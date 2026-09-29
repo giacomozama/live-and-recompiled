@@ -68,8 +68,11 @@ void Convert(uint32_t type, const uint8_t* p, float* o) {
     }
 }
 
-// TEMPORARY A/B: false converts every vertex on the CPU, as before
-constexpr bool kRawVertices = true;
+// A/B switch: 0 converts every vertex on the CPU, as before
+#ifndef XBE_RAW_VERTICES
+#define XBE_RAW_VERTICES 1
+#endif
+constexpr bool kRawVertices = XBE_RAW_VERTICES;
 
 // D3DVSDT type as the input assembler reads it: DXGI format, what the vertex shader does after, bytes the format reads
 struct HostElement {

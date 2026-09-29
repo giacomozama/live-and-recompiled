@@ -1,6 +1,7 @@
 #include "gpu/texture.h"
 
 #include <algorithm>
+#include <bit>
 #include <cstring>
 #include <mutex>
 #include <unordered_map>
@@ -242,17 +243,13 @@ float DepthTexel(uint32_t fmt, const uint8_t* p) {
     switch (fmt) {
         case 0x2A: case 0x2E: return float(v >> 8) / 16777215.0f;
         case 0x2C: case 0x30: return float(s) / 65535.0f;
-        case 0x2B: case 0x2F: {  // 24 bit float without sign, depth units up to 2^128
-            uint32_t bits = (v >> 8) << 7;
-            float f;
-            std::memcpy(&f, &bits, 4);
-            return f;
+        case 0x2B: case 0x2F: {  // unsigned, 8 bit exponent, 16 bit mantissa: a float32 missing its low bits
+            uint32_t exponent = v >> 24, mantissa = (v >> 8) & 0xFFFF;
+            return std::bit_cast<float>(exponent << 23 | mantissa << 7);
         }
-        default: {
-            uint32_t bits = (uint32_t(s) << 11) + 0x3C000000u;
-            float f;
-            std::memcpy(&f, &bits, 4);
-            return f / 511.9375f;
+        default: {  // unsigned, 4 bit exponent biased 7, 12 bit mantissa, over its max 511.9375
+            uint32_t exponent = (s >> 12) + 120u, mantissa = s & 0xFFFu;
+            return std::bit_cast<float>(exponent << 23 | mantissa << 11) / 511.9375f;
         }
     }
 }

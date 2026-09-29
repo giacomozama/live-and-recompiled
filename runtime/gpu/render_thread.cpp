@@ -22,6 +22,7 @@
 #include <unordered_set>
 #include <vector>
 
+#include "core/diag.h"
 #include "core/log.h"
 #include "gpu/backend.h"
 #include "kernel/kernel.h"
@@ -190,7 +191,7 @@ public:
 
     void SyncLate(uint32_t data) override {
         if (!inner_->DeliverLate(data)) {
-            LOG_FIRST(16, "render thread: no finished copy of %08X for a NOOVERWRITE lock, reading it back now", data);
+            if (diag::Perf()) LOG_FIRST(16, "render thread: no finished copy of %08X for a NOOVERWRITE lock, reading it back now", data);
             written_.insert(data);
             ReadBack(data, true);
         }
@@ -249,7 +250,7 @@ private:
         // only surfaces the GPU wrote since the last read-back hold anything newer than guest memory
         if (!written_.erase(data)) return;
         (late ? g_perf_sync_late : g_perf_sync_block)++;
-        if (logged_.insert(uint64_t(data) << 1 | (late ? 1 : 0)).second)
+        if (diag::Perf() && logged_.insert(uint64_t(data) << 1 | (late ? 1 : 0)).second)
             LOGI("render thread: read-back of %08X for %s", data, late ? "a NOOVERWRITE lock without a finished copy" : "a lock / BlockOnResource");
         Cmd c{Op::Sync};
         c.a = data;
@@ -367,7 +368,7 @@ private:
         g_perf_wait_kind_ns[size_t(kind)] += ns;
         if (why) {
             g_perf_waits++;
-            LOG_FIRST(32, "render thread: the title waited %.2f ms for a %s", ns / 1e6, why);
+            if (diag::Perf()) LOG_FIRST(32, "render thread: the title waited %.2f ms for a %s", ns / 1e6, why);
         }
     }
 
@@ -453,7 +454,7 @@ private:
     State sent_;  // the state as the render thread will have it
     std::unordered_map<uint32_t, uint64_t> last_use_;
     std::unordered_set<uint32_t> written_;  // surfaces drawn since their last read-back, by data address
-    std::unordered_set<uint64_t> logged_;   // TEMPORARY: read-backs named once, by address and kind
+    std::unordered_set<uint64_t> logged_;   // perf diagnostic: read-backs named once, by address and kind
     uint64_t next_id_ = 0, last_present_ = 0;
 
     // the render thread

@@ -26,11 +26,11 @@ struct VOut {
     float4 d1 : COLOR1;
     float4 b0 : COLOR2;
     float4 b1 : COLOR3;
-    float4 t0 : TEXCOORD0;
-    float4 t1 : TEXCOORD1;
-    float4 t2 : TEXCOORD2;
-    float4 t3 : TEXCOORD3;
-    float fog : TEXCOORD4;
+    float4 tc0 : TEXCOORD0;
+    float4 tc1 : TEXCOORD1;
+    float4 tc2 : TEXCOORD2;
+    float4 tc3 : TEXCOORD3;
+    float fogamt : TEXCOORD4;
 };
 cbuffer VC : register(b0) { float4 c[192]; };
 cbuffer DC : register(b1) {
@@ -58,23 +58,29 @@ cbuffer DC : register(b1) {
 // ---------------------------------------------------------------- vertex programs
 
 const char* kVsHelpers = R"(
-float4 xmul(float4 a, float4 b) { return (a == 0 || b == 0) ? (float4)0 : a * b; }
-float awayzero(float v) { float m = clamp(abs(v), 5.42101e-20, 1.84467e+19); return v < 0 ? -m : m; }
-float4 xrcp(float v) { return (1.0 / v).xxxx; }
-float4 xrcc(float v) { return awayzero(1.0 / v).xxxx; }
-float4 xrsq(float v) { return v == 0 ? (1.#INF).xxxx : (rsqrt(abs(v))).xxxx; }
-float4 xexp(float v) { return float4(exp2(floor(v)), v - floor(v), exp2(v), 1); }
-float4 xlog(float v) {
-    float t = abs(v);
-    if (t == 0) return float4(-1.#INF, 1, -1.#INF, 1);
-    float e = floor(log2(t));
-    return float4(e, t / exp2(e), log2(t), 1);
+float4 mac_mul(float4 a, float4 b) { return (a == 0 || b == 0) ? (float4)0 : a * b; }
+int mac_arl(float v) { return (int)floor(v + 1e-3); }
+// magnitude clamped between 1 / 2^64 and 2^64, sign kept
+float magclamp(float v) { float m = clamp(abs(v), 5.42101e-20, 1.84467e+19); return v < 0 ? -m : m; }
+float4 ilu_rcp(float v) { return (1.0 / v).xxxx; }
+float4 ilu_rcc(float v) { return magclamp(1.0 / v).xxxx; }
+float4 ilu_rsq(float v) { return v == 0 ? (1.#INF).xxxx : (rsqrt(abs(v))).xxxx; }
+// 2^floor(v), fraction, 2^v
+float4 ilu_exp(float v) {
+    float whole = floor(v);
+    return float4(exp2(whole), v - whole, exp2(v), 1);
 }
-float4 xlit(float4 s) {
-    s.w = clamp(s.w, -(128.0 - 1.0 / 256.0), 128.0 - 1.0 / 256.0);
-    s.x = max(s.x, 0);
-    s.y = max(s.y, 0);
-    return float4(1, s.x, s.x > 0 ? exp2(s.w * log2(s.y)) : 0, 1);
+// exponent, mantissa, log2 of |v|; zero logs to negative infinity
+float4 ilu_log(float v) {
+    float mag = abs(v), l2 = log2(mag), ex = floor(l2);
+    return mag == 0 ? float4(-1.#INF, 1, -1.#INF, 1) : float4(ex, mag / exp2(ex), l2, 1);
+}
+// power clamped to 128 less 1/256
+float4 ilu_lit(float4 s) {
+    const float cap = 127.99609375;
+    float diffuse = max(s.x, 0);
+    float spec = exp2(clamp(s.w, -cap, cap) * log2(max(s.y, 0)));
+    return float4(1, diffuse, diffuse > 0 ? spec : 0, 1);
 }
 float fogfactor(float d) {
     if (fogp.w == 3) return (fogp.y - d) / (fogp.y - fogp.x);
@@ -129,9 +135,9 @@ std::string Src(const Tok& k, int which, uint16_t regs) {
 std::string MacExpr(uint32_t op, const std::string& a, const std::string& b, const std::string& c) {
     switch (op) {
         case 1: return a;
-        case 2: return "xmul(" + a + ", " + b + ")";
+        case 2: return "mac_mul(" + a + ", " + b + ")";
         case 3: return "(" + a + " + " + c + ")";
-        case 4: return "(xmul(" + a + ", " + b + ") + " + c + ")";
+        case 4: return "(mac_mul(" + a + ", " + b + ") + " + c + ")";
         case 5: return "dot(" + a + ".xyz, " + b + ".xyz).xxxx";
         case 6: return "dot(float4(" + a + ".xyz, 1), " + b + ").xxxx";
         case 7: return "dot(" + a + ", " + b + ").xxxx";
@@ -148,12 +154,12 @@ std::string MacExpr(uint32_t op, const std::string& a, const std::string& b, con
 std::string IluExpr(uint32_t op, const std::string& c) {
     switch (op) {
         case 1: return c;
-        case 2: return "xrcp(" + c + ".x)";
-        case 3: return "xrcc(" + c + ".x)";
-        case 4: return "xrsq(" + c + ".x)";
-        case 5: return "xexp(" + c + ".x)";
-        case 6: return "xlog(" + c + ".x)";
-        case 7: return "xlit(" + c + ")";
+        case 2: return "ilu_rcp(" + c + ".x)";
+        case 3: return "ilu_rcc(" + c + ".x)";
+        case 4: return "ilu_rsq(" + c + ".x)";
+        case 5: return "ilu_exp(" + c + ".x)";
+        case 6: return "ilu_log(" + c + ".x)";
+        case 7: return "ilu_lit(" + c + ")";
         default: return "(float4)0";
     }
 }
@@ -201,7 +207,7 @@ std::string VsInputs(uint16_t regs, uint64_t decode) {
 const char* kVsEpilogue = R"(
     VOut o;
     precise float4 p = oPos;
-    p.w = awayzero(p.w);
+    p.w = magclamp(p.w);
     precise float4 q;
     // full screen passes drawn half a pixel up-left for the console's integer pixel centers stop half a pixel short
     // of the far edges on D3D12's, which upscaled leaves the last host columns and rows undrawn
@@ -217,11 +223,11 @@ const char* kVsEpilogue = R"(
     o.d1 = saturate(oD1);
     o.b0 = saturate(oB0);
     o.b1 = saturate(oB1);
-    o.t0 = oT0;
-    o.t1 = oT1;
-    o.t2 = oT2;
-    o.t3 = oT3;
-    o.fog = fogfactor(oFog.x);
+    o.tc0 = oT0;
+    o.tc1 = oT1;
+    o.tc2 = oT2;
+    o.tc3 = oT3;
+    o.fogamt = fogfactor(oFog.x);
     return o;
 }
 )";
@@ -255,7 +261,7 @@ struct Ps {
             case 0: return "float4(0,0,0,0)";
             case 1: return F("pc[%d]", stage == 8 ? 16 : ((flags & 0x10) ? stage * 2 : 0));
             case 2: return F("pc[%d]", stage == 8 ? 17 : ((flags & 0x100) ? stage * 2 + 1 : 1));
-            case 3: return "pFog";
+            case 3: return "fogin";
             case 4: return "v0";
             case 5: return "v1";
             case 8: return "t0";
@@ -346,14 +352,30 @@ struct Ps {
     }
 };
 
-// texture fetch for combiner texture modes
+// a dot stage's operand: the source stage's rgb, raw or read back as signed bytes
+std::string DotInput(uint32_t map, uint32_t src) {
+    switch (map) {
+        case 1: return F("sbyte(t%u.rgb, 128, 128, 127)", src);        // offset by 128
+        case 2: return F("sbyte(t%u.rgb, -0.5, 255.5, 127.5)", src);  // two's complement, (2b + 1) / 255
+        case 3: return F("sbyte(t%u.rgb, 0, 256, 127)", src);         // two's complement
+        default: return F("t%u.rgb", src);
+    }
+}
+
+// texture shader stage i, per its mode
 std::string TexFetch(const PixelKey& k, int i) {
     uint32_t mode = (k.tex_modes >> (i * 5)) & 0x1F;
     const TexInfo& t = k.tex[i];
     uint32_t in = i == 1 ? 0 : i == 2 ? (k.input_texture >> 16) & 0xF : (k.input_texture >> 20) & 0xF;
     uint32_t dm = i == 0 ? 0 : (k.dot_mapping >> ((i - 1) * 4)) & 0xF;
-    const char* dotmap[] = {"dot01", "dotd3d", "dotgl", "dotm11", "dot01", "dot01", "dot01", "dot01"};
+    const std::string tc = F("tc%d", i);
+    const char* q = tc.c_str();
     std::string norm = (t.rect ? F(" / texsize[%d].xy", i) : "") + F(" + texsize[%d].zw", i);
+    auto put = [&](const std::string& v) { return F("float4 t%d = %s;\n", i, v.c_str()); };
+    // dpN, or dpNn for stage N + 1's product taken early
+    auto dp = [&](int n, int coord, uint32_t map, uint32_t src) {
+        return F("float dp%d%s = dot(tc%d.xyz, %s);\n", n, coord == n ? "" : "n", coord, DotInput(map, src).c_str());
+    };
     auto tex2d = [&](const std::string& uv) {
         if (t.flags & kTexWide) return F("spreadtap(tex%d, smp%d, %s, spread[%d], %s)", i, i, uv.c_str(), i, (t.flags & kTexHdr) ? "hdr.y" : "1");
         return F("tex%d.Sample(smp%d, %s)", i, i, uv.c_str());
@@ -376,70 +398,52 @@ std::string TexFetch(const PixelKey& k, int i) {
         if (t.kind == kTex3D) return F("tex%d.Sample(smp%d, %s)", i, i, uvw.c_str());
         return std::string("float4(0,0,0,1)");
     };
+    auto depth = [&](const std::string& ref) {
+        return put(F("shadow(tex%d, smp%d, (%s.xy / %s.w)%s, %s, %d, i.pos.xy, texsize[%d].xy)", i, i, q, q, norm.c_str(), ref.c_str(),
+                     t.shadow, i));
+    };
     std::string s;
     switch (mode) {
-        case 0: return F("float4 t%d = float4(0,0,0,1);\n", i);
-        case 1:  // project 2d
-            if (t.shadow)
-                return F("float4 t%d = shadow(tex%d, smp%d, (pT%d.xy / pT%d.w)%s, 0, %d, i.pos.xy, texsize[%d].xy);\n", i, i, i, i, i,
-                         norm.c_str(), t.shadow, i);
-            return F("float4 t%d = %s;\n", i, sample2(F("pT%d.xy / pT%d.w", i, i)).c_str());
-        case 2:  // project 3d
-            if (t.shadow)
-                return F("float4 t%d = shadow(tex%d, smp%d, (pT%d.xy / pT%d.w)%s, pT%d.z / pT%d.w, %d, i.pos.xy, texsize[%d].xy);\n", i, i,
-                         i, i, i, norm.c_str(), i, i, t.shadow, i);
-            return F("float4 t%d = %s;\n", i, sample3(F("pT%d.xyz / pT%d.w", i, i)).c_str());
-        case 3: return F("float4 t%d = %s;\n", i, sample3(F("pT%d.xyz", i)).c_str());
-        case 4: return F("float4 t%d = pT%d;\n", i, i);
-        case 5:  // clip plane
-            s = F("float4 t%d = 0;\n", i);
-            for (int j = 0; j < 4; j++)
-                s += F("if (pT%d.%c %s 0) discard;\n", i, "xyzw"[j], ((k.compare_mode >> (i * 4 + j)) & 1) ? ">=" : "<");
+        case 0: return put("float4(0,0,0,1)");
+        case 1: return t.shadow ? depth("0") : put(sample2(F("%s.xy / %s.w", q, q)));
+        case 2: return t.shadow ? depth(F("%s.z / %s.w", q, q)) : put(sample3(F("%s.xyz / %s.w", q, q)));
+        case 3: return put(sample3(tc + ".xyz"));
+        case 4: return put(tc);
+        case 5:  // clip plane: a set compare_mode bit kills at >= 0, a clear one below 0
+            s = put("0");
+            for (int j = 0; j < 4; j++) s += F("if (%s.%c %s 0) discard;\n", q, "xyzw"[j], ((k.compare_mode >> (i * 4 + j)) & 1) ? ">=" : "<");
             return s;
         case 6:
-        case 7:  // bump env map
-            s = F("float2 dsdt%d = float2(sgn3(t%u.b), sgn3(t%u.g));\n", i, in, in);
-            s += F("dsdt%d = float2(dot(bumpmat[%d].xz, dsdt%d), dot(bumpmat[%d].yw, dsdt%d));\n", i, i, i, i, i);
-            s += F("float4 t%d = %s;\n", i, sample2(F("pT%d.xy + dsdt%d", i, i)).c_str());
+        case 7:  // bump env map: signed du dv through the 2x2 matrix, 7 scales by luminance
+            s = F("float2 duv%d = sbyte(t%u.bgr, 0, 256, 127).xy;\n", i, in);
+            s += put(sample2(F("%s.xy + float2(dot(bumpmat[%d].xz, duv%d), dot(bumpmat[%d].yw, duv%d))", q, i, i, i, i)));
             if (mode == 7) s += F("t%d *= bumplum[%d].x * t%u.r + bumplum[%d].y;\n", i, i, in, i);
             return s;
-        case 9:  // dot st
-            return F("float dot%d = dot(pT%d.xyz, %s(t%u));\nfloat4 t%d = %s;\n", i, i, dotmap[dm], in, i,
-                     sample2(F("float2(dot%d, dot%d)", i - 1, i)).c_str());
+        case 9: return dp(i, i, dm, in) + put(sample2(F("float2(dp%d, dp%d)", i - 1, i)));
         case 0xA:
-        case 0x11:  // dot zw, dot product
-            return F("float dot%d = dot(pT%d.xyz, %s(t%u));\nfloat4 t%d = 0;\n", i, i, dotmap[dm], in, i);
-        case 0xB: {  // reflect diffuse, stage 2
-            uint32_t dm3 = (k.dot_mapping >> 8) & 0xF, in3 = (k.input_texture >> 20) & 0xF;
-            return F("float dot%d = dot(pT%d.xyz, %s(t%u));\nfloat dot%d_n = dot(pT%d.xyz, %s(t%u));\nfloat4 t%d = %s;\n", i, i,
-                     dotmap[dm], in, i, i + 1, dotmap[dm3], in3, i, sample3(F("float3(dot%d, dot%d, dot%d_n)", i - 1, i, i)).c_str());
-        }
-        case 0xC:  // reflect specular, stage 3
-            s = F("float dot%d = dot(pT%d.xyz, %s(t%u));\n", i, i, dotmap[dm], in);
-            s += F("float3 n%d = float3(dot%d, dot%d, dot%d);\nfloat3 e%d = float3(pT%d.w, pT%d.w, pT%d.w);\n", i, i - 2, i - 1, i, i,
-                   i - 2, i - 1, i);
-            s += F("float3 rv%d = 2 * n%d * dot(n%d, e%d) / dot(n%d, n%d) - e%d;\n", i, i, i, i, i, i, i);
-            return s + F("float4 t%d = %s;\n", i, sample3(F("rv%d", i)).c_str());
+        case 0x11: return dp(i, i, dm, in) + put("0");
+        case 0xB:  // reflect diffuse at stage 2: stage 3's product early for the normal
+            s = dp(i, i, dm, in) + dp(i, i + 1, (k.dot_mapping >> 8) & 0xF, (k.input_texture >> 20) & 0xF);
+            return s + put(sample3(F("float3(dp%d, dp%d, dp%dn)", i - 1, i, i)));
+        case 0xC:  // reflect specular at stage 3: eye from the three w
+            s = dp(i, i, dm, in);
+            s += F("float3 nrm%d = float3(dp%d, dp%d, dp%d), eye%d = float3(tc%d.w, tc%d.w, tc%d.w);\n", i, i - 2, i - 1, i, i, i - 2,
+                   i - 1, i);
+            s += F("float3 refl%d = 2 * nrm%d * dot(nrm%d, eye%d) / dot(nrm%d, nrm%d) - eye%d;\n", i, i, i, i, i, i, i);
+            return s + put(sample3(F("refl%d", i)));
         case 0xD:
-        case 0xE:  // dot str 3d, cube
-            return F("float dot%d = dot(pT%d.xyz, %s(t%u));\nfloat4 t%d = %s;\n", i, i, dotmap[dm], in, i,
-                     sample3(F("float3(dot%d, dot%d, dot%d)", i - 2, i - 1, i)).c_str());
-        case 0xF: return F("float4 t%d = %s;\n", i, sample2(F("t%u.ar", in)).c_str());
-        case 0x10: return F("float4 t%d = %s;\n", i, sample2(F("t%u.gb", in)).c_str());
-        default: return F("float4 t%d = 0;\n", i);
+        case 0xE: return dp(i, i, dm, in) + put(sample3(F("float3(dp%d, dp%d, dp%d)", i - 2, i - 1, i)));
+        case 0xF: return put(sample2(F("t%u.ar", in)));
+        case 0x10: return put(sample2(F("t%u.gb", in)));
+        default: return put("0");
     }
 }
 
 const char* kPsHelpers = R"(
-float sgn3(float x) { x *= 255; return x >= 128 ? (x - 256) / 127 : x / 127; }
-float sgn1(float x) { return (x * 255 - 128) / 127; }
-float sgn2(float x) { x *= 255; return x >= 128 ? (x - 255.5) / 127.5 : (x + 0.5) / 127.5; }
-float3 dot01(float4 c) { return c.rgb; }
-float3 dotd3d(float4 c) { return float3(sgn1(c.r), sgn1(c.g), sgn1(c.b)); }
-float3 dotgl(float4 c) { return float3(sgn2(c.r), sgn2(c.g), sgn2(c.b)); }
-float3 dotm11(float4 c) { return float3(sgn3(c.r), sgn3(c.g), sgn3(c.b)); }
+// unorm to byte b, less lo under 128 or hi from 128, over d
+float3 sbyte(float3 u, float lo, float hi, float d) { float3 b = u * 255; return (b - (b >= 128 ? hi : lo)) / d; }
 // the sampler compares, a linear filter blends the four results like the console does; soft shadows take a Poisson
-// disc turned per pixel, the game's screen blur smooths the grain
+// disc turned per pixel, for a screen blur to smooth the grain
 static const float2 kDisc[12] = {
     float2(-0.326, -0.406), float2(-0.840, -0.074), float2(-0.696, 0.457), float2(-0.203, 0.621),
     float2(0.962, -0.195),  float2(0.473, -0.480),  float2(0.519, 0.767),  float2(0.185, -0.893),
@@ -614,7 +618,7 @@ std::string VertexProgramHlsl(const std::vector<uint32_t>& prog, uint16_t regs, 
             if (ilu) s += "        precise float4 ir = " + IluExpr(ilu, c) + ";\n";
             uint32_t r = k.f(3, 20, 4), omask = k.f(3, 12, 4);
             if (mac == 13) {
-                s += "        a0 = (int)floor(mr.x + 0.001);\n";
+                s += "        a0 = mac_arl(mr.x);\n";
             } else if (mac) {
                 uint32_t m = k.f(3, 24, 4);
                 if (ilu && r == 1) m = 0;
@@ -762,11 +766,11 @@ std::string FixedVertexHlsl(uint16_t regs, bool pretransformed, uint64_t decode,
     o.d1 = saturate(oD1);
     o.b0 = o.d0;
     o.b1 = o.d1;
-    o.t0 = oT0;
-    o.t1 = oT1;
-    o.t2 = oT2;
-    o.t3 = oT3;
-    o.fog = fogfactor(abs(cp.z));
+    o.tc0 = oT0;
+    o.tc1 = oT1;
+    o.tc2 = oT2;
+    o.tc3 = oT3;
+    o.fogamt = fogfactor(abs(cp.z));
     return o;
 }
 )";
@@ -782,10 +786,10 @@ std::string PixelHlsl(const PixelKey& k) {
         s += F("%s tex%d : register(t%d);\n%s smp%d : register(s%d);\n", type, i, i, t.shadow ? "SamplerComparisonState" : "SamplerState", i, i);
     }
     s += F("float4 main(VOut i, bool front : SV_IsFrontFace) : SV_Target {\n");
-    s += "    float4 pT0 = i.t0, pT1 = i.t1, pT2 = i.t2, pT3 = i.t3;\n";
+    s += "    float4 tc0 = i.tc0, tc1 = i.tc1, tc2 = i.tc2, tc3 = i.tc3;\n";
     s += k.two_sided ? "    float4 v0 = front ? i.d0 : i.b0, v1 = front ? i.d1 : i.b1;\n" : "    float4 v0 = i.d0, v1 = i.d1;\n";
     s += "    if (misc.w == 0) v1 = float4(0, 0, 0, 1);\n";
-    s += "    float4 pFog = float4(fogcolor.rgb, saturate(i.fog));\n";
+    s += "    float4 fogin = float4(fogcolor.rgb, saturate(i.fogamt));\n";
     std::string body;
     if (k.programmable) {
         for (int i = 0; i < 4; i++) {
@@ -824,7 +828,7 @@ std::string PixelHlsl(const PixelKey& k) {
             body += "outc.rgb = " + D + " + lerp(" + C + ", " + B + ", " + A + ");\n";
             body += "outc.a = " + G + ";\n";
         } else {
-            body += "float4 outc = float4(lerp(pFog.rgb, r0.rgb, pFog.a), r0.a);\n";
+            body += "float4 outc = float4(lerp(fogin.rgb, r0.rgb, fogin.a), r0.a);\n";
         }
     } else {
         body += "float4 cur = v0, tmp = 0;\n";
@@ -833,16 +837,16 @@ std::string PixelHlsl(const PixelKey& k) {
             if (f[0] <= 1) break;
             const TexInfo& t = k.tex[i];
             std::string norm = (t.rect ? F(" / texsize[%d].xy", i) : "") + F(" + texsize[%d].zw", i);
-            std::string uv = (k.proj >> i) & 1 ? F("(pT%d.xy / pT%d.w)%s", i, i, norm.c_str()) : F("pT%d.xy%s", i, norm.c_str());
+            std::string uv = (k.proj >> i) & 1 ? F("(tc%d.xy / tc%d.w)%s", i, i, norm.c_str()) : F("tc%d.xy%s", i, norm.c_str());
             if (t.shadow)
-                body += F("float4 t%d = shadow(tex%d, smp%d, (pT%d.xy / pT%d.w)%s, pT%d.z / pT%d.w, %d, i.pos.xy, texsize[%d].xy);\n", i, i,
+                body += F("float4 t%d = shadow(tex%d, smp%d, (tc%d.xy / tc%d.w)%s, tc%d.z / tc%d.w, %d, i.pos.xy, texsize[%d].xy);\n", i, i,
                           i, i, i, norm.c_str(), i, i, t.shadow, i);
             else if (t.kind == kTex2D && (t.flags & kTexWide))
                 body += F("float4 t%d = spreadtap(tex%d, smp%d, %s, spread[%d], %s);\n", i, i, i, uv.c_str(), i, (t.flags & kTexHdr) ? "hdr.y" : "1");
             else if (t.kind == kTex2D) body += F("float4 t%d = tex%d.Sample(smp%d, %s);\n", i, i, i, uv.c_str());
             else if (t.kind == kTexCube && (t.flags & kTexNormCube))
-                body += F("float4 t%d = float4(normalize(pT%d.xyz) * 0.5 + 0.5, tex%d.Sample(smp%d, pT%d.xyz).a);\n", i, i, i, i, i);
-            else if (t.kind) body += F("float4 t%d = tex%d.Sample(smp%d, pT%d.xyz);\n", i, i, i, i);
+                body += F("float4 t%d = float4(normalize(tc%d.xyz) * 0.5 + 0.5, tex%d.Sample(smp%d, tc%d.xyz).a);\n", i, i, i, i, i);
+            else if (t.kind) body += F("float4 t%d = tex%d.Sample(smp%d, tc%d.xyz);\n", i, i, i, i);
             else body += F("float4 t%d = float4(1,1,1,1);\n", i);
             if ((t.flags & (kTexHdr | kTexWide)) == kTexHdr) body += F("t%d.rgb = saturate(t%d.rgb * hdr.y);\n", i, i);
             if ((k.alphakill >> i) & 1) body += F("if (t%d.a == 0) discard;\n", i);
@@ -852,7 +856,7 @@ std::string PixelHlsl(const PixelKey& k) {
             body += F("{ float3 c3 = saturate(%s); float c1 = saturate(%s); %s = float4(c3, c1); }\n", rgb.c_str(), a.c_str(), dst);
         }
         body += "cur.rgb = saturate(cur.rgb + v1.rgb);\n";
-        body += "float4 outc = float4(lerp(pFog.rgb, cur.rgb, pFog.a), cur.a);\n";
+        body += "float4 outc = float4(lerp(fogin.rgb, cur.rgb, fogin.a), cur.a);\n";
     }
     // HDR targets keep colour divided by their headroom, the console's per pass clamp stays
     body += "alphatest(outc.a);\noutc.rgb = saturate(outc.rgb) * hdr.x;\nreturn outc;\n}\n";
