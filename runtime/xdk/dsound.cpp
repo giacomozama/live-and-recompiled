@@ -10,6 +10,7 @@
 #include "audio/audio.h"
 #include "xbe/xbe.h"
 #include "xdk/hle.h"
+#include "xdk/layout.h"
 
 using namespace kernel;
 
@@ -338,6 +339,7 @@ HLE_STDCALL(DirectSoundDoWork, 0) { return 0; }
 // Effects run on the console's DSP and are not reproduced. The descriptor keeps the image's effect list so the
 // title finds its indices, every segment points at zeroed memory.
 HLE_STDCALL(XAudioDownloadEffectsImage, 4) {
+    XDK_REQUIRE("dsound", XDK_KEY(EffectsImage_Skip0), XDK_KEY(EffectsImage_Skip1), XDK_KEY(EffectsImage_Desc));
     std::string name = ReadCString(a[0]);
     std::vector<uint8_t> img;
     if (a[2] & 1) {
@@ -348,7 +350,7 @@ HLE_STDCALL(XAudioDownloadEffectsImage, 4) {
         img.assign(std::istreambuf_iterator<char>(f), {});
     }
     auto u32 = [&](size_t o) { uint32_t v = 0; if (o + 4 <= img.size()) std::memcpy(&v, &img[o], 4); return v; };
-    size_t t = 0x818 + size_t(u32(0x804) + u32(0x80C)) * 4;
+    size_t t = XDK_EffectsImage_Desc + size_t(u32(XDK_EffectsImage_Skip0) + u32(XDK_EffectsImage_Skip1)) * 4;
     uint32_t count = std::min<uint32_t>(u32(t), 64);
     LOGI("dsound: effects image %s, %u effects", name.c_str(), count);
     uint32_t desc = mem::AllocSystem(8 + std::max(count, 1u) * 32);
@@ -475,13 +477,14 @@ BUFFER(SetI3DL2Source, 3) { return 0; }
 // ---------------------------------------------------------------- streams, the object carries the XDK's own vtable
 
 HLE_STDCALL(DirectSoundCreateStream, 2) {
+    XDK_REQUIRE("dsound", XDK_KEY(CDirectSoundStream_Vtable), XDK_KEY(CDirectSoundStream_Vtable2));
     std::lock_guard<std::recursive_mutex> lock(g_lock);
     Start();
     uint32_t desc = a[0];
     uint32_t obj = mem::AllocSystem(0x80);
     std::memset(HostPtr(obj), 0, 0x80);
-    W32(obj, kStreamVtable);
-    W32(obj + 4, kStreamVtable2);
+    W32(obj + XDK_CDirectSoundStream_Vtable, kStreamVtable);
+    W32(obj + XDK_CDirectSoundStream_Vtable2, kStreamVtable2);
     Voice& v = g_voices[obj];
     v.obj = obj;
     v.stream = true;

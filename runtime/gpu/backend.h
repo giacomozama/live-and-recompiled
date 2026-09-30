@@ -61,12 +61,4 @@ inline std::atomic<uint64_t> g_perf_sync_late{0}, g_perf_sync_block{0};  // read
 // F3: save the next frame, every draw and target, under diag::CaptureDir
 inline std::atomic<bool> g_capture{false};
 
-// the title's shadow map, the colour surface bound beside it and the swizzled chain aliased over the map's memory
-// that blurs shadow edges on screen, by surface data as the headers hold it; blur_hi is 0 until the title made them
-struct ShadowTargets {
-    uint32_t map = 0, color = 0, blur_lo = 0, blur_hi = 0;
-    uint32_t steps = 0;  // vertex constant of the chain passes' texcoord steps, one per stage; 0 no soft chain
-};
-inline ShadowTargets g_shadow;  // written under the D3D lock
-
 }  // namespace gpu

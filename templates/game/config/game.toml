@@ -1,0 +1,9 @@
+# Placeholder. build.bat replaces it on the first build with the config xbe_symbols writes for the game's XBE:
+#   out\build\win-amd64-release\xbe_symbols.exe assets\default.xbe sdk\xdk --out config\game.toml
+# With XbSymbolDatabaseCLI on PATH it also passes --xbsdb, the output of XbSymbolDatabaseCLI -e, for more entry
+# points and the names the signatures missed. Names left at 0 become trapping stubs; find them in Ghidra
+# (python sdk\tools\symbols\xbe2pe.py config\game.toml game.exe) and fill them in by hand.
+[xbe]
+path = "assets/default.xbe"
+out = "generated/game"
+partitions = 64

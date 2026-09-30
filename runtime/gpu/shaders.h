@@ -14,12 +14,10 @@ struct TexInfo {
     uint8_t kind = kTexNone;
     uint8_t rect = 0;    // linear texture, coordinates in texels
     uint8_t shadow = 0;  // depth texture: 1 D24, 2 D16
-    uint8_t flags = 0;   // kTexHdr, kTexNormCube, kTexWide
+    uint8_t flags = 0;   // kTexWide; bits 0 and 1 are a backend extension's
 };
 enum : uint8_t {
-    kTexHdr = 1,       // a render target holding HDR colour divided by the headroom
-    kTexNormCube = 2,  // a normalization cube: computed per pixel instead
-    kTexWide = 4,      // an upscaled target shrunk by the pass: each tap averaged over console texels
+    kTexWide = 4,  // an upscaled target shrunk by the pass: each tap averaged over console texels
 };
 
 struct PixelKey {
@@ -54,6 +52,24 @@ FixedKey MakeFixedKey(const State& s);
 std::string FixedVertexHlsl(uint16_t regs, bool pretransformed, uint64_t decode = 0, const FixedKey& f = {});
 std::string PixelHlsl(const PixelKey& k);
 
+// HLSL a backend extension adds; the defaults write the console path
+struct ShaderHooks {
+    virtual ~ShaderHooks() = default;
+    // the cbuffer line for DrawConstants::ext
+    virtual std::string Constants() const;
+    // float4 shadow(Texture2D<float> t, SamplerComparisonState s, float2 uv, float z, int fmt, float2 px, float2 size)
+    virtual std::string Shadow() const;
+    // what spreadtap scales a render target's colour by
+    virtual std::string ReadScale(const TexInfo&) const { return "1"; }
+    // a cube sampled along dir at stage i, empty for a plain sample
+    virtual std::string Cube(const TexInfo&, int, const std::string&) const { return {}; }
+    // after stage i's fetch
+    virtual std::string Fetched(const TexInfo&, int) const { return {}; }
+    // outc to the target, after the alpha test
+    virtual std::string Output() const;
+};
+inline const ShaderHooks* g_shader_hooks = nullptr;
+
 // the constant buffer layout both stages share, register b1
 struct DrawConstants {
     float surf[4];      // target width, height, 1 / depth scale, 0
@@ -66,7 +82,7 @@ struct DrawConstants {
     float bump[4][4];   // 00 01 10 11
     float bumpl[4][4];  // scale offset
     float wvp[16];      // fixed function
-    float hdr[4];       // colour out scale, HDR target read scale, soft shadow radius in shadow map texels, 0
+    float ext[4];       // a backend extension's, declared by ShaderHooks::Constants
     float spread[4][4]; // kTexWide: tap step in uv, taps per axis
     // fixed function, lit in view space
     float wv[16];

@@ -46,24 +46,14 @@ void Load() {
     s.height = t["height"].value_or(s.height);
     s.render_percent = t["render_percent"].value_or(s.render_percent);
     s.fps_cap = t["fps_cap"].value_or(s.fps_cap);
-    s.fps_counter = t["fps_counter"].value_or(s.fps_counter);
     s.vsync = t["vsync"].value_or(s.vsync);
     s.aniso = t["anisotropic_filtering"].value_or(s.aniso);
-    s.shadow_resolution = std::min(t["shadow_resolution"].value_or(s.shadow_resolution), 8192u);
-    s.shader_model = t["shader_model"].value_or(s.shader_model) >= 3 ? 3u : 1u;
-    s.hdr_rendering = t["hdr_rendering"].value_or(s.hdr_rendering);
-    s.tone_mapping = t["tone_mapping"].value_or(s.tone_mapping);
-    s.hq_soft_shadows = t["hq_soft_shadows"].value_or(s.hq_soft_shadows);
-    s.mouse_sensitivity = float(t["mouse_sensitivity"].value_or(double(s.mouse_sensitivity)));
-    s.invert_mouse = t["invert_mouse"].value_or(s.invert_mouse);
     s.join_ip = t["join_ip"].value_or(s.join_ip);
     for (const Option& o : kGame.options) {
         if (o.flag) *o.flag = t[o.key].value_or(*o.flag);
         else *o.value = t[o.key].value_or(*o.value);
     }
-    if (const toml::table* keys = t["keys"].as_table())
-        for (auto&& [id, value] : *keys)
-            if (auto v = value.value<std::string>()) s.keys[std::string(id.str())] = *v;
+    if (kGame.load) kGame.load(&t);
 }
 
 void Save() {
@@ -73,24 +63,14 @@ void Save() {
                   {"height", int64_t(s.height)},
                   {"render_percent", int64_t(s.render_percent)},
                   {"fps_cap", int64_t(s.fps_cap)},
-                  {"fps_counter", s.fps_counter},
                   {"vsync", s.vsync},
                   {"anisotropic_filtering", int64_t(s.aniso)},
-                  {"shadow_resolution", int64_t(s.shadow_resolution)},
-                  {"shader_model", int64_t(s.shader_model)},
-                  {"hdr_rendering", s.hdr_rendering},
-                  {"tone_mapping", s.tone_mapping},
-                  {"hq_soft_shadows", s.hq_soft_shadows},
-                  {"mouse_sensitivity", double(s.mouse_sensitivity)},
-                  {"invert_mouse", s.invert_mouse},
                   {"join_ip", s.join_ip}};
     for (const Option& o : kGame.options) {
         if (o.flag) t.insert(o.key, *o.flag);
         else t.insert(o.key, int64_t(*o.value));
     }
-    toml::table keys;
-    for (const auto& [id, value] : s.keys) keys.insert(id, value);
-    t.insert("keys", keys);
+    if (kGame.save) kGame.save(&t);
     std::ofstream f(File());
     f << t << "\n";
 }

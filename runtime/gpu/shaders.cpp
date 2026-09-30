@@ -19,7 +19,7 @@ std::string F(const char* fmt, ...) {
     return buf;
 }
 
-const char* kCommon = R"(
+const char* kCommonHead = R"(
 struct VOut {
     float4 pos : SV_Position;
     float4 d0 : COLOR0;
@@ -44,8 +44,8 @@ cbuffer DC : register(b1) {
     float4 bumpmat[4];
     float4 bumplum[4];
     float4x4 wvp;
-    float4 hdr;
-    float4 spread[4];
+)";
+const char* kCommonTail = R"(    float4 spread[4];
     float4x4 wv;
     float4x4 wvn;
     float4x4 tm[4];
@@ -54,6 +54,13 @@ cbuffer DC : register(b1) {
     float4 lt[56];
 };
 )";
+
+const ShaderHooks& Hooks() {
+    static const ShaderHooks plain;
+    return g_shader_hooks ? *g_shader_hooks : plain;
+}
+
+std::string Common() { return kCommonHead + Hooks().Constants() + kCommonTail; }
 
 // ---------------------------------------------------------------- vertex programs
 
@@ -377,14 +384,12 @@ std::string TexFetch(const PixelKey& k, int i) {
         return F("float dp%d%s = dot(tc%d.xyz, %s);\n", n, coord == n ? "" : "n", coord, DotInput(map, src).c_str());
     };
     auto tex2d = [&](const std::string& uv) {
-        if (t.flags & kTexWide) return F("spreadtap(tex%d, smp%d, %s, spread[%d], %s)", i, i, uv.c_str(), i, (t.flags & kTexHdr) ? "hdr.y" : "1");
+        if (t.flags & kTexWide) return F("spreadtap(tex%d, smp%d, %s, spread[%d], %s)", i, i, uv.c_str(), i, Hooks().ReadScale(t).c_str());
         return F("tex%d.Sample(smp%d, %s)", i, i, uv.c_str());
     };
-    // a normalization cube's colour is the direction itself, exact instead of 64 texels a face
     auto cube = [&](const std::string& dir) {
-        if (t.flags & kTexNormCube)
-            return F("float4(normalize(%s) * 0.5 + 0.5, tex%d.Sample(smp%d, %s).a)", dir.c_str(), i, i, dir.c_str());
-        return F("tex%d.Sample(smp%d, %s)", i, i, dir.c_str());
+        std::string c = Hooks().Cube(t, i, dir);
+        return c.empty() ? F("tex%d.Sample(smp%d, %s)", i, i, dir.c_str()) : c;
     };
     auto sample2 = [&](const std::string& uv) {
         if (t.kind == kTex2D) return tex2d(F("(%s)%s", uv.c_str(), norm.c_str()));
@@ -439,27 +444,11 @@ std::string TexFetch(const PixelKey& k, int i) {
     }
 }
 
-const char* kPsHelpers = R"(
+const char* kPsSbyte = R"(
 // unorm to byte b, less lo under 128 or hi from 128, over d
 float3 sbyte(float3 u, float lo, float hi, float d) { float3 b = u * 255; return (b - (b >= 128 ? hi : lo)) / d; }
-// the sampler compares, a linear filter blends the four results like the console does; soft shadows take a Poisson
-// disc turned per pixel, for a screen blur to smooth the grain
-static const float2 kDisc[12] = {
-    float2(-0.326, -0.406), float2(-0.840, -0.074), float2(-0.696, 0.457), float2(-0.203, 0.621),
-    float2(0.962, -0.195),  float2(0.473, -0.480),  float2(0.519, 0.767),  float2(0.185, -0.893),
-    float2(0.507, 0.064),   float2(0.896, 0.412),   float2(-0.322, -0.933), float2(-0.792, -0.598)};
-float4 shadow(Texture2D<float> t, SamplerComparisonState s, float2 uv, float z, int fmt, float2 px, float2 size) {
-    float mx = fmt == 2 ? 65535.0 : 16777215.0;
-    float r = clamp(z, 0, mx) / mx;
-    if (hdr.z <= 0) return t.SampleCmpLevelZero(s, uv, r).xxxx;
-    float a = 6.2831853 * frac(52.9829189 * frac(dot(px, float2(0.06711056, 0.00583715))));
-    float2 cs = float2(cos(a), sin(a)), st = hdr.z / size;
-    float sum = 0;
-    [unroll] for (int k = 0; k < 12; k++)
-        sum += t.SampleCmpLevelZero(s, uv + float2(kDisc[k].x * cs.x - kDisc[k].y * cs.y, kDisc[k].x * cs.y + kDisc[k].y * cs.x) * st, r);
-    return (sum / 12).xxxx;
-}
-float4 spreadtap(Texture2D t, SamplerState s, float2 uv, float4 w, float m) {
+)";
+const char* kPsTail = R"(float4 spreadtap(Texture2D t, SamplerState s, float2 uv, float4 w, float m) {
     float4 c = 0;
     int n = (int)w.z;
     for (int y = 0; y < n; y++)
@@ -476,6 +465,8 @@ void alphatest(float a) {
     if (!ok) discard;
 }
 )";
+
+std::string PsHelpers() { return kPsSbyte + Hooks().Shadow() + kPsTail; }
 
 // fixed function texture stage arguments, D3DTA
 std::string FfArg(uint32_t a, int stage, bool alpha) {
@@ -526,6 +517,19 @@ std::string FfOp(uint32_t op, const std::string& a1, const std::string& a2, cons
 }  // namespace
 
 bool PixelKey::operator==(const PixelKey& o) const { return std::memcmp(this, &o, sizeof(*this)) == 0; }
+
+std::string ShaderHooks::Constants() const { return "    float4 ext;\n"; }
+
+std::string ShaderHooks::Shadow() const {
+    return R"(// the sampler compares, a linear filter blends the four results like the console does
+float4 shadow(Texture2D<float> t, SamplerComparisonState s, float2 uv, float z, int fmt, float2 px, float2 size) {
+    float mx = fmt == 2 ? 65535.0 : 16777215.0;
+    return t.SampleCmpLevelZero(s, uv, clamp(z, 0, mx) / mx).xxxx;
+}
+)";
+}
+
+std::string ShaderHooks::Output() const { return "outc.rgb = saturate(outc.rgb);\n"; }
 
 uint64_t Hash(const void* p, size_t n, uint64_t h) {
     // 16 bytes a step through a 64 x 64 -> 128 bit multiply: it runs over textures every frame and keys every draw
@@ -604,7 +608,7 @@ PixelKey MakePixelKey(const State& s, const TexInfo tex[4]) {
 }
 
 std::string VertexProgramHlsl(const std::vector<uint32_t>& prog, uint16_t regs, uint64_t decode) {
-    std::string s = kCommon;
+    std::string s = Common();
     s += kVsHelpers;
     s += VsInputs(regs, decode);
     s += kVsPrologue;
@@ -674,7 +678,7 @@ FixedKey MakeFixedKey(const State& s) {
 
 // D3D's fixed function vertex pipeline: transform, lighting in view space, texture coordinate generation and transforms
 std::string FixedVertexHlsl(uint16_t regs, bool pretransformed, uint64_t decode, const FixedKey& f) {
-    std::string s = kCommon;
+    std::string s = Common();
     s += kVsHelpers;
     s += VsInputs(regs, decode);
     s += kVsPrologue;
@@ -778,8 +782,8 @@ std::string FixedVertexHlsl(uint16_t regs, bool pretransformed, uint64_t decode,
 }
 
 std::string PixelHlsl(const PixelKey& k) {
-    std::string s = kCommon;
-    s += kPsHelpers;
+    std::string s = Common();
+    s += PsHelpers();
     for (int i = 0; i < 4; i++) {
         const TexInfo& t = k.tex[i];
         const char* type = t.shadow ? "Texture2D<float>" : t.kind == kTex3D ? "Texture3D" : t.kind == kTexCube ? "TextureCube" : "Texture2D";
@@ -794,7 +798,7 @@ std::string PixelHlsl(const PixelKey& k) {
     if (k.programmable) {
         for (int i = 0; i < 4; i++) {
             body += TexFetch(k, i);
-            if ((k.tex[i].flags & (kTexHdr | kTexWide)) == kTexHdr) body += F("t%d.rgb = saturate(t%d.rgb * hdr.y);\n", i, i);
+            body += Hooks().Fetched(k.tex[i], i);
         }
         for (int i = 0; i < 4; i++) {
             uint32_t m = (k.tex_modes >> (i * 5)) & 0x1F;
@@ -838,17 +842,17 @@ std::string PixelHlsl(const PixelKey& k) {
             const TexInfo& t = k.tex[i];
             std::string norm = (t.rect ? F(" / texsize[%d].xy", i) : "") + F(" + texsize[%d].zw", i);
             std::string uv = (k.proj >> i) & 1 ? F("(tc%d.xy / tc%d.w)%s", i, i, norm.c_str()) : F("tc%d.xy%s", i, norm.c_str());
+            std::string cube;
             if (t.shadow)
                 body += F("float4 t%d = shadow(tex%d, smp%d, (tc%d.xy / tc%d.w)%s, tc%d.z / tc%d.w, %d, i.pos.xy, texsize[%d].xy);\n", i, i,
                           i, i, i, norm.c_str(), i, i, t.shadow, i);
             else if (t.kind == kTex2D && (t.flags & kTexWide))
-                body += F("float4 t%d = spreadtap(tex%d, smp%d, %s, spread[%d], %s);\n", i, i, i, uv.c_str(), i, (t.flags & kTexHdr) ? "hdr.y" : "1");
+                body += F("float4 t%d = spreadtap(tex%d, smp%d, %s, spread[%d], %s);\n", i, i, i, uv.c_str(), i, Hooks().ReadScale(t).c_str());
             else if (t.kind == kTex2D) body += F("float4 t%d = tex%d.Sample(smp%d, %s);\n", i, i, i, uv.c_str());
-            else if (t.kind == kTexCube && (t.flags & kTexNormCube))
-                body += F("float4 t%d = float4(normalize(tc%d.xyz) * 0.5 + 0.5, tex%d.Sample(smp%d, tc%d.xyz).a);\n", i, i, i, i, i);
+            else if (t.kind == kTexCube && !(cube = Hooks().Cube(t, i, F("tc%d.xyz", i))).empty()) body += F("float4 t%d = %s;\n", i, cube.c_str());
             else if (t.kind) body += F("float4 t%d = tex%d.Sample(smp%d, tc%d.xyz);\n", i, i, i, i);
             else body += F("float4 t%d = float4(1,1,1,1);\n", i);
-            if ((t.flags & (kTexHdr | kTexWide)) == kTexHdr) body += F("t%d.rgb = saturate(t%d.rgb * hdr.y);\n", i, i);
+            body += Hooks().Fetched(t, i);
             if ((k.alphakill >> i) & 1) body += F("if (t%d.a == 0) discard;\n", i);
             const char* dst = f[8] == 5 ? "tmp" : "cur";
             std::string rgb = FfOp(f[0], FfArg(f[1], i, false), FfArg(f[2], i, false), FfArg(f[3], i, false), i, false);
@@ -858,8 +862,7 @@ std::string PixelHlsl(const PixelKey& k) {
         body += "cur.rgb = saturate(cur.rgb + v1.rgb);\n";
         body += "float4 outc = float4(lerp(fogin.rgb, cur.rgb, fogin.a), cur.a);\n";
     }
-    // HDR targets keep colour divided by their headroom, the console's per pass clamp stays
-    body += "alphatest(outc.a);\noutc.rgb = saturate(outc.rgb) * hdr.x;\nreturn outc;\n}\n";
+    body += "alphatest(outc.a);\n" + Hooks().Output() + "return outc;\n}\n";
     s += body;
     return s;
 }

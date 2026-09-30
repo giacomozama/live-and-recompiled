@@ -3,6 +3,7 @@
 
 #include "core/input.h"
 #include "xdk/hle.h"
+#include "xdk/layout.h"
 
 using namespace kernel;
 
@@ -20,10 +21,10 @@ void UpdatePorts() {
     uint32_t cur = 0;
     for (int p = 0; p < 4; p++)
         if (input::Poll(p).connected) cur |= 1u << p;
-    uint32_t old = R32(kGamepadType);
+    uint32_t old = R32(kGamepadType + XDK_XPP_Current);
     if (cur != old) {
-        W32(kGamepadType + 4, R32(kGamepadType + 4) | (cur ^ old));
-        W32(kGamepadType, cur);
+        W32(kGamepadType + XDK_XPP_Changed, R32(kGamepadType + XDK_XPP_Changed) | (cur ^ old));
+        W32(kGamepadType + XDK_XPP_Current, cur);
         LOGI("xapi: controller ports now %X", cur);
     }
 }
@@ -43,12 +44,13 @@ HLE_STDCALL(XMountUtilityDrive, 1) {
 }
 
 HLE_STDCALL(XInitDevices, 2) {
-    W32(kGamepadType, 0);
-    W32(kGamepadType + 4, 0);
-    W32(kGamepadType + 8, 0);
-    W32(kMemoryUnitType, 0);
-    W32(kMemoryUnitType + 4, 0);
-    W32(kMemoryUnitType + 8, 0);
+    XDK_REQUIRE("xapi", XDK_KEY(XPP_Current), XDK_KEY(XPP_Changed), XDK_KEY(XPP_Previous));
+    W32(kGamepadType + XDK_XPP_Current, 0);
+    W32(kGamepadType + XDK_XPP_Changed, 0);
+    W32(kGamepadType + XDK_XPP_Previous, 0);
+    W32(kMemoryUnitType + XDK_XPP_Current, 0);
+    W32(kMemoryUnitType + XDK_XPP_Changed, 0);
+    W32(kMemoryUnitType + XDK_XPP_Previous, 0);
     UpdatePorts();
     if (!g_poller) {
         g_poller = true;

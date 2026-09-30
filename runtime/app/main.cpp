@@ -19,7 +19,6 @@
 #include <backends/imgui_impl_win32.h>
 
 #include "app/app.h"
-#include "core/input.h"
 #include "core/log.h"
 #include "gpu/backend.h"
 #include "image_symbols.h"
@@ -107,23 +106,13 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         std::lock_guard lock(UiLock());
         if (ImGui::GetCurrentContext() && ImGui_ImplWin32_WndProcHandler(hwnd, msg, wp, lp)) return 1;
     }
+    if (intptr_t result = 0; kGame.message && kGame.message(hwnd, msg, wp, lp, &result)) return result;
     switch (msg) {
         case WM_KEYDOWN:
-            if (wp == VK_F10) ToggleMenu();
             if (wp == VK_F3) DumpThreads();
-            if (wp == VK_ESCAPE && MenuOpen() && !Capturing()) ToggleMenu();
-            else if (wp == VK_ESCAPE && ConsoleOpen()) ToggleConsole();
-            if (wp == VK_OEM_3 && !MenuOpen() && !(lp & (1 << 30))) ToggleConsole();
             return 0;
-        case WM_INPUT:
-            input::OnRawInput(reinterpret_cast<void*>(lp));
-            break;
-        case WM_LBUTTONUP:
-            input::OnClick();
-            break;
         case WM_ACTIVATE:
             if (LOWORD(wp) == WA_INACTIVE) {
-                input::ReleaseCursor();
                 // a changed display mode steps aside for the desktop, minimized, and comes back on return; not while
                 // handing over to the next instance, which runs in the same mode
                 if (g_mode_changed && !kernel::g_relaunching) {
@@ -139,14 +128,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 PostMessageW(hwnd, kApplyDisplay, 0, 0);
             }
             break;
-        case WM_SETCURSOR:
-            if (LOWORD(lp) == HTCLIENT) {
-                SetCursor(MenuOpen() || ConsoleOpen() ? LoadCursorW(nullptr, MAKEINTRESOURCEW(32512))
-                          : input::InMenu()               ? static_cast<HCURSOR>(MenuCursor())
-                                                          : nullptr);
-                return TRUE;
-            }
-            break;
         case kApplyDisplay:
             if (IsIconic(hwnd)) ShowWindow(hwnd, SW_RESTORE);
             ApplyNow();
@@ -157,12 +138,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             ShowWindow(hwnd, SW_SHOW);
             SetForegroundWindow(hwnd);
             return 0;
-        case WM_SYSKEYDOWN:
-            if (wp == VK_F10) {
-                ToggleMenu();
-                return 0;
-            }
-            break;
         case WM_CLOSE:
             DestroyWindow(hwnd);
             return 0;
@@ -270,8 +245,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard | ImGuiConfigFlags_NavEnableGamepad;
     ImGui_ImplWin32_Init(app::g_hwnd);
 
-    input::Init(app::g_hwnd);
-    input::LoadBindings();
+    if (app::kGame.window) app::kGame.window(app::g_hwnd);
     std::wstring hdd = app::Instance() > 1 ? L"hdd" + std::to_wstring(app::Instance()) : L"hdd";
     if (app::Instance())
         SetWindowTextW(app::g_hwnd, (std::wstring(app::kGame.title) + L" [" + std::to_wstring(app::Instance()) + L"]").c_str());

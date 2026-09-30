@@ -19,6 +19,12 @@ target_include_directories(xbe_recomp PRIVATE ${XBE_SDK_DIR}/runtime ${XBE_SDK_D
 target_compile_definitions(xbe_recomp PRIVATE _CRT_SECURE_NO_WARNINGS)
 target_link_libraries(xbe_recomp PRIVATE Zydis tomlplusplus::tomlplusplus)
 
+# XDK signature scanner that writes a new title's config
+add_executable(xbe_symbols ${XBE_SDK_DIR}/tools/symbols/main.cpp)
+target_include_directories(xbe_symbols PRIVATE ${XBE_SDK_DIR}/runtime)
+target_compile_definitions(xbe_symbols PRIVATE _CRT_SECURE_NO_WARNINGS)
+target_link_libraries(xbe_symbols PRIVATE Zydis tomlplusplus::tomlplusplus)
+
 set(XBE_IMGUI_SOURCES
     ${imgui_SOURCE_DIR}/imgui.cpp
     ${imgui_SOURCE_DIR}/imgui_draw.cpp
@@ -39,7 +45,7 @@ function(add_xbe_image target xbe config partitions game_dir)
     foreach(i RANGE ${last})
         list(APPEND GEN_SOURCES ${GEN}/x86_recomp.${i}.cpp)
     endforeach()
-    file(GLOB configs CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/config/*.toml)
+    file(GLOB configs CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/config/*.toml ${XBE_SDK_DIR}/xdk/*/*.toml)
     add_custom_command(
         OUTPUT ${GEN}/codegen.stamp
         BYPRODUCTS ${GEN_SOURCES} ${GEN}/x86_recomp_shared.h ${GEN}/image_symbols.h

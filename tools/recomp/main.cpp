@@ -46,6 +46,9 @@ static bool LoadConfig(const fs::path& path, Config& cfg) {
     for (auto [key, out] : {std::pair{"symbols", &cfg.symbols}, std::pair{"data", &cfg.data}})
         if (auto f = t[key].as_table())
             for (auto& [k, v] : *f) (*out)[std::string(k.str())] = uint32_t(v.value<int64_t>().value_or(0));
+    if (auto f = t["layout"].as_table())
+        for (auto& [k, v] : *f)
+            if (auto i = v.value<int64_t>()) cfg.layout[std::string(k.str())] = uint32_t(*i);
     for (auto& [name, va] : cfg.symbols)
         if (va) cfg.functions.emplace(va, name);
     return true;

@@ -124,6 +124,7 @@ bool CodeGen::Run() {
         syms += F("#define SYM_%s %08X\n#define HAS_%s %d\n", name.c_str(), a, name.c_str(), va ? 1 : 0);
     }
     for (auto& [name, va] : an_.cfg.data) syms += F("#define SYM_%s %08X\n#define HAS_%s %d\n", name.c_str(), va, name.c_str(), va ? 1 : 0);
+    for (auto& [name, v] : an_.cfg.layout) syms += F("#define XDK_%s 0x%X\n", name.c_str(), v);
     WriteIfChanged(out_ / "image_symbols.h", syms);
 
     // shared declarations

@@ -12,6 +12,7 @@
 #include "gpu/texture.h"
 #include "xdk/d3d8.h"
 #include "xdk/hle.h"
+#include "xdk/layout.h"
 
 using namespace kernel;
 
@@ -41,10 +42,14 @@ constexpr uint32_t kInternalRelease = SYM(D3D_InternalRelease);
 constexpr uint32_t kInitDefaultState = SYM(D3D_InitDefaultState);
 
 // CDevice fields mirrored so the recompiled getters and resource code see what the XDK would
-constexpr uint32_t kDevPush = 0x00, kDevThreshold = 0x04, kDevBaseVertex = 0x1C, kDevIndexBuffer = 0x7A0,
-                   kDevTextures = 0xF88, kDevRenderTarget = 0x1A04, kDevDepth = 0x1A08, kDevSwapCount = 0x2478,
-                   kDevFrameBuffer = 0x1A14, kDevFrameBufferSize = 0x1A18, kDevZScale = 0x948, kDevSuperX = 0x95C,
-                   kDevSuperY = 0x960;
+constexpr uint32_t kDevPush = XDK_CDevice_Push, kDevThreshold = XDK_CDevice_PushThreshold,
+                   kDevBaseVertex = XDK_CDevice_BaseVertex, kDevIndexBuffer = XDK_CDevice_IndexBuffer,
+                   kDevTextures = XDK_CDevice_Textures, kDevRenderTarget = XDK_CDevice_RenderTarget,
+                   kDevDepth = XDK_CDevice_Depth, kDevSwapCount = XDK_CDevice_SwapCount,
+                   kDevBackBuffer = XDK_CDevice_BackBuffer, kDevFrontBuffer = XDK_CDevice_FrontBuffer,
+                   kDevZScale = XDK_CDevice_ZScale, kDevSuperX = XDK_CDevice_SuperSampleX,
+                   kDevSuperY = XDK_CDevice_SuperSampleY, kDevTransforms = XDK_CDevice_Transforms;
+constexpr uint32_t kStageStates = XDK_TextureState_Stage, kStreamSize = XDK_Stream_Size;
 
 gpu::State g_state;
 std::unique_ptr<gpu::Backend> g_backend;
@@ -95,7 +100,7 @@ void SyncDeferred() {
     // deferred states live in the title's memory, the inline SetRenderState and SetTextureStageState write them
     for (uint32_t i = gpu::kRsDeferredFirst; i < gpu::kRsComplexFirst; i++) g_state.rs[i] = R32(kRenderState + i * 4);
     for (int s = 0; s < 4; s++)
-        for (uint32_t i = 0; i < gpu::kTssBumpEnvMat00; i++) g_state.tss[s][i] = R32(kTextureState + (s * 32 + i) * 4);
+        for (uint32_t i = 0; i < gpu::kTssBumpEnvMat00; i++) g_state.tss[s][i] = R32(kTextureState + (s * kStageStates + i) * 4);
 }
 
 float ZScale(const gpu::Surface& zs) {
@@ -129,6 +134,13 @@ using namespace d3d;
 // ---------------------------------------------------------------- device
 
 HLE_STDCALL(Direct3D_CreateDevice, 6) {
+    XDK_REQUIRE("d3d", XDK_KEY(CDevice_Push), XDK_KEY(CDevice_PushThreshold), XDK_KEY(CDevice_BaseVertex),
+                XDK_KEY(CDevice_IndexBuffer), XDK_KEY(CDevice_ZScale), XDK_KEY(CDevice_SuperSampleX),
+                XDK_KEY(CDevice_SuperSampleY), XDK_KEY(CDevice_Transforms), XDK_KEY(CDevice_Textures),
+                XDK_KEY(CDevice_RenderTarget), XDK_KEY(CDevice_Depth), XDK_KEY(CDevice_BackBuffer),
+                XDK_KEY(CDevice_FrontBuffer), XDK_KEY(CDevice_SwapCount), XDK_KEY(CDevice_Size),
+                XDK_KEY(DirtyFlags_Texture), XDK_KEY(TextureState_Stage), XDK_KEY(Stream_Size),
+                XDK_KEY(Stream_Stride), XDK_KEY(Stream_Buffer));
     std::lock_guard<std::recursive_mutex> lock(g_lock);
     uint32_t pp = a[4];
     uint32_t w = R32(pp), h = R32(pp + 4), fmt = R32(pp + 8), count = std::max<uint32_t>(R32(pp + 12), 1);
@@ -137,7 +149,7 @@ HLE_STDCALL(Direct3D_CreateDevice, 6) {
     if (!h) h = 480;
     LOGI("d3d: CreateDevice %ux%u format %X buffers %u depth %u format %X interval %X flags %X", w, h, fmt, count,
          auto_depth, depth_fmt, interval, R32(pp + 0x28));
-    std::memset(HostPtr(kDevice), 0, 0x928 * 4);
+    std::memset(HostPtr(kDevice), 0, XDK_CDevice_Size);
     W32(kDevicePtr, kDevice);
     // anything still pushing hardware commands writes into a scratch buffer that MakeSpace rewinds
     g_scratch_push = mem::AllocContiguous(0x10000, 0, 0xFFFFFFFF, 0x1000);
@@ -161,8 +173,8 @@ HLE_STDCALL(Direct3D_CreateDevice, 6) {
     g_state.viewport = {0, 0, w, h, 0.0f, 1.0f};
     SetDev(kDevRenderTarget, g_buffers[1]);
     SetDev(kDevDepth, g_depth);
-    SetDev(kDevFrameBuffer, g_buffers[1]);
-    SetDev(kDevFrameBufferSize, g_buffers[1]);
+    SetDev(kDevBackBuffer, g_buffers[1]);
+    SetDev(kDevFrontBuffer, g_buffers[1]);
     float one = 1.0f, zs = g_depth && (R32(g_depth + 12) >> 8 & 0xFF) == 0x30 ? 65535.0f : 16777215.0f;
     std::memcpy(HostPtr(kDevice + kDevSuperX), &one, 4);
     std::memcpy(HostPtr(kDevice + kDevSuperY), &one, 4);
@@ -460,7 +472,7 @@ COMPLEX_STATE(DoNotCullUncompressed, gpu::kRsDoNotCullUncompressed)
 
 HLE_STDCALL(D3DDevice_SetTextureState_TexCoordIndex, 2) {
     g_state.tss[a[0] & 3][gpu::kTssTexCoordIndex] = a[1];
-    W32(kTextureState + ((a[0] & 3) * 32 + gpu::kTssTexCoordIndex) * 4, a[1]);
+    W32(kTextureState + ((a[0] & 3) * kStageStates + gpu::kTssTexCoordIndex) * 4, a[1]);
     return 0;
 }
 HLE_STDCALL(D3DDevice_SetTextureState_BumpEnv, 3) {
@@ -479,17 +491,17 @@ HLE_STDCALL(D3DDevice_SetTextureStageStateNotInline, 3) {
     uint32_t stage = a[0] & 3, type = a[1], v = a[2];
     if (type < gpu::kTssCount) {
         g_state.tss[stage][type] = v;
-        W32(kTextureState + (stage * 32 + type) * 4, v);
+        W32(kTextureState + (stage * kStageStates + type) * 4, v);
     }
     return 0;
 }
 
 // the XDK's transform types: view 0, projection 1, texture 2-5, world 6-9; the renderer keeps Direct3D 8's numbers
-// (view 2, projection 3, texture 16, world 256). The device copy at +0xC60 is what GetTransform reads.
+// (view 2, projection 3, texture 16, world 256). The device copy is what GetTransform reads.
 HLE_STDCALL(D3DDevice_SetTransform, 2) {
     uint32_t t = a[0];
     if (t >= 10) return 0;
-    std::memcpy(HostPtr(kDevice + 0xC60 + t * 64), HostPtr(a[1]), 64);
+    std::memcpy(HostPtr(kDevice + kDevTransforms + t * 64), HostPtr(a[1]), 64);
     uint32_t pc = t < 2 ? t + 2 : t < 6 ? t + 14 : t + 250;
     std::memcpy(g_state.transforms[pc].data(), HostPtr(a[1]), 64);
     return 0;
@@ -530,7 +542,7 @@ HLE_STDCALL(D3DDevice_SetTexture, 2) {
     SetDev(kDevTextures + stage * 4, tex);
     if (old) CallGuest(ctx, kInternalRelease, {old});
     g_state.textures[stage] = tex;
-    W32(kDirtyFlags, R32(kDirtyFlags) | 0x4800);
+    W32(kDirtyFlags, R32(kDirtyFlags) | XDK_DirtyFlags_Texture);
     return 0;
 }
 
@@ -552,10 +564,10 @@ HLE_FASTCALL(D3DDevice_SwitchTexture, 1) {
 HLE_STDCALL(D3DDevice_SetStreamSource, 3) {
     std::lock_guard<std::recursive_mutex> lock(g_lock);
     uint32_t n = a[0] & 15, vb = a[1], stride = a[2];
-    uint32_t old = R32(kStreams + n * 12 + 8);
+    uint32_t old = R32(kStreams + n * kStreamSize + XDK_Stream_Buffer);
     if (vb) CallGuest(ctx, kInternalAddRef, {vb});
-    W32(kStreams + n * 12, stride);
-    W32(kStreams + n * 12 + 8, vb);
+    W32(kStreams + n * kStreamSize + XDK_Stream_Stride, stride);
+    W32(kStreams + n * kStreamSize + XDK_Stream_Buffer, vb);
     if (old) CallGuest(ctx, kInternalRelease, {old});
     g_state.streams[n] = {vb, stride};
     return 0;
