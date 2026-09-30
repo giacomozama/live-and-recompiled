@@ -17,6 +17,15 @@ using namespace kernel;
 namespace kernel {
 extern const xbe::Image* g_image;
 }
+namespace dispatch {
+X86Func* Find(uint32_t guest);
+}
+
+// configs written before the SDK knew the name
+#ifndef SYM_IDirectSound_SynchPlayback
+#define SYM_IDirectSound_SynchPlayback FFFFFF00
+#define HAS_IDirectSound_SynchPlayback 0
+#endif
 
 namespace {
 
@@ -39,6 +48,7 @@ struct Voice {
     // buffer
     uint32_t data = 0, bytes = 0, loop_start = 0, loop_len = 0;
     bool playing = false, looping = false, paused = false;
+    bool sync = false;  // held until IDirectSound_SynchPlayback
     double pos = 0;  // frames
     uint32_t freq = 0;
     // stream
@@ -151,7 +161,7 @@ void Render(float* out, uint32_t frames) {
     std::memset(out, 0, frames * 2 * sizeof(float));
     std::lock_guard<std::recursive_mutex> lock(g_lock);
     for (auto& [obj, v] : g_voices) {
-        if (v.paused || (!v.stream && !v.playing)) continue;
+        if (v.paused || v.sync || (!v.stream && !v.playing)) continue;
         float l, r;
         Levels(v, l, r);
         double step = double(v.freq ? v.freq : v.rate) / audio::kRate;
@@ -296,10 +306,48 @@ float F32(uint32_t v) {
 
 // ---------------------------------------------------------------- device
 
+// DSOUND objects are the host's; .XTLID names linked exports that would still run console code on them
+static void AuditExports() {
+    static const uint32_t handled[] = {
+        SYM(DirectSoundCreate), SYM(IDirectSound_Release), SYM(DirectSoundUseFullHRTF), SYM(IDirectSound_GetSpeakerConfig),
+        SYM(IDirectSound_SetEffectData), SYM(IDirectSound_EnableHeadphones), SYM(IDirectSound_SetMixBinHeadroom),
+        SYM(IDirectSound_CommitDeferredSettings), SYM(IDirectSound_SetDopplerFactor), SYM(IDirectSound_SetRolloffFactor),
+        SYM(IDirectSound_SetDistanceFactor), SYM(IDirectSound_SetVelocity), SYM(IDirectSound_SetI3DL2Listener),
+        SYM(IDirectSound_SetPosition), SYM(IDirectSound_SetOrientation), SYM(IDirectSound_SynchPlayback), SYM(DirectSoundDoWork),
+        SYM(XAudioDownloadEffectsImage), SYM(DirectSoundCreateBuffer), SYM(IDirectSound_CreateSoundBuffer),
+        SYM(IDirectSoundBuffer_Release), SYM(IDirectSoundBuffer_Unlock), SYM(IDirectSoundBuffer_SetBufferData),
+        SYM(IDirectSoundBuffer_Play), SYM(IDirectSoundBuffer_Stop), SYM(IDirectSoundBuffer_SetLoopRegion),
+        SYM(IDirectSoundBuffer_GetStatus), SYM(IDirectSoundBuffer_GetCurrentPosition), SYM(IDirectSoundBuffer_SetCurrentPosition),
+        SYM(IDirectSoundBuffer_Lock), SYM(IDirectSoundBuffer_SetVolume), SYM(IDirectSoundBuffer_SetFrequency),
+        SYM(IDirectSoundBuffer_SetFilter), SYM(IDirectSoundBuffer_SetHeadroom), SYM(IDirectSoundBuffer_SetMixBinVolumes),
+        SYM(IDirectSoundBuffer_SetMixBins), SYM(IDirectSoundBuffer_SetMaxDistance), SYM(IDirectSoundBuffer_SetMinDistance),
+        SYM(IDirectSoundBuffer_SetPosition), SYM(IDirectSoundBuffer_SetVelocity), SYM(IDirectSoundBuffer_SetI3DL2Source),
+        SYM(DirectSoundCreateStream), SYM(CDirectSoundStream_AddRef), SYM(CDirectSoundStream_SetFormat),
+        SYM(CDirectSoundStream_Release), SYM(CDirectSoundStream_GetInfo), SYM(CDirectSoundStream_GetStatus),
+        SYM(CDirectSoundStream_Process), SYM(CDirectSoundStream_Discontinuity), SYM(CDirectSoundStream_Flush),
+        SYM(CDirectSoundStream_FlushEx), SYM(CDirectSoundStream_Pause), SYM(CDirectSoundStream_SetVolume),
+        SYM(CDirectSoundStream_SetFrequency), SYM(CDirectSoundStream_SetFilter), SYM(CDirectSoundStream_SetHeadroom),
+        SYM(CDirectSoundStream_SetMixBinVolumes), SYM(CDirectSoundStream_SetMixBins), SYM(CDirectSoundStream_SetMaxDistance),
+        SYM(CDirectSoundStream_SetMinDistance), SYM(CDirectSoundStream_SetPosition), SYM(CDirectSoundStream_SetVelocity),
+        SYM(CDirectSoundStream_SetI3DL2Source)};
+    std::string left;
+    for (auto& s : g_image->sections)
+        for (uint32_t o = 0; s.name == ".XTLID" && o + 8 <= std::min(s.vsize, s.rsize); o += 8) {
+            uint32_t id = g_image->U32(s.raw + o), va = g_image->U32(s.raw + o + 4);
+            if (id >> 16 != 0xB || !dispatch::Find(va) || std::find(std::begin(handled), std::end(handled), va) != std::end(handled))
+                continue;
+            char b[24];
+            std::snprintf(b, sizeof b, " %05X at %08X", id, va);
+            left += b;
+        }
+    if (!left.empty()) LOGW("dsound: exports running their original code:%s", left.c_str());
+}
+
 HLE_STDCALL(DirectSoundCreate, 3) {
     std::lock_guard<std::recursive_mutex> lock(g_lock);
     Start();
     if (!g_ds) {
+        AuditExports();
         g_ds = mem::AllocSystem(0x40);
         std::memset(HostPtr(g_ds), 0, 0x40);
     }
@@ -335,6 +383,12 @@ HLE_STDCALL(IDirectSound_SetOrientation, 8) {
     return 0;
 }
 HLE_STDCALL(DirectSoundDoWork, 0) { return 0; }
+// starts together every voice played or unpaused with the synch playback flag
+HLE_STDCALL(IDirectSound_SynchPlayback, 1) {
+    std::lock_guard<std::recursive_mutex> lock(g_lock);
+    for (auto& [obj, v] : g_voices) v.sync = false;
+    return 0;
+}
 
 // Effects run on the console's DSP and are not reproduced. The descriptor keeps the image's effect list so the
 // title finds its indices, every segment points at zeroed memory.
@@ -404,6 +458,7 @@ BUFFER(Play, 4) {
     v.playing = true;
     v.looping = a[3] & 1;
     if (a[3] & 2) v.pos = 0;
+    v.sync = a[3] & 4;
     return 0;
 }
 BUFFER(Stop, 1) {
@@ -561,6 +616,7 @@ STREAM(FlushEx, 4) {
 }
 STREAM(Pause, 2) {
     v.paused = a[1] == 1;
+    v.sync = a[1] == 2;
     return 0;
 }
 STREAM(SetVolume, 2) {

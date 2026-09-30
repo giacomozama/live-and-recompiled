@@ -33,6 +33,19 @@ KERNEL_DATA(16, ExEventObjectType, 0x20);
 KERNEL_DATA(71, IoFileObjectType, 0x20);
 KERNEL_DATA(259, PsThreadObjectType, 0x20);
 KERNEL_DATA(357, IdexChannelObject, 0x40);
+KERNEL_DATA(22, ExMutantObjectType, 0x20);
+KERNEL_DATA(30, ExSemaphoreObjectType, 0x20);
+KERNEL_DATA(31, ExTimerObjectType, 0x20);
+KERNEL_DATA(64, IoCompletionObjectType, 0x20);
+KERNEL_DATA(70, IoDeviceObjectType, 0x20);
+KERNEL_DATA(240, ObDirectoryObjectType, 0x20);
+KERNEL_DATA(249, ObSymbolicLinkObjectType, 0x20);
+KERNEL_DATA(88, KdDebuggerEnabled, 4);
+KERNEL_DATA(89, KdDebuggerNotPresent, 4);
+KERNEL_DATA(120, KeInterruptTime, 12);
+KERNEL_DATA(154, KeSystemTime, 12);
+KERNEL_DATA(157, KeTimeIncrement, 4);
+KERNEL_DATA(321, XboxEEPROMKey, 16);
 
 void PutAnsi(uint32_t str, const char* text) {
     uint32_t buf = str + 8;
@@ -46,6 +59,19 @@ void PutAnsi(uint32_t str, const char* text) {
 uint8_t& Irql() { return G<uint8_t>(Current()->kpcr + 0x24); }
 
 int64_t TimeoutArg(uint32_t ptr) { return ptr ? int64_t(R64(ptr)) : INT64_MAX; }
+
+// KSYSTEM_TIME: readers retry until High1Time equals High2Time
+void PutSystemTime(uint32_t va, uint64_t t) {
+    W32(va + 8, uint32_t(t >> 32));
+    W32(va, uint32_t(t));
+    W32(va + 4, uint32_t(t >> 32));
+}
+
+uint64_t InterruptTime() {
+    using namespace std::chrono;
+    static const auto start = steady_clock::now();
+    return uint64_t(duration_cast<nanoseconds>(steady_clock::now() - start).count() / 100);
+}
 
 }  // namespace
 
@@ -74,12 +100,16 @@ void InitKernelData() {
     uint32_t queue = DataAddress(357) + 0x28;
     W32(queue, queue);
     W32(queue + 4, queue);
+    G<uint8_t>(DataAddress(89)) = 1;
+    W32(DataAddress(157), 10000);  // 1 ms in 100 ns units
     // the start of the clock
     std::thread([] {
         auto start = std::chrono::steady_clock::now();
         for (;;) {
             auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count();
             W32(g_tick_count_va, uint32_t(ms));
+            PutSystemTime(DataAddress(120), InterruptTime());
+            PutSystemTime(DataAddress(154), uint64_t(Now100ns()));
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
     }).detach();
@@ -136,6 +166,27 @@ KERNEL_EXPORT(294, RtlLeaveCriticalSection, 1) {
     return 0;
 }
 
+KERNEL_EXPORT(306, RtlTryEnterCriticalSection, 1) {
+    uint32_t cs = a[0];
+    uint32_t me = Current()->ethread;
+    int32_t idle = -1;
+    if (__atomic_compare_exchange_n(reinterpret_cast<int32_t*>(HostPtr(cs + 0x10)), &idle, 0, false, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST)) {
+        W32(cs + 0x18, me);
+        W32(cs + 0x14, 1);
+        return 1;
+    }
+    if (R32(cs + 0x18) != me) return 0;
+    __atomic_add_fetch(reinterpret_cast<int32_t*>(HostPtr(cs + 0x10)), 1, __ATOMIC_SEQ_CST);
+    W32(cs + 0x14, R32(cs + 0x14) + 1);
+    return 1;
+}
+
+// critical regions only hold off kernel APCs, which the host has none of
+KERNEL_EXPORT(278, RtlEnterCriticalSectionAndRegion, 1) { return kimpl_RtlEnterCriticalSection(ctx, a); }
+KERNEL_EXPORT(295, RtlLeaveCriticalSectionAndRegion, 1) { return kimpl_RtlLeaveCriticalSection(ctx, a); }
+KERNEL_EXPORT(101, KeEnterCriticalRegion, 0) { return 0; }
+KERNEL_EXPORT(122, KeLeaveCriticalRegion, 0) { return 0; }
+
 // ---------------------------------------------------------------- irql, time
 
 KERNEL_FASTCALL(160, KfRaiseIrql) {
@@ -153,6 +204,22 @@ KERNEL_EXPORT(129, KeRaiseIrqlToDpcLevel, 0) {
     uint8_t old = Irql();
     Irql() = 2;
     return old;
+}
+
+// one processor: synch level is dispatch level
+KERNEL_EXPORT(130, KeRaiseIrqlToSynchLevel, 0) {
+    uint8_t old = Irql();
+    Irql() = 2;
+    return old;
+}
+
+KERNEL_EXPORT(103, KeGetCurrentIrql, 0) { return Irql(); }
+KERNEL_EXPORT(121, KeIsExecutingDpc, 0) { return 0; }
+
+KERNEL_EXPORT(125, KeQueryInterruptTime, 0) {
+    uint64_t t = InterruptTime();
+    ctx.edx = uint32_t(t >> 32);
+    return uint32_t(t);
 }
 
 KERNEL_EXPORT(128, KeQuerySystemTime, 1) {
@@ -197,6 +264,7 @@ KERNEL_EXPORT(99, KeDelayExecutionThread, 3) {
     auto now = [] {
         return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
     };
+    SuspendPoint();
     if (interval == 0) {
         std::this_thread::yield();
         return kSuccess;
@@ -322,6 +390,13 @@ KERNEL_EXPORT(170, MmDeleteKernelStack, 2) {
     return 0;
 }
 KERNEL_EXPORT(15, ExAllocatePoolWithTag, 2) { return mem::AllocSystem(a[0]); }
+KERNEL_EXPORT(14, ExAllocatePool, 1) { return mem::AllocSystem(a[0]); }
+KERNEL_EXPORT(174, MmIsAddressValid, 1) { return mem::IsCommitted(a[0]); }
+// every page stays read write
+KERNEL_EXPORT(204, NtProtectVirtualMemory, 4) {
+    if (a[3]) W32(a[3], 4);
+    return kSuccess;
+}
 KERNEL_EXPORT(17, ExFreePool, 1) {
     mem::FreeSystem(a[0]);
     return 0;
@@ -450,6 +525,112 @@ KERNEL_EXPORT(221, NtReleaseMutant, 2) {
     return st;
 }
 
+KERNEL_EXPORT(193, NtCreateSemaphore, 4) {
+    int32_t count = int32_t(a[2]), limit = int32_t(a[3]);
+    if (limit <= 0 || count < 0 || count > limit) return kInvalidParameter;
+    std::string name;
+    if (ObjectRef existing = Named(a[1], name)) {
+        W32(a[0], NewHandle(existing));
+        return kObjectNameExists;
+    }
+    auto o = std::make_shared<Object>(ObjType::Semaphore);
+    o->signal = count;
+    o->limit = limit;
+    uint32_t body = mem::AllocSystem(20);
+    G<uint8_t>(body) = 5;
+    G<uint8_t>(body + 2) = 5;
+    W32(body + 4, uint32_t(count));
+    W32(body + 0x10, uint32_t(limit));
+    Bind(o, body);
+    if (!name.empty()) AddNamed(name, o);
+    W32(a[0], NewHandle(o));
+    return kSuccess;
+}
+
+KERNEL_EXPORT(222, NtReleaseSemaphore, 3) {
+    ObjectRef o = FromHandle(a[0]);
+    if (!o) return kInvalidHandle;
+    if (o->type != ObjType::Semaphore) return kObjectTypeMismatch;
+    uint32_t st;
+    int32_t prev = ReleaseSemaphore(*o, int32_t(a[1]), st);
+    if (a[2] && st == kSuccess) W32(a[2], uint32_t(prev));
+    return st;
+}
+
+// dispatcher headers the guest owns: written like the console does, FromPointer rebuilds its object from them
+static void InitHeader(uint32_t p, uint8_t type, uint8_t dwords, int32_t state) {
+    std::memset(HostPtr(p), 0, dwords * 4u);
+    G<uint8_t>(p) = type;
+    G<uint8_t>(p + 2) = dwords;
+    W32(p + 4, uint32_t(state));
+    W32(p + 8, p + 8);
+    W32(p + 12, p + 8);
+}
+
+KERNEL_EXPORT(108, KeInitializeEvent, 3) {
+    InitHeader(a[0], uint8_t(a[1]), 4, a[2] & 0xFF);
+    return 0;
+}
+KERNEL_EXPORT(138, KeResetEvent, 1) { return uint32_t(ResetEvent(*FromPointer(a[0]))); }
+KERNEL_EXPORT(123, KePulseEvent, 3) { return uint32_t(PulseEvent(*FromPointer(a[0]))); }
+KERNEL_EXPORT(146, KeSetEventBoostPriority, 2) {
+    SetEvent(*FromPointer(a[0]));
+    return 0;
+}
+
+KERNEL_EXPORT(205, NtPulseEvent, 2) {
+    ObjectRef o = FromHandle(a[0]);
+    if (!o) return kInvalidHandle;
+    int32_t prev = PulseEvent(*o);
+    if (a[1]) W32(a[1], uint32_t(prev));
+    return kSuccess;
+}
+
+KERNEL_EXPORT(112, KeInitializeSemaphore, 3) {
+    InitHeader(a[0], 5, 5, int32_t(a[1]));
+    W32(a[0] + 0x10, a[2]);
+    return 0;
+}
+
+KERNEL_EXPORT(132, KeReleaseSemaphore, 4) {
+    uint32_t st;
+    int32_t prev = ReleaseSemaphore(*FromPointer(a[0]), int32_t(a[2]), st);
+    if (st != kSuccess) LOG_FIRST(8, "KeReleaseSemaphore %08X over its limit", a[0]);
+    return uint32_t(prev);
+}
+
+KERNEL_EXPORT(110, KeInitializeMutant, 2) {
+    bool owned = a[1] & 0xFF;
+    InitHeader(a[0], 2, 8, owned ? 0 : 1);
+    if (owned) {
+        ObjectRef o = FromPointer(a[0]);
+        std::lock_guard<std::mutex> lock(DispatchLock());
+        o->owner = Current()->ethread;
+        o->recursion = 1;
+    }
+    return 0;
+}
+
+KERNEL_EXPORT(131, KeReleaseMutant, 4) {
+    uint32_t st;
+    return uint32_t(ReleaseMutant(*FromPointer(a[0]), st));
+}
+
+// signals by type: event set, semaphore released once, mutant released
+KERNEL_EXPORT(230, NtSignalAndWaitForSingleObjectEx, 5) {
+    ObjectRef s = FromHandle(a[0]), w = FromHandle(a[1]);
+    if (!s || !w) return kInvalidHandle;
+    uint32_t st = kSuccess;
+    switch (s->type) {
+        case ObjType::Event: SetEvent(*s); break;
+        case ObjType::Semaphore: ReleaseSemaphore(*s, 1, st); break;
+        case ObjType::Mutant: ReleaseMutant(*s, st); break;
+        default: return kObjectTypeMismatch;
+    }
+    if (st != kSuccess) return st;
+    return Wait({w}, false, TimeoutArg(a[4]), a[3] & 0xFF);
+}
+
 KERNEL_EXPORT(233, NtWaitForSingleObject, 3) {
     ObjectRef o = FromHandle(a[0]);
     if (!o) return kInvalidHandle;
@@ -537,6 +718,41 @@ KERNEL_EXPORT(149, KeSetTimer, 4) {
 
 KERNEL_EXPORT(97, KeCancelTimer, 1) { return CancelTimer(*FromPointer(a[0])); }
 
+KERNEL_EXPORT(194, NtCreateTimer, 3) {
+    std::string name;
+    if (ObjectRef existing = Named(a[1], name)) {
+        W32(a[0], NewHandle(existing));
+        return kObjectNameExists;
+    }
+    auto o = std::make_shared<Object>(ObjType::Timer);
+    o->notification = a[2] == 0;
+    uint32_t body = mem::AllocSystem(0x28);
+    InitHeader(body, uint8_t(8 + (a[2] & 1)), 10, 0);
+    Bind(o, body);
+    if (!name.empty()) AddNamed(name, o);
+    W32(a[0], NewHandle(o));
+    return kSuccess;
+}
+
+// timer, due, apc routine, apc mode, apc context, resume, period ms, previous state
+KERNEL_EXPORT(229, NtSetTimerEx, 8) {
+    ObjectRef o = FromHandle(a[0]);
+    if (!o) return kInvalidHandle;
+    if (o->type != ObjType::Timer) return kObjectTypeMismatch;
+    if (a[7]) G<uint8_t>(a[7]) = o->signal > 0;
+    CancelTimer(*o);
+    SetTimer(o, int64_t(R64(a[1])), int32_t(a[6]), 0, a[2] ? CurrentRef() : nullptr, a[2], a[4]);
+    return kSuccess;
+}
+
+KERNEL_EXPORT(185, NtCancelTimer, 2) {
+    ObjectRef o = FromHandle(a[0]);
+    if (!o) return kInvalidHandle;
+    if (a[1]) G<uint8_t>(a[1]) = o->signal > 0;
+    CancelTimer(*o);
+    return kSuccess;
+}
+
 KERNEL_EXPORT(107, KeInitializeDpc, 3) {
     uint32_t d = a[0];
     std::memset(HostPtr(d), 0, 0x1C);
@@ -592,6 +808,70 @@ KERNEL_EXPORT(224, NtResumeThread, 2) {
     Resume(t);
     return kSuccess;
 }
+
+static Thread* ThreadAt(uint32_t kthread) {
+    ObjectRef o = FromPointer(kthread);
+    return o && o->type == ObjType::Thread ? static_cast<Thread*>(o.get()) : nullptr;
+}
+
+KERNEL_EXPORT(231, NtSuspendThread, 2) {
+    ObjectRef o = FromHandle(a[0]);
+    if (!o || o->type != ObjType::Thread) return kInvalidHandle;
+    uint32_t prev = Suspend(static_cast<Thread&>(*o));
+    if (a[1]) W32(a[1], prev);
+    return kSuccess;
+}
+
+KERNEL_EXPORT(152, KeSuspendThread, 1) {
+    Thread* t = ThreadAt(a[0]);
+    return t ? Suspend(*t) : 0;
+}
+
+KERNEL_EXPORT(140, KeResumeThread, 1) {
+    Thread* t = ThreadAt(a[0]);
+    if (!t) return 0;
+    uint32_t prev = uint32_t(std::max(t->suspend.load(), 0));
+    Resume(*t);
+    return prev;
+}
+KERNEL_EXPORT(92, KeAlertResumeThread, 1) { return kimpl_KeResumeThread(ctx, a); }
+
+KERNEL_EXPORT(238, NtYieldExecution, 0) {
+    SuspendPoint();
+    std::this_thread::yield();
+    return kSuccess;
+}
+
+KERNEL_EXPORT(104, KeGetCurrentThread, 0) { return Current()->ethread; }
+
+KERNEL_EXPORT(254, PsCreateSystemThread, 5) {
+    ThreadRef t = CreateThread(0x10000, 0, 0, a[2], a[3], false);
+    if (a[0]) W32(a[0], NewHandle(t));
+    if (a[1]) W32(a[1], t->id);
+    StartThread(t);
+    return kSuccess;
+}
+
+// user APCs run at the thread's next alertable wait
+KERNEL_EXPORT(206, NtQueueApcThread, 5) {
+    ObjectRef o = FromHandle(a[0]);
+    if (!o || o->type != ObjType::Thread) return kInvalidHandle;
+    QueueApc(static_cast<Thread&>(*o), a[1], a[2], a[3], a[4]);
+    return kSuccess;
+}
+
+KERNEL_EXPORT(148, KeSetPriorityThread, 2) {
+    Thread* t = ThreadAt(a[0]);
+    if (!t) return 0;
+    int old = t->priority;
+    t->priority = int32_t(a[1]);
+    return uint32_t(old);
+}
+KERNEL_EXPORT(124, KeQueryBasePriorityThread, 1) {
+    Thread* t = ThreadAt(a[0]);
+    return t ? uint32_t(t->priority) : 0;
+}
+KERNEL_EXPORT(144, KeSetDisableBoostThread, 2) { return 0; }
 
 KERNEL_EXPORT(143, KeSetBasePriorityThread, 2) {
     ObjectRef o = FromPointer(a[0]);
@@ -795,7 +1075,9 @@ KERNEL_EXPORT(312, RtlUnwind, 4) {
     return a[3];
 }
 
-static std::string FormatGuest(X86Context& ctx, uint32_t fmt_va, uint32_t args_va) {
+KERNEL_EXPORT(26, ExRaiseException, 1) { return kimpl_RtlRaiseException(ctx, a); }
+
+static std::string FormatGuest(X86Context& ctx, uint32_t fmt_va, uint32_t args_va, bool trim = true) {
     std::string fmt = ReadCString(fmt_va), out;
     uint32_t ap = args_va;
     for (size_t i = 0; i < fmt.size(); i++) {
@@ -834,7 +1116,7 @@ static std::string FormatGuest(X86Context& ctx, uint32_t fmt_va, uint32_t args_v
         out += buf;
     }
     (void)ctx;
-    while (!out.empty() && (out.back() == '\n' || out.back() == '\r')) out.pop_back();
+    while (trim && !out.empty() && (out.back() == '\n' || out.back() == '\r')) out.pop_back();
     return out;
 }
 
@@ -844,6 +1126,42 @@ static void DbgPrintEntry(X86Context& ctx, uint8_t*) {
     ctx.esp += 4;  // cdecl
 }
 static const bool kreg_DbgPrint = (RegisterExport(8, "DbgPrint", DbgPrintEntry), true);
+
+// cdecl: RtlSprintf(buffer, format, ...), RtlSnprintf(buffer, count, format, ...); a result longer than count
+// fills count bytes unterminated and returns -1
+static void SprintfEntry(X86Context& ctx, uint8_t*) {
+    std::string s = FormatGuest(ctx, R32(ctx.esp + 8), ctx.esp + 12, false);
+    std::memcpy(HostPtr(R32(ctx.esp + 4)), s.c_str(), s.size() + 1);
+    ctx.eax = uint32_t(s.size());
+    ctx.esp += 4;
+}
+static void SnprintfEntry(X86Context& ctx, uint8_t*) {
+    std::string s = FormatGuest(ctx, R32(ctx.esp + 12), ctx.esp + 16, false);
+    uint32_t count = R32(ctx.esp + 8);
+    uint32_t n = std::min<uint32_t>(uint32_t(s.size()) + 1, count);
+    std::memcpy(HostPtr(R32(ctx.esp + 4)), s.c_str(), n);
+    ctx.eax = s.size() < count ? uint32_t(s.size()) : 0xFFFFFFFFu;
+    ctx.esp += 4;
+}
+static const bool kreg_RtlSprintf = (RegisterExport(362, "RtlSprintf", SprintfEntry), true);
+static const bool kreg_RtlSnprintf = (RegisterExport(361, "RtlSnprintf", SnprintfEntry), true);
+
+KERNEL_EXPORT(6, DbgBreakPointWithStatus, 1) {
+    LOGW("DbgBreakPointWithStatus %08X from %08X", a[0], R32(ctx.esp));
+    return 0;
+}
+
+KERNEL_EXPORT(264, RtlAssert, 4) {
+    LOGE("RtlAssert: %s at %s:%u %s", ReadCString(a[0]).c_str(), ReadCString(a[1]).c_str(), a[2],
+         a[3] ? ReadCString(a[3]).c_str() : "");
+    return 0;
+}
+
+KERNEL_EXPORT(352, RtlRip, 3) {
+    LOGE("RtlRip: %s %s %s", a[0] ? ReadCString(a[0]).c_str() : "", a[1] ? ReadCString(a[1]).c_str() : "",
+         a[2] ? ReadCString(a[2]).c_str() : "");
+    x86_trap(ctx, R32(ctx.esp), "RtlRip");
+}
 
 KERNEL_EXPORT(5, DbgBreakPoint, 0) {
     LOGW("DbgBreakPoint from %08X", R32(ctx.esp));
@@ -879,6 +1197,19 @@ KERNEL_EXPORT(360, HalInitiateShutdown, 0) { Shutdown(0); }
 KERNEL_EXPORT(358, HalIsResetOrShutdownPending, 0) { return 0; }
 KERNEL_EXPORT(47, HalRegisterShutdownNotification, 2) { return 0; }
 KERNEL_EXPORT(37, FscSetCacheSize, 1) { return kSuccess; }
+KERNEL_EXPORT(36, FscInvalidateIdleBlocks, 0) { return kSuccess; }
+KERNEL_EXPORT(366, HalWriteSMCScratchRegister, 1) { return 0; }
+KERNEL_EXPORT(365, HalEnableSecureTrayEject, 0) { return 0; }
+KERNEL_EXPORT(90, IoDismountVolume, 1) { return kSuccess; }
+KERNEL_EXPORT(91, IoDismountVolumeByName, 1) { return kSuccess; }
+KERNEL_EXPORT(248, ObReferenceObjectByPointer, 2) { return kSuccess; }
+KERNEL_FASTCALL(251, ObfReferenceObject) { return 0; }
+
+// the settings are fixed, a write changes nothing
+KERNEL_EXPORT(29, ExSaveNonVolatileSetting, 4) {
+    LOG_FIRST(16, "ExSaveNonVolatileSetting %X ignored", a[0]);
+    return kSuccess;
+}
 
 // ---------------------------------------------------------------- settings and hardware
 

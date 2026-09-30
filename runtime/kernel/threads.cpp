@@ -216,8 +216,21 @@ void ExitThread(uint32_t code) {
 
 void Resume(Thread& t) {
     std::lock_guard<std::mutex> lock(t.apc_lock);
-    t.suspend--;
+    if (t.suspend > 0) t.suspend--;
     t.resume_cv.notify_all();
+}
+
+uint32_t Suspend(Thread& t) {
+    uint32_t prev = uint32_t(t.suspend++);
+    if (&t == Current()) SuspendPoint();
+    return prev;
+}
+
+void SuspendPoint() {
+    Thread* t = Current();
+    if (!t || t->suspend.load() <= 0) return;
+    std::unique_lock<std::mutex> lock(t->apc_lock);
+    t->resume_cv.wait(lock, [&] { return t->suspend.load() <= 0; });
 }
 
 void QueueApc(Thread& t, uint32_t routine, uint32_t a1, uint32_t a2, uint32_t a3) {

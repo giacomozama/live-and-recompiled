@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- **Kernel** - 266 of the 366 public xboxkrnl exports: semaphores, thread suspend and resume, yield, APC queueing, timers by handle with APC routines, signal and wait, dispatcher object initialisers, interrupt and system time, interlocked and SList, Rtl memory, string, integer and printf helpers, critical section variants. A missing import is logged by name at boot and when called.
+- **Files** - 64 bit offsets, one lock per handle for seek and transfer, file objects signalled on completion, scatter and gather, allocation size no longer truncates or extends.
+- **DirectSound** - `IDirectSound_SynchPlayback` and the synch playback flags of Play and Pause; at `DirectSoundCreate` the log lists DSOUND exports from `.XTLID` that have no host version.
+- **xbe_symbols** - Function signatures carry their `.XTLID` export id, used when the bytes match nothing.
+
 ## 0.1.0 - 2026-09-30
 
 First version, extracted from the Splinter Cell Double Agent (original Xbox) static recompilation, which builds both of its images (default.xbe and sc4_adv.xbe) on it.

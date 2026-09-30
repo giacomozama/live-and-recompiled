@@ -186,7 +186,7 @@ int64_t ToDeadline(int64_t due) {
     return now + std::max<int64_t>(rel, 0) * 100;
 }
 
-uint32_t Wait(const std::vector<ObjectRef>& objs, bool wait_all, int64_t timeout, bool alertable) {
+static uint32_t WaitFor(const std::vector<ObjectRef>& objs, bool wait_all, int64_t timeout, bool alertable) {
     using namespace std::chrono;
     Thread* self = Current();
     uint32_t me = Me();
@@ -228,6 +228,13 @@ uint32_t Wait(const std::vector<ObjectRef>& objs, bool wait_all, int64_t timeout
             g_cv.wait_for(lock, milliseconds(50));
         }
     }
+}
+
+uint32_t Wait(const std::vector<ObjectRef>& objs, bool wait_all, int64_t timeout, bool alertable) {
+    SuspendPoint();
+    uint32_t r = WaitFor(objs, wait_all, timeout, alertable);
+    SuspendPoint();
+    return r;
 }
 
 int32_t SetEvent(Object& o) {
@@ -294,6 +301,8 @@ struct TimerEntry {
     ObjectRef timer;
     int32_t period_ms;
     uint32_t dpc;
+    std::weak_ptr<Thread> apc_thread;
+    uint32_t apc_routine, apc_context;
     bool operator>(const TimerEntry& o) const { return deadline > o.deadline; }
 };
 
@@ -362,6 +371,8 @@ static void TimerLoop() {
             g_cv.notify_all();
         }
         if (e.dpc) QueueDpc(e.dpc, uint32_t(Now100ns()), uint32_t(Now100ns() >> 32));
+        if (auto t = e.apc_thread.lock(); t && e.apc_routine)
+            QueueApc(*t, e.apc_routine, e.apc_context, uint32_t(Now100ns()), uint32_t(Now100ns() >> 32));
         if (e.period_ms > 0) {
             e.deadline += int64_t(e.period_ms) * 1000000;
             g_timers.push(e);
@@ -371,7 +382,8 @@ static void TimerLoop() {
     }
 }
 
-void SetTimer(ObjectRef timer, int64_t due, int32_t period_ms, uint32_t dpc) {
+void SetTimer(ObjectRef timer, int64_t due, int32_t period_ms, uint32_t dpc, std::shared_ptr<Thread> apc_thread,
+              uint32_t apc_routine, uint32_t apc_context) {
     std::lock_guard<std::mutex> lock(g_timer_lock);
     if (!g_timer_thread) {
         g_timer_thread = true;
@@ -383,7 +395,7 @@ void SetTimer(ObjectRef timer, int64_t due, int32_t period_ms, uint32_t dpc) {
     }
     uint64_t seq = g_seq++;
     g_timer_seq[timer.get()] = seq;
-    g_timers.push({ToDeadline(due), seq, timer, period_ms, dpc});
+    g_timers.push({ToDeadline(due), seq, timer, period_ms, dpc, apc_thread, apc_routine, apc_context});
     g_timer_cv.notify_all();
 }
 

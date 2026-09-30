@@ -59,6 +59,8 @@ static bool LoadConfig(const fs::path& path, Config& cfg) {
             if (auto s = i.value<std::string>())
                 if (!LoadConfig(dir / *s, cfg)) return false;
     if (auto v = t["xbe"]["path"].value<std::string>()) cfg.xbe_path = *v;
+    if (auto v = t["xbe"]["title"].value<int64_t>()) cfg.title = uint32_t(*v);
+    if (auto v = t["xbe"]["entry"].value<int64_t>()) cfg.entry = uint32_t(*v);
     if (auto v = t["xbe"]["out"].value<std::string>()) cfg.out_dir = *v;
     if (auto v = t["xbe"]["partitions"].value<int64_t>()) cfg.partitions = uint32_t(*v);
     if (auto v = t["xbe"]["gap_fill"].value<bool>()) cfg.gap_fill = *v;
@@ -174,6 +176,11 @@ int main(int argc, char** argv) {
     }
     std::fprintf(stderr, "%s: title %08X entry %08X kernel thunk %08X\n", xbe_path.filename().string().c_str(),
                  img.title_id, img.entry, img.kernel_thunk);
+    if ((cfg.title && cfg.title != img.title_id) || (cfg.entry && cfg.entry != img.entry)) {
+        std::fprintf(stderr, "%s was written for title %08X entry %08X, not this image: delete it so build.bat writes a new one\n",
+                     argv[1], cfg.title, cfg.entry);
+        return 1;
+    }
 
     Analysis an(img, cfg);
     an.Run();

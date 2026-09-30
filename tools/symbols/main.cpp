@@ -50,6 +50,7 @@ struct Sig {
     bool deep = false;       // lookalikes exist, always check callees' callees
     std::string sec;         // library section, candidates elsewhere are skipped
     uint32_t count = 1, nth = 0;
+    uint32_t xtlid = 0;      // .XTLID export id, used when the bytes match nothing
 };
 
 struct DataRef {
@@ -303,6 +304,7 @@ Sig ReadSig(const toml::table& t) {
     s.leaf = false;
     s.deep = t["deep"].value_or(false);
     s.sec = t["sec"].value_or(std::string());
+    s.xtlid = uint32_t(t["xtlid"].value_or(int64_t(0)));
     if (auto a = t["calls"].as_array()) ReadCalls(*a, s);
     return s;
 }
@@ -319,8 +321,9 @@ std::string WriteCalls(const Sig& s) {
 }
 
 std::string WriteSig(const Sig& s) {
-    if (!s.len) return "{}";
+    if (!s.len) return s.xtlid ? "{xtlid = " + Hex(s.xtlid) + "}" : "{}";
     std::string r = "{sec = \"" + s.sec + "\", len = " + Hex(s.len) + ", hash = \"" + Hex(s.hash) + "\"";
+    if (s.xtlid) r += ", xtlid = " + Hex(s.xtlid);
     if (s.count > 1) r += ", count = " + std::to_string(s.count) + ", nth = " + std::to_string(s.nth);
     if (s.deep) r += ", deep = true";
     if (!s.calls.empty()) r += ", calls = " + WriteCalls(s);
@@ -453,8 +456,12 @@ int Sign(const fs::path& out, const std::vector<fs::path>& configs, const std::s
         for (auto& [n, va] : cfg.symbols) {
             if (skip.count(n)) continue;
             sf.names.insert(n);
+            for (auto& [id, eva] : img.Exports())
+                if (id && va && eva == va && !sf.symbols[n].xtlid) sf.symbols[n].xtlid = id;
             if (!va || sf.symbols[n].len) continue;
+            uint32_t id = sf.symbols[n].xtlid;
             sf.symbols[n] = make(va);
+            sf.symbols[n].xtlid = id;
             fresh[n] = va;
             origin[n] = cp.filename().string();
         }
@@ -507,7 +514,8 @@ int Sign(const fs::path& out, const std::vector<fs::path>& configs, const std::s
         "# [symbols] name = {sec, len, hash, calls, deep, count, nth}: hash of len bytes from the function start in\n"
         "# section sec, image addresses and rel32 targets masked; calls = [len, hash, calls] of each rel32 call or\n"
         "# jump target outside it, in order, two levels deep; deep = lookalikes exist, so the callees' callees must\n"
-        "# match too; count and nth pick one of identical functions by link order. {} = no signature, stays 0.\n"
+        "# match too; count and nth pick one of identical functions by link order; xtlid = its .XTLID export id,\n"
+        "# used when the bytes match nothing. {} = no signature, stays 0.\n"
         "# [anchors] functions only used to find data. [data] in = function, insn = instruction index, op = operand,\n"
         "# xtlid = the id .XTLID lists the address under, used when in finds nothing.\n";
     s += "\n[symbols]\n";
@@ -630,6 +638,12 @@ int Scan(const fs::path& xbe_path, const fs::path& xdk, const fs::path& out, con
         report.push_back(line + (ok.size() == 1 ? ", kept " + n[ok[0]] : ", dropped all"));
     }
     for (auto& k : sf.names) symbols[k] = sf.symbols.count(k) && found.count(k) ? found[k] : 0;
+    for (auto& [k, va] : symbols)
+        for (auto& [id, eva] : img.Exports())
+            if (!va && id && sf.symbols.count(k) && sf.symbols[k].xtlid == id) {
+                va = eva;
+                report.push_back("  " + k + " found by .XTLID " + Hex(id));
+            }
     for (auto& [k, d] : sf.data) {
         data[k] = 0;
         auto sig = sf.symbols.count(d.in) ? &sf.symbols[d.in] : sf.anchors.count(d.in) ? &sf.anchors[d.in] : nullptr;
@@ -655,6 +669,7 @@ int Scan(const fs::path& xbe_path, const fs::path& xdk, const fs::path& out, con
     std::string s = "# Recompiler input for " + xbe_path.filename().string() + ", written by xbe_symbols\n";
     s += "includes = [\"" + layout + "\"]\n\n[xbe]\n";
     s += "path = \"assets/" + xbe_path.filename().string() + "\"\n";
+    s += "title = " + Hex(x.title_id) + "\nentry = " + Hex(x.entry) + "\n";
     s += "out = \"generated/" + name + "\"\n";
     s += "partitions = " + std::to_string(parts) + "\n";
     s += "code_sections = [";

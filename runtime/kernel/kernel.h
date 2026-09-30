@@ -136,7 +136,10 @@ int32_t ReleaseMutant(Object& o, uint32_t& status);
 int64_t Now100ns();                           // system time, 100 ns since 1601
 int64_t ToDeadline(int64_t due_100ns);        // relative or absolute to a steady clock deadline in ns
 void QueueDpc(uint32_t dpc, uint32_t arg1, uint32_t arg2);
-void SetTimer(ObjectRef timer, int64_t due, int32_t period_ms, uint32_t dpc);
+struct Thread;
+// apc_routine runs on apc_thread with (apc_context, due low, due high) each time the timer fires
+void SetTimer(ObjectRef timer, int64_t due, int32_t period_ms, uint32_t dpc, std::shared_ptr<Thread> apc_thread = nullptr,
+              uint32_t apc_routine = 0, uint32_t apc_context = 0);
 bool CancelTimer(Object& timer);
 
 // ---------------------------------------------------------------- threads
@@ -166,6 +169,8 @@ ThreadRef CreateThread(uint32_t stack_size, uint32_t tls_size, uint32_t system_r
 void StartThread(ThreadRef t);
 [[noreturn]] void ExitThread(uint32_t code);
 void Resume(Thread& t);
+uint32_t Suspend(Thread& t);  // previous count; another thread stops at its next kernel wait, delay or yield
+void SuspendPoint();           // blocks the current thread while it is suspended
 bool RunApcs(Thread& t);
 void QueueApc(Thread& t, uint32_t routine, uint32_t a1, uint32_t a2, uint32_t a3);
 std::vector<ThreadRef> Threads();
@@ -206,6 +211,8 @@ void RegisterExport(uint32_t ordinal, const char* name, KernelFn fn);
 uint32_t RegisterData(uint32_t ordinal, const char* name, uint32_t size);  // allocates kernel data, returns address
 uint32_t DataAddress(uint32_t ordinal);
 const char* ExportName(uint32_t ordinal);
+bool HasExport(uint32_t ordinal);       // implemented as a function or data
+const char* OrdinalName(uint32_t ordinal);  // public name, "?" past the table
 
 // guest kernel variables updated by the host
 extern uint32_t g_tick_count_va;

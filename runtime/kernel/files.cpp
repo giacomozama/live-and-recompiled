@@ -73,6 +73,7 @@ struct File : Object {
     size_t next = 0;
     bool listed = false;
     bool delete_on_close = false;
+    std::mutex io;  // threads sharing a handle: seek and transfer stay together
     File() : Object(ObjType::File) {}
     ~File() override {
         if (fp) std::fclose(fp);
@@ -123,6 +124,15 @@ bool WildMatch(const std::string& pat, const std::string& s) {
     }
     while (p < pat.size() && pat[p] == '*') p++;
     return p == pat.size();
+}
+
+// past 2 GB a long offset wraps on Windows
+void Seek(FILE* fp, uint64_t pos) {
+#ifdef _WIN32
+    _fseeki64(fp, int64_t(pos), SEEK_SET);
+#else
+    fseeko(fp, off_t(pos), SEEK_SET);
+#endif
 }
 
 void IoStatus(uint32_t iosb, uint32_t status, uint32_t info) {
@@ -367,44 +377,48 @@ KERNEL_EXPORT(202, NtOpenFile, 6) {
     return kSuccess;
 }
 
-KERNEL_EXPORT(219, NtReadFile, 8) {
-    uint32_t h = a[0], event = a[1], apc = a[2], apc_ctx = a[3], iosb = a[4], buf = a[5], len = a[6], off = a[7];
-    auto f = FileFromHandle(h);
-    if (!f || !f->fp) return kInvalidHandle;
-    uint64_t pos = f->pos;
-    if (off) {
-        int64_t o = int64_t(R64(off));
-        if (o >= 0) pos = uint64_t(o);
-    }
-    std::fseek(f->fp, long(pos), SEEK_SET);
-    size_t n = len ? std::fread(HostPtr(buf), 1, len, f->fp) : 0;
-    f->pos = pos + n;
-    if (len && !n) {
-        IoStatus(iosb, kEndOfFile, 0);
-        Complete(event, apc, apc_ctx, iosb);
-        return kEndOfFile;
-    }
-    IoStatus(iosb, kSuccess, uint32_t(n));
+// I/O completes before the call returns: the status block is written, then the file object, the event and the
+// APC are signalled (GetOverlappedResult without an event waits on the file handle)
+static uint32_t Finish(File& f, uint32_t status, uint32_t n, uint32_t event, uint32_t apc, uint32_t apc_ctx, uint32_t iosb) {
+    IoStatus(iosb, status, n);
+    SetEvent(f);
     Complete(event, apc, apc_ctx, iosb);
-    return kSuccess;
+    return status;
 }
 
-KERNEL_EXPORT(236, NtWriteFile, 8) {
+static uint64_t Offset(File& f, uint32_t off) {
+    int64_t o = off ? int64_t(R64(off)) : -1;
+    return o >= 0 ? uint64_t(o) : f.pos;
+}
+
+// pages is the FILE_SEGMENT_ELEMENT array for scatter and gather, 0 for one buffer
+static uint32_t Transfer(const Args& a, bool write, uint32_t pages) {
     uint32_t h = a[0], event = a[1], apc = a[2], apc_ctx = a[3], iosb = a[4], buf = a[5], len = a[6], off = a[7];
     auto f = FileFromHandle(h);
     if (!f || !f->fp) return kInvalidHandle;
-    uint64_t pos = f->pos;
-    if (off) {
-        int64_t o = int64_t(R64(off));
-        if (o >= 0) pos = uint64_t(o);
+    ResetEvent(*f);
+    std::lock_guard<std::mutex> lock(f->io);
+    uint64_t pos = Offset(*f, off);
+    Seek(f->fp, pos);
+    uint32_t n = 0;
+    while (n < len) {
+        uint32_t at = pages ? R32(pages + n / 0x1000 * 8) + n % 0x1000 : buf + n;
+        uint32_t chunk = pages ? std::min(len - n, 0x1000 - n % 0x1000) : len;
+        size_t done = write ? std::fwrite(HostPtr(at), 1, chunk, f->fp) : std::fread(HostPtr(at), 1, chunk, f->fp);
+        n += uint32_t(done);
+        if (done < chunk) break;
     }
-    std::fseek(f->fp, long(pos), SEEK_SET);
-    size_t n = std::fwrite(HostPtr(buf), 1, len, f->fp);
     f->pos = pos + n;
-    IoStatus(iosb, kSuccess, uint32_t(n));
-    Complete(event, apc, apc_ctx, iosb);
-    return kSuccess;
+    if (write && n < len) return Finish(*f, 0xC000007F, n, event, apc, apc_ctx, iosb);  // disk full
+    if (!write && len && !n) return Finish(*f, kEndOfFile, 0, event, apc, apc_ctx, iosb);
+    return Finish(*f, kSuccess, n, event, apc, apc_ctx, iosb);
 }
+
+KERNEL_EXPORT(219, NtReadFile, 8) { return Transfer(a, false, 0); }
+KERNEL_EXPORT(236, NtWriteFile, 8) { return Transfer(a, true, 0); }
+// the buffer argument is an array of one page per element
+KERNEL_EXPORT(220, NtReadFileScatter, 8) { return Transfer(a, false, a[5]); }
+KERNEL_EXPORT(237, NtWriteFileGather, 8) { return Transfer(a, true, a[5]); }
 
 KERNEL_EXPORT(211, NtQueryInformationFile, 5) {
     uint32_t h = a[0], iosb = a[1], out = a[2], len = a[3], cls = a[4];
@@ -459,11 +473,13 @@ KERNEL_EXPORT(226, NtSetInformationFile, 5) {
         case 14:  // position
             f->pos = R64(in);
             break;
-        case 19:  // allocation
+        case 19:  // allocation: only a size below the end of file cuts it
         case 20:  // end of file
             if (f->fp) {
+                std::lock_guard<std::mutex> lock(f->io);
                 std::fflush(f->fp);
-                fs::resize_file(f->host, R64(in), ec);
+                uint64_t size = fs::file_size(f->host, ec);
+                if (cls == 20 || R64(in) < size) fs::resize_file(f->host, R64(in), ec);
             }
             break;
         case 13:  // disposition

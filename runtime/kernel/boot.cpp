@@ -125,8 +125,8 @@ bool Boot(const std::string& xbe_path, const std::string& game_dir, const std::s
         uint32_t ord = v & 0x7FFFFFFF;
         uint32_t data = DataAddress(ord);
         W32(slot, data ? data : dispatch::KernelThunkAddress(ord));
-        if (!data && std::string(ExportName(ord)) == "?") {
-            LOGW("boot: kernel import %u has no implementation", ord);
+        if (!HasExport(ord)) {
+            LOGW("boot: kernel import %u (%s) has no implementation", ord, ExportName(ord));
             missing++;
         }
     }

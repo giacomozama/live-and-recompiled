@@ -110,8 +110,8 @@ void x86_kernel(X86Context& ctx, uint8_t* base, uint32_t ordinal) {
         g_exports[ordinal].fn(ctx, base);
         return;
     }
-    LOGE("kernel export %u (%s) is not implemented, return address %08X", ordinal,
-         ordinal < 400 && g_exports[ordinal].name ? g_exports[ordinal].name : "?", kernel::R32(ctx.esp));
+    LOGE("kernel export %u (%s) is not implemented, return address %08X", ordinal, kernel::ExportName(ordinal),
+         kernel::R32(ctx.esp));
     x86_trap(ctx, kernel::R32(ctx.esp), "unimplemented kernel export");
 }
 
@@ -136,7 +136,8 @@ uint32_t RegisterData(uint32_t ordinal, const char* name, uint32_t size) {
 }
 
 uint32_t DataAddress(uint32_t ordinal) { return ordinal < 400 ? g_exports[ordinal].data : 0; }
-const char* ExportName(uint32_t ordinal) { return ordinal < 400 && g_exports[ordinal].name ? g_exports[ordinal].name : "?"; }
+const char* ExportName(uint32_t ordinal) { return ordinal < 400 && g_exports[ordinal].name ? g_exports[ordinal].name : OrdinalName(ordinal); }
+bool HasExport(uint32_t ordinal) { return ordinal < 400 && (g_exports[ordinal].fn || g_exports[ordinal].data); }
 
 uint32_t CallGuest(X86Context& ctx, uint32_t fn, std::initializer_list<uint32_t> args) {
     // the D3D and DirectSound hooks call this several times a draw: no heap, only the registers put back are kept
