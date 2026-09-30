@@ -1,6 +1,6 @@
 #pragma once
-// XDK data layouts come from the image config (sdk/xdk/<build>/layout.toml). One the config lacks is unknown and
-// traps where its library starts rather than being guessed.
+// XDK data layouts come from the image config (sdk/xdk/<build>/layout.toml), data addresses from its [data]. One the
+// config lacks is unknown and traps where it is first needed rather than being guessed.
 #include <cstdint>
 #include <cstdlib>
 #include <iterator>
@@ -22,13 +22,14 @@ constexpr bool AllKnown(const LayoutKey (&keys)[N]) {
 }
 [[noreturn]] inline void LayoutMissing(const char* lib, const LayoutKey* keys, size_t n) {
     for (size_t i = 0; i < n; i++)
-        if (keys[i].value == kUnknown) LOGE("%s: XDK layout %s is unknown for this image", lib, keys[i].name);
+        if (keys[i].value == kUnknown) LOGE("%s: %s is unknown for this image, add it to the config", lib, keys[i].name);
     logx::Flush();
     std::abort();
 }
 }  // namespace xdk
 
 #define XDK_KEY(name) ::xdk::LayoutKey{#name, XDK_##name}
+#define XDK_DATA(name) ::xdk::LayoutKey{#name, HAS_##name ? SYM(name) : ::xdk::kUnknown}
 #define XDK_REQUIRE(lib, ...)                                                                  \
     do {                                                                                       \
         static constexpr ::xdk::LayoutKey keys_[] = {__VA_ARGS__};                             \

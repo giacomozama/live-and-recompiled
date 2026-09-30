@@ -477,7 +477,8 @@ BUFFER(SetI3DL2Source, 3) { return 0; }
 // ---------------------------------------------------------------- streams, the object carries the XDK's own vtable
 
 HLE_STDCALL(DirectSoundCreateStream, 2) {
-    XDK_REQUIRE("dsound", XDK_KEY(CDirectSoundStream_Vtable), XDK_KEY(CDirectSoundStream_Vtable2));
+    XDK_REQUIRE("dsound", XDK_KEY(CDirectSoundStream_Vtable), XDK_KEY(CDirectSoundStream_Vtable2),
+                XDK_DATA(DSound_StreamVtable), XDK_DATA(DSound_StreamVtable2));
     std::lock_guard<std::recursive_mutex> lock(g_lock);
     Start();
     uint32_t desc = a[0];

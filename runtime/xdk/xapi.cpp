@@ -44,7 +44,8 @@ HLE_STDCALL(XMountUtilityDrive, 1) {
 }
 
 HLE_STDCALL(XInitDevices, 2) {
-    XDK_REQUIRE("xapi", XDK_KEY(XPP_Current), XDK_KEY(XPP_Changed), XDK_KEY(XPP_Previous));
+    XDK_REQUIRE("xapi", XDK_KEY(XPP_Current), XDK_KEY(XPP_Changed), XDK_KEY(XPP_Previous), XDK_DATA(XPP_GamepadType),
+                XDK_DATA(XPP_MemoryUnitType));
     W32(kGamepadType + XDK_XPP_Current, 0);
     W32(kGamepadType + XDK_XPP_Changed, 0);
     W32(kGamepadType + XDK_XPP_Previous, 0);

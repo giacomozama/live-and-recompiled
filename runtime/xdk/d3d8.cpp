@@ -134,6 +134,9 @@ using namespace d3d;
 // ---------------------------------------------------------------- device
 
 HLE_STDCALL(Direct3D_CreateDevice, 6) {
+    XDK_REQUIRE("d3d", XDK_DATA(D3D_Device), XDK_DATA(D3D_pDevice), XDK_DATA(D3D_DirtyFlags),
+                XDK_DATA(D3D_DeferredTextureState), XDK_DATA(D3D_RenderState), XDK_DATA(D3D_Streams),
+                XDK_DATA(D3D_SimpleRenderStateEncode));
     XDK_REQUIRE("d3d", XDK_KEY(CDevice_Push), XDK_KEY(CDevice_PushThreshold), XDK_KEY(CDevice_BaseVertex),
                 XDK_KEY(CDevice_IndexBuffer), XDK_KEY(CDevice_ZScale), XDK_KEY(CDevice_SuperSampleX),
                 XDK_KEY(CDevice_SuperSampleY), XDK_KEY(CDevice_Transforms), XDK_KEY(CDevice_Textures),
@@ -574,6 +577,7 @@ HLE_STDCALL(D3DDevice_SetStreamSource, 3) {
 }
 
 HLE_STDCALL(D3DDevice_SetIndices, 2) {
+    XDK_REQUIRE("d3d", XDK_DATA(D3D_IndexData));
     std::lock_guard<std::recursive_mutex> lock(g_lock);
     uint32_t ib = a[0];
     uint32_t old = Dev(kDevIndexBuffer);
