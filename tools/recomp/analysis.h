@@ -25,6 +25,7 @@ struct Hook {
 struct Config {
     std::string xbe_path;
     uint32_t title = 0, entry = 0;  // the image xbe_symbols wrote the config for, 0 = unchecked
+    std::set<uint32_t> trace;       // functions whose calls and results are logged
     std::string out_dir;
     std::vector<std::string> code_sections;
     std::vector<std::string> code_prefixes;

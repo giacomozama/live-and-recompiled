@@ -40,6 +40,7 @@ static bool ParseExit(const toml::node* n, Hook::Exit& e) {
 
 // Keys beyond [xbe], [functions], [symbols], [data] and [layout]:
 //   [xbe] data_ranges = [[lo, hi], ...]  bytes in code sections that are never code, hi exclusive
+//   [xbe] trace = [address, ...]  log each call of these functions (caller, arguments) and its eax
 //   [[hook]] at, call, after, on_true, on_false  call a host function before or after a guest instruction;
 //     on_true/on_false make it return bool and name "ret" or an instruction of the same function to jump to
 //   [[function]] at, end  an entry decoded no further than end (exclusive); it also stops other walks
@@ -61,6 +62,8 @@ static bool LoadConfig(const fs::path& path, Config& cfg) {
     if (auto v = t["xbe"]["path"].value<std::string>()) cfg.xbe_path = *v;
     if (auto v = t["xbe"]["title"].value<int64_t>()) cfg.title = uint32_t(*v);
     if (auto v = t["xbe"]["entry"].value<int64_t>()) cfg.entry = uint32_t(*v);
+    if (auto a = t["xbe"]["trace"].as_array())
+        for (auto& i : *a) cfg.trace.insert(uint32_t(i.value_or(int64_t(0))));
     if (auto v = t["xbe"]["out"].value<std::string>()) cfg.out_dir = *v;
     if (auto v = t["xbe"]["partitions"].value<int64_t>()) cfg.partitions = uint32_t(*v);
     if (auto v = t["xbe"]["gap_fill"].value<bool>()) cfg.gap_fill = *v;

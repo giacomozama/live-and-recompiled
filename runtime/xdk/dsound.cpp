@@ -26,6 +26,26 @@ X86Func* Find(uint32_t guest);
 #define SYM_IDirectSound_SynchPlayback FFFFFF00
 #define HAS_IDirectSound_SynchPlayback 0
 #endif
+#ifndef SYM_IDirectSound_DownloadEffectsImage
+#define SYM_IDirectSound_DownloadEffectsImage FFFFFF01
+#define HAS_IDirectSound_DownloadEffectsImage 0
+#endif
+#ifndef SYM_IDirectSound_GetEffectData
+#define SYM_IDirectSound_GetEffectData FFFFFF02
+#define HAS_IDirectSound_GetEffectData 0
+#endif
+#ifndef SYM_IDirectSound_CommitEffectData
+#define SYM_IDirectSound_CommitEffectData FFFFFF03
+#define HAS_IDirectSound_CommitEffectData 0
+#endif
+#ifndef SYM_IDirectSound_GetOutputLevels
+#define SYM_IDirectSound_GetOutputLevels FFFFFF04
+#define HAS_IDirectSound_GetOutputLevels 0
+#endif
+#ifndef SYM_IDirectSoundBuffer_SetPlayRegion
+#define SYM_IDirectSoundBuffer_SetPlayRegion FFFFFF05
+#define HAS_IDirectSoundBuffer_SetPlayRegion 0
+#endif
 
 namespace {
 
@@ -46,7 +66,7 @@ struct Voice {
     uint16_t tag = 1, channels = 1, bits = 16, align = 2;
     uint32_t rate = 48000;
     // buffer
-    uint32_t data = 0, bytes = 0, loop_start = 0, loop_len = 0;
+    uint32_t data = 0, bytes = 0, loop_start = 0, loop_len = 0, play_start = 0, play_len = 0;
     bool playing = false, looping = false, paused = false;
     bool sync = false;  // held until IDirectSound_SynchPlayback
     double pos = 0;  // frames
@@ -195,7 +215,8 @@ void Render(float* out, uint32_t frames) {
                     b1 = b;
                 }
             } else {
-                uint32_t end = v.looping && v.loop_len ? FramesOf(v, v.loop_start + v.loop_len) : FramesOf(v, v.bytes);
+                uint32_t end = v.looping && v.loop_len ? FramesOf(v, v.loop_start + v.loop_len)
+                               : FramesOf(v, v.play_len ? std::min(v.play_start + v.play_len, v.bytes) : v.bytes);
                 if (f >= end) {
                     if (!v.looping || !end) {
                         v.playing = false;
@@ -314,6 +335,8 @@ static void AuditExports() {
         SYM(IDirectSound_CommitDeferredSettings), SYM(IDirectSound_SetDopplerFactor), SYM(IDirectSound_SetRolloffFactor),
         SYM(IDirectSound_SetDistanceFactor), SYM(IDirectSound_SetVelocity), SYM(IDirectSound_SetI3DL2Listener),
         SYM(IDirectSound_SetPosition), SYM(IDirectSound_SetOrientation), SYM(IDirectSound_SynchPlayback), SYM(DirectSoundDoWork),
+        SYM(IDirectSound_DownloadEffectsImage), SYM(IDirectSound_GetEffectData), SYM(IDirectSound_CommitEffectData),
+        SYM(IDirectSound_GetOutputLevels), SYM(IDirectSoundBuffer_SetPlayRegion),
         SYM(XAudioDownloadEffectsImage), SYM(DirectSoundCreateBuffer), SYM(IDirectSound_CreateSoundBuffer),
         SYM(IDirectSoundBuffer_Release), SYM(IDirectSoundBuffer_Unlock), SYM(IDirectSoundBuffer_SetBufferData),
         SYM(IDirectSoundBuffer_Play), SYM(IDirectSoundBuffer_Stop), SYM(IDirectSoundBuffer_SetLoopRegion),
@@ -334,7 +357,9 @@ static void AuditExports() {
     for (auto& s : g_image->sections)
         for (uint32_t o = 0; s.name == ".XTLID" && o + 8 <= std::min(s.vsize, s.rsize); o += 8) {
             uint32_t id = g_image->U32(s.raw + o), va = g_image->U32(s.raw + o + 4);
-            if (id >> 16 != 0xB || !dispatch::Find(va) || std::find(std::begin(handled), std::end(handled), va) != std::end(handled))
+            auto done = [&](uint32_t f) { return std::find(std::begin(handled), std::end(handled), f) != std::end(handled); };
+            // a jmp to a host version is covered by it
+            if (id >> 16 != 0xB || !dispatch::Find(va) || done(va) || (G<uint8_t>(va) == 0xE9 && done(va + 5 + R32(va + 1))))
                 continue;
             char b[24];
             std::snprintf(b, sizeof b, " %05X at %08X", id, va);
@@ -390,23 +415,14 @@ HLE_STDCALL(IDirectSound_SynchPlayback, 1) {
     return 0;
 }
 
-// Effects run on the console's DSP and are not reproduced. The descriptor keeps the image's effect list so the
-// title finds its indices, every segment points at zeroed memory.
-HLE_STDCALL(XAudioDownloadEffectsImage, 4) {
+// Effects run on the console's DSP and are not reproduced.
+// the descriptor keeps the image's effect list so the title finds its indices, every segment points at zeroed memory
+static uint32_t EffectsDesc(const std::vector<uint8_t>& img, const char* name) {
     XDK_REQUIRE("dsound", XDK_KEY(EffectsImage_Skip0), XDK_KEY(EffectsImage_Skip1), XDK_KEY(EffectsImage_Desc));
-    std::string name = ReadCString(a[0]);
-    std::vector<uint8_t> img;
-    if (a[2] & 1) {
-        for (auto& sec : g_image->sections)
-            if (sec.name == name) img.assign(static_cast<uint8_t*>(HostPtr(sec.va)), static_cast<uint8_t*>(HostPtr(sec.va)) + sec.vsize);
-    } else {
-        std::ifstream f(ResolvePath(name, 0), std::ios::binary);
-        img.assign(std::istreambuf_iterator<char>(f), {});
-    }
     auto u32 = [&](size_t o) { uint32_t v = 0; if (o + 4 <= img.size()) std::memcpy(&v, &img[o], 4); return v; };
     size_t t = XDK_EffectsImage_Desc + size_t(u32(XDK_EffectsImage_Skip0) + u32(XDK_EffectsImage_Skip1)) * 4;
     uint32_t count = std::min<uint32_t>(u32(t), 64);
-    LOGI("dsound: effects image %s, %u effects", name.c_str(), count);
+    LOGI("dsound: effects image %s, %u effects", name, count);
     uint32_t desc = mem::AllocSystem(8 + std::max(count, 1u) * 32);
     W32(desc, count);
     W32(desc + 4, u32(t + 4));
@@ -421,7 +437,40 @@ HLE_STDCALL(XAudioDownloadEffectsImage, 4) {
             W32(d + k * 8 + 4, size);
         }
     }
+    return desc;
+}
+
+HLE_STDCALL(XAudioDownloadEffectsImage, 4) {
+    std::string name = ReadCString(a[0]);
+    std::vector<uint8_t> img;
+    if (a[2] & 1) {
+        for (auto& sec : g_image->sections)
+            if (sec.name == name) img.assign(static_cast<uint8_t*>(HostPtr(sec.va)), static_cast<uint8_t*>(HostPtr(sec.va)) + sec.vsize);
+    } else {
+        std::ifstream f(ResolvePath(name, 0), std::ios::binary);
+        img.assign(std::istreambuf_iterator<char>(f), {});
+    }
+    uint32_t desc = EffectsDesc(img, name.c_str());
     if (a[3]) W32(a[3], desc);
+    return 0;
+}
+
+// (this, image, size, location, descriptor out): the title loaded the image itself
+HLE_STDCALL(IDirectSound_DownloadEffectsImage, 5) {
+    std::vector<uint8_t> img(static_cast<uint8_t*>(HostPtr(a[1])), static_cast<uint8_t*>(HostPtr(a[1])) + a[2]);
+    uint32_t desc = EffectsDesc(img, "from memory");
+    if (a[4]) W32(a[4], desc);
+    return 0;
+}
+// (this, effect, offset, data, size): SetEffectData keeps nothing, so effect memory reads as zero
+HLE_STDCALL(IDirectSound_GetEffectData, 5) {
+    if (a[3]) std::memset(HostPtr(a[3]), 0, a[4]);
+    return 0;
+}
+HLE_STDCALL(IDirectSound_CommitEffectData, 1) { return 0; }
+// (this, DSOUTPUTLEVELS out, reset peaks): 16 dwords of meters, silent
+HLE_STDCALL(IDirectSound_GetOutputLevels, 3) {
+    if (a[1]) std::memset(HostPtr(a[1]), 0, 64);
     return 0;
 }
 
@@ -457,12 +506,18 @@ BUFFER(SetBufferData, 3) {
 BUFFER(Play, 4) {
     v.playing = true;
     v.looping = a[3] & 1;
-    if (a[3] & 2) v.pos = 0;
+    if (a[3] & 2) v.pos = FramesOf(v, v.play_start);
     v.sync = a[3] & 4;
     return 0;
 }
 BUFFER(Stop, 1) {
     v.playing = false;
+    return 0;
+}
+// (this, start, length) in bytes, 0 length plays to the end
+BUFFER(SetPlayRegion, 3) {
+    v.play_start = a[1];
+    v.play_len = a[2];
     return 0;
 }
 BUFFER(SetLoopRegion, 3) {

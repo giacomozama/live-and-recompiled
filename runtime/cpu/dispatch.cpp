@@ -192,6 +192,18 @@ void x86_trap(X86Context& ctx, uint32_t va, const char* what) {
     std::abort();
 }
 
+uint32_t x86_trace(X86Context& ctx, uint32_t va, uint32_t ret) {
+    using kernel::R32;
+    if (!ret) {
+        ret = R32(ctx.esp);
+        LOGI("trace %08X from %08X (%08X, %08X, %08X, %08X) ecx %08X", va, ret, R32(ctx.esp + 4), R32(ctx.esp + 8),
+             R32(ctx.esp + 12), R32(ctx.esp + 16), ctx.ecx);
+    } else {
+        LOGI("trace %08X returned %08X to %08X", va, ctx.eax, ret);
+    }
+    return ret;
+}
+
 void x86_priv(X86Context& ctx, uint32_t va, const char* what) {
     static std::mutex m;
     static std::unordered_set<uint32_t> seen;

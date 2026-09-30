@@ -36,6 +36,17 @@ bool g_mode_changed = false;
 
 // crash dump in CrashDumps beside the exe
 LONG WINAPI WriteCrashDump(EXCEPTION_POINTERS* e) {
+    // the dump holds no guest memory: the guest registers and return addresses go to the log
+    if (kernel::Thread* t = kernel::Current(); e && t && t->ctx) {
+        auto* r = e->ExceptionRecord;
+        LOGE("exception %08lX at %p on guest thread %X", r->ExceptionCode, r->ExceptionAddress, t->id);
+        if (r->ExceptionCode == EXCEPTION_ACCESS_VIOLATION && r->NumberParameters >= 2) {
+            uint64_t va = r->ExceptionInformation[1], g = uint64_t(reinterpret_cast<uintptr_t>(kernel::g_base));
+            LOGE("  %s %llX, guest %08llX", r->ExceptionInformation[0] ? "write" : "read", (unsigned long long)va,
+                 (unsigned long long)(va - g));
+        }
+        kernel::LogGuestStack(*t->ctx, 256);
+    }
     auto dir = ExeDir() / "CrashDumps";
     CreateDirectoryW(dir.c_str(), nullptr);
     SYSTEMTIME t;

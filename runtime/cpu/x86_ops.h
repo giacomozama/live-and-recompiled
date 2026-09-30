@@ -25,6 +25,13 @@ typedef double __attribute__((aligned(1), may_alias)) x86_f64u;
 #define X86_EXTERN_FUNC(name) extern "C" void name(X86Context& __restrict ctx, uint8_t* base)
 #define X86_WEAK_FUNC(name, impl) \
     extern "C" __attribute__((weak, noinline)) void name(X86Context& __restrict ctx, uint8_t* base) { impl(ctx, base); }
+// [xbe] trace: logs the caller and arguments on entry, eax on return
+#define X86_TRACED_FUNC(name, impl, va)                                                                    \
+    extern "C" __attribute__((weak, noinline)) void name(X86Context& __restrict ctx, uint8_t* base) {      \
+        uint32_t x86_ret = x86_trace(ctx, va, 0);                                                         \
+        impl(ctx, base);                                                                                  \
+        x86_trace(ctx, va, x86_ret);                                                                      \
+    }
 
 #define X86_PUSH32(v)            \
     do {                         \
@@ -50,6 +57,7 @@ void x86_resume(X86Context& ctx, uint8_t* base, const X86Resume& r);
 void x86_kernel(X86Context& ctx, uint8_t* base, uint32_t ordinal);
 [[noreturn]] void x86_trap(X86Context& ctx, uint32_t va, const char* what);
 void x86_priv(X86Context& ctx, uint32_t va, const char* what);
+uint32_t x86_trace(X86Context& ctx, uint32_t va, uint32_t ret);  // ret 0 on entry, returns the return address
 uint64_t x86_rdtsc();
 void x86_cpuid(X86Context& ctx);
 
