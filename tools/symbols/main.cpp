@@ -49,7 +49,6 @@ struct Sig {
     bool leaf = true;        // callees not recorded
     bool deep = false;       // lookalikes exist, always check callees' callees
     std::string sec;         // library section, candidates elsewhere are skipped
-    std::string xbsdb;       // XbSymbolDatabase name when it differs, "-" when its same name is another function
     uint32_t count = 1, nth = 0;
 };
 
@@ -57,7 +56,7 @@ struct DataRef {
     std::string in;
     uint32_t insn = 0;
     bool imm = false;
-    std::string xbsdb;
+    uint32_t xtlid = 0;  // .XTLID export id, used when no function has it
 };
 
 // XBE with a masked linear sweep of its code sections
@@ -262,6 +261,15 @@ struct Image {
         });
         return r;
     }
+
+    // .XTLID: export id and address pairs
+    std::vector<std::pair<uint32_t, uint32_t>> Exports() const {
+        std::vector<std::pair<uint32_t, uint32_t>> r;
+        for (auto& s : x.sections)
+            for (uint32_t o = 0; s.name == ".XTLID" && o + 8 <= std::min(s.vsize, s.rsize); o += 8)
+                r.push_back({x.U32(s.raw + o), x.U32(s.raw + o + 4)});
+        return r;
+    }
 };
 
 struct SigFile {
@@ -295,7 +303,6 @@ Sig ReadSig(const toml::table& t) {
     s.leaf = false;
     s.deep = t["deep"].value_or(false);
     s.sec = t["sec"].value_or(std::string());
-    s.xbsdb = t["xbsdb"].value_or(std::string());
     if (auto a = t["calls"].as_array()) ReadCalls(*a, s);
     return s;
 }
@@ -312,9 +319,8 @@ std::string WriteCalls(const Sig& s) {
 }
 
 std::string WriteSig(const Sig& s) {
-    std::string x = s.xbsdb.empty() ? "" : "xbsdb = \"" + s.xbsdb + "\"";
-    if (!s.len) return "{" + x + "}";
-    std::string r = "{" + (x.empty() ? "" : x + ", ") + "sec = \"" + s.sec + "\", len = " + Hex(s.len) + ", hash = \"" + Hex(s.hash) + "\"";
+    if (!s.len) return "{}";
+    std::string r = "{sec = \"" + s.sec + "\", len = " + Hex(s.len) + ", hash = \"" + Hex(s.hash) + "\"";
     if (s.count > 1) r += ", count = " + std::to_string(s.count) + ", nth = " + std::to_string(s.nth);
     if (s.deep) r += ", deep = true";
     if (!s.calls.empty()) r += ", calls = " + WriteCalls(s);
@@ -342,7 +348,7 @@ bool LoadSigs(const fs::path& p, SigFile& f) {
                 d.in = (*e)["in"].value_or(std::string());
                 d.insn = uint32_t((*e)["insn"].value_or(int64_t(0)));
                 d.imm = (*e)["op"].value_or(std::string()) == "imm";
-                d.xbsdb = (*e)["xbsdb"].value_or(std::string());
+                d.xtlid = uint32_t((*e)["xtlid"].value_or(int64_t(0)));
             }
             f.data[std::string(k.str())] = d;
         }
@@ -382,21 +388,6 @@ bool LoadConfig(const fs::path& p, Config& cfg) {
 
 std::string Plain(std::string n) {
     if (auto i = n.find("::"); i != std::string::npos) n = n.substr(i + 2);
-    return n;
-}
-
-// XbSymbolDatabase revision suffixes (__r2, _8) dropped when matching runtime names
-std::string Base(const std::string& n, const std::set<std::string>& names) {
-    if (names.count(n)) return n;
-    auto u = n.find_last_of('_');
-    if (u != std::string::npos && u + 1 < n.size()) {
-        std::string tail = n.substr(u + 1), head = n.substr(0, u);
-        if (tail[0] == 'r' && tail.size() > 1) tail = tail.substr(1);
-        if (std::all_of(tail.begin(), tail.end(), [](char c) { return std::isdigit(uint8_t(c)); })) {
-            if (head.size() > 1 && head.back() == '_') head.pop_back();
-            if (names.count(head)) return head;
-        }
-    }
     return n;
 }
 
@@ -469,30 +460,11 @@ int Sign(const fs::path& out, const std::vector<fs::path>& configs, const std::s
         }
         rank(sf.symbols, fresh);
 
-        // how XbSymbolDatabase, whose output the [functions] names are, names these addresses
-        std::set<std::string> all = sf.names;
-        for (auto& [dn, dva] : cfg.data) all.insert(dn);
-        std::map<std::string, std::vector<uint32_t>> xnames;
-        for (auto& [va, fn] : cfg.functions) xnames[Base(Plain(fn), all)].push_back(va);
-        auto xbsdb = [&](const std::string& n, uint32_t va, std::string& out) {
-            if (!va || !out.empty()) return;
-            if (cfg.functions.count(va)) {
-                std::string x = Plain(cfg.functions[va]);
-                if (Base(x, all) != n) out = x;
-            } else if (xnames.count(n)) {
-                out = "-";
-            }
-        };
-        for (auto& [n, va] : cfg.symbols)
-            if (!skip.count(n)) xbsdb(n, va, sf.symbols[n].xbsdb);
-        for (auto& [dn, dva] : cfg.data)
-            if (!skip.count(dn)) xbsdb(dn, dva, sf.data[dn].xbsdb);
-
         // data: the first unique signed function using the address, then a named library function, then any
         // function called outside .text (game code there would not carry over)
         std::map<std::string, uint32_t> anchor_at;
         for (auto& [dn, dva] : cfg.data) {
-            if (skip.count(dn) || !sf.data[dn].in.empty() || !dva) continue;
+            if (skip.count(dn) || !sf.data[dn].in.empty() || sf.data[dn].xtlid || !dva) continue;
             std::vector<std::pair<std::string, uint32_t>> order;
             for (auto& [n, va] : fresh)
                 if (sf.symbols[n].count == 1) order.push_back({n, va});
@@ -506,9 +478,9 @@ int Sign(const fs::path& out, const std::vector<fs::path>& configs, const std::s
                 std::optional<DataRef> ref;
                 img.Walk(va, len, [&](uint32_t, uint32_t i, const ZydisDecodedInstruction& in) {
                     if (ref) return;
-                    if (in.raw.disp.size == 32 && uint32_t(in.raw.disp.value) == dva) ref = DataRef{n, i, false, {}};
+                    if (in.raw.disp.size == 32 && uint32_t(in.raw.disp.value) == dva) ref = DataRef{n, i, false};
                     for (auto& im : in.raw.imm)
-                        if (!ref && im.size == 32 && !im.is_relative && uint32_t(im.value.u) == dva) ref = DataRef{n, i, true, {}};
+                        if (!ref && im.size == 32 && !im.is_relative && uint32_t(im.value.u) == dva) ref = DataRef{n, i, true};
                 });
                 if (!ref) continue;
                 if (!is_sym) {
@@ -521,11 +493,12 @@ int Sign(const fs::path& out, const std::vector<fs::path>& configs, const std::s
                         continue;
                     }
                 }
-                ref->xbsdb = sf.data[dn].xbsdb;
                 sf.data[dn] = *ref;
                 break;
             }
-            if (sf.data[dn].in.empty()) std::fprintf(stderr, "%s: no function uses %s\n", cp.filename().string().c_str(), dn.c_str());
+            for (auto& [id, va] : img.Exports())
+                if (sf.data[dn].in.empty() && va == dva) sf.data[dn].xtlid = id;
+            if (sf.data[dn].in.empty() && !sf.data[dn].xtlid) std::fprintf(stderr, "%s: no function uses %s\n", cp.filename().string().c_str(), dn.c_str());
         }
     }
 
@@ -535,16 +508,18 @@ int Sign(const fs::path& out, const std::vector<fs::path>& configs, const std::s
         "# section sec, image addresses and rel32 targets masked; calls = [len, hash, calls] of each rel32 call or\n"
         "# jump target outside it, in order, two levels deep; deep = lookalikes exist, so the callees' callees must\n"
         "# match too; count and nth pick one of identical functions by link order. {} = no signature, stays 0.\n"
-        "# [anchors] functions only used to find data. [data] in = function, insn = instruction index, op = operand.\n";
+        "# [anchors] functions only used to find data. [data] in = function, insn = instruction index, op = operand,\n"
+        "# xtlid = the id .XTLID lists the address under, used when in finds nothing.\n";
     s += "\n[symbols]\n";
     for (auto& n : sf.names) s += n + " = " + WriteSig(sf.symbols[n]) + "\n";
     s += "\n[anchors]\n";
     for (auto& [n, sig] : sf.anchors) s += n + " = " + WriteSig(sig) + "\n";
     s += "\n[data]\n";
     for (auto& [n, d] : sf.data) {
-        std::string e = d.xbsdb.empty() ? "" : "xbsdb = \"" + d.xbsdb + "\"";
+        std::string e;
         if (!d.in.empty())
-            e += (e.empty() ? "" : ", ") + std::string("in = \"") + d.in + "\", insn = " + std::to_string(d.insn) + ", op = \"" + (d.imm ? "imm" : "disp") + "\"";
+            e = std::string("in = \"") + d.in + "\", insn = " + std::to_string(d.insn) + ", op = \"" + (d.imm ? "imm" : "disp") + "\"";
+        if (d.xtlid) e += (e.empty() ? "" : ", ") + std::string("xtlid = ") + Hex(d.xtlid);
         s += n + " = {" + e + "}\n";
     }
     std::ofstream(out, std::ios::binary) << s;
@@ -570,35 +545,6 @@ std::vector<std::string> GuessCode(const xbe::Image& x) {
     return r;
 }
 
-struct XbsdbEntry {
-    std::string lib, name;
-    bool var = false;
-};
-
-// XbSymbolDatabaseCLI stdout: LIB__Name = 0x..., extended: LIB__VAR__Name, LIB__FUN__conv__Name(params), LIB__UNK__Name
-std::map<uint32_t, XbsdbEntry> ReadXbsdb(const fs::path& p) {
-    std::map<uint32_t, XbsdbEntry> r;
-    std::ifstream f(p);
-    for (std::string line; std::getline(f, line);) {
-        auto eq = line.find(" = 0x");
-        auto sep = line.find("__");
-        if (eq == std::string::npos || sep == std::string::npos || sep > eq) continue;
-        XbsdbEntry e;
-        e.lib = line.substr(0, sep);
-        std::string rest = line.substr(sep + 2, eq - sep - 2);
-        rest = rest.substr(0, rest.find('('));
-        for (const char* k : {"VAR__", "FUN__", "UNK__"})
-            if (rest.rfind(k, 0) == 0) {
-                e.var = k[0] == 'V';
-                rest = rest.substr(5);
-                if (k[0] == 'F' && rest.find("__") != std::string::npos) rest = rest.substr(rest.find("__") + 2);
-            }
-        e.name = rest;
-        r[uint32_t(std::stoul(line.substr(eq + 3), nullptr, 16))] = e;
-    }
-    return r;
-}
-
 std::string Table(const std::map<std::string, uint32_t>& m) {
     std::vector<std::string> keys;
     size_t w = 0;
@@ -613,7 +559,7 @@ std::string Table(const std::map<std::string, uint32_t>& m) {
     return s;
 }
 
-int Scan(const fs::path& xbe_path, const fs::path& xdk, const fs::path& out, const fs::path& xbsdb, const std::string& name) {
+int Scan(const fs::path& xbe_path, const fs::path& xdk, const fs::path& out, const std::string& name) {
     Image img;
     if (!img.Load(xbe_path)) return 1;
     auto& x = img.x;
@@ -688,33 +634,10 @@ int Scan(const fs::path& xbe_path, const fs::path& xdk, const fs::path& out, con
         data[k] = 0;
         auto sig = sf.symbols.count(d.in) ? &sf.symbols[d.in] : sf.anchors.count(d.in) ? &sf.anchors[d.in] : nullptr;
         if (sig && found.count(d.in)) data[k] = img.Operand(found[d.in], sig->len, d).value_or(0);
+        for (auto& [id, va] : img.Exports())
+            if (!data[k] && d.xtlid && id == d.xtlid) data[k] = va;
     }
 
-    std::map<uint32_t, std::string> functions;
-    if (!xbsdb.empty()) {
-        std::set<std::string> names = sf.names;
-        std::map<std::string, std::string> alias;
-        for (auto& [k, s] : sf.symbols)
-            if (!s.xbsdb.empty()) alias[s.xbsdb] = k;
-        for (auto& [k, d] : sf.data) {
-            names.insert(k);
-            if (!d.xbsdb.empty()) alias[d.xbsdb] = k;
-        }
-        for (auto& [va, e] : ReadXbsdb(xbsdb)) {
-            std::string b = alias.count(e.name) ? alias[e.name] : Base(e.name, names);
-            auto* m = symbols.count(b) ? &symbols : data.count(b) ? &data : nullptr;
-            if (m == &symbols && sf.symbols[b].xbsdb == "-" && !alias.count(e.name)) m = nullptr;
-            if (m && !(*m)[b]) {
-                (*m)[b] = va;
-                report.push_back("  " + b + " from XbSymbolDatabase");
-            } else if (m && (*m)[b] != va) {
-                report.push_back("  " + b + ": XbSymbolDatabase says " + Hex(va) + ", signature " + Hex((*m)[b]));
-            }
-            auto s = x.SectionAt(va);
-            if (!e.var && s && std::find(sections.begin(), sections.end(), s->name) != sections.end())
-                functions[va] = e.lib + "::" + e.name;
-        }
-    }
     size_t fs_ = 0, ds = 0;
     std::string miss;
     for (auto& [k, va] : symbols) fs_ += va != 0, miss += va ? "" : " " + k;
@@ -737,7 +660,6 @@ int Scan(const fs::path& xbe_path, const fs::path& xdk, const fs::path& out, con
     s += "code_sections = [";
     for (size_t i = 0; i < sections.size(); i++) s += (i ? ", \"" : "\"") + sections[i] + "\"";
     s += "]\n\n# extra entry points\n[functions]\n";
-    for (auto& [va, f] : functions) s += Hex(va) + " = \"" + f + "\"\n";
     s += "\n# functions the host replaces or calls by name, 0 where the image has none\n[symbols]\n" + Table(symbols);
     s += "\n[data]\n" + Table(data);
     if (out.empty()) std::fwrite(s.data(), 1, s.size(), stdout);
@@ -756,7 +678,7 @@ int main(int argc, char** argv) {
         a.erase(it, it + 2);
         return v;
     };
-    std::string out = opt("--out"), xbsdb = opt("--xbsdb"), name = opt("--name"), skip = opt("--skip");
+    std::string out = opt("--out"), name = opt("--name"), skip = opt("--skip");
     if (!a.empty() && a[0] == "--sign" && a.size() >= 2 && !out.empty()) {
         std::set<std::string> sk;
         for (size_t p = 0; !skip.empty() && p != std::string::npos;) {
@@ -768,9 +690,9 @@ int main(int argc, char** argv) {
     }
     if (a.size() != 2) {
         std::fprintf(stderr,
-                     "usage: xbe_symbols <game.xbe> <sdk>/xdk [--out config/game.toml] [--name game] [--xbsdb symbols.txt]\n"
+                     "usage: xbe_symbols <game.xbe> <sdk>/xdk [--out config/game.toml] [--name game]\n"
                      "       xbe_symbols --sign <config.toml>... --out signatures.toml [--skip name,...]\n");
         return 1;
     }
-    return Scan(a[0], a[1], out, xbsdb, name.empty() ? "game" : name);
+    return Scan(a[0], a[1], out, name.empty() ? "game" : name);
 }

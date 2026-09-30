@@ -12,7 +12,7 @@ Addresses are in default.xbe. sc4_adv.xbe links the same 5849 libraries.
 
 ## Lazy texture mode fixup
 
-The lazy state routine (XbSymbolDatabase names it D3D_LazySetPointParams, 0x4A4480; 0x4A4840 is inside it) builds the shader stage program (method 0x1E70, pushed at 0x4A4959). With a pixel shader set it takes the definition's PSTextureModes (kept at device +0x790 by SetPixelShader, 0x4A5D95) and fixes each stage's mode from the stage's texture word at device +0xC + 4 * stage, 0x4A4756 to 0x4A494B:
+The lazy state routine at 0x4A4480 (0x4A4840 is inside it, per the disassembly of default.xbe) builds the shader stage program (method 0x1E70, pushed at 0x4A4959). With a pixel shader set it takes the definition's PSTextureModes (kept at device +0x790 by SetPixelShader, 0x4A5D95) and fixes each stage's mode from the stage's texture word at device +0xC + 4 * stage, 0x4A4756 to 0x4A494B:
 
 - sign bit set (observed as no texture bound): modes other than 4, 5, 0xA, 0x11 become 0 (0x4A47EF to 0x4A4803)
 - modes 1 to 3: cube bit (`test dl, 4`) gives 3, bit 30 or format class 0x30 gives 2, else 1 (0x4A4807 to 0x4A4837)

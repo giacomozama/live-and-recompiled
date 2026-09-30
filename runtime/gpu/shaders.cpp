@@ -2,6 +2,7 @@
 #include "gpu/vertex.h"
 
 #include <algorithm>
+#include <bit>
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
@@ -103,7 +104,7 @@ struct Tok {
 };
 
 const char* kMask[16] = {"", "w", "z", "zw", "y", "yw", "yz", "yzw", "x", "xw", "xz", "xzw", "xy", "xyw", "xyz", "xyzw"};
-const char* kFogMask[16] = {"", "x", "x", "xy", "x", "xy", "xy", "xyz", "x", "xy", "xy", "xyz", "xy", "xyz", "xyz", "xyzw"};
+const char* kLanes[5] = {"", "x", "xy", "xyz", "xyzw"};  // oFog takes one lane per mask bit, from x
 const char* kOut[16] = {"oPos", "", "", "oD0", "oD1", "oFog", "oPts", "oB0", "oB1", "oT0", "oT1", "oT2", "oT3", "", "", ""};
 
 // operand A 0, B 1, C 2
@@ -637,7 +638,7 @@ std::string VertexProgramHlsl(const std::vector<uint32_t>& prog, uint16_t regs, 
                 uint32_t o = k.f(3, 3, 8) & 0xF;
                 const char* src = use_ilu ? "ir" : "mr";
                 if (kOut[o][0]) {
-                    const char* msk = o == 5 ? kFogMask[omask] : kMask[omask];
+                    const char* msk = o == 5 ? kLanes[std::popcount(omask)] : kMask[omask];
                     s += F("        %s.%s = %s.%s;\n", kOut[o], msk, src, msk);
                 }
             }

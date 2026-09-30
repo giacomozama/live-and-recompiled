@@ -46,11 +46,9 @@ echo [2/3] XDK symbols
 cmake --preset release >nul || goto :fail
 findstr /b /l /c:"[symbols]" config\game.toml >nul && echo       config\game.toml already written && goto :game
 cmake --build out\build\release --target xbe_symbols >nul || goto :fail
-set XBSDB=
-where XbSymbolDatabaseCLI >nul 2>nul && XbSymbolDatabaseCLI -e assets\%GAME_XBE% > out\xbsdb.txt && set "XBSDB=--xbsdb out\xbsdb.txt"
 set "SDK=sdk"
 if not exist sdk\xdk set "SDK=..\.."
-"%OUT%\xbe_symbols.exe" assets\%GAME_XBE% %SDK%\xdk --out config\game.toml %XBSDB% || goto :fail
+"%OUT%\xbe_symbols.exe" assets\%GAME_XBE% %SDK%\xdk --out config\game.toml || goto :fail
 
 rem ---------------------------------------------------------------- game
 :game

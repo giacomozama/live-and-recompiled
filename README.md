@@ -22,9 +22,9 @@ This tool was used to create: https://github.com/TGP482/SCDoubleAgent-XBERecomp
 2. Put the game's XBE and its data folders in the `assets` folder. No game files, keys or generated code belong in any repository.
 3. Run `xbe_symbols`, which `build.bat` does on the first build:
    ```
-   xbe_symbols assets\default.xbe sdk\xdk --out config\game.toml [--xbsdb symbols.txt]
+   xbe_symbols assets\default.xbe sdk\xdk --out config\game.toml
    ```
-   It prints the XBE's library versions, picks `xdk/<build>/signatures.toml` and finds the XDK functions and data the host replaces, then writes the config: `[xbe]` with a partition count and the code sections, the `layout.toml` include, `[symbols]` and `[data]`. Misses and ambiguous names are listed and left at 0, which become trapping stubs. `--xbsdb` takes the output of `XbSymbolDatabaseCLI -e <xbe>`: its names fill misses and its functions become extra entry points. `build.bat` runs it when `XbSymbolDatabaseCLI` is on PATH; the SDK only calls that tool and holds none of its data.
+   It prints the XBE's library versions, picks `xdk/<build>/signatures.toml` and finds the XDK functions and data the host replaces, then writes the config: `[xbe]` with a partition count and the code sections, the `layout.toml` include, `[symbols]` and `[data]`. Misses and ambiguous names are listed and left at 0, which become trapping stubs. It stops when no `signatures.toml` exists for the XBE's build.
 4. Fill in `app::kGame` in `src/common/game_info.cpp`: title, window name, log and settings file names, splash, the xbe to exe table, game options, and the hooks for loading, the window, drawing and the pads.
 5. Game hooks go in `src/game`. Define `X86_FUNC(sub_XXXXXXXX)` to replace a recompiled function, and call `__imp__sub_XXXXXXXX` to reach the original. `python sdk/tools/symbols/xbe2pe.py config/game.toml game.exe` writes a flat PE with the recompiled functions as exports for Ghidra.
 6. Run `build.bat`. One game repo can build several images, one config and `add_xbe_image` each; `--name` sets the config's `generated/<name>`, which is the folder argument of `add_xbe_image`.
@@ -72,4 +72,3 @@ A new XDK build needs `xdk/<build>/layout.toml` and signatures made from titles 
 - [XenonRecomp](https://github.com/hedge-dev/XenonRecomp) for the recompiled function layout this follows.
 - [Zydis](https://github.com/zyantific/zydis), [toml++](https://github.com/marzer/tomlplusplus) and [Dear ImGui](https://github.com/ocornut/imgui).
 - [xemu](https://github.com/xemu-project/xemu) and [Cxbx-Reloaded](https://github.com/Cxbx-Reloaded/Cxbx-Reloaded), read for hardware and API behaviour.
-- [XbSymbolDatabase](https://github.com/Cxbx-Reloaded/XbSymbolDatabase) for finding XDK functions in retail XBEs.
