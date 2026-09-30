@@ -3,6 +3,7 @@
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <optional>
 
 #include "analysis.h"
 #include "codegen.h"
@@ -11,6 +12,38 @@ namespace fs = std::filesystem;
 
 static uint32_t ParseAddr(std::string_view s) { return uint32_t(std::stoul(std::string(s), nullptr, 0)); }
 
+static std::optional<int64_t> Num(const toml::table* t, const char* key) {
+    return t ? (*t)[key].value<int64_t>() : std::nullopt;
+}
+
+// "ret" or an address, as a number or a string
+static bool ParseExit(const toml::node* n, Hook::Exit& e) {
+    if (!n) return true;
+    e.set = true;
+    if (auto i = n->value<int64_t>()) {
+        e.to = uint32_t(*i);
+        return true;
+    }
+    auto s = n->value<std::string>();
+    if (!s) return false;
+    if (*s == "ret") {
+        e.ret = true;
+        return true;
+    }
+    try {
+        e.to = ParseAddr(*s);
+    } catch (...) {
+        return false;
+    }
+    return true;
+}
+
+// Keys beyond [xbe], [functions], [symbols], [data] and [layout]:
+//   [xbe] data_ranges = [[lo, hi], ...]  bytes in code sections that are never code, hi exclusive
+//   [[hook]] at, call, after, on_true, on_false  call a host function before or after a guest instruction;
+//     on_true/on_false make it return bool and name "ret" or an instruction of the same function to jump to
+//   [[function]] at, end  an entry decoded no further than end (exclusive); it also stops other walks
+//   [[switch]] at, targets  the targets of an indirect jmp, replacing table detection
 static bool LoadConfig(const fs::path& path, Config& cfg) {
     toml::table t;
     try {
@@ -49,9 +82,70 @@ static bool LoadConfig(const fs::path& path, Config& cfg) {
     if (auto f = t["layout"].as_table())
         for (auto& [k, v] : *f)
             if (auto i = v.value<int64_t>()) cfg.layout[std::string(k.str())] = uint32_t(*i);
+    auto bad = [&](const char* key) {
+        std::fprintf(stderr, "%s: bad [[%s]] entry\n", path.string().c_str(), key);
+        return false;
+    };
+    if (auto a = t["hook"].as_array())
+        for (auto& e : *a) {
+            auto h = e.as_table();
+            auto at = Num(h, "at");
+            auto call = h ? (*h)["call"].value<std::string>() : std::nullopt;
+            Hook k;
+            if (!at || !call || !ParseExit(h->get("on_true"), k.on_true) || !ParseExit(h->get("on_false"), k.on_false))
+                return bad("hook");
+            k.at = uint32_t(*at);
+            k.call = *call;
+            k.after = (*h)["after"].value_or(false);
+            cfg.hooks.emplace(k.at, k);
+        }
+    if (auto a = t["function"].as_array())
+        for (auto& e : *a) {
+            auto at = Num(e.as_table(), "at");
+            if (!at) return bad("function");
+            cfg.functions.emplace(uint32_t(*at), "");
+            cfg.function_ends[uint32_t(*at)] = uint32_t(Num(e.as_table(), "end").value_or(0));
+        }
+    if (auto a = t["switch"].as_array())
+        for (auto& e : *a) {
+            auto h = e.as_table();
+            auto at = Num(h, "at");
+            auto ts = h ? (*h)["targets"].as_array() : nullptr;
+            if (!at || !ts || ts->empty()) return bad("switch");
+            auto& v = cfg.switches[uint32_t(*at)];
+            v.clear();
+            for (auto& x : *ts) {
+                auto i = x.value<int64_t>();
+                if (!i) return bad("switch");
+                v.push_back(uint32_t(*i));
+            }
+        }
     for (auto& [name, va] : cfg.symbols)
         if (va) cfg.functions.emplace(va, name);
     return true;
+}
+
+// overrides that analysis could not apply are config mistakes
+static bool CheckOverrides(const Analysis& an) {
+    bool ok = true;
+    for (auto& [at, end] : an.cfg.function_ends)
+        if (!an.functions.count(at) || (end && end <= at)) {
+            std::fprintf(stderr, "[[function]] %08X: not decodable code or end not above it\n", at);
+            ok = false;
+        }
+    for (auto& [at, targets] : an.cfg.switches) {
+        const Insn* i = an.InsnAt(at);
+        if (!i || i->flow != Flow::JmpIndirect) {
+            std::fprintf(stderr, "[[switch]] %08X: not a decoded indirect jmp\n", at);
+            ok = false;
+        }
+        for (uint32_t t : targets)
+            if (!an.InsnAt(t)) {
+                std::fprintf(stderr, "[[switch]] %08X: target %08X is not a decoded instruction\n", at, t);
+                ok = false;
+            }
+    }
+    return ok;
 }
 
 int main(int argc, char** argv) {
@@ -83,6 +177,7 @@ int main(int argc, char** argv) {
 
     Analysis an(img, cfg);
     an.Run();
+    if (!CheckOverrides(an)) return 1;
     fs::create_directories(out_dir);
     CodeGen gen(an, out_dir);
     return gen.Run() ? 0 : 1;

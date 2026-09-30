@@ -39,6 +39,8 @@ A new XDK build needs `xdk/<build>/layout.toml` and signatures made from titles 
 - **C++ Exceptions** - MSVC FuncInfo thunks and catch funclet continuations.
 - **x87, SSE and MMX** - Dynamic top of stack x87, SSE and MMX, CPUID probe flags.
 - **Overridable Output** - Every function is a weak `sub_X` over `__imp__sub_X`, so the host replaces any of them without editing generated code.
+- **Instruction Hooks** - `[[hook]]` calls a game defined function before or after any guest instruction, with guest flags kept in `ctx`; a bool hook can return from the function or jump within it.
+- **Analysis Overrides** - `[[function]]` adds an entry with an optional decode end, `[[switch]]` sets the targets of an indirect jmp and `[xbe] data_ranges` marks bytes that are never code.
 - **Incremental** - Generated files are only rewritten when their content changes.
 - **XDK Signatures** - `xbe_symbols` finds the XDK functions and data of a new title by masked hashes and writes its config.
 

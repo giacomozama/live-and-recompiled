@@ -10,6 +10,18 @@
 
 #include "xbe/xbe.h"
 
+struct Hook {
+    struct Exit {
+        bool set = false, ret = false;
+        uint32_t to = 0;
+    };
+    uint32_t at = 0;
+    std::string call;
+    bool after = false;
+    Exit on_true, on_false;
+    bool Returns() const { return on_true.set || on_false.set; }
+};
+
 struct Config {
     std::string xbe_path;
     std::string out_dir;
@@ -24,6 +36,9 @@ struct Config {
     std::vector<std::pair<uint32_t, uint32_t>> data_ranges;  // data inside code sections
     bool gap_fill = true;
     bool pointer_seeds = true;
+    std::multimap<uint32_t, Hook> hooks;
+    std::map<uint32_t, uint32_t> function_ends;          // declared entries, exclusive decode limit or 0
+    std::map<uint32_t, std::vector<uint32_t>> switches;  // indirect jmp to its targets
 };
 
 enum class Flow : uint8_t { Normal, Jcc, Jmp, JmpIndirect, Call, CallIndirect, Ret, Stop, Invalid };

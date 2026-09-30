@@ -175,6 +175,8 @@ bool Analysis::Walk(uint32_t entry, bool trusted, std::vector<uint32_t>* calls) 
     std::vector<JumpTable> tables;
     std::vector<uint32_t> found_calls;
     std::vector<uint32_t> work{entry};
+    uint32_t stop = 0;
+    if (auto e = cfg.function_ends.find(entry); e != cfg.function_ends.end()) stop = e->second;
     auto conflict = [&](uint32_t va, uint32_t len) {
         for (uint32_t i = 0; i < len; i++) {
             uint32_t a = va + i;
@@ -191,6 +193,7 @@ bool Analysis::Walk(uint32_t entry, bool trusted, std::vector<uint32_t>* calls) 
         int nring = 0;
         for (;;) {
             if (insns_.count(va) || seen.count(va)) break;
+            if ((va != entry && cfg.function_ends.count(va)) || (stop && va >= stop)) break;
             if (!IsCode(va)) {
                 if (trusted) break;
                 return false;
@@ -209,6 +212,7 @@ bool Analysis::Walk(uint32_t entry, bool trusted, std::vector<uint32_t>* calls) 
                 seen[va] = 1;
                 break;
             }
+            if (stop && va + insn.len > stop) break;
             if (conflict(va, insn.len)) {
                 // real control flow wins over a guessed entry decoded across these bytes: both decodes are kept
                 bool data = false;
@@ -235,7 +239,11 @@ bool Analysis::Walk(uint32_t entry, bool trusted, std::vector<uint32_t>* calls) 
                 work.push_back(insn.target);
                 break;
             } else if (insn.flow == Flow::JmpIndirect) {
-                if (jt.targets.empty() && SledTable(va, ring, nring, jt)) {
+                if (auto s = cfg.switches.find(va); s != cfg.switches.end()) {
+                    jt = JumpTable{va, 0, s->second, {}};
+                    for (uint32_t t : jt.targets) work.push_back(t);
+                    tables.push_back(jt);
+                } else if (jt.targets.empty() && SledTable(va, ring, nring, jt)) {
                     for (uint32_t t : jt.targets) work.push_back(t);
                     tables.push_back(jt);
                 } else if (!jt.targets.empty()) {
@@ -599,6 +607,8 @@ std::vector<uint32_t> Analysis::Body(uint32_t entry) const {
     std::vector<uint32_t> out;
     std::set<uint32_t> seen;
     std::vector<uint32_t> work{entry};
+    uint32_t stop = 0;
+    if (auto e = cfg.function_ends.find(entry); e != cfg.function_ends.end()) stop = e->second;
     while (!work.empty()) {
         uint32_t va = work.back();
         work.pop_back();
@@ -606,6 +616,7 @@ std::vector<uint32_t> Analysis::Body(uint32_t entry) const {
         if (va != entry && functions.count(va)) continue;
         auto it = insns_.find(va);
         if (it == insns_.end()) continue;
+        if (stop && va + it->second.len > stop) continue;
         seen.insert(va);
         out.push_back(va);
         const Insn& in = it->second;

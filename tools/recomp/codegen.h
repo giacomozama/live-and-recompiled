@@ -18,6 +18,9 @@ private:
     };
 
     std::string EmitFunction(uint32_t entry);
+    bool CheckHooks(const std::vector<uint32_t>& funcs) const;
+    int RetBytes(const std::vector<uint32_t>& body) const;  // the one ret n of a body, or -1
+    void EmitHooks(uint32_t va, bool after);
     void EmitInsn(uint32_t va, const ZydisDecodedInstruction& in, const ZydisDecodedOperand* ops, uint32_t next_body);
 
     // operand helpers
@@ -58,4 +61,5 @@ private:
     } pending_;
     std::map<std::string, size_t> unimpl_;
     size_t insn_count_ = 0;
+    int ret_bytes_ = -1;
 };

@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <cctype>
 #include <cstdarg>
 #include <cstdio>
 #include <fstream>
@@ -54,6 +55,13 @@ std::string CodeGen::EmitFunction(uint32_t entry) {
         bool falls = in->flow == Flow::Normal || in->flow == Flow::Call || in->flow == Flow::CallIndirect || in->flow == Flow::Jcc;
         if (falls && (i + 1 >= body.size() || body[i + 1] != next)) targets.insert(next);
     }
+    if (!an_.cfg.hooks.empty()) {
+        ret_bytes_ = RetBytes(body);
+        for (uint32_t va : body)
+            for (auto [it, e] = an_.cfg.hooks.equal_range(va); it != e; ++it)
+                for (auto* x : {&it->second.on_true, &it->second.on_false})
+                    if (x->set && !x->ret) targets.insert(x->to);
+    }
     body_.clear();
     if (body.empty()) Line(F("\tx86_trap(ctx, 0x%X, \"function was not decoded\");", entry));
     for (size_t i = 0; i < body.size(); i++) {
@@ -62,6 +70,7 @@ std::string CodeGen::EmitFunction(uint32_t entry) {
             Line(F("loc_%08X:", va));
             pending_.valid = false;
         }
+        if (!an_.cfg.hooks.empty()) EmitHooks(va, false);
         const Insn* info = an_.InsnAt(va);
         ZydisDecodedInstruction in;
         ZydisDecodedOperand ops[ZYDIS_MAX_OPERAND_COUNT];
@@ -73,6 +82,7 @@ std::string CodeGen::EmitFunction(uint32_t entry) {
         Line("\t// " + F("%08X ", va) + Text(va, in, ops));
         uint32_t next_body = i + 1 < body.size() ? body[i + 1] : 0;
         EmitInsn(va, in, ops, next_body);
+        if (!an_.cfg.hooks.empty()) EmitHooks(va, true);
         bool falls = info->flow == Flow::Normal || info->flow == Flow::Call || info->flow == Flow::CallIndirect ||
                      info->flow == Flow::Jcc;
         uint32_t next = va + info->len;
@@ -109,9 +119,85 @@ std::string CodeGen::EmitFunction(uint32_t entry) {
     return out;
 }
 
+int CodeGen::RetBytes(const std::vector<uint32_t>& body) const {
+    int n = -1;
+    for (uint32_t va : body) {
+        const Insn* i = an_.InsnAt(va);
+        ZydisDecodedInstruction in;
+        ZydisDecodedOperand ops[ZYDIS_MAX_OPERAND_COUNT];
+        if (!i || i->flow != Flow::Ret) continue;
+        if (!an_.Decode(va, in, ops)) return -1;
+        int k = in.operand_count_visible && ops[0].type == ZYDIS_OPERAND_TYPE_IMMEDIATE ? int(ops[0].imm.value.u) : 0;
+        if (n >= 0 && n != k) return -1;
+        n = k;
+    }
+    return n;
+}
+
+bool CodeGen::CheckHooks(const std::vector<uint32_t>& funcs) const {
+    bool ok = true;
+    auto fail = [&](const Hook& h, uint32_t f, const char* why) {
+        std::fprintf(stderr, "[[hook]] %s at %08X%s: %s\n", h.call.c_str(), h.at, f ? F(" in %s", FuncName(f).c_str()).c_str() : "",
+                     why);
+        ok = false;
+    };
+    std::set<uint32_t> placed;
+    for (uint32_t f : funcs) {
+        std::vector<uint32_t> body = an_.Body(f);
+        std::set<uint32_t> in(body.begin(), body.end());
+        for (uint32_t va : body)
+            for (auto [it, e] = an_.cfg.hooks.equal_range(va); it != e; ++it) {
+                const Hook& h = it->second;
+                Flow flow = an_.InsnAt(va)->flow;
+                placed.insert(va);
+                if (h.after && flow != Flow::Normal && flow != Flow::Call && flow != Flow::CallIndirect)
+                    fail(h, f, "after = true on a control transfer");
+                for (auto* x : {&h.on_true, &h.on_false}) {
+                    if (x->ret && RetBytes(body) < 0)
+                        fail(h, f, "\"ret\" needs a function with one ret form, name an address instead");
+                    if (x->set && !x->ret && !in.count(x->to)) fail(h, f, "jump target is not an instruction of the function");
+                }
+            }
+    }
+    std::map<std::string, bool> kind;
+    for (auto& [va, h] : an_.cfg.hooks) {
+        if (!placed.count(va)) fail(h, 0, "not an instruction in a recompiled function");
+        bool ident = !h.call.empty() && !std::isdigit((unsigned char)h.call[0]);
+        for (char c : h.call) ident &= std::isalnum((unsigned char)c) || c == '_';
+        if (!ident) fail(h, 0, "call is not an identifier");
+        if (auto [k, fresh] = kind.emplace(h.call, h.Returns()); !fresh && k->second != h.Returns())
+            fail(h, 0, "call used both with and without on_true/on_false");
+    }
+    return ok;
+}
+
+// the hook sees guest flags in ctx and may change them, so they are stored before and reloaded after
+void CodeGen::EmitHooks(uint32_t va, bool after) {
+    for (auto [it, e] = an_.cfg.hooks.equal_range(va); it != e; ++it) {
+        const Hook& h = it->second;
+        if (h.after != after) continue;
+        auto leave = [&](const Hook::Exit& x) {
+            if (x.ret) return F("ctx.esp += %d; return;", 4 + ret_bytes_);
+            return (x.to <= va ? std::string("X86_BARRIER(); ") : std::string()) + Target(x.to);
+        };
+        Line("\tX86_SAVE_FLAGS();");
+        std::string reload = "cf = ctx.cf; zf = ctx.zf; sf = ctx.sf; of = ctx.of; pf = ctx.pf;";
+        if (!h.Returns()) {
+            Line(F("\t%s(ctx, base); %s", h.call.c_str(), reload.c_str()));
+        } else {
+            std::string s = F("\t{ bool hook = %s(ctx, base); %s", h.call.c_str(), reload.c_str());
+            if (h.on_true.set) s += " if (hook) { " + leave(h.on_true) + " }";
+            if (h.on_false.set) s += (h.on_true.set ? " else { " : " if (!hook) { ") + leave(h.on_false) + " }";
+            Line(s + " }");
+        }
+        pending_.valid = false;
+    }
+}
+
 bool CodeGen::Run() {
     std::vector<uint32_t> funcs(an_.functions.begin(), an_.functions.end());
     std::sort(funcs.begin(), funcs.end());
+    if (!an_.cfg.hooks.empty() && !CheckHooks(funcs)) return false;
 
     // symbols the host binds to by name; one missing from this image gets a placeholder address whose
     // recompiled body traps, so the host override still links
@@ -131,6 +217,9 @@ bool CodeGen::Run() {
     std::string shared = "#pragma once\n#include \"cpu/x86_ops.h\"\n\n";
     for (uint32_t f : funcs) shared += F("X86_EXTERN_FUNC(%s);\n", FuncName(f).c_str());
     for (uint32_t f : absent) shared += F("X86_EXTERN_FUNC(%s);\n", FuncName(f).c_str());
+    std::map<std::string, bool> hooks;
+    for (auto& [va, h] : an_.cfg.hooks) hooks.emplace(h.call, h.Returns());
+    for (auto& [name, returns] : hooks) shared += F("%s %s(X86Context& ctx, uint8_t* base);\n", returns ? "bool" : "void", name.c_str());
     WriteIfChanged(out_ / "x86_recomp_shared.h", shared);
 
     // partition by instruction count so the files compile in similar time
