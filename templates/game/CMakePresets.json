@@ -3,7 +3,7 @@
     "cmakeMinimumRequired": {"major": 3, "minor": 25, "patch": 0},
     "configurePresets": [
         {
-            "name": "windows-base",
+            "name": "base",
             "hidden": true,
             "generator": "Ninja",
             "binaryDir": "${sourceDir}/out/build/${presetName}",
@@ -15,16 +15,16 @@
             },
             "condition": {"type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows"}
         },
-        {"name": "win-amd64-debug", "displayName": "Windows AMD64 Debug", "inherits": "windows-base",
+        {"name": "debug", "displayName": "Debug", "inherits": "base",
          "cacheVariables": {"CMAKE_BUILD_TYPE": "Debug"}},
-        {"name": "win-amd64-release", "displayName": "Windows AMD64 Release", "inherits": "windows-base",
+        {"name": "release", "displayName": "Release", "inherits": "base",
          "cacheVariables": {"CMAKE_BUILD_TYPE": "Release"}},
-        {"name": "win-amd64-relwithdebinfo", "displayName": "Windows AMD64 RelWithDebInfo", "inherits": "windows-base",
+        {"name": "relwithdebinfo", "displayName": "RelWithDebInfo", "inherits": "base",
          "cacheVariables": {"CMAKE_BUILD_TYPE": "RelWithDebInfo"}}
     ],
     "buildPresets": [
-        {"name": "win-amd64-debug", "configurePreset": "win-amd64-debug"},
-        {"name": "win-amd64-release", "configurePreset": "win-amd64-release"},
-        {"name": "win-amd64-relwithdebinfo", "configurePreset": "win-amd64-relwithdebinfo"}
+        {"name": "debug", "configurePreset": "debug"},
+        {"name": "release", "configurePreset": "release"},
+        {"name": "relwithdebinfo", "configurePreset": "relwithdebinfo"}
     ]
 }

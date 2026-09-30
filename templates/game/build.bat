@@ -13,7 +13,7 @@ echo.
 set "PF86=%ProgramFiles(x86)%"
 set "VSINST=%PF86%\Microsoft Visual Studio\Installer"
 set "VSWHERE=%VSINST%\vswhere.exe"
-set "OUT=%CD%\out\build\win-amd64-release"
+set "OUT=%CD%\out\build\release"
 
 if not exist assets\%GAME_XBE% goto :nogame
 
@@ -43,22 +43,24 @@ for /f "tokens=*" %%v in ('clang++ --version ^| findstr /i version') do echo    
 
 rem ---------------------------------------------------------------- symbols
 echo [2/3] XDK symbols
-cmake --preset win-amd64-release >nul || goto :fail
+cmake --preset release >nul || goto :fail
 findstr /b /l /c:"[symbols]" config\game.toml >nul && echo       config\game.toml already written && goto :game
-cmake --build out\build\win-amd64-release --target xbe_symbols >nul || goto :fail
+cmake --build out\build\release --target xbe_symbols >nul || goto :fail
 set XBSDB=
 where XbSymbolDatabaseCLI >nul 2>nul && XbSymbolDatabaseCLI -e assets\%GAME_XBE% > out\xbsdb.txt && set "XBSDB=--xbsdb out\xbsdb.txt"
-"%OUT%\xbe_symbols.exe" assets\%GAME_XBE% sdk\xdk --out config\game.toml %XBSDB% || goto :fail
+set "SDK=sdk"
+if not exist sdk\xdk set "SDK=..\.."
+"%OUT%\xbe_symbols.exe" assets\%GAME_XBE% %SDK%\xdk --out config\game.toml %XBSDB% || goto :fail
 
 rem ---------------------------------------------------------------- game
 :game
 echo [3/3] Game code
 echo       first build recompiles %GAME_XBE%, expect 30 to 90 minutes ...
-cmake --build out\build\win-amd64-release || goto :fail
+cmake --build out\build\release || goto :fail
 
 echo.
 echo   %GAME_TITLE% built.
-echo   out\build\win-amd64-release\%GAME_EXE%.exe
+echo   out\build\release\%GAME_EXE%.exe
 echo.
 if defined CI exit /b 0
 choice /c YN /n /m "  Play now? [Y/N] "

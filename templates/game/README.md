@@ -8,7 +8,7 @@ A static recompilation of the original Xbox version of Game Title into a native 
 2. Clone this repository.
 3. Put the game files in the `assets` folder (see Game Setup).
 4. Run `build.bat`. The first build recompiles the game and takes a while.
-5. Run `out\build\win-amd64-release\Game.exe`.
+5. Run `out\build\release\Game.exe`.
 
 > [!NOTE]
 > No game data, XBE bytes or generated code are in this repository. You must own the game.

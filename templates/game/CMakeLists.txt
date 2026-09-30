@@ -6,8 +6,12 @@ project(game LANGUAGES C CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# vendored copy of XboxXBE-Recomp
-include(sdk/cmake/XbeRecomp.cmake)
+# the SDK in sdk/, or two folders up when built inside the SDK's templates
+set(SDK sdk)
+if(NOT EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/sdk/cmake/XbeRecomp.cmake)
+    set(SDK ../..)
+endif()
+include(${SDK}/cmake/XbeRecomp.cmake)
 
 file(GLOB XBE_HOST_SOURCES CONFIGURE_DEPENDS src/*/*.cpp)
 list(FILTER XBE_HOST_SOURCES EXCLUDE REGEX "/src/game/")
