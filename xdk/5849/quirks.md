@@ -37,3 +37,11 @@ The lazy state routine at 0x4A4480 (0x4A4840 is inside it, per the disassembly o
 ## SetFormat sets the pitch back to the format's rate
 
 `CDirectSoundVoice_SetFormat` (sc4_adv.xbe 0x2BD4D7) calls the settings' SetFormat 0x2BD451, which ends by storing the pitch of the new format's sample rate (+0x10, through 0x2BB6B5) at +0x18 (0x2BD4C3 to 0x2BD4CC), then `CMcpxVoiceClient_SetPitch` 0x2C2806 (0x2BD512). A frequency set earlier is gone, so the runtime clears its own.
+
+## SetAllParameters copies the 3D block
+
+Proven in Black (title 45410083, the same 5849 DSOUND), which sets its 3D sounds with nothing else. `IDirectSoundBuffer_SetAllParameters` 0x21A18B reaches 0x219BCA, which copies 18 dwords from the DS3DBUFFER at +4 into the voice's 3D settings (`[[this + 0x10] + 0xB4]`) at +8 (0x219BDC to 0x219CDE). In default.xbe the single setters write the same block: position at +8 (0x4CF50C), velocity at +0x14 (0x4CF55E), minimum distance at +0x38 (0x4CF4D8), maximum distance at +0x3C (0x4CF4A5). So the structure has the position at +4, the distances at +0x34 and +0x38 and the mode at +0x3C; the library's own default block (Black 0x2243A8) agrees: size 0x4C, 1.0 at +0x34, 1e9 at +0x38. Mode 2 turns the 3D work off (0x2190AB, 0x219108 and 0x219145 skip each calculation), mode 1 takes the position as listener relative (0x21BBCA skips the listener subtraction).
+
+## StopEx
+
+`IDirectSoundBuffer_StopEx` (Black 0x2197AF) reaches 0x220A0A. With a time stamp it queues the stop (command 4 through vtable +0x1C). Without one it calls 0x2207A1 with the flags: none stops at once, as Stop does (0x218B2B passes 0); bit 0 keys the voice off so its envelope releases (0x21EED8 writes the voice to FE8202F8 and FE82012C); bits 0 and 1 on a looping voice first play on without the loop (0x220688 with play flags 0, from 0x2207D0). The runtime stops at once in every case.

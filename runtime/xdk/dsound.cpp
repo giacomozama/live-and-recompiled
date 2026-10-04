@@ -47,6 +47,30 @@ X86Func* Find(uint32_t guest);
 #define SYM_IDirectSoundBuffer_SetPlayRegion FFFFFF05
 #define HAS_IDirectSoundBuffer_SetPlayRegion 0
 #endif
+#ifndef SYM_IDirectSoundBuffer_SetAllParameters
+#define SYM_IDirectSoundBuffer_SetAllParameters FFFFFF06
+#define HAS_IDirectSoundBuffer_SetAllParameters 0
+#endif
+#ifndef SYM_IDirectSoundBuffer_SetFormat
+#define SYM_IDirectSoundBuffer_SetFormat FFFFFF07
+#define HAS_IDirectSoundBuffer_SetFormat 0
+#endif
+#ifndef SYM_IDirectSoundBuffer_SetOutputBuffer
+#define SYM_IDirectSoundBuffer_SetOutputBuffer FFFFFF08
+#define HAS_IDirectSoundBuffer_SetOutputBuffer 0
+#endif
+#ifndef SYM_IDirectSoundBuffer_SetRolloffCurve
+#define SYM_IDirectSoundBuffer_SetRolloffCurve FFFFFF09
+#define HAS_IDirectSoundBuffer_SetRolloffCurve 0
+#endif
+#ifndef SYM_IDirectSoundBuffer_StopEx
+#define SYM_IDirectSoundBuffer_StopEx FFFFFF0A
+#define HAS_IDirectSoundBuffer_StopEx 0
+#endif
+#ifndef SYM_DirectSoundUseLightHRTF
+#define SYM_DirectSoundUseLightHRTF FFFFFF0B
+#define HAS_DirectSoundUseLightHRTF 0
+#endif
 
 namespace {
 
@@ -78,6 +102,7 @@ struct Voice {
     // levels
     float volume = 1, gain_l = 1, gain_r = 1;
     bool is3d = false;
+    uint32_t mode = 0;  // DS3DMODE: 1 head relative, 2 disabled
     float p[3] = {}, min_dist = 1, max_dist = 1e9f;
     // ADPCM block cache
     int64_t block = -1;
@@ -171,13 +196,16 @@ void Complete(Voice& v, Packet& pk, uint32_t status) {
 void Levels(Voice& v, float& l, float& r) {
     l = v.gain_l * v.volume;
     r = v.gain_r * v.volume;
-    if (!v.is3d) return;
-    float d[3] = {v.p[0] - g_listener[0], v.p[1] - g_listener[1], v.p[2] - g_listener[2]};
+    if (!v.is3d || v.mode == 2) return;
+    bool rel = v.mode == 1;  // the position is already in listener space
+    float d[3] = {v.p[0], v.p[1], v.p[2]};
+    for (int i = 0; i < 3 && !rel; i++) d[i] -= g_listener[i];
     float dist = std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
     float att = dist <= v.min_dist ? 1.0f : v.min_dist / std::min(dist, v.max_dist);
     float right[3] = {g_top[1] * g_front[2] - g_top[2] * g_front[1], g_top[2] * g_front[0] - g_top[0] * g_front[2],
                       g_top[0] * g_front[1] - g_top[1] * g_front[0]};
-    float pan = dist > 1e-3f ? (d[0] * right[0] + d[1] * right[1] + d[2] * right[2]) / dist : 0.0f;
+    float side = rel ? d[0] : d[0] * right[0] + d[1] * right[1] + d[2] * right[2];
+    float pan = dist > 1e-3f ? side / dist : 0.0f;
     l *= att * std::min(1.0f, 1.0f - pan);
     r *= att * std::min(1.0f, 1.0f + pan);
 }
@@ -346,13 +374,16 @@ float F32(uint32_t v) {
 // DSOUND objects are the host's; .XTLID names linked exports that would still run console code on them
 static void AuditExports() {
     static const uint32_t handled[] = {
-        SYM(DirectSoundCreate), SYM(IDirectSound_Release), SYM(DirectSoundUseFullHRTF), SYM(IDirectSound_GetSpeakerConfig),
+        SYM(DirectSoundCreate), SYM(IDirectSound_Release), SYM(DirectSoundUseFullHRTF), SYM(DirectSoundUseLightHRTF),
+        SYM(IDirectSound_GetSpeakerConfig),
         SYM(IDirectSound_SetEffectData), SYM(IDirectSound_EnableHeadphones), SYM(IDirectSound_SetMixBinHeadroom),
         SYM(IDirectSound_CommitDeferredSettings), SYM(IDirectSound_SetDopplerFactor), SYM(IDirectSound_SetRolloffFactor),
         SYM(IDirectSound_SetDistanceFactor), SYM(IDirectSound_SetVelocity), SYM(IDirectSound_SetI3DL2Listener),
         SYM(IDirectSound_SetPosition), SYM(IDirectSound_SetOrientation), SYM(IDirectSound_SynchPlayback), SYM(DirectSoundDoWork),
         SYM(IDirectSound_DownloadEffectsImage), SYM(IDirectSound_GetEffectData), SYM(IDirectSound_CommitEffectData),
-        SYM(IDirectSound_GetOutputLevels), SYM(IDirectSoundBuffer_SetPlayRegion),
+        SYM(IDirectSound_GetOutputLevels), SYM(IDirectSoundBuffer_SetPlayRegion), SYM(IDirectSoundBuffer_SetAllParameters),
+        SYM(IDirectSoundBuffer_SetFormat), SYM(IDirectSoundBuffer_SetOutputBuffer), SYM(IDirectSoundBuffer_SetRolloffCurve),
+        SYM(IDirectSoundBuffer_StopEx),
         SYM(XAudioDownloadEffectsImage), SYM(DirectSoundCreateBuffer), SYM(IDirectSound_CreateSoundBuffer),
         SYM(IDirectSoundBuffer_Release), SYM(IDirectSoundBuffer_Unlock), SYM(IDirectSoundBuffer_SetBufferData),
         SYM(IDirectSoundBuffer_Play), SYM(IDirectSoundBuffer_Stop), SYM(IDirectSoundBuffer_SetLoopRegion),
@@ -370,12 +401,17 @@ static void AuditExports() {
         SYM(CDirectSoundStream_SetMinDistance), SYM(CDirectSoundStream_SetPosition), SYM(CDirectSoundStream_SetVelocity),
         SYM(CDirectSoundStream_SetI3DL2Source)};
     std::string left;
+    // the library's own section: the WMA decoder shares the export ids and touches no DSOUND object
+    uint32_t lo = 0, hi = 0;
+    for (auto& s : g_image->sections)
+        if (SYM(DirectSoundCreate) - s.va < s.vsize) lo = s.va, hi = s.va + s.vsize;
     for (auto& s : g_image->sections)
         for (uint32_t o = 0; s.name == ".XTLID" && o + 8 <= std::min(s.vsize, s.rsize); o += 8) {
             uint32_t id = g_image->U32(s.raw + o), va = g_image->U32(s.raw + o + 4);
             auto done = [&](uint32_t f) { return std::find(std::begin(handled), std::end(handled), f) != std::end(handled); };
             // a jmp to a host version is covered by it
-            if (id >> 16 != 0xB || !dispatch::Find(va) || done(va) || (G<uint8_t>(va) == 0xE9 && done(va + 5 + R32(va + 1))))
+            if (id >> 16 != 0xB || va < lo || va >= hi || !dispatch::Find(va) || done(va) ||
+                (G<uint8_t>(va) == 0xE9 && done(va + 5 + R32(va + 1))))
                 continue;
             char b[24];
             std::snprintf(b, sizeof b, " %05X at %08X", id, va);
@@ -397,6 +433,7 @@ HLE_STDCALL(DirectSoundCreate, 3) {
 }
 HLE_STDCALL(IDirectSound_Release, 1) { return 0; }
 HLE_STDCALL(DirectSoundUseFullHRTF, 0) { return 0; }
+HLE_STDCALL(DirectSoundUseLightHRTF, 0) { return 0; }
 HLE_STDCALL(IDirectSound_GetSpeakerConfig, 2) {
     W32(a[1], 2);  // stereo
     return 0;
@@ -539,6 +576,11 @@ BUFFER(Stop, 1) {
     v.playing = false;
     return 0;
 }
+// (this, time low, time high, flags): stops now, the release envelope is not reproduced
+BUFFER(StopEx, 4) {
+    v.playing = false;
+    return 0;
+}
 // (this, start, length) in bytes, 0 length plays to the end
 BUFFER(SetPlayRegion, 3) {
     v.play_start = a[1];
@@ -608,6 +650,22 @@ BUFFER(SetPosition, 5) {
 }
 BUFFER(SetVelocity, 5) { return 0; }
 BUFFER(SetI3DL2Source, 3) { return 0; }
+// (this, DS3DBUFFER, apply): position at +4, distances at +0x34 and +0x38, mode at +0x3C
+BUFFER(SetAllParameters, 3) {
+    for (int i = 0; i < 3; i++) v.p[i] = F32(R32(a[1] + 4 + i * 4));
+    v.min_dist = F32(R32(a[1] + 0x34));
+    v.max_dist = F32(R32(a[1] + 0x38));
+    v.mode = R32(a[1] + 0x3C);
+    return 0;
+}
+BUFFER(SetRolloffCurve, 4) { return 0; }
+BUFFER(SetOutputBuffer, 2) { return 0; }  // the voice keeps its own mix bins
+BUFFER(SetFormat, 2) {
+    ReadFormat(v, a[1]);
+    v.freq = 0;
+    v.block = -1;
+    return 0;
+}
 
 // ---------------------------------------------------------------- streams, the object carries the XDK's own vtable
 
