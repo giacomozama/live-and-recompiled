@@ -129,11 +129,11 @@ uint32_t g_ds = 0;
 float Db(int32_t hundredths) { return hundredths <= -10000 ? 0.0f : std::pow(10.0f, hundredths / 2000.0f); }
 
 uint32_t FramesOf(const Voice& v, uint32_t bytes) {
-    if (v.tag == 0x69) return bytes / (36u * v.channels) * 65;
+    if (v.tag == 0x69) return bytes / (36u * v.channels) * 64;
     return bytes / std::max<uint32_t>(v.align, 1);
 }
 uint32_t BytesOf(const Voice& v, uint32_t frames) {
-    if (v.tag == 0x69) return frames / 65 * 36 * v.channels;
+    if (v.tag == 0x69) return frames / 64 * 36 * v.channels;
     return frames * v.align;
 }
 
@@ -145,7 +145,7 @@ const int kStep[89] = {7,     8,     9,     10,    11,    12,    13,    14,    1
                        2272,  2499,  2749,  3024,  3327,  3660,  4026,  4428,  4871,  5358,  5894,  6484,  7132,  7845,  8630,
                        9493,  10442, 11487, 12635, 13899, 15289, 16818, 18500, 20350, 22385, 24623, 27086, 29794, 32767};
 
-// one 36 byte per channel IMA block, 65 frames
+// one 36 byte per channel IMA block, the voice plays 64 of its 65 frames
 void DecodeBlock(const uint8_t* b, int ch, int16_t* out) {
     for (int c = 0; c < ch; c++) {
         int pred = int16_t(b[c * 4] | b[c * 4 + 1] << 8), idx = std::min<int>(b[c * 4 + 2], 88);
@@ -170,12 +170,12 @@ float Sample(Voice& v, uint32_t data, uint32_t f, int c) {
     c = std::min<int>(c, v.channels - 1);
     const uint8_t* p = static_cast<const uint8_t*>(HostPtr(data));
     if (v.tag == 0x69) {
-        int64_t at = int64_t(data) + int64_t(f / 65) * 36 * v.channels;
+        int64_t at = int64_t(data) + int64_t(f / 64) * 36 * v.channels;
         if (at != v.block) {
             DecodeBlock(static_cast<const uint8_t*>(HostPtr(uint32_t(at))), std::min<int>(v.channels, 8), v.decoded);
             v.block = at;
         }
-        return v.decoded[(f % 65) * v.channels + c] / 32768.0f;
+        return v.decoded[(f % 64) * v.channels + c] / 32768.0f;
     }
     if (v.bits == 8) return (p[f * v.align + c] - 128) / 128.0f;
     int16_t s;
@@ -607,7 +607,7 @@ BUFFER(GetStatus, 2) {
 BUFFER(GetCurrentPosition, 3) {
     uint32_t p = BytesOf(v, uint32_t(v.pos));
     if (a[1]) W32(a[1], p);
-    if (a[2]) W32(a[2], v.play_len ? (p + BytesOf(v, 65 * 4)) % v.play_len : 0);
+    if (a[2]) W32(a[2], v.play_len ? (p + BytesOf(v, 64 * 4)) % v.play_len : 0);
     return 0;
 }
 BUFFER(SetCurrentPosition, 2) {
