@@ -57,3 +57,11 @@ The byte and sample conversions (Black 0x21D1DB and 0x21D1F4, default.xbe 0x4D2E
 ## Headroom is taken off the volume
 
 `SetVolume` (Black 0x2188D8, default.xbe 0x4CDEEB) stores volume minus headroom (+0x20) at +0x1C, `SetHeadroom` (0x218907, 0x4CDF1A) moves +0x1C by the change. The settings constructor (0x21A97D, 0x4D041C) starts the headroom at 600, or at 0 for a buffer with flags 0x182000 (mix in, effect in) or 0x200010 (3D).
+
+## Mix bins belong to channels in runs
+
+The slot volume builder (Black 0x21E94D, default.xbe 0x4D45CB) builds the volume of each of a voice's eight bin slots: the bin count (+0x24) divided by the channel count gives the slots of each channel, channel 0 the first run, channel 1 the next. A slot's attenuation is the bin's volume (+0x30 by bin number) plus +0x1C. `SetMixBins` (0x2198BB, 0x4CF1D9) replaces the list and its volumes, `SetMixBinVolumes` (0x2187DF, 0x4CDDF2) only writes volumes by bin number. Bins 6 to 9 are the crosstalk front left, front right, back left and back right (the 3D default list, Black 0x2243F4 and default.xbe 0x4EB94C, is 6, 8, 7, 9, 10).
+
+## Speaker config
+
+`IDirectSound_GetSpeakerConfig` (Black 0x2183DF, default.xbe 0x4CDB34) returns 0 for stereo, 1 for mono, 2 for surround, with 0x10000 for AC3, from the console's audio setting (0x4D0304 fills the global from 0x452505). Black 0x8C360 reads it that way. The runtime mixes to two channels and answers stereo.

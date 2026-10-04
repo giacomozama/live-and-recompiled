@@ -101,7 +101,9 @@ struct Voice {
     uint32_t max_packets = 1, callback = 0, context = 0;
     std::deque<Packet> packets;
     // levels
-    float volume = 1, headroom = 1, gain_l = 1, gain_r = 1;
+    float volume = 1, headroom = 1;
+    uint8_t nbins = 0, bin[8] = {};
+    int32_t bin_mb[32] = {};  // by mix bin
     bool is3d = false;
     uint32_t mode = 0;  // DS3DMODE: 1 head relative, 2 disabled
     float p[3] = {}, min_dist = 1, max_dist = 1e9f;
@@ -194,9 +196,24 @@ void Complete(Voice& v, Packet& pk, uint32_t status) {
     }
 }
 
-void Levels(Voice& v, float& l, float& r) {
-    l = v.gain_l * v.volume * v.headroom;
-    r = v.gain_r * v.volume * v.headroom;
+// gain of voice channel c on host left and right. Channel c owns slots [c * n / channels, (c + 1) * n / channels).
+void Levels(Voice& v, float g[2][2]) {
+    static const uint8_t kFront[2] = {0, 1};
+    const uint8_t* bin = v.nbins ? v.bin : kFront;
+    uint32_t n = v.nbins ? v.nbins : 2, per = std::max<uint32_t>(n / v.channels, 1);
+    bool speakers = false;
+    for (uint32_t s = 0; s < n; s++) speakers |= bin[s] < 10 && bin[s] != 3;
+    for (uint32_t c = 0; c < 2; c++) {
+        g[c][0] = g[c][1] = 0;
+        for (uint32_t s = c * per; c < v.channels && s < (c + 1) * per && s < n; s++) {
+            uint32_t b = bin[s];
+            if (speakers && (b == 3 || b > 9)) continue;  // sub and effect sends
+            float x = Db(v.bin_mb[b]) * v.volume * v.headroom * (b == 2 ? 0.707f : 1.0f);
+            // even bins are left, odd right, 2 is the centre
+            if (!speakers || b == 2 || !(b & 1)) g[c][0] = std::max(g[c][0], x);
+            if (!speakers || b == 2 || (b & 1)) g[c][1] = std::max(g[c][1], x);
+        }
+    }
     if (!v.is3d || v.mode == 2) return;
     bool rel = v.mode == 1;  // the position is already in listener space
     float d[3] = {v.p[0], v.p[1], v.p[2]};
@@ -207,8 +224,10 @@ void Levels(Voice& v, float& l, float& r) {
                       g_top[0] * g_front[1] - g_top[1] * g_front[0]};
     float side = rel ? d[0] : d[0] * right[0] + d[1] * right[1] + d[2] * right[2];
     float pan = dist > 1e-3f ? side / dist : 0.0f;
-    l *= att * std::min(1.0f, 1.0f - pan);
-    r *= att * std::min(1.0f, 1.0f + pan);
+    for (int c = 0; c < 2; c++) {
+        g[c][0] *= att * std::min(1.0f, 1.0f - pan);
+        g[c][1] *= att * std::min(1.0f, 1.0f + pan);
+    }
 }
 
 void Render(float* out, uint32_t frames) {
@@ -216,8 +235,8 @@ void Render(float* out, uint32_t frames) {
     std::lock_guard<std::recursive_mutex> lock(g_lock);
     for (auto& [obj, v] : g_voices) {
         if (v.paused || v.sync || (!v.stream && !v.playing)) continue;
-        float l, r;
-        Levels(v, l, r);
+        float g[2][2];
+        Levels(v, g);
         uint32_t base = v.data + v.play_start;
         double step = double(v.freq ? v.freq : v.rate) / audio::kRate;
         for (uint32_t i = 0; i < frames; i++) {
@@ -269,8 +288,10 @@ void Render(float* out, uint32_t frames) {
                 b1 = Sample(v, base, next, 1);
             }
             float t = float(v.pos - f);
-            out[i * 2] += (a + (a1 - a) * t) * l;
-            out[i * 2 + 1] += (b + (b1 - b) * t) * r;
+            a += (a1 - a) * t;
+            b += (b1 - b) * t;
+            out[i * 2] += a * g[0][0] + b * g[1][0];
+            out[i * 2 + 1] += a * g[0][1] + b * g[1][1];
             v.pos += step;
         }
     }
@@ -317,25 +338,22 @@ void ReadFormat(Voice& v, uint32_t wfx) {
     if (v.tag != 1 && v.tag != 0x69) LOG_FIRST(8, "dsound: format tag %X not supported", v.tag);
 }
 
-// DSMIXBINS volumes onto the two host channels
-void MixBins(Voice& v, uint32_t mixbins) {
+// DSMIXBINS: the voice's bins and their volumes
+void SetBins(Voice& v, uint32_t mixbins) {
+    v.nbins = 0;  // none listed: front left and right
     if (!mixbins) return;
-    uint32_t n = R32(mixbins), pairs = R32(mixbins + 4);
-    float l = 0, r = 0;
-    for (uint32_t i = 0; i < n && i < 16; i++) {
-        uint32_t bin = R32(pairs + i * 8);
-        float g = Db(int32_t(R32(pairs + i * 8 + 4)));
-        if (bin == 0 || bin == 4) l = std::max(l, g);
-        if (bin == 1 || bin == 5) r = std::max(r, g);
-        if (bin == 2) {
-            l = std::max(l, g * 0.707f);
-            r = std::max(r, g * 0.707f);
-        }
+    uint32_t n = std::min<uint32_t>(R32(mixbins), 8), pairs = R32(mixbins + 4);
+    for (uint32_t i = 0; i < n; i++) {
+        v.bin[i] = R32(pairs + i * 8) & 31;
+        v.bin_mb[v.bin[i]] = int32_t(R32(pairs + i * 8 + 4));
     }
-    if (l == 0 && r == 0)
-        for (uint32_t i = 0; i < n && i < 16; i++) l = r = std::max(l, Db(int32_t(R32(pairs + i * 8 + 4))));
-    v.gain_l = l;
-    v.gain_r = r;
+    v.nbins = uint8_t(n);
+}
+// volumes only, the bins stay
+void SetBinVolumes(Voice& v, uint32_t mixbins) {
+    if (!mixbins) return;
+    uint32_t n = std::min<uint32_t>(R32(mixbins), 32), pairs = R32(mixbins + 4);
+    for (uint32_t i = 0; i < n; i++) v.bin_mb[R32(pairs + i * 8) & 31] = int32_t(R32(pairs + i * 8 + 4));
 }
 // 600 mB unless 3D or a mix in or effect in buffer
 float DefaultHeadroom(uint32_t flags) { return flags & 0x382010 ? 1.0f : Db(-600); }
@@ -354,7 +372,7 @@ uint32_t NewBuffer(uint32_t desc, uint32_t out) {
     v.obj = obj;
     uint32_t flags = R32(desc + 4), bytes = R32(desc + 8);
     ReadFormat(v, R32(desc + 12));
-    MixBins(v, R32(desc + 16));
+    SetBins(v, R32(desc + 16));
     v.is3d = flags & 0x10;
     v.headroom = DefaultHeadroom(flags);
     if (bytes) {
@@ -439,7 +457,7 @@ HLE_STDCALL(IDirectSound_Release, 1) { return 0; }
 HLE_STDCALL(DirectSoundUseFullHRTF, 0) { return 0; }
 HLE_STDCALL(DirectSoundUseLightHRTF, 0) { return 0; }
 HLE_STDCALL(IDirectSound_GetSpeakerConfig, 2) {
-    W32(a[1], 2);  // stereo
+    W32(a[1], 0);  // DSSPEAKER_STEREO
     return 0;
 }
 HLE_STDCALL(IDirectSound_SetEffectData, 6) { return 0; }
@@ -643,11 +661,11 @@ BUFFER(SetHeadroom, 2) {
     return 0;
 }
 BUFFER(SetMixBinVolumes, 2) {
-    MixBins(v, a[1]);
+    SetBinVolumes(v, a[1]);
     return 0;
 }
 BUFFER(SetMixBins, 2) {
-    MixBins(v, a[1]);
+    SetBins(v, a[1]);
     return 0;
 }
 BUFFER(SetMaxDistance, 3) {
@@ -701,7 +719,7 @@ HLE_STDCALL(DirectSoundCreateStream, 2) {
     ReadFormat(v, R32(desc + 8));
     v.callback = R32(desc + 12);
     v.context = R32(desc + 16);
-    MixBins(v, R32(desc + 20));
+    SetBins(v, R32(desc + 20));
     v.is3d = flags & 0x10;
     v.headroom = DefaultHeadroom(flags);
     W32(a[1], obj);
@@ -803,11 +821,11 @@ STREAM(SetHeadroom, 2) {
     return 0;
 }
 STREAM(SetMixBinVolumes, 2) {
-    MixBins(v, a[1]);
+    SetBinVolumes(v, a[1]);
     return 0;
 }
 STREAM(SetMixBins, 2) {
-    MixBins(v, a[1]);
+    SetBins(v, a[1]);
     return 0;
 }
 STREAM(SetMaxDistance, 3) {
