@@ -98,6 +98,19 @@ float4 psmain(O i) : SV_Target {
 }
 )";
 
+const char* kDepthHlsl = R"(
+Texture2D<float> img : register(t0);
+SamplerState ps : register(s1);
+struct O { float4 p : SV_Position; float2 uv : TEXCOORD0; };
+O vs(uint id : SV_VertexID) {
+    O o;
+    o.uv = float2((id << 1) & 2, id & 2);
+    o.p = float4(o.uv * float2(2, -2) + float2(-1, 1), 0, 1);
+    return o;
+}
+float psmain(O i) : SV_Depth { return img.SampleLevel(ps, i.uv, 0); }
+)";
+
 float Bits(uint32_t v) {
     float f;
     std::memcpy(&f, &v, 4);
@@ -304,6 +317,7 @@ private:
     void Pass(const char* hlsl, const char* entry, DXGI_FORMAT rtv, D3D12_CPU_DESCRIPTOR_HANDLE rh, uint32_t w, uint32_t h,
               ID3D12Resource* const src[3], const DXGI_FORMAT fmt[3], const float p[8], float blend) override;
     bool BindTargets(const State& s);
+    bool DepthCopy(const State& s);
     ID3D12Resource* BindTexture(const State& s, int stage, TexInfo& info, D3D12_SHADER_RESOURCE_VIEW_DESC& srv);
     bool tex_rt_[4] = {};  // stage samples a render target
     float tex_k_[4] = {1, 1, 1, 1};  // Extension::Sample's k
@@ -690,6 +704,65 @@ bool D3D12Backend::BindTargets(const State& s) {
         bound_rt_ = rt;
         bound_ds_ = ds;
     }
+    return true;
+}
+
+// a depth buffer drawn as colour into another depth buffer's memory: copied as depth
+bool D3D12Backend::DepthCopy(const State& s) {
+    TextureDesc d;
+    if (!s.rt.header || !s.textures[0] || !Describe(s.textures[0], d) || Format(d.format).depth || d.cube || d.depth != 1) return false;
+    auto di = targets_.find(uint64_t(mem::VirtualFromPhysical(s.rt.data)) << 1 | 1), si = targets_.find(uint64_t(d.data) << 1 | 1);
+    if (di == targets_.end() || si == targets_.end() || di == si) return false;
+    Target& dst = di->second;
+    Target& src = si->second;
+    auto& pso = blit_psos_[~0ull];
+    if (!pso) {
+        uint64_t h;
+        ID3DBlob* vs = Compile(kDepthHlsl, "vs", "vs_5_0", h);
+        ID3DBlob* ps = Compile(kDepthHlsl, "psmain", "ps_5_0", h);
+        if (!vs || !ps) return false;
+        D3D12_GRAPHICS_PIPELINE_STATE_DESC p{};
+        p.pRootSignature = root_.Get();
+        p.VS = {vs->GetBufferPointer(), vs->GetBufferSize()};
+        p.PS = {ps->GetBufferPointer(), ps->GetBufferSize()};
+        p.SampleMask = UINT_MAX;
+        p.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+        p.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+        p.RasterizerState.DepthClipEnable = TRUE;
+        p.DepthStencilState.DepthEnable = TRUE;
+        p.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
+        p.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_ALWAYS;
+        p.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+        p.DSVFormat = DXGI_FORMAT_D24_UNORM_S8_UINT;
+        p.SampleDesc.Count = 1;
+        if (FAILED(dev_->CreateGraphicsPipelineState(&p, IID_PPV_ARGS(&pso)))) return false;
+    }
+    if (cap_) fprintf(cap_, "%04u depth copy %08X to %08X\n", cap_i_++, src.data, dst.data);
+    Transition(src.res.Get(), src.state, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+    Transition(dst.res.Get(), dst.state, D3D12_RESOURCE_STATE_DEPTH_WRITE);
+    D3D12_CPU_DESCRIPTOR_HANDLE dh = Cpu(dsv_heap_.Get(), dst.view, dsv_inc_);
+    cl_->OMSetRenderTargets(0, nullptr, FALSE, &dh);
+    D3D12_VIEWPORT vp{0, 0, float(dst.w), float(dst.h), 0, 1};
+    D3D12_RECT sc{0, 0, LONG(dst.w), LONG(dst.h)};
+    cl_->RSSetViewports(1, &vp);
+    cl_->RSSetScissorRects(1, &sc);
+    uint32_t slot = SrvSlots(1);
+    D3D12_SHADER_RESOURCE_VIEW_DESC sv{};
+    sv.Format = DXGI_FORMAT_R24_UNORM_X8_TYPELESS;
+    sv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+    sv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    sv.Texture2D.MipLevels = 1;
+    dev_->CreateShaderResourceView(src.res.Get(), &sv, Cpu(srv_heap_.Get(), slot, srv_inc_));
+    Alloc cb = Upload(256, 256);
+    cl_->SetPipelineState(pso.Get());
+    cl_->SetGraphicsRootConstantBufferView(0, cb.gpu);
+    cl_->SetGraphicsRootConstantBufferView(1, cb.gpu);
+    cl_->SetGraphicsRootDescriptorTable(2, Gpu(srv_heap_.Get(), slot, srv_inc_));
+    cl_->SetGraphicsRootDescriptorTable(3, Gpu(smp_heap_.Get(), BlitSamplers(), smp_inc_));
+    cl_->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    cl_->DrawInstanced(3, 1, 0, 0);
+    dst.drawn = true;
+    bound_rt_ = bound_ds_ = nullptr;
     return true;
 }
 
@@ -1194,6 +1267,7 @@ void D3D12Backend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t 
     PerfScope perf_draw{g_perf.draw};
     g_perf.draws++;
     if (cap_) CapStep(s.rt);
+    if (DepthCopy(s)) return;
     struct DrawEnd {
         Extension* e;
         ~DrawEnd() {
