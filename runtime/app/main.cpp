@@ -34,6 +34,7 @@ namespace {
 HWND g_hwnd = nullptr;
 constexpr UINT kApplyDisplay = WM_APP + 1, kOpenWindow = WM_APP + 2;
 bool g_mode_changed = false;
+bool g_apply_posted = false;  // a display apply is waiting in the queue or running
 
 // crash dump in CrashDumps beside the exe
 LONG WINAPI WriteCrashDump(EXCEPTION_POINTERS* e) {
@@ -89,7 +90,12 @@ void ApplyNow() {
     }
     Mode out = Output();
     LONG_PTR visible = IsWindowVisible(g_hwnd) ? WS_VISIBLE : 0;  // a window held back for a splash or handover stays so
-    if (s.display_mode == DisplayMode::Fullscreen && s.width && s.height) {
+    DEVMODEW desktop{};
+    desktop.dmSize = sizeof(desktop);
+    EnumDisplaySettingsW(mi.szDevice, ENUM_REGISTRY_SETTINGS, &desktop);
+    // the desktop's own size is no mode change: switching to it anyway blanks the screen for nothing
+    if (s.display_mode == DisplayMode::Fullscreen && s.width && s.height &&
+        (s.width != desktop.dmPelsWidth || s.height != desktop.dmPelsHeight)) {
         DEVMODEW dm{};
         dm.dmSize = sizeof(dm);
         dm.dmPelsWidth = s.width;
@@ -136,13 +142,18 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                     ShowWindow(hwnd, SW_MINIMIZE);
                 }
             } else if (Get().display_mode == DisplayMode::Fullscreen && Get().width && Get().height && !g_mode_changed &&
-                       IsWindowVisible(hwnd)) {
+                       IsWindowVisible(hwnd) && !g_apply_posted) {
+                // once: restoring the window activates it again from inside the apply, and a second apply switched
+                // the mode back and forth, after which presents were not taken for a while (the game stood still
+                // until the next alt-tab)
+                g_apply_posted = true;
                 PostMessageW(hwnd, kApplyDisplay, 0, 0);
             }
             break;
         case kApplyDisplay:
             if (IsIconic(hwnd)) ShowWindow(hwnd, SW_RESTORE);
             ApplyNow();
+            g_apply_posted = false;
             return 0;
         case kOpenWindow:
             CloseSplash();
