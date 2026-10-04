@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <map>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -72,6 +73,7 @@ std::array<uint32_t, 3> g_buffers{};  // front, back surfaces
 uint32_t g_buffer_count = 2;
 uint32_t g_depth = 0;
 uint32_t g_scratch_push = 0, g_scratch_size = 0;
+uint32_t g_walk = 0;  // first scratch command not read yet
 
 uint32_t Dev(uint32_t off) { return R32(kDevice + off); }
 void SetDev(uint32_t off, uint32_t v) { W32(kDevice + off, v); }
@@ -108,8 +110,11 @@ void Release(X86Context& ctx, uint32_t res) {
 #endif
 }
 
-// Hardware commands a caller still pushes go to a scratch buffer nothing reads, rewound at every request
+void Walk(uint32_t end);
+
+// Hardware commands a caller still pushes go to a scratch buffer, rewound at every request once Walk has read it
 uint32_t ScratchPush(uint32_t bytes = 0) {
+    Walk(Dev(kDevPush));
     uint32_t need = std::max<uint32_t>(0x10000, (bytes + 0x1FFF) & ~0xFFFu);
     if (need > g_scratch_size) {
         if (g_scratch_push) mem::FreeContiguous(g_scratch_push);
@@ -118,6 +123,7 @@ uint32_t ScratchPush(uint32_t bytes = 0) {
     }
     SetDev(kDevPush, g_scratch_push);
     SetDev(kDevThreshold, g_scratch_push + g_scratch_size - 0x1000);
+    g_walk = g_scratch_push;
     return g_scratch_push;
 }
 
@@ -323,10 +329,12 @@ HLE_FASTCALL(CDevice_KickOff, 0) { return 0; }
 
 HLE_STDCALL(D3DDevice_MakeSpace, 0) {
     LOG_FIRST(16, "d3d: MakeSpace from %08X, some caller still pushes hardware commands", R32(ctx.esp));
+    std::lock_guard<std::recursive_mutex> lock(g_lock);
     return ScratchPush();
 }
 HLE_STDCALL(D3D_MakeRequestedSpace, 2) {
     LOG_FIRST(16, "d3d: MakeRequestedSpace from %08X", R32(ctx.esp));
+    std::lock_guard<std::recursive_mutex> lock(g_lock);
     return ScratchPush();
 }
 
@@ -879,6 +887,99 @@ uint32_t VertexBytes() {
 uint32_t g_push_begin = 0;
 }  // namespace
 
+// Begin/End immediate mode. Titles inline Begin and the vertex data calls, so their commands are read from the scratch buffer.
+namespace d3d {
+namespace {
+uint32_t g_im_prim = 0, g_im_mask = 0;  // open primitive, slots it wrote
+float g_im_attr[64];                    // 16 slots of x y z w
+std::vector<float> g_im_vertices;       // every slot per vertex
+
+// draws the open primitive: the slots it wrote are FLOAT4 inputs of the bound program, or of the fixed pipeline
+void EndPrimitive() {
+    struct Made {
+        std::shared_ptr<gpu::VertexShader> from, vs;
+    };
+    // the render thread tells shaders apart by pointer: one object per program and slot set, the program kept alive
+    static std::map<std::pair<gpu::VertexShader*, uint32_t>, Made> made;
+    static std::vector<float> packed;
+    uint32_t prim = g_im_prim, count = uint32_t(g_im_vertices.size() / 64), handle = g_state.vs_handle;
+    g_im_prim = 0;
+    if (!prim || !count) return;
+    if (!(handle & 1) && (handle & 0xE) == 4) LOG_FIRST(1, "d3d: pretransformed immediate mode vertices are not supported");
+    auto bound = g_state.vs, from = handle & 1 ? bound : nullptr;
+    Made& m = made[{from.get(), g_im_mask}];
+    if (!m.vs) {
+        m.from = from;
+        m.vs = std::make_shared<gpu::VertexShader>();
+        if (from) {
+            m.vs->program = from->program;
+            m.vs->program_type = from->program_type;
+        }
+        for (uint32_t s = 0; s < 16; s++)
+            if (g_im_mask >> s & 1) {
+                m.vs->inputs[s] = {0, m.vs->stream_stride[0], 0x42};
+                m.vs->stream_stride[0] += 16;
+            }
+    }
+    packed.clear();
+    for (uint32_t v = 0; v < count; v++)
+        for (uint32_t s = 0; s < 16; s++)
+            if (g_im_mask >> s & 1) packed.insert(packed.end(), &g_im_vertices[v * 64 + s * 4], &g_im_vertices[v * 64 + s * 4] + 4);
+    g_state.vs = m.vs;
+    g_state.vs_handle = handle | 1;
+    DrawUp(prim, count, packed.data(), m.vs->stream_stride[0]);
+    g_state.vs = bound;
+    g_state.vs_handle = handle;
+}
+
+// reads the commands pushed since the last call: vertex data between a begin and an end is drawn, the rest is skipped
+void Walk(uint32_t end) {
+    if (!g_walk || end < g_walk || end > g_scratch_push + g_scratch_size) return;
+    for (uint32_t p = g_walk; p + 4 <= end;) {
+        // count in bits 18 to 28, bit 30 keeps the method for every value
+        uint32_t head = R32(p), method = head & 0x1FFC, n = (head >> 18) & 0x7FF;
+        p += 4;
+        if ((head & 0xA0030003) || n * 4 > end - p) break;
+        for (uint32_t i = 0; i < n; i++, p += 4) {
+            uint32_t m = head & 0x40000000 ? method : method + i * 4, v = R32(p);
+            float f, *a = g_im_attr;
+            bool last = true;  // the slot's last component
+            std::memcpy(&f, &v, 4);
+            if (m == 0x17FC) {
+                if (v) {
+                    g_im_prim = v;
+                    g_im_mask = 0;
+                    g_im_vertices.clear();
+                } else {
+                    EndPrimitive();
+                }
+                continue;
+            } else if (m >= 0x1880 && m < 0x1900) {  // 2 floats, z = 0 and w = 1
+                a += (m - 0x1880) / 8 * 4;
+                last = (m - 0x1880) / 4 & 1;
+                a[last] = f;
+                a[2] = 0;
+                a[3] = 1;
+            } else if (m >= 0x1940 && m < 0x1980) {  // 4 bytes
+                a += (m - 0x1940) / 4 * 4;
+                for (int c = 0; c < 4; c++) a[c] = (v >> c * 8 & 0xFF) / 255.0f;
+            } else if (m >= 0x1A00 && m < 0x1B00) {  // 4 floats
+                a += (m - 0x1A00) / 16 * 4;
+                last = ((m - 0x1A00) / 4 & 3) == 3;
+                a[(m - 0x1A00) / 4 & 3] = f;
+            } else {
+                continue;
+            }
+            if (!g_im_prim) continue;
+            g_im_mask |= 1u << (a - g_im_attr) / 4;
+            if (a == g_im_attr && last) g_im_vertices.insert(g_im_vertices.end(), g_im_attr, g_im_attr + 64);
+        }
+    }
+    g_walk = end;
+}
+}  // namespace
+}  // namespace d3d
+
 HLE_STDCALL(D3DDevice_DrawVerticesUP, 4) {
     std::lock_guard<std::recursive_mutex> lock(g_lock);
     DrawUp(a[0], a[1], HostPtr(a[2]), a[3]);
@@ -931,8 +1032,23 @@ HLE_STDCALL(D3DDevice_EndPush, 1) {
 // frame buffer compression tiles are the console's memory controller's business
 HLE_STDCALL(D3DDevice_SetTile, 2) { return 0; }
 
+// the library's Begin pushes the start of the primitive, here it is opened
 HLE_STDCALL(D3DDevice_Begin, 1) {
-    LOG_FIRST(4, "d3d: Begin/End immediate mode is not supported");
+    XDK_REQUIRE("d3d", XDK_KEY(CDevice_Flags));
+    std::lock_guard<std::recursive_mutex> lock(g_lock);
+    Walk(Dev(kDevPush));
+    g_im_prim = a[0];
+    g_im_mask = 0;
+    g_im_vertices.clear();
+    SetDev(XDK_CDevice_Flags, Dev(XDK_CDevice_Flags) | 0x800);
     return 0;
 }
-HLE_STDCALL(D3DDevice_End, 0) { return 0; }
+// the library's End pushes the end of the primitive, here it is drawn
+HLE_STDCALL(D3DDevice_End, 0) {
+    XDK_REQUIRE("d3d", XDK_KEY(CDevice_Flags));
+    std::lock_guard<std::recursive_mutex> lock(g_lock);
+    Walk(Dev(kDevPush));
+    EndPrimitive();
+    SetDev(XDK_CDevice_Flags, Dev(XDK_CDevice_Flags) & ~0x1800u);
+    return 0;
+}

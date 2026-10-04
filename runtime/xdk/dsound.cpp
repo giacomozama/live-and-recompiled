@@ -104,6 +104,7 @@ struct Voice {
     float volume = 1, headroom = 1;
     uint8_t nbins = 0, bin[8] = {};
     int32_t bin_mb[32] = {};  // by mix bin
+    std::vector<float> curve;  // rolloff
     bool is3d = false;
     uint32_t mode = 0;  // DS3DMODE: 1 head relative, 2 disabled
     float p[3] = {}, min_dist = 1, max_dist = 1e9f;
@@ -219,7 +220,16 @@ void Levels(Voice& v, float g[2][2]) {
     float d[3] = {v.p[0], v.p[1], v.p[2]};
     for (int i = 0; i < 3 && !rel; i++) d[i] -= g_listener[i];
     float dist = std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
-    float att = dist <= v.min_dist ? 1.0f : v.min_dist / std::min(dist, v.max_dist);
+    float att = 1;
+    if (dist > v.min_dist && v.curve.empty()) {
+        att = v.min_dist / std::min(dist, v.max_dist);
+    } else if (dist > v.min_dist && v.max_dist > v.min_dist) {
+        // points spread evenly from min to max distance, 1.0 at min
+        float at = (std::min(dist, v.max_dist) - v.min_dist) / (v.max_dist - v.min_dist) * v.curve.size();
+        size_t i = std::min(size_t(at), v.curve.size() - 1);
+        float from = i ? v.curve[i - 1] : 1.0f;
+        att = from + (v.curve[i] - from) * (at - i);
+    }
     float right[3] = {g_top[1] * g_front[2] - g_top[2] * g_front[1], g_top[2] * g_front[0] - g_top[0] * g_front[2],
                       g_top[0] * g_front[1] - g_top[1] * g_front[0]};
     float side = rel ? d[0] : d[0] * right[0] + d[1] * right[1] + d[2] * right[2];
@@ -690,7 +700,12 @@ BUFFER(SetAllParameters, 3) {
     v.mode = R32(a[1] + 0x3C);
     return 0;
 }
-BUFFER(SetRolloffCurve, 4) { return 0; }
+// (this, points, count, apply)
+BUFFER(SetRolloffCurve, 4) {
+    v.curve.clear();
+    for (uint32_t i = 0; a[1] && i < std::min<uint32_t>(a[2], 64); i++) v.curve.push_back(F32(R32(a[1] + i * 4)));
+    return 0;
+}
 BUFFER(SetOutputBuffer, 2) { return 0; }  // the voice keeps its own mix bins
 BUFFER(SetFormat, 2) {
     ReadFormat(v, a[1]);
