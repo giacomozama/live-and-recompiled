@@ -187,13 +187,23 @@ uint64_t MemSig(uint32_t data, uint32_t total) {
     return sig;
 }
 
+// MemSig samples a big surface and misses small writes (XFONT text): after a Sync every byte is compared
+bool Changed(const Target& t) {
+    if (t.drawn || t.read.empty()) return false;
+    uint32_t row = t.gw * 4, pitch = (row + 63) & ~63u;
+    const uint8_t* p = static_cast<const uint8_t*>(kernel::HostPtr(t.data));
+    for (uint32_t y = 0; y < t.gh; y++)
+        if (std::memcmp(p + size_t(y) * pitch, &t.read[size_t(y) * row], row)) return true;
+    return false;
+}
+
 // a lock alone proves nothing, reads lock too: only changed bytes mean the CPU wrote it
 bool CpuWrote(Target& t) {
     uint64_t e = DirtyEpoch(t.data);
     if (e <= t.epoch) return false;
     t.epoch = e;
     uint64_t sig = MemSig(t.data, t.bytes);
-    if (sig == t.sig) return false;
+    if (sig == t.sig && !Changed(t)) return false;
     t.sig = sig;
     return true;
 }
@@ -280,7 +290,11 @@ private:
     Target* GetTarget(const Surface& s, bool depth, bool create = true);
     void UploadTarget(Target& t, const Surface& s);
     void Blit(ID3D12Resource* src, DXGI_FORMAT fmt, const float uvrect[4], bool gamma, bool alpha, uint32_t taps = 1, float mul = 1,
-              DXGI_FORMAT rtv = kBgra) override;
+              DXGI_FORMAT rtv = kBgra) override {
+        Blit(src, fmt, uvrect, gamma, alpha, taps, mul, rtv, false);
+    }
+    void Blit(ID3D12Resource* src, DXGI_FORMAT fmt, const float uvrect[4], bool gamma, bool alpha, uint32_t taps, float mul, DXGI_FORMAT rtv,
+              bool over);
     uint32_t BlitSamplers();
     ID3D12Resource* Feedback(Target& t) override;
     void Resolve(Target& t) {
@@ -296,7 +310,7 @@ private:
     uint32_t Samplers(const State& s, const TexInfo info[4]);
     ID3DBlob* Compile(const std::string& src, const char* entry, const char* profile, uint64_t& hash);
     ID3D12PipelineState* Pipeline(const PsoKey& k, ID3DBlob* vs, ID3DBlob* ps);
-    ID3D12PipelineState* BlitPipeline(DXGI_FORMAT rtv);
+    ID3D12PipelineState* BlitPipeline(DXGI_FORMAT rtv, bool over = false);
     void ResizeSwap();
     float Scale() const override { return scale_; }
     // into: a copy from an earlier call to draw over again, in state into_state
@@ -685,7 +699,27 @@ void D3D12Backend::UploadTarget(Target& t, const Surface& s) {
     if (!Describe(s.header, d) || Format(d.format).depth) return;
     std::vector<uint8_t> px;
     uint32_t pitch;
-    DecodeLevel(d, 0, 0, static_cast<const uint8_t*>(kernel::HostPtr(d.data)), nullptr, px, pitch);
+    // after a Sync only the pixels the CPU changed go over the picture, which stays at render scale
+    bool over = !t.drawn && d.width == t.gw && d.height == t.gh && t.read.size() == size_t(t.gw) * t.gh * 4;
+    if (over) {
+        LOG_FIRST(4, "d3d12: CPU pixels drawn over target %08X", t.data);
+        pitch = t.gw * 4;
+        px.assign(t.read.size(), 0);
+        uint32_t guest_pitch = (pitch + 63) & ~63u;
+        const uint8_t* guest = static_cast<const uint8_t*>(kernel::HostPtr(t.data));
+        for (uint32_t y = 0; y < t.gh; y++) {
+            for (uint32_t x = 0; x < t.gw; x++) {
+                const uint8_t* c = guest + size_t(y) * guest_pitch + x * 4;
+                size_t i = (size_t(y) * t.gw + x) * 4;
+                if (!std::memcmp(c, &t.read[i], 4)) continue;
+                std::memcpy(&t.read[i], c, 4);
+                std::memcpy(&px[i], c, 3);
+                px[i + 3] = 255;
+            }
+        }
+    } else {
+        DecodeLevel(d, 0, 0, static_cast<const uint8_t*>(kernel::HostPtr(d.data)), nullptr, px, pitch);
+    }
     uint32_t w = d.width, h = d.height;
     ComPtr<ID3D12Resource> tex;
     D3D12_HEAP_PROPERTIES hp{D3D12_HEAP_TYPE_DEFAULT};
@@ -716,7 +750,7 @@ void D3D12Backend::UploadTarget(Target& t, const Surface& s) {
     cl_->RSSetViewports(1, &vp);
     cl_->RSSetScissorRects(1, &sc);
     float uv[4] = {0, 0, 1, 1};
-    Blit(tex.Get(), kBgra, uv, false, true, 1, 1 / t.range, t.fmt);
+    Blit(tex.Get(), kBgra, uv, false, true, 1, 1 / t.range, t.fmt, over);
     frames_[frame_ % kFrames].garbage.push_back(tex);
     t.epoch = DirtyEpoch(t.data);
     t.sig = MemSig(t.data, t.bytes);
@@ -749,7 +783,7 @@ uint32_t D3D12Backend::BlitSamplers() {
 }
 
 void D3D12Backend::Blit(ID3D12Resource* src, DXGI_FORMAT fmt, const float uvrect[4], bool gamma, bool alpha, uint32_t taps, float mul,
-                        DXGI_FORMAT rtv) {
+                        DXGI_FORMAT rtv, bool over) {
     uint32_t slot = SrvSlots(2);
     D3D12_SHADER_RESOURCE_VIEW_DESC sv{};
     sv.Format = fmt;
@@ -763,7 +797,7 @@ void D3D12Backend::Blit(ID3D12Resource* src, DXGI_FORMAT fmt, const float uvrect
     Alloc cb = Upload(256, 256);
     float c[8] = {uvrect[0], uvrect[1], uvrect[2], uvrect[3], gamma ? 1.0f : 0.0f, alpha ? 1.0f : 0.0f, float(taps), mul};
     std::memcpy(cb.cpu, c, sizeof(c));
-    cl_->SetPipelineState(BlitPipeline(rtv));
+    cl_->SetPipelineState(BlitPipeline(rtv, over));
     cl_->SetGraphicsRootConstantBufferView(0, cb.gpu);
     cl_->SetGraphicsRootConstantBufferView(1, cb.gpu);
     cl_->SetGraphicsRootDescriptorTable(2, Gpu(srv_heap_.Get(), slot, srv_inc_));
@@ -792,8 +826,8 @@ ID3DBlob* D3D12Backend::Compile(const std::string& src, const char* entry, const
     return code.Get();
 }
 
-ID3D12PipelineState* D3D12Backend::BlitPipeline(DXGI_FORMAT rtv) {
-    auto& pso = blit_psos_[rtv];
+ID3D12PipelineState* D3D12Backend::BlitPipeline(DXGI_FORMAT rtv, bool over) {
+    auto& pso = blit_psos_[uint64_t(rtv) | uint64_t(over) << 32];
     if (pso) return pso.Get();
     uint64_t h;
     ID3DBlob* vs = Compile(kBlitHlsl, "vs", "vs_5_0", h);
@@ -802,7 +836,17 @@ ID3D12PipelineState* D3D12Backend::BlitPipeline(DXGI_FORMAT rtv) {
     d.pRootSignature = root_.Get();
     d.VS = {vs->GetBufferPointer(), vs->GetBufferSize()};
     d.PS = {ps->GetBufferPointer(), ps->GetBufferSize()};
-    d.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+    auto& blend = d.BlendState.RenderTarget[0];
+    blend.RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+    if (over) {
+        // premultiplied colour, the target keeps its alpha
+        blend.BlendEnable = TRUE;
+        blend.SrcBlend = D3D12_BLEND_ONE;
+        blend.DestBlend = D3D12_BLEND_INV_SRC_ALPHA;
+        blend.SrcBlendAlpha = D3D12_BLEND_ZERO;
+        blend.DestBlendAlpha = D3D12_BLEND_ONE;
+        blend.BlendOp = blend.BlendOpAlpha = D3D12_BLEND_OP_ADD;
+    }
     d.SampleMask = UINT_MAX;
     d.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
     d.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
@@ -1828,6 +1872,7 @@ void D3D12Backend::Sync(uint32_t data, uint32_t) {
     uint32_t pitch = (t.gw * 4 + 63) & ~63u;
     for (uint32_t y = 0; y < t.gh; y++)
         std::memcpy(static_cast<uint8_t*>(kernel::HostPtr(data)) + size_t(y) * pitch, &px[size_t(y) * t.gw * 4], t.gw * 4);
+    t.read = std::move(px);
     t.drawn = false;
     t.sig = MemSig(t.data, t.bytes);
 }
@@ -1878,6 +1923,7 @@ void D3D12Backend::RecordLate(uint32_t data) {
     g_perf.lates++;
     // what DeliverLate or Sync left in guest memory is no CPU write to upload back
     t.sig = MemSig(t.data, t.bytes);
+    t.read.clear();
     std::lock_guard lock(late_lock_);
     Late& l = late_[data];
     if (l.gw != t.gw || l.gh != t.gh) {
