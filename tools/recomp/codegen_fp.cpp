@@ -83,7 +83,7 @@ bool CodeGen::EmitX87(uint32_t va, const ZydisDecodedInstruction& in, const Zydi
             src = st(0);
         }
         std::string expr = a.rev ? "(s " + std::string(a.op) + " d)" : "(d " + std::string(a.op) + " s)";
-        emit(F("double s = %s; double d = %s; %s = %s;%s", src.c_str(), dst.c_str(), dst.c_str(), expr.c_str(),
+        emit(F("double s = %s; double d = %s; %s = x87_prec(ctx, %s);%s", src.c_str(), dst.c_str(), dst.c_str(), expr.c_str(),
                a.pop ? " x87_pop(ctx);" : ""));
         return true;
     }
@@ -160,7 +160,7 @@ bool CodeGen::EmitX87(uint32_t va, const ZydisDecodedInstruction& in, const Zydi
             return true;
         case ZYDIS_MNEMONIC_FCHS: emit("X87_ST(0) = -X87_ST(0);"); return true;
         case ZYDIS_MNEMONIC_FABS: emit("X87_ST(0) = std::fabs(X87_ST(0));"); return true;
-        case ZYDIS_MNEMONIC_FSQRT: emit("X87_ST(0) = std::sqrt(X87_ST(0));"); return true;
+        case ZYDIS_MNEMONIC_FSQRT: emit("X87_ST(0) = x87_prec(ctx, std::sqrt(X87_ST(0)));"); return true;
         case ZYDIS_MNEMONIC_FSIN: emit("X87_ST(0) = std::sin(X87_ST(0)); ctx.fsw &= ~0x400;"); return true;
         case ZYDIS_MNEMONIC_FCOS: emit("X87_ST(0) = std::cos(X87_ST(0)); ctx.fsw &= ~0x400;"); return true;
         case ZYDIS_MNEMONIC_FSINCOS:

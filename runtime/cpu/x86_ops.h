@@ -67,6 +67,9 @@ inline void x87_push(X86Context& ctx, double v) {
 }
 inline void x87_pop(X86Context& ctx) { ctx.top = (ctx.top + 1) & 7; }
 
+// precision control: results round to 24 bits when the control word asks for it
+inline double x87_prec(X86Context& ctx, double v) { return (ctx.fcw & 0x300) ? v : double(float(v)); }
+
 // C0 bit 8, C2 bit 10, C3 bit 14
 inline void x87_compare(X86Context& ctx, double a, double b) {
     uint16_t c;
