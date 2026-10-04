@@ -4,6 +4,7 @@
 #include <atomic>
 #include <chrono>
 #include <map>
+#include <thread>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -26,6 +27,9 @@ using namespace kernel;
 #ifndef SYM_D3DDevice_EndPush
 #define SYM_D3DDevice_EndPush FFFFFE01
 #define HAS_D3DDevice_EndPush 0
+#endif
+#ifndef HAS_D3D_FvfShader
+#define HAS_D3D_FvfShader 0
 #endif
 #ifndef SYM_D3DDevice_SetPalette
 #define SYM_D3DDevice_SetPalette FFFFFE02
@@ -170,6 +174,16 @@ void UpdateViewportConstants() {
     float hw = v.w * 0.5f, hh = v.h * 0.5f;
     g_state.vsc[58] = {hw, -hh, (v.max_z - v.min_z) * g_state.zscale, 0};
     g_state.vsc[59] = {v.x + g_state.ss_offset_x + hw, v.y + g_state.ss_offset_y + hh, v.min_z * g_state.zscale, 0};
+    // the viewport as the library's SetViewport stores it, for inlined readers
+    if (XDK_CDevice_Viewport != xdk::kUnknown) {
+        uint32_t p = kDevice + XDK_CDevice_Viewport;
+        W32(p, v.x);
+        W32(p + 4, v.y);
+        W32(p + 8, v.w);
+        W32(p + 12, v.h);
+        std::memcpy(HostPtr(p + 16), &v.min_z, 4);
+        std::memcpy(HostPtr(p + 20), &v.max_z, 4);
+    }
 }
 
 void SetComplex(uint32_t rs, uint32_t v) {
@@ -185,6 +199,35 @@ void ApplyDefaultStates(X86Context& ctx) {
     (void)ctx;
     LOG_FIRST(1, "d3d: the image has no D3D_InitDefaultState, default states were not applied");
 #endif
+}
+
+constexpr bool kVBlank = XDK_CDevice_VBlankCount != xdk::kUnknown && XDK_CDevice_VBlankEvent != xdk::kUnknown &&
+                         XDK_CDevice_VBlankCallback != xdk::kUnknown;
+
+// what the library's vertical blank interrupt leaves for the title: count, event, callback
+void VerticalBlank(X86Context& ctx) {
+    using clock = std::chrono::steady_clock;
+    uint32_t info = mem::AllocSystem(12), shown = 0;
+    auto next = clock::now();
+    for (;;) {
+        next = std::max(next + std::chrono::microseconds(16667), clock::now());
+        std::this_thread::sleep_until(next);
+        uint32_t count = Dev(XDK_CDevice_VBlankCount) + 1, swaps = Dev(kDevSwapCount);
+        SetDev(XDK_CDevice_VBlankCount, count);
+        ObjectRef event = FromPointer(kDevice + XDK_CDevice_VBlankEvent);
+        SetEvent(*event);
+        if (uint32_t callback = Dev(XDK_CDevice_VBlankCallback)) {
+            // blank count, swaps shown, 1 when this blank showed one
+            W32(info, count);
+            W32(info + 4, swaps);
+            W32(info + 8, swaps != shown);
+            CallGuest(ctx, callback, {info});
+        }
+        shown = swaps;
+        // the title clears the event in its own memory before a wait, which the host object does not see
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        ResetEvent(*event);
+    }
 }
 
 }  // namespace
@@ -244,6 +287,25 @@ HLE_STDCALL(Direct3D_CreateDevice, 6) {
     std::memcpy(HostPtr(kDevice + kDevSuperX), &one, 4);
     std::memcpy(HostPtr(kDevice + kDevSuperY), &one, 4);
     std::memcpy(HostPtr(kDevice + kDevZScale), &zs, 4);
+    // fields the library's init sets that inlined library code and the default states read
+    if (XDK_CDevice_AutoDepth != xdk::kUnknown) SetDev(XDK_CDevice_AutoDepth, g_depth);
+    if (XDK_CDevice_BackBufferScale != xdk::kUnknown) {
+        std::memcpy(HostPtr(kDevice + XDK_CDevice_BackBufferScale), &one, 4);
+        std::memcpy(HostPtr(kDevice + XDK_CDevice_BackBufferScale + 4), &one, 4);
+    }
+    // 60 Hz, widescreen
+    if (XDK_CDevice_DisplayFlags != xdk::kUnknown) SetDev(XDK_CDevice_DisplayFlags, 0x400000 | (app::Widescreen() ? 0x10000 : 0));
+#if HAS_D3D_FvfShader
+    if (XDK_CDevice_VertexShader != xdk::kUnknown) SetDev(XDK_CDevice_VertexShader, SYM(D3D_FvfShader));
+#endif
+    if (kVBlank) {
+        // notification event, signalled
+        SetDev(XDK_CDevice_VBlankEvent, 0x00040000);
+        SetDev(XDK_CDevice_VBlankEvent + 4, 1);
+        static bool started = false;
+        if (!started) StartHostThread("vertical blank", VerticalBlank);
+        started = true;
+    }
     g_state.rt = SurfaceOf(g_buffers[1]);
     g_state.zs = SurfaceOf(g_depth);
     UpdateViewportConstants();
