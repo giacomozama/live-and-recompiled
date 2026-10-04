@@ -101,7 +101,7 @@ struct Voice {
     uint32_t max_packets = 1, callback = 0, context = 0;
     std::deque<Packet> packets;
     // levels
-    float volume = 1, gain_l = 1, gain_r = 1;
+    float volume = 1, headroom = 1, gain_l = 1, gain_r = 1;
     bool is3d = false;
     uint32_t mode = 0;  // DS3DMODE: 1 head relative, 2 disabled
     float p[3] = {}, min_dist = 1, max_dist = 1e9f;
@@ -195,8 +195,8 @@ void Complete(Voice& v, Packet& pk, uint32_t status) {
 }
 
 void Levels(Voice& v, float& l, float& r) {
-    l = v.gain_l * v.volume;
-    r = v.gain_r * v.volume;
+    l = v.gain_l * v.volume * v.headroom;
+    r = v.gain_r * v.volume * v.headroom;
     if (!v.is3d || v.mode == 2) return;
     bool rel = v.mode == 1;  // the position is already in listener space
     float d[3] = {v.p[0], v.p[1], v.p[2]};
@@ -337,6 +337,8 @@ void MixBins(Voice& v, uint32_t mixbins) {
     v.gain_l = l;
     v.gain_r = r;
 }
+// 600 mB unless 3D or a mix in or effect in buffer
+float DefaultHeadroom(uint32_t flags) { return flags & 0x382010 ? 1.0f : Db(-600); }
 
 Voice* Find(uint32_t obj) {
     auto it = g_voices.find(obj);
@@ -354,6 +356,7 @@ uint32_t NewBuffer(uint32_t desc, uint32_t out) {
     ReadFormat(v, R32(desc + 12));
     MixBins(v, R32(desc + 16));
     v.is3d = flags & 0x10;
+    v.headroom = DefaultHeadroom(flags);
     if (bytes) {
         v.data = mem::AllocContiguous(bytes, 0, 0xFFFFFFFF, 4);
         v.bytes = v.play_len = v.loop_len = bytes;
@@ -635,7 +638,10 @@ BUFFER(SetFrequency, 2) {
     return 0;
 }
 BUFFER(SetFilter, 2) { return 0; }
-BUFFER(SetHeadroom, 2) { return 0; }
+BUFFER(SetHeadroom, 2) {
+    v.headroom = Db(-int32_t(a[1]));
+    return 0;
+}
 BUFFER(SetMixBinVolumes, 2) {
     MixBins(v, a[1]);
     return 0;
@@ -697,6 +703,7 @@ HLE_STDCALL(DirectSoundCreateStream, 2) {
     v.context = R32(desc + 16);
     MixBins(v, R32(desc + 20));
     v.is3d = flags & 0x10;
+    v.headroom = DefaultHeadroom(flags);
     W32(a[1], obj);
     return 0;
 }
@@ -791,7 +798,10 @@ STREAM(SetFrequency, 2) {
     return 0;
 }
 STREAM(SetFilter, 2) { return 0; }
-STREAM(SetHeadroom, 2) { return 0; }
+STREAM(SetHeadroom, 2) {
+    v.headroom = Db(-int32_t(a[1]));
+    return 0;
+}
 STREAM(SetMixBinVolumes, 2) {
     MixBins(v, a[1]);
     return 0;

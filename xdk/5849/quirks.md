@@ -53,3 +53,7 @@ Proven in Black (title 45410083), which gives every buffer its whole sound heap 
 ## An ADPCM block is 64 frames
 
 The byte and sample conversions (Black 0x21D1DB and 0x21D1F4, default.xbe 0x4D2E4B and 0x4D2E64) use 64 samples for each block of the format's block align when the tag is 0x69 (`shl eax, 6`, `shr eax, 6`). The 65th decoded frame of a block is not played.
+
+## Headroom is taken off the volume
+
+`SetVolume` (Black 0x2188D8, default.xbe 0x4CDEEB) stores volume minus headroom (+0x20) at +0x1C, `SetHeadroom` (0x218907, 0x4CDF1A) moves +0x1C by the change. The settings constructor (0x21A97D, 0x4D041C) starts the headroom at 600, or at 0 for a buffer with flags 0x182000 (mix in, effect in) or 0x200010 (3D).
