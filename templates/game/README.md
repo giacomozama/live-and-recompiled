@@ -15,7 +15,7 @@ A static recompilation of the original Xbox version of Game Title into a native 
 
 ## Game Setup
 
-Copy the game disc's files into `assets`: `default.xbe` with the game's folders beside it. `default.xbe` becomes `Game.exe`.
+Copy the game disc's files into `assets`: `default.xbe` with the game's folders beside it. `default.xbe` becomes `Game.exe`. To play, the `assets` folder beside the exe takes the same files or the disc image (`.iso`).
 
 ## Features
 
@@ -31,6 +31,7 @@ Copy the game disc's files into `assets`: `default.xbe` with the game's folders 
 - **Anisotropic Filtering** - Sharper textures at grazing angles.
 
 ### General
+- **Disc Images** - Runs the game from an `.iso` in the `assets` folder, a whole disc dump or the game partition alone.
 - **Settings** - Saved in the settings file beside the exe.
 - **Crash Dumps** - Minidumps are written to `CrashDumps` beside the exe.
 

@@ -4,8 +4,10 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <fstream>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include "app/app.h"
 #include "core/log.h"
@@ -30,7 +32,9 @@ int main(int argc, char** argv) {
     if (app::kGame.init) app::kGame.init();
     if (app::kGame.window) app::kGame.window(nullptr);
     std::string hdd = app::Instance() > 1 ? "hdd" + std::to_string(app::Instance()) : "hdd";
-    if (!kernel::Boot(game + "/" + IMAGE_XBE, game, (app::ExeDir() / hdd).string())) return 1;
+    std::ifstream f(game + "/" + IMAGE_XBE, std::ios::binary);
+    std::vector<uint8_t> xbe((std::istreambuf_iterator<char>(f)), {});
+    if (!kernel::Boot(std::move(xbe), IMAGE_XBE, game, (app::ExeDir() / hdd).string())) return 1;
     for (;;) {
         std::this_thread::sleep_for(std::chrono::seconds(1));
         logx::Flush();

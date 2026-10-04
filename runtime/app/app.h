@@ -39,6 +39,13 @@ float RenderScale(uint32_t guest_height);
 bool Widescreen();
 
 std::filesystem::path ExeDir();
+// the game in assets (game_files.cpp): its folder and this executable's xbe, from the extracted files or a disc
+// image (.iso), which it mounts as D:; false after telling the player what is missing
+struct GameFiles {
+    std::filesystem::path dir;
+    std::vector<uint8_t> xbe;
+};
+bool FindGame(GameFiles& game);
 int Instance();  // --instance N on the command line, 0 without: a second copy on this PC for system link tests
 void* Window();  // HWND
 // boot splash: GameInfo::splash .bmp or .png beside the exe, up before the game window
@@ -67,7 +74,7 @@ struct GameInfo {
     const char* log;             // log prefix
     const char* settings;        // settings file beside the exe
     const wchar_t* splash;       // .bmp or .png beside the exe
-    const wchar_t* missing;      // message when the game files are not found
+    const wchar_t* missing;      // message when neither the game files nor a disc image are found
     std::vector<std::pair<const char*, const char*>> images;  // xbe file name, executable name
     std::vector<Option> options;
     // the settings file's toml::table, for what options cannot hold

@@ -181,9 +181,10 @@ bool CreateSymbolicLink(const std::string& link, const std::string& target);
 bool DeleteSymbolicLink(const std::string& link);
 std::string QuerySymbolicLink(const std::string& link);
 std::string ResolvePath(const std::string& xbox_path, uint32_t root_handle);  // host path or empty
+bool ReadGameFile(const std::string& xbox_path, std::vector<uint8_t>& out);  // from a host folder or the disc image
 
 // ---------------------------------------------------------------- boot
-bool Boot(const std::string& xbe_path, const std::string& game_dir, const std::string& data_dir);
+bool Boot(std::vector<uint8_t> xbe, const std::string& xbe_name, const std::string& game_dir, const std::string& data_dir);
 void RunForever();
 [[noreturn]] void Shutdown(int code);
 // the executable recompiled from an Xbox image path (D:\\default.xbe), null when there is none

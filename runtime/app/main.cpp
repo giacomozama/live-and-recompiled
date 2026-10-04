@@ -159,17 +159,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     return DefWindowProcW(hwnd, msg, wp, lp);
 }
 
-// assets\default.xbe beside the exe or in any folder above it (the build output)
-std::filesystem::path FindGame() {
-    auto dir = ExeDir();
-    for (int i = 0; i < 6; i++) {
-        if (std::filesystem::exists(dir / "assets" / "default.xbe")) return dir / "assets";
-        if (!dir.has_parent_path() || dir.parent_path() == dir) break;
-        dir = dir.parent_path();
-    }
-    return {};
-}
-
 }  // namespace
 
 std::filesystem::path ExeDir() {
@@ -223,11 +212,8 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
     app::Load();
     if (app::kGame.init) app::kGame.init();
 
-    auto game = app::FindGame();
-    if (game.empty()) {
-        MessageBoxW(nullptr, app::kGame.missing, app::kGame.short_title, MB_ICONERROR);
-        return 1;
-    }
+    app::GameFiles game;
+    if (!app::FindGame(game)) return 1;
 
     bool splash = app::OpenSplash(), handover = app::StartHandover();
 
@@ -260,7 +246,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
     std::wstring hdd = app::Instance() > 1 ? L"hdd" + std::to_wstring(app::Instance()) : L"hdd";
     if (app::Instance())
         SetWindowTextW(app::g_hwnd, (std::wstring(app::kGame.title) + L" [" + std::to_wstring(app::Instance()) + L"]").c_str());
-    if (!kernel::Boot((game / IMAGE_XBE).string(), game.string(), (app::ExeDir() / hdd).string())) {
+    if (!kernel::Boot(std::move(game.xbe), IMAGE_XBE, game.dir.string(), (app::ExeDir() / hdd).string())) {
         MessageBoxW(app::g_hwnd, L"The game failed to start, see the log in the logs folder.", app::kGame.short_title,
                     MB_ICONERROR);
         return 1;

@@ -37,7 +37,7 @@ file(GLOB XBE_RUNTIME_SOURCES CONFIGURE_DEPENDS ${XBE_SDK_DIR}/runtime/*/*.cpp)
 
 # One executable per recompiled image: its code from config/<config> (partitions as that config sets them),
 # the SDK runtime, XBE_HOST_SOURCES shared by every image of the game, and src/<game_dir> hooks only this image has.
-# Expects assets/<xbe> and the config's out = "generated/<game_dir>".
+# Expects assets/<xbe> and the config's out = "generated/<game_dir>". At run time the game may be a disc image instead.
 function(add_xbe_image target xbe config partitions game_dir)
     set(GEN ${CMAKE_CURRENT_SOURCE_DIR}/generated/${game_dir})
     set(GEN_SOURCES ${GEN}/x86_func_mapping.cpp)
@@ -59,7 +59,13 @@ function(add_xbe_image target xbe config partitions game_dir)
     set_source_files_properties(${GEN_SOURCES} PROPERTIES GENERATED TRUE
         COMPILE_OPTIONS "-O2;-fno-strict-aliasing;-Wno-unused-label;-Wno-parentheses-equality;-Wno-unused-variable")
     file(GLOB GAME_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/src/${game_dir}/*.cpp)
-    add_executable(${target} WIN32 ${XBE_RUNTIME_SOURCES} ${XBE_HOST_SOURCES} ${GAME_SOURCES} ${GEN_SOURCES} ${XBE_IMGUI_SOURCES})
+    # the xbe's SHA-1: the executable checks the game it finds is the release it was made from
+    set(xbe_file ${CMAKE_CURRENT_SOURCE_DIR}/assets/${xbe})
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${xbe_file})
+    file(SHA1 ${xbe_file} xbe_sha1)
+    set(XBE_HASH ${CMAKE_CURRENT_BINARY_DIR}/${target}_xbe.cpp)
+    file(CONFIGURE OUTPUT ${XBE_HASH} CONTENT "extern const char kImageSha1[] = \"${xbe_sha1}\";\n")
+    add_executable(${target} WIN32 ${XBE_RUNTIME_SOURCES} ${XBE_HOST_SOURCES} ${GAME_SOURCES} ${GEN_SOURCES} ${XBE_IMGUI_SOURCES} ${XBE_HASH})
     add_dependencies(${target} recompile_${target})
     target_include_directories(${target} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src ${XBE_SDK_DIR}/runtime ${GEN})
     target_include_directories(${target} SYSTEM PRIVATE ${imgui_SOURCE_DIR})

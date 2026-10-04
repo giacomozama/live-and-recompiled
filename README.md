@@ -46,7 +46,7 @@ A new XDK build needs `xdk/<build>/layout.toml` and signatures made from titles 
 
 ### CPU and Kernel
 - **Guest Calls** - Indirect call table over the code, host calls into guest code, RDTSC at 733.33 MHz and a Pentium III CPUID.
-- **Kernel** - Objects and waits, host threads, files mapped to host folders, memory with the physical mirrors at 0x80000000 and 0xF0000000, crypto, EEPROM settings, C++ exception dispatch.
+- **Kernel** - Objects and waits, host threads, files mapped to host folders or read from a disc image, memory with the physical mirrors at 0x80000000 and 0xF0000000, crypto, EEPROM settings, C++ exception dispatch.
 - **Image Switching** - XLaunchNewImage and quick reboots relaunch into the matching executable, with the kept display handed over without a gap.
 
 ### Graphics
@@ -62,6 +62,7 @@ A new XDK build needs `xdk/<build>/layout.toml` and signatures made from titles 
 - **Controllers** - XInput pads with rumble.
 
 ### General
+- **Disc Images** - The game runs from an `.iso` in `assets` (whole disc dump or game partition) as well as from extracted files in release builds.
 - **System Link** - XNet over Winsock for LAN play.
 - **Crash Dumps** - Minidumps in CrashDumps beside the exe.
 - **Diagnostics** - `XBE_PERF` logs frame timing, `XBE_CAPTURE_DIR` lets F3 capture a frame, `XBE_D3D12_DEBUG` turns on the D3D12 debug layer.

@@ -5,8 +5,6 @@
 #include <deque>
 #include <map>
 
-#include <fstream>
-
 #include "audio/audio.h"
 #include "xbe/xbe.h"
 #include "xdk/hle.h"
@@ -447,8 +445,7 @@ HLE_STDCALL(XAudioDownloadEffectsImage, 4) {
         for (auto& sec : g_image->sections)
             if (sec.name == name) img.assign(static_cast<uint8_t*>(HostPtr(sec.va)), static_cast<uint8_t*>(HostPtr(sec.va)) + sec.vsize);
     } else {
-        std::ifstream f(ResolvePath(name, 0), std::ios::binary);
-        img.assign(std::istreambuf_iterator<char>(f), {});
+        ReadGameFile(name, img);
     }
     uint32_t desc = EffectsDesc(img, name.c_str());
     if (a[3]) W32(a[3], desc);
