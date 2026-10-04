@@ -44,11 +44,13 @@ for /f "tokens=*" %%v in ('clang++ --version ^| findstr /i version') do echo    
 rem ---------------------------------------------------------------- symbols
 echo [2/3] XDK symbols
 cmake --preset release >nul || goto :fail
-findstr /b /l /c:"[symbols]" config\game.toml >nul && echo       config\game.toml already written && goto :game
+findstr /b /l /c:"[symbols]" config\game.toml >nul 2>nul && echo       config\game.toml already written && goto :game
 cmake --build out\build\release --target xbe_symbols >nul || goto :fail
-set "SDK=sdk"
-if not exist sdk\xdk set "SDK=..\.."
-"%OUT%\xbe_symbols.exe" assets\%GAME_XBE% %SDK%\xdk --out config\game.toml || goto :fail
+rem the configure step wrote where the SDK is
+if not exist out\build\release\sdk_dir.txt echo       out\build\release\sdk_dir.txt was not written, update the SDK. && goto :fail
+set /p SDK=<out\build\release\sdk_dir.txt
+if not exist config mkdir config
+"%OUT%\xbe_symbols.exe" assets\%GAME_XBE% "%SDK%\xdk" --out config\game.toml || goto :fail
 
 rem ---------------------------------------------------------------- game
 :game

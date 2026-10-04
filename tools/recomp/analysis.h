@@ -34,6 +34,7 @@ struct Config {
     // names the host binds to: functions it replaces and data it reads; 0 = not in this image
     std::map<std::string, uint32_t> symbols, data;
     std::map<std::string, uint32_t> layout;     // XDK data layout, emitted as XDK_<name>
+    std::map<std::string, std::vector<std::string>> abi;  // where a symbol takes each argument, emitted as IMAGE_ABI
     std::set<uint32_t> no_gap_fill;             // section starts to skip in gap fill
     std::vector<std::pair<uint32_t, uint32_t>> data_ranges;  // data inside code sections
     bool gap_fill = true;

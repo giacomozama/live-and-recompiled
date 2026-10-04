@@ -214,6 +214,16 @@ bool CodeGen::Run() {
     }
     for (auto& [name, va] : an_.cfg.data) syms += F("#define SYM_%s %08X\n#define HAS_%s %d\n", name.c_str(), va, name.c_str(), va ? 1 : 0);
     for (auto& [name, v] : an_.cfg.layout) syms += F("#define XDK_%s 0x%X\n", name.c_str(), v);
+    // argument maps, one X(name, location...) row each; xdk/hle.h makes the table
+    if (!an_.cfg.abi.empty()) {
+        syms += "#define IMAGE_ABI(X)";
+        for (auto& [name, locs] : an_.cfg.abi) {
+            syms += " \\\n\tX(" + name;
+            for (auto& l : locs) syms += ", " + l;
+            syms += ")";
+        }
+        syms += "\n";
+    }
     WriteIfChanged(out_ / "image_symbols.h", syms);
 
     // shared declarations

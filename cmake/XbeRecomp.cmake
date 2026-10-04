@@ -2,6 +2,9 @@
 include_guard(GLOBAL)
 
 get_filename_component(XBE_SDK_DIR ${CMAKE_CURRENT_LIST_DIR}/.. ABSOLUTE)
+# build scripts find the SDK's xdk folder and THIRD_PARTY.txt through this
+file(TO_NATIVE_PATH "${XBE_SDK_DIR}" XBE_SDK_DIR_NATIVE)
+file(WRITE ${CMAKE_BINARY_DIR}/sdk_dir.txt "${XBE_SDK_DIR_NATIVE}\n")
 
 include(FetchContent)
 set(ZYDIS_BUILD_TOOLS OFF CACHE BOOL "" FORCE)
@@ -59,7 +62,7 @@ function(add_xbe_image target xbe config partitions game_dir)
     add_custom_command(
         OUTPUT ${GEN}/codegen.stamp
         BYPRODUCTS ${GEN_SOURCES} ${GEN}/x86_recomp_shared.h ${GEN}/image_symbols.h
-        COMMAND xbe_recomp config/${config}
+        COMMAND xbe_recomp config/${config} --xdk ${XBE_SDK_DIR}/xdk
         COMMAND ${CMAKE_COMMAND} -E touch ${GEN}/codegen.stamp
         DEPENDS xbe_recomp ${configs} ${CMAKE_CURRENT_SOURCE_DIR}/assets/${xbe}
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}

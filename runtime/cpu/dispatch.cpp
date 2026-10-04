@@ -139,13 +139,13 @@ uint32_t DataAddress(uint32_t ordinal) { return ordinal < 400 ? g_exports[ordina
 const char* ExportName(uint32_t ordinal) { return ordinal < 400 && g_exports[ordinal].name ? g_exports[ordinal].name : OrdinalName(ordinal); }
 bool HasExport(uint32_t ordinal) { return ordinal < 400 && (g_exports[ordinal].fn || g_exports[ordinal].data); }
 
-uint32_t CallGuest(X86Context& ctx, uint32_t fn, std::initializer_list<uint32_t> args) {
+uint32_t CallGuest(X86Context& ctx, uint32_t fn, const uint32_t* args, size_t count) {
     // the D3D and DirectSound hooks call this several times a draw: no heap, only the registers put back are kept
     struct {
         uint32_t eax, ecx, edx, ebx, esi, edi, ebp;
     } saved{ctx.eax, ctx.ecx, ctx.edx, ctx.ebx, ctx.esi, ctx.edi, ctx.ebp};
     uint32_t esp = ctx.esp;
-    for (const uint32_t* p = args.end(); p != args.begin();) {
+    for (const uint32_t* p = args + count; p != args;) {
         ctx.esp -= 4;
         W32(ctx.esp, *--p);
     }

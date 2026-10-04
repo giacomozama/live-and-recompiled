@@ -222,14 +222,12 @@ HLE_STDCALL(D3D_BlockOnResource, 1) {
 }
 // lock(resource, face, level, locked, rect, flags): D3DLOCK_NOOVERWRITE skips the block above, yet a
 // title may read what the GPU drew
-X86_EXTERN_FUNC(GUEST_ORIG(Lock2DSurface));
-X86_FUNC(GUEST(Lock2DSurface)) {
-    uint32_t res = R32(ctx.esp + 4);
-    if ((R32(ctx.esp + 24) & 0x20) && res && g_backend) {
+HLE_WRAP(Lock2DSurface, 6) {
+    uint32_t res = a[0];
+    if ((a[5] & 0x20) && res && g_backend) {
         std::lock_guard<std::recursive_mutex> lock(g_lock);
         g_backend->SyncLate(mem::VirtualFromPhysical(R32(res + 4)));
     }
-    GUEST_ORIG(Lock2DSurface)(ctx, base);
 }
 HLE_STDCALL(D3DResource_BlockUntilNotBusy, 1) {
     if (a[0] && g_backend) {
@@ -422,7 +420,7 @@ HLE_STDCALL(D3DDevice_SetScreenSpaceOffset, 2) {
 // ---------------------------------------------------------------- render states
 
 HLE_FASTCALL(D3DDevice_SetRenderState_Simple, 0) {
-    uint32_t method = ctx.ecx & 0x1FFC, value = ctx.edx;
+    uint32_t method = a[0] & 0x1FFC, value = a[1];
     g_state.simple[method >> 2] = value;
     return 0;
 }
@@ -516,23 +514,19 @@ HLE_STDCALL(D3DDevice_SetMaterial, 1) {
 }
 
 // the XDK keeps its own light lists, the renderer gets a copy
-X86_EXTERN_FUNC(GUEST_ORIG(D3DDevice_SetLight));
-X86_FUNC(GUEST(D3DDevice_SetLight)) {
-    uint32_t i = R32(ctx.esp + 4), l = R32(ctx.esp + 8);
+HLE_WRAP(D3DDevice_SetLight, 2) {
+    uint32_t i = a[0], l = a[1];
     if (i < 8 && l) {
         std::lock_guard<std::recursive_mutex> lock(g_lock);
         std::memcpy(g_state.lights[i].data(), HostPtr(l), 26 * 4);
     }
-    GUEST_ORIG(D3DDevice_SetLight)(ctx, base);
 }
-X86_EXTERN_FUNC(GUEST_ORIG(D3DDevice_LightEnable));
-X86_FUNC(GUEST(D3DDevice_LightEnable)) {
-    uint32_t i = R32(ctx.esp + 4), on = R32(ctx.esp + 8);
+HLE_WRAP(D3DDevice_LightEnable, 2) {
+    uint32_t i = a[0], on = a[1];
     if (i < 8) {
         std::lock_guard<std::recursive_mutex> lock(g_lock);
         g_state.light_enable = on ? g_state.light_enable | 1u << i : g_state.light_enable & ~(1u << i);
     }
-    GUEST_ORIG(D3DDevice_LightEnable)(ctx, base);
 }
 
 // ---------------------------------------------------------------- resources in use
@@ -554,12 +548,12 @@ HLE_STDCALL(D3DDevice_SetTexture, 2) {
 HLE_FASTCALL(D3DDevice_SwitchTexture, 1) {
     std::lock_guard<std::recursive_mutex> lock(g_lock);
     static uint32_t headers[4];
-    uint32_t stage = (((ctx.ecx & 0x1FFC) - 0x1B00) >> 6) & 3, cur = g_state.textures[stage];
+    uint32_t stage = (((a[0] & 0x1FFC) - 0x1B00) >> 6) & 3, cur = g_state.textures[stage];
     uint32_t& h = headers[stage];
     if (!h) h = mem::AllocSystem(20);
     if (cur && cur != h) std::memcpy(HostPtr(h), HostPtr(cur), 20);
-    W32(h + 4, ctx.edx);
-    W32(h + 12, a[0]);
+    W32(h + 4, a[1]);
+    W32(h + 12, a[2]);
     g_state.textures[stage] = h;
     return 0;
 }
@@ -651,24 +645,25 @@ HLE_STDCALL(D3DDevice_SetVertexShader, 1) {
 }
 
 HLE_FASTCALL(D3DDevice_SetVertexShaderConstant1Fast, 0) {
-    uint32_t reg = ctx.ecx;
-    if (reg < 192) std::memcpy(g_state.vsc[reg].data(), HostPtr(ctx.edx), 16);
+    uint32_t reg = a[0];
+    if (reg < 192) std::memcpy(g_state.vsc[reg].data(), HostPtr(a[1]), 16);
     return 0;
 }
 
 HLE_FASTCALL(D3DDevice_SetVertexShaderConstant1, 0) {
-    uint32_t reg = ctx.ecx;
-    if (reg < 192) std::memcpy(g_state.vsc[reg].data(), HostPtr(ctx.edx), 16);
+    uint32_t reg = a[0];
+    if (reg < 192) std::memcpy(g_state.vsc[reg].data(), HostPtr(a[1]), 16);
     return 0;
 }
 
 HLE_FASTCALL(D3DDevice_SetVertexShaderConstant4, 0) {
-    for (uint32_t i = 0; i < 4 && ctx.ecx + i < 192; i++) std::memcpy(g_state.vsc[ctx.ecx + i].data(), HostPtr(ctx.edx + i * 16), 16);
+    uint32_t reg = a[0], src = a[1];
+    for (uint32_t i = 0; i < 4 && reg + i < 192; i++) std::memcpy(g_state.vsc[reg + i].data(), HostPtr(src + i * 16), 16);
     return 0;
 }
 
 HLE_FASTCALL(D3DDevice_SetVertexShaderConstantNotInlineFast, 1) {
-    uint32_t reg = ctx.ecx, src = ctx.edx, dwords = a[0];
+    uint32_t reg = a[0], src = a[1], dwords = a[2];
     for (uint32_t i = 0; i < dwords / 4 && reg + i < 192; i++) std::memcpy(g_state.vsc[reg + i].data(), HostPtr(src + i * 16), 16);
     return 0;
 }
