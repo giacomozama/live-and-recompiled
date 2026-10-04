@@ -127,6 +127,7 @@ public:
         }
         cur_->cmds.push_back(c);
         for (uint32_t tex : s.textures) Use(tex);
+        for (uint32_t pal : s.palettes) Use(pal);
         for (const auto& st : s.streams) Use(st.vb);
         Use(s.rt.header);
         Use(s.zs.header);
@@ -309,6 +310,9 @@ private:
         std::array<uint32_t, 4> textures;
         for (size_t i = 0; i < 4; i++) textures[i] = Header(s.textures[i]);
         Delta(&sent_.textures, &textures, sizeof(textures));
+        std::array<uint32_t, 4> palettes;
+        for (size_t i = 0; i < 4; i++) palettes[i] = Header(s.palettes[i]);
+        Delta(&sent_.palettes, &palettes, sizeof(palettes));
         auto streams = s.streams;
         for (auto& st : streams) st.vb = Header(st.vb);
         Delta(&sent_.streams, &streams, sizeof(streams));

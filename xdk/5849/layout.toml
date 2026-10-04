@@ -11,6 +11,7 @@ CDevice_SuperSampleX  = 0x95C   # D3DDevice_GetViewportOffsetAndScale 0x49F06E s
 CDevice_SuperSampleY  = 0x960   # D3DDevice_GetViewportOffsetAndScale 0x49F090 scales viewport Y by it
 CDevice_Transforms    = 0xC60   # D3DDevice_SetTransform 0x49A476 copies 16 dwords to +0xC60 + type * 64
 CDevice_Textures      = 0xF88   # D3DDevice_SetTexture 0x49B0D0 reads, 0x49B109 stores [stage]
+CDevice_Palettes      = 0xF98   # 0x49BA04 reads [stage] (state query 0x49B980), the device teardown 0x4A278F releases them; D3DDevice_SetPalette (Black 0x26B573) stores [stage]
 CDevice_RenderTarget  = 0x1A04  # D3DDevice_GetRenderTarget2 0x49AE56 returns it
 CDevice_Depth         = 0x1A08  # D3DDevice_GetDepthStencilSurface2 0x49AE76 returns it
 CDevice_BackBuffer    = 0x1A14  # D3DDevice_GetBackBuffer2 0x49AB00 returns it for index 0

@@ -26,6 +26,10 @@ using namespace kernel;
 #define SYM_D3DDevice_EndPush FFFFFE01
 #define HAS_D3DDevice_EndPush 0
 #endif
+#ifndef SYM_D3DDevice_SetPalette
+#define SYM_D3DDevice_SetPalette FFFFFE02
+#define HAS_D3DDevice_SetPalette 0
+#endif
 
 namespace d3d {
 
@@ -54,7 +58,8 @@ constexpr uint32_t kDevPush = XDK_CDevice_Push, kDevThreshold = XDK_CDevice_Push
                    kDevDepth = XDK_CDevice_Depth, kDevSwapCount = XDK_CDevice_SwapCount,
                    kDevBackBuffer = XDK_CDevice_BackBuffer, kDevFrontBuffer = XDK_CDevice_FrontBuffer,
                    kDevZScale = XDK_CDevice_ZScale, kDevSuperX = XDK_CDevice_SuperSampleX,
-                   kDevSuperY = XDK_CDevice_SuperSampleY, kDevTransforms = XDK_CDevice_Transforms;
+                   kDevSuperY = XDK_CDevice_SuperSampleY, kDevTransforms = XDK_CDevice_Transforms,
+                   kDevPalettes = XDK_CDevice_Palettes;
 constexpr uint32_t kStageStates = XDK_TextureState_Stage, kStreamSize = XDK_Stream_Size;
 
 gpu::State g_state;
@@ -588,6 +593,19 @@ HLE_STDCALL(D3DDevice_SetTexture, 2) {
     Release(ctx, old);
     g_state.textures[stage] = tex;
     W32(kDirtyFlags, R32(kDirtyFlags) | XDK_DirtyFlags_Texture);
+    return 0;
+}
+
+// SetPalette(stage, palette): the colours a P8 texture of the stage looks up
+HLE_STDCALL(D3DDevice_SetPalette, 2) {
+    XDK_REQUIRE("d3d", XDK_KEY(CDevice_Palettes));
+    std::lock_guard<std::recursive_mutex> lock(g_lock);
+    uint32_t stage = a[0] & 3, pal = a[1];
+    uint32_t old = Dev(kDevPalettes + stage * 4);
+    AddRef(ctx, pal);
+    SetDev(kDevPalettes + stage * 4, pal);
+    Release(ctx, old);
+    g_state.palettes[stage] = pal;
     return 0;
 }
 

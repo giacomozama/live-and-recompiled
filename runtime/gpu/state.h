@@ -158,6 +158,7 @@ struct State {
     std::array<uint32_t, kRsMax> rs{};     // deferred and complex render states by D3DRS
     std::array<std::array<uint32_t, kTssCount>, 4> tss{};
     std::array<uint32_t, 4> textures{};    // guest D3DBaseTexture pointers
+    std::array<uint32_t, 4> palettes{};    // guest D3DPalette pointers, the colours of the stage's P8 texture
     struct Stream {
         uint32_t vb = 0;  // guest D3DVertexBuffer
         uint32_t stride = 0;

@@ -63,6 +63,9 @@ constexpr bool AllKnown(const LayoutKey (&keys)[N]) {
 #ifndef XDK_CDevice_Textures
 #define XDK_CDevice_Textures 0xFFFFFFFFu
 #endif
+#ifndef XDK_CDevice_Palettes
+#define XDK_CDevice_Palettes 0xFFFFFFFFu
+#endif
 #ifndef XDK_CDevice_RenderTarget
 #define XDK_CDevice_RenderTarget 0xFFFFFFFFu
 #endif

@@ -214,6 +214,7 @@ struct Tex {
     DXGI_FORMAT fmt = DXGI_FORMAT_UNKNOWN;
     uint32_t levels = 1;
     uint64_t sig = 0, frame = 0;
+    uint64_t palette = 0;  // hash of the colours a P8 texture was decoded with
     uint8_t flags = 0;  // Extension::Decoded's
 };
 
@@ -342,7 +343,7 @@ private:
     std::unordered_map<uint64_t, uint32_t> samplers_;
     uint32_t smp_used_ = 0;
     std::unordered_map<uint64_t, Target> targets_;
-    std::unordered_map<uint32_t, Tex> textures_;
+    std::unordered_map<uint64_t, Tex> textures_;  // by data address, a P8 texture's with its palette's above
     std::unordered_map<uint64_t, ComPtr<ID3D12PipelineState>> blit_psos_;
     Extension* ext_ = nullptr;
     // one frame capture: every draw in a text file, each target as the frame leaves it, the textures it read
@@ -1039,7 +1040,17 @@ ID3D12Resource* D3D12Backend::BindTexture(const State& s, int stage, TexInfo& in
         return t.res.Get();
     }
 
-    Tex& tx = textures_[d.data];
+    // a P8 texture is decoded with the stage's palette: 256 colours, fewer by the size code in the top two bits
+    uint32_t colours[256] = {}, palette_va = 0;
+    uint64_t palette = 0;
+    if (d.format == 0x0B && s.palettes[size_t(stage)]) {
+        uint32_t header = s.palettes[size_t(stage)];
+        palette_va = mem::VirtualFromPhysical(kernel::R32(header + 4));
+        std::memcpy(colours, kernel::HostPtr(palette_va), (256u >> (kernel::R32(header) >> 30)) * 4);
+        palette = Hash(colours, sizeof(colours));
+    }
+    const uint64_t key = uint64_t(palette_va) << 32 | d.data;
+    Tex& tx = textures_[key];
     uint32_t total = TotalSize(d);
     bool same = tx.res && tx.d.format == d.format && tx.d.width == d.width && tx.d.height == d.height && tx.d.depth == d.depth &&
                 tx.d.levels == d.levels && tx.d.cube == d.cube && tx.d.pitch == d.pitch;
@@ -1067,16 +1078,17 @@ ID3D12Resource* D3D12Backend::BindTexture(const State& s, int stage, TexInfo& in
         td.Format = tx.fmt;
         td.SampleDesc.Count = 1;
         if (FAILED(dev_->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &td, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&tx.res)))) {
-            textures_.erase(d.data);
+            textures_.erase(key);
             return nullptr;
         }
     }
     // cheap change check once per frame: lock epochs plus a sample of the bytes
-    if (tx.frame != presents_ + 1 || !same) {
+    if (tx.frame != presents_ + 1 || !same || tx.palette != palette) {
         tx.frame = presents_ + 1;
+        tx.palette = palette;
         const uint8_t* p = static_cast<const uint8_t*>(kernel::HostPtr(d.data));
         auto perf_t = PerfClock::now();
-        uint64_t sig = MemSig(d.data, total) ^ DirtyEpoch(d.data);
+        uint64_t sig = MemSig(d.data, total) ^ DirtyEpoch(d.data) ^ palette;
         g_perf.sig += PerfMs(perf_t);
         if (sig != tx.sig || !same) {
             PerfScope perf_up{g_perf.texup};
@@ -1090,7 +1102,7 @@ ID3D12Resource* D3D12Backend::BindTexture(const State& s, int stage, TexInfo& in
             for (uint32_t f = 0; f < faces; f++)
                 for (uint32_t l = 0; l < tx.levels; l++) {
                     uint32_t pitch;
-                    DecodeLevel(d, l, f, p, nullptr, px, pitch);
+                    DecodeLevel(d, l, f, p, palette_va ? colours : nullptr, px, pitch);
                     if (ext_) ext_->Decoded(d, fi, f, l, px, pitch, tx.flags);
                     D3D12_RESOURCE_DESC rd = tx.res->GetDesc();
                     D3D12_PLACED_SUBRESOURCE_FOOTPRINT fp;
