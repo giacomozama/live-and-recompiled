@@ -29,3 +29,11 @@ The lazy state routine at 0x4A4480 (0x4A4840 is inside it, per the disassembly o
 ## CreateDevice runs the default state routine
 
 `Direct3D_CreateDevice` 0x49D210 calls the device init 0x4A2220 at 0x49D269. That routine sets the render target to the back buffer (+0x1A14, `D3DDevice_SetRenderTarget` call at 0x4A2657), calls `D3D_InitDefaultState` 0x4A1A80 at 0x4A265C, then clears (0x4A2670).
+
+## Stream packet callbacks run in DirectSoundDoWork
+
+`DirectSoundDoWork` 0x4CEF33 calls `CDirectSound_DoWork` 0x4CDCA6, which runs 0x4D2751: it empties the deferred command list at +0x4B0 and calls each command's owner (vtable +0x24) with the lock let go. A voice has six command slots from +0xD0, 0x20 bytes each, flags at +8; the stream constructor sets bit 0 on slots 0 to 3 (0x4D33CC to 0x4D33E1). The scheduler 0x4D2CC5 puts a slot with bit 0 on the +0x4B0 list (0x4D2648) and any other on the DPC path (0x4D2B9A). So a stream's completions reach the title from its own `DirectSoundDoWork` call, never beside its other stream calls; the runtime runs them there, and from a thread of its own only when the title has not called it for a while.
+
+## SetFormat sets the pitch back to the format's rate
+
+`CDirectSoundVoice_SetFormat` (sc4_adv.xbe 0x2BD4D7) calls the settings' SetFormat 0x2BD451, which ends by storing the pitch of the new format's sample rate (+0x10, through 0x2BB6B5) at +0x18 (0x2BD4C3 to 0x2BD4CC), then `CMcpxVoiceClient_SetPitch` 0x2C2806 (0x2BD512). A frequency set earlier is gone, so the runtime clears its own.

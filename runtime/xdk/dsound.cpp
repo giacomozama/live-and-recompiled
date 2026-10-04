@@ -1,9 +1,12 @@
 // DirectSound (XDK 5849) on a host software mixer. Buffers and streams are read from guest memory as they play.
 #include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <cmath>
 #include <condition_variable>
 #include <deque>
 #include <map>
+#include <vector>
 
 #include "audio/audio.h"
 #include "xbe/xbe.h"
@@ -82,14 +85,18 @@ struct Voice {
 };
 
 struct Done {
-    uint32_t callback, context, packet_context, status;
+    uint32_t voice, callback, context, packet_context, status;
 };
 
 std::recursive_mutex g_lock;
 std::map<uint32_t, Voice> g_voices;
 float g_listener[3] = {}, g_front[3] = {0, 0, 1}, g_top[3] = {0, 1, 0};
+// Completed packets' callbacks, run as the XDK runs them: in DirectSoundDoWork on the title's thread, so they never
+// overlap the title's own stream code. A stream flushed or released runs its own at once, before it is gone.
 std::deque<Done> g_done;
 std::condition_variable_any g_done_cv;
+thread_local std::vector<Done> t_flushed;  // run by the STREAM call that flushed them, once g_lock is let go
+std::atomic<int64_t> g_pumped{0};          // the last DirectSoundDoWork, steady ms
 bool g_started = false;
 uint32_t g_ds = 0;
 
@@ -154,7 +161,7 @@ void Complete(Voice& v, Packet& pk, uint32_t status) {
     if (pk.completed_ptr) W32(pk.completed_ptr, status == 0 ? pk.size : pk.used);
     if (pk.status_ptr) W32(pk.status_ptr, status);
     if (v.callback) {
-        g_done.push_back({v.callback, v.context, pk.context, status});
+        g_done.push_back({v.obj, v.callback, v.context, pk.context, status});
         g_done_cv.notify_one();
     } else if (pk.context) {
         if (ObjectRef e = FromHandle(pk.context)) SetEvent(*e);
@@ -241,21 +248,32 @@ void Render(float* out, uint32_t frames) {
     for (uint32_t i = 0; i < frames * 2; i++) out[i] = std::clamp(out[i], -1.0f, 1.0f);
 }
 
+int64_t NowMs() {
+    using namespace std::chrono;
+    return duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count();
+}
+
+void Run(X86Context& ctx, const std::vector<Done>& done) {
+    for (const Done& d : done) CallGuest(ctx, d.callback, {d.context, d.packet_context, d.status});
+}
+
 void Start() {
     if (g_started) return;
     g_started = true;
     audio::StartOutput(Render);
-    // stream callbacks run on a guest capable thread, like the DPCs they are on the console
+    // for a title that never calls DirectSoundDoWork: its callbacks come from here instead
     StartHostThread("dsound", [](X86Context& ctx) {
+        constexpr int64_t kPumpMs = 250;
         for (;;) {
-            Done d;
+            std::vector<Done> done;
             {
                 std::unique_lock<std::recursive_mutex> lock(g_lock);
-                g_done_cv.wait(lock, [] { return !g_done.empty(); });
-                d = g_done.front();
-                g_done.pop_front();
+                g_done_cv.wait_for(lock, std::chrono::milliseconds(50));
+                if (NowMs() - g_pumped < kPumpMs) continue;
+                done.assign(g_done.begin(), g_done.end());
+                g_done.clear();
             }
-            CallGuest(ctx, d.callback, {d.context, d.packet_context, d.status});
+            Run(ctx, done);
         }
     });
 }
@@ -405,7 +423,17 @@ HLE_STDCALL(IDirectSound_SetOrientation, 8) {
     }
     return 0;
 }
-HLE_STDCALL(DirectSoundDoWork, 0) { return 0; }
+HLE_STDCALL(DirectSoundDoWork, 0) {
+    g_pumped = NowMs();
+    std::vector<Done> done;
+    {
+        std::lock_guard<std::recursive_mutex> lock(g_lock);
+        done.assign(g_done.begin(), g_done.end());
+        g_done.clear();
+    }
+    Run(ctx, done);
+    return 0;
+}
 // starts together every voice played or unpaused with the synch playback flag
 HLE_STDCALL(IDirectSound_SynchPlayback, 1) {
     std::lock_guard<std::recursive_mutex> lock(g_lock);
@@ -607,24 +635,41 @@ HLE_STDCALL(DirectSoundCreateStream, 2) {
     return 0;
 }
 
-#define STREAM(name, nargs)                                 \
-    static uint32_t str_##name(Voice& v, const Args& a);    \
-    HLE_STDCALL(CDirectSoundStream_##name, nargs) {         \
-        std::lock_guard<std::recursive_mutex> lock(g_lock); \
-        Voice* v = Find(a[0]);                              \
-        return v ? str_##name(*v, a) : 0x80004005u;         \
-    }                                                       \
+#define STREAM(name, nargs)                                     \
+    static uint32_t str_##name(Voice& v, const Args& a);        \
+    HLE_STDCALL(CDirectSoundStream_##name, nargs) {             \
+        uint32_t r;                                             \
+        std::vector<Done> flushed;                              \
+        {                                                       \
+            std::lock_guard<std::recursive_mutex> lock(g_lock); \
+            Voice* v = Find(a[0]);                              \
+            r = v ? str_##name(*v, a) : 0x80004005u;            \
+            flushed.swap(t_flushed);                            \
+        }                                                       \
+        Run(ctx, flushed);                                      \
+        return r;                                               \
+    }                                                           \
     static uint32_t str_##name([[maybe_unused]] Voice& v, [[maybe_unused]] const Args& a)
 
+// the stream's callbacks still queued and those of its flushed packets, in order, go to the calling thread
 static void FlushStream(Voice& v) {
     for (auto& pk : v.packets) Complete(v, pk, kFlushed);
     v.packets.clear();
     v.pos = 0;
+    for (auto it = g_done.begin(); it != g_done.end();) {
+        if (it->voice != v.obj) {
+            ++it;
+            continue;
+        }
+        t_flushed.push_back(*it);
+        it = g_done.erase(it);
+    }
 }
 
 STREAM(AddRef, 1) { return uint32_t(++v.refs); }
 STREAM(SetFormat, 2) {
     ReadFormat(v, a[1]);
+    v.freq = 0;  // the XDK sets the pitch back to the new format's own rate
     v.block = -1;
     return 0;
 }
