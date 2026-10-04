@@ -3,15 +3,18 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdint>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <iterator>
 #include <map>
 #include <optional>
 #include <set>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include "xbe/xbe.h"
@@ -24,6 +27,13 @@ constexpr uint64_t kMul = 0x100000001B3ull;
 
 // operand values taken as image addresses; one range for every title so masks agree
 bool IsAddr(uint64_t v) { return v >= 0x10000 && v < 0x4000000; }
+
+// fingerprint constants below kSmall or from kNegative up are frame and counter noise
+constexpr uint32_t kSmall = 0x40, kNegative = 0xFFFFFF00;
+// a match by constants needs this many in common, this score, and this lead over every rival
+constexpr size_t kMinConstants = 3;
+constexpr double kAccept = 0.6, kLead = 0.2;
+const char* const kRegs[] = {"eax", "ecx", "edx", "ebx", "esp", "ebp", "esi", "edi"};
 
 uint64_t Pow(uint32_t n) {
     static std::vector<uint64_t> p{1};
@@ -51,7 +61,28 @@ struct Sig {
     std::string sec;         // library section, candidates elsewhere are skipped
     uint32_t count = 1, nth = 0;
     uint32_t xtlid = 0;      // .XTLID export id, used when the bytes match nothing
+    std::vector<uint32_t> k;    // constants, sorted
+    std::vector<uint32_t> ret;  // stack bytes each ret pops
+    uint8_t regs = 0;           // registers read before written, bit per kRegs
+    bool shape = false;         // ret and regs are known
 };
+
+std::string Regs(uint8_t m) {
+    std::string r;
+    for (int i = 0; i < 8; i++)
+        if (m >> i & 1) r += (r.empty() ? "" : " ") + std::string(kRegs[i]);
+    return r;
+}
+
+// share of the constants two functions have in common, repeats counted
+double Similar(const std::vector<uint32_t>& a, const std::vector<uint32_t>& b) {
+    size_t i = 0, j = 0, both = 0;
+    while (i < a.size() && j < b.size())
+        if (a[i] < b[j]) i++;
+        else if (b[j] < a[i]) j++;
+        else both++, i++, j++;
+    return both < kMinConstants ? 0 : double(both) / double(a.size() + b.size() - both);
+}
 
 struct DataRef {
     std::string in;
@@ -73,6 +104,7 @@ struct Image {
     xbe::Image x;
     std::vector<Code> code;
     std::vector<uint32_t> calls;
+    std::set<uint32_t> labels;  // targets of conditional and short jumps, inside functions
     ZydisDecoder dec;
 
     Image() { ZydisDecoderInit(&dec, ZYDIS_MACHINE_MODE_LEGACY_32, ZYDIS_STACK_WIDTH_32); }
@@ -126,6 +158,8 @@ struct Image {
         for (auto& im : in.raw.imm)
             if (im.size == 32 && (im.is_relative || IsAddr(uint32_t(im.value.u)))) mask(im.offset);
         if (in.meta.category == ZYDIS_CATEGORY_CALL && Rel32(in)) calls.push_back(Target(c.va + uint32_t(o), in));
+        else if (in.raw.imm[0].is_relative && (in.meta.category == ZYDIS_CATEGORY_COND_BR || in.raw.imm[0].size == 8))
+            labels.insert(Target(c.va + uint32_t(o), in));
         return in.length;
     }
 
@@ -207,6 +241,110 @@ struct Image {
             uint32_t t = Target(p, in);
             if (t < va || t >= va + len) r.push_back(t);
         });
+        return r;
+    }
+
+    // constants, ret sizes and entry registers of the code reachable inside [va, va + len)
+    void Trace(uint32_t va, uint32_t len, Sig& s) const {
+        s.shape = true;
+        auto c = CodeAt(va);
+        auto bit = [](ZydisRegister r) {
+            r = ZydisRegisterGetLargestEnclosing(ZYDIS_MACHINE_MODE_LEGACY_32, r);
+            return r >= ZYDIS_REGISTER_EAX && r <= ZYDIS_REGISTER_EDI && r != ZYDIS_REGISTER_ESP ? 1 << (r - ZYDIS_REGISTER_EAX) : 0;
+        };
+        // a library section does not point into .text, so an address there is a constant such as a GPU command
+        auto add = [&](uint64_t v64) {
+            uint32_t v = uint32_t(v64);
+            auto at = IsAddr(v) ? x.SectionAt(v) : nullptr;
+            if (v >= kSmall && v < kNegative && (!IsAddr(v) || (c->name != ".text" && at && at->name == ".text"))) s.k.push_back(v);
+        };
+        std::map<uint32_t, int> seen;  // registers written on every path to an instruction
+        std::vector<std::pair<uint32_t, int>> work{{va, 0}};
+        while (c && !work.empty()) {
+            auto [p, wr] = work.back();
+            work.pop_back();
+            ZydisDecodedInstruction in;
+            ZydisDecodedOperand ops[ZYDIS_MAX_OPERAND_COUNT];
+            while (p >= va && p - va < len) {
+                auto it = seen.find(p);
+                bool first = it == seen.end();
+                if (!first && !(it->second & ~wr)) break;
+                if (!first) wr &= it->second;
+                seen[p] = wr;
+                size_t o = p - c->va;
+                if (!ZYAN_SUCCESS(ZydisDecoderDecodeFull(&dec, c->b.data() + o, std::min<size_t>(15, c->b.size() - o), &in, ops))) break;
+                auto cat = in.meta.category;
+                int rd = 0, wt = 0;
+                // pushed arguments, stack slots and the frame size change with inlining and the callee's convention
+                bool stack = ops[0].type == ZYDIS_OPERAND_TYPE_REGISTER && ops[0].reg.value == ZYDIS_REGISTER_ESP;
+                for (uint32_t i = 0; i < in.operand_count; i++) {
+                    auto& op = ops[i];
+                    if (op.type == ZYDIS_OPERAND_TYPE_REGISTER) {
+                        if (op.actions & ZYDIS_OPERAND_ACTION_MASK_READ) rd |= bit(op.reg.value);
+                        if (op.actions & ZYDIS_OPERAND_ACTION_WRITE) wt |= bit(op.reg.value);
+                    } else if (op.type == ZYDIS_OPERAND_TYPE_MEMORY) {
+                        rd |= bit(op.mem.base) | bit(op.mem.index);
+                        stack |= op.mem.base == ZYDIS_REGISTER_ESP;
+                    }
+                }
+                bool same = in.operand_count_visible == 2 && ops[0].type == ZYDIS_OPERAND_TYPE_REGISTER &&
+                            ops[1].type == ZYDIS_OPERAND_TYPE_REGISTER && ops[0].reg.value == ops[1].reg.value;
+                // clearing a register and saving one on the stack do not read it
+                if ((same && (in.mnemonic == ZYDIS_MNEMONIC_XOR || in.mnemonic == ZYDIS_MNEMONIC_SUB || in.mnemonic == ZYDIS_MNEMONIC_SBB)) ||
+                    (in.mnemonic == ZYDIS_MNEMONIC_PUSH && ops[0].type == ZYDIS_OPERAND_TYPE_REGISTER))
+                    rd = 0;
+                s.regs |= uint8_t(rd & ~wr);
+                wr |= wt;
+                if (cat == ZYDIS_CATEGORY_CALL) wr |= 7;  // eax ecx edx
+                bool rel = in.raw.imm[0].is_relative;
+                if (first && !stack && !rel) {
+                    if (in.raw.disp.size) add(uint64_t(in.raw.disp.value));
+                    for (auto& im : in.raw.imm)
+                        if (im.size) add(im.value.u);
+                }
+                if (cat == ZYDIS_CATEGORY_RET) {
+                    uint32_t n = in.raw.imm[0].size ? uint32_t(in.raw.imm[0].value.u) : 0;
+                    if (std::find(s.ret.begin(), s.ret.end(), n) == s.ret.end()) s.ret.push_back(n);
+                }
+                if (cat == ZYDIS_CATEGORY_RET || in.mnemonic == ZYDIS_MNEMONIC_INT3 || in.mnemonic == ZYDIS_MNEMONIC_HLT) break;
+                if (cat == ZYDIS_CATEGORY_COND_BR && rel) work.push_back({Target(p, in), wr});
+                if (cat == ZYDIS_CATEGORY_UNCOND_BR) {
+                    if (!rel) break;
+                    p = Target(p, in);
+                } else {
+                    p += in.length;
+                }
+            }
+        }
+        std::sort(s.k.begin(), s.k.end());
+        std::sort(s.ret.begin(), s.ret.end());
+    }
+
+    // likely function starts: call targets, and code after padding, a return or a jump that is aligned or
+    // pointed at and that no conditional or short jump leads to
+    std::vector<uint32_t> Starts() const {
+        std::vector<uint32_t> r;
+        auto after = [&](uint32_t va) {
+            auto c = CodeAt(va);
+            size_t o = c ? va - c->va : 0, p = o;
+            if (!c || !c->start[o] || !o || labels.count(va)) return c && !o;
+            do p--;
+            while (p && !c->start[p]);
+            ZydisDecodedInstruction in;
+            return Decode(c->va + uint32_t(p), in) && p + in.length == o &&
+                   (in.meta.category == ZYDIS_CATEGORY_RET || in.meta.category == ZYDIS_CATEGORY_UNCOND_BR ||
+                    in.mnemonic == ZYDIS_MNEMONIC_INT3 || in.mnemonic == ZYDIS_MNEMONIC_NOP);
+        };
+        for (uint32_t va : calls)
+            if (Boundary(va)) r.push_back(va);
+        for (auto& s : x.sections)
+            for (uint32_t o = 0, n = std::min(s.vsize, s.rsize); o + 4 <= n; o++)
+                if (uint32_t v = x.U32(s.raw + o); after(v)) r.push_back(v);
+        for (auto& c : code)
+            for (uint32_t va = (c.va + 15) & ~15u; va - c.va < c.b.size(); va += 16)
+                if (after(va)) r.push_back(va);
+        std::sort(r.begin(), r.end());
+        r.erase(std::unique(r.begin(), r.end()), r.end());
         return r;
     }
 
@@ -306,6 +444,18 @@ Sig ReadSig(const toml::table& t) {
     s.sec = t["sec"].value_or(std::string());
     s.xtlid = uint32_t(t["xtlid"].value_or(int64_t(0)));
     if (auto a = t["calls"].as_array()) ReadCalls(*a, s);
+    if (auto a = t["k"].as_array())
+        for (auto& e : *a) s.k.push_back(uint32_t(e.value_or(int64_t(0))));
+    if (auto a = t["ret"].as_array())
+        for (auto& e : *a) s.ret.push_back(uint32_t(e.value_or(int64_t(0))));
+    else if (auto v = t["ret"].value<int64_t>())
+        s.ret.push_back(uint32_t(*v));
+    if (auto a = t["regs"].as_array()) {
+        s.shape = true;
+        for (auto& e : *a)
+            for (int i = 0; i < 8; i++)
+                if (e.value_or(std::string()) == kRegs[i]) s.regs |= uint8_t(1 << i);
+    }
     return s;
 }
 
@@ -327,6 +477,20 @@ std::string WriteSig(const Sig& s) {
     if (s.count > 1) r += ", count = " + std::to_string(s.count) + ", nth = " + std::to_string(s.nth);
     if (s.deep) r += ", deep = true";
     if (!s.calls.empty()) r += ", calls = " + WriteCalls(s);
+    auto list = [&](const char* key, const std::vector<uint32_t>& v, bool hex) {
+        if (v.empty()) return;
+        r += std::string(", ") + key + " = " + (hex || v.size() > 1 ? "[" : "");
+        for (size_t i = 0; i < v.size(); i++) r += (i ? ", " : "") + (hex ? Hex(v[i]) : std::to_string(v[i]));
+        r += hex || v.size() > 1 ? "]" : "";
+    };
+    list("k", s.k, true);
+    list("ret", s.ret, false);
+    if (s.shape) {
+        r += ", regs = [";
+        for (int i = 0, n = 0; i < 8; i++)
+            if (s.regs >> i & 1) r += std::string(n++ ? ", \"" : "\"") + kRegs[i] + "\"";
+        r += "]";
+    }
     return r + "}";
 }
 
@@ -364,6 +528,7 @@ struct Config {
     std::string xbe;
     std::vector<std::string> code_sections;
     std::map<std::string, uint32_t> symbols, data;
+    std::map<std::string, uint32_t> xtlid;  // export ids of functions no signing title links
     std::map<uint32_t, std::string> functions;
 };
 
@@ -381,7 +546,7 @@ bool LoadConfig(const fs::path& p, Config& cfg) {
     if (auto v = t["xbe"]["path"].value<std::string>()) cfg.xbe = *v;
     if (auto a = t["xbe"]["code_sections"].as_array())
         for (auto& i : *a) cfg.code_sections.push_back(i.value_or(std::string()));
-    for (auto [key, out] : {std::pair{"symbols", &cfg.symbols}, std::pair{"data", &cfg.data}})
+    for (auto [key, out] : {std::pair{"symbols", &cfg.symbols}, std::pair{"data", &cfg.data}, std::pair{"xtlid", &cfg.xtlid}})
         if (auto s = t[key].as_table())
             for (auto& [k, v] : *s) (*out)[std::string(k.str())] = uint32_t(v.value_or(int64_t(0)));
     if (auto s = t["functions"].as_table())
@@ -453,6 +618,8 @@ int Sign(const fs::path& out, const std::vector<fs::path>& configs, const std::s
             }
         };
         std::map<std::string, uint32_t> fresh;
+        for (auto& [n, id] : cfg.xtlid)
+            if (!skip.count(n)) sf.names.insert(n), sf.symbols[n].xtlid = id;
         for (auto& [n, va] : cfg.symbols) {
             if (skip.count(n)) continue;
             sf.names.insert(n);
@@ -462,6 +629,7 @@ int Sign(const fs::path& out, const std::vector<fs::path>& configs, const std::s
             uint32_t id = sf.symbols[n].xtlid;
             sf.symbols[n] = make(va);
             sf.symbols[n].xtlid = id;
+            if (sf.symbols[n].len) img.Trace(va, sf.symbols[n].len, sf.symbols[n]);
             fresh[n] = va;
             origin[n] = cp.filename().string();
         }
@@ -504,7 +672,7 @@ int Sign(const fs::path& out, const std::vector<fs::path>& configs, const std::s
                 break;
             }
             for (auto& [id, va] : img.Exports())
-                if (sf.data[dn].in.empty() && va == dva) sf.data[dn].xtlid = id;
+                if (va == dva) sf.data[dn].xtlid = id;
             if (sf.data[dn].in.empty() && !sf.data[dn].xtlid) std::fprintf(stderr, "%s: no function uses %s\n", cp.filename().string().c_str(), dn.c_str());
         }
     }
@@ -516,6 +684,10 @@ int Sign(const fs::path& out, const std::vector<fs::path>& configs, const std::s
         "# jump target outside it, in order, two levels deep; deep = lookalikes exist, so the callees' callees must\n"
         "# match too; count and nth pick one of identical functions by link order; xtlid = its .XTLID export id,\n"
         "# used when the bytes match nothing. {} = no signature, stays 0.\n"
+        "# k = its constants, sorted: immediates and displacements of instructions that do not use the stack, when\n"
+        "# not an image address, a branch target or below 0x40; an address inside .text counts in a library section,\n"
+        "# which holds no such pointer. ret = stack bytes its rets pop, regs = registers it reads before it writes\n"
+        "# them. A function the bytes do not find is matched by k; ret and regs then show a changed convention.\n"
         "# [anchors] functions only used to find data. [data] in = function, insn = instruction index, op = operand,\n"
         "# xtlid = the id .XTLID lists the address under, used when in finds nothing.\n";
     s += "\n[symbols]\n";
@@ -576,14 +748,15 @@ int Scan(const fs::path& xbe_path, const fs::path& xdk, const fs::path& out, con
     std::fprintf(stderr, "\n");
 
     std::vector<uint16_t> want;
-    for (const char* pick : {"D3D8", "XAPILIB"})
+    for (const char* pick : {"D3D8", "D3D8LTCG", "XAPILIB"})
         for (auto& l : x.libraries)
             if (l.name == pick) want.push_back(l.build);
     for (auto& l : x.libraries) want.push_back(l.build);
     fs::path dir;
+    uint16_t build = 0;
     for (auto b : want)
         if (fs::exists(xdk / std::to_string(b) / "signatures.toml")) {
-            dir = xdk / std::to_string(b);
+            dir = xdk / std::to_string(build = b);
             break;
         }
     if (dir.empty()) {
@@ -644,12 +817,97 @@ int Scan(const fs::path& xbe_path, const fs::path& xdk, const fs::path& out, con
                 va = eva;
                 report.push_back("  " + k + " found by .XTLID " + Hex(id));
             }
+
+    // functions the bytes did not find: the unclaimed start whose constants are closest
+    std::vector<uint32_t> bounds(img.calls);
+    std::map<uint32_t, uint32_t> claimed;
+    for (auto& [k, va] : found) claimed[va] = va + (sf.symbols.count(k) ? sf.symbols[k] : sf.anchors[k]).len;
+    for (auto& [k, va] : symbols)
+        if (va) bounds.push_back(va), claimed.insert({va, va + 1});
+    std::sort(bounds.begin(), bounds.end());
+    auto shape = [&](uint32_t va) {
+        Sig s;
+        auto c = img.CodeAt(va);
+        auto next = std::upper_bound(bounds.begin(), bounds.end(), va);
+        if (c) img.Trace(va, img.Extent(va, uint32_t(std::min<uint64_t>(next == bounds.end() ? ~0u : *next, c->va + c->b.size()))), s);
+        return s;
+    };
+    struct Rank {
+        double best = 0, next = 0;
+        size_t who = 0;
+        void Add(double v, size_t w) {
+            if (v > best) next = best, best = v, who = w;
+            else next = std::max(next, v);
+        }
+    };
+    std::vector<std::string> named;
+    std::map<std::string, std::vector<std::pair<uint32_t, Sig>>> starts;
+    for (auto& [k, s] : sf.symbols)
+        if (s.k.size() >= kMinConstants) {
+            named.push_back(k);
+            if (!symbols[k]) starts[s.sec];
+        }
+    for (uint32_t va : img.Starts()) {
+        auto c = img.CodeAt(va);
+        auto it = claimed.upper_bound(va);
+        if (starts.count(c->name) && (it == claimed.begin() || va >= std::prev(it)->second)) starts[c->name].push_back({va, shape(va)});
+    }
+    std::vector<Rank> by_name(named.size());
+    std::map<uint32_t, Rank> by_start;
+    for (size_t i = 0; i < named.size(); i++) {
+        auto& s = sf.symbols[named[i]];
+        if (!starts.count(s.sec)) continue;
+        auto& c = starts[s.sec];
+        for (size_t j = 0; j < c.size(); j++) {
+            double score = Similar(s.k, c[j].second.k);
+            by_name[i].Add(score, j);
+            by_start[c[j].first].Add(score, i);
+        }
+    }
+    std::set<std::string> loose;  // found, but not by their bytes
+    for (auto& [k, va] : symbols)
+        if (va && !found.count(k)) loose.insert(k);
+    for (size_t i = 0; i < named.size(); i++) {
+        auto& r = by_name[i];
+        if (symbols[named[i]] || r.best < kAccept || r.best - r.next < kLead) continue;
+        uint32_t va = starts[sf.symbols[named[i]].sec][r.who].first;
+        auto& rival = by_start[va];
+        if (rival.who != i || rival.best - rival.next < kLead) continue;
+        symbols[named[i]] = va;
+        loose.insert(named[i]);
+        char b[16];
+        std::snprintf(b, sizeof b, "%.2f", r.best);
+        report.push_back("  " + named[i] + " found by constants (" + b + ") at " + Hex(va));
+    }
+    // a different ret size or other entry registers than the reference: arguments moved
+    std::map<std::string, std::string> abi;
+    auto convention = [](const Sig& s) {
+        std::string r = s.regs ? "reads " + Regs(s.regs) : "reads no register";
+        for (size_t i = 0; i < s.ret.size(); i++) r += (i ? " or " : ", pops ") + std::to_string(s.ret[i]);
+        return r + (s.ret.empty() ? ", leaves by jump" : "");
+    };
+    for (auto& k : loose) {
+        auto& s = sf.symbols[k];
+        Sig c = shape(symbols[k]);
+        // a function that leaves by jump does not tell its stack bytes
+        if (!s.shape || (c.regs == s.regs && (c.ret == s.ret || c.ret.empty() || s.ret.empty()))) continue;
+        size_t args = s.ret.size() == 1 ? s.ret[0] / 4 : 0;  // when the reference tells
+        for (int i = 0; s.ret.size() == 1 && i < 8; i++) args += s.regs >> i & 1;
+        abi[k] = "[\"?\"";
+        for (size_t i = 1; i < args; i++) abi[k] += ", \"?\"";
+        abi[k] += "]  # " + convention(c);
+        if (abi.size() == 1) report.push_back("  convention differs from the reference, prove each argument order by hand and write it in [abi]:");
+        report.push_back("    " + k + " at " + Hex(symbols[k]) + " " + convention(c) + "; reference " + convention(s));
+    }
+
     for (auto& [k, d] : sf.data) {
         data[k] = 0;
         auto sig = sf.symbols.count(d.in) ? &sf.symbols[d.in] : sf.anchors.count(d.in) ? &sf.anchors[d.in] : nullptr;
         if (sig && found.count(d.in)) data[k] = img.Operand(found[d.in], sig->len, d).value_or(0);
         for (auto& [id, va] : img.Exports())
             if (!data[k] && d.xtlid && id == d.xtlid) data[k] = va;
+        // an instruction index only holds in a function the bytes found
+        if (!data[k] && loose.count(d.in)) report.push_back("  " + k + " not read from " + d.in + ", which the bytes did not find");
     }
 
     size_t fs_ = 0, ds = 0;
@@ -659,17 +917,17 @@ int Scan(const fs::path& xbe_path, const fs::path& xdk, const fs::path& out, con
     std::fprintf(stderr, "  found %zu of %zu functions, %zu of %zu data\n", fs_, symbols.size(), ds, data.size());
     for (auto& r : report) std::fprintf(stderr, "%s\n", r.c_str());
     if (!miss.empty()) std::fprintf(stderr, "  missing (0, the host traps if the game calls one):%s\n", miss.c_str());
+    for (auto& l : x.libraries)
+        if (l.name.size() > 4 && l.name.compare(l.name.size() - 4, 4, "LTCG") == 0)
+            std::fprintf(stderr, "  %s is link time code generated: check the functions found by constants and the missing ones by hand\n", l.name.c_str());
 
     uint64_t code = 0;
     for (auto& c : img.code) code += c.b.size();
     uint32_t parts = 8;
     while (parts < 256 && code / 40000 > parts * 3 / 2) parts *= 2;
-    fs::path cfg_dir = out.empty() ? fs::absolute("config") : fs::absolute(out).parent_path();
-    std::string layout = (fs::absolute(dir) / "layout.toml").lexically_relative(cfg_dir).generic_string();
-    std::string s = "# Recompiler input for " + xbe_path.filename().string() + ", written by xbe_symbols\n";
-    s += "includes = [\"" + layout + "\"]\n\n[xbe]\n";
+    std::string s = "# Recompiler input for " + xbe_path.filename().string() + ", written by xbe_symbols\n\n[xbe]\n";
     s += "path = \"assets/" + xbe_path.filename().string() + "\"\n";
-    s += "title = " + Hex(x.title_id) + "\nentry = " + Hex(x.entry) + "\n";
+    s += "title = " + Hex(x.title_id) + "\nentry = " + Hex(x.entry) + "\nxdk = " + std::to_string(build) + "\n";
     s += "out = \"generated/" + name + "\"\n";
     s += "partitions = " + std::to_string(parts) + "\n";
     s += "code_sections = [";
@@ -677,6 +935,9 @@ int Scan(const fs::path& xbe_path, const fs::path& xdk, const fs::path& out, con
     s += "]\n\n# extra entry points\n[functions]\n";
     s += "\n# functions the host replaces or calls by name, 0 where the image has none\n[symbols]\n" + Table(symbols);
     s += "\n[data]\n" + Table(data);
+    s += "\n# argument locations in API order for functions a link time code generated library compiled with another\n"
+         "# convention: a register (eax ebx ecx edx esi edi ebp) or \"stack\" for the next stack slot, which the callee pops\n[abi]\n";
+    for (auto& [k, e] : abi) s += k + " = " + e + "\n";
     if (out.empty()) std::fwrite(s.data(), 1, s.size(), stdout);
     else std::ofstream(out, std::ios::binary) << s;
     return 0;
