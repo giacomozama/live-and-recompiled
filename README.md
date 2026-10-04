@@ -14,7 +14,7 @@ This tool was originally created for porting [Tom Clancy's Splinter Cell: Double
    list(FILTER XBE_HOST_SOURCES EXCLUDE REGEX "/src/game/")
    add_xbe_image(MyGame default.xbe game.toml 128 game)
    ```
-3. Build with Clang and Ninja (`clang++`, `-fuse-ld=lld`). Zydis, toml++ and Dear ImGui are fetched by CMake.
+3. Build with Clang and Ninja (`clang++`, `-fuse-ld=lld`). Zydis, toml++, Dear ImGui and SDL3 are fetched by CMake.
 
 ## Game Setup
 
@@ -59,7 +59,7 @@ A new XDK build needs `xdk/<build>/layout.toml` and signatures made from titles 
 - **DirectSound at the API Level** - Software mixer on XAudio2 with Xbox ADPCM, streams and the effects image.
 
 ### Input
-- **Controllers** - XInput pads with rumble.
+- **Controllers** - Xbox, PlayStation and Switch controllers through SDL3, hot plugged, with rumble.
 
 ### General
 - **Disc Images** - The game runs from an `.iso` in `assets` (whole disc dump or game partition) as well as from extracted files in release builds.
@@ -71,5 +71,5 @@ A new XDK build needs `xdk/<build>/layout.toml` and signatures made from titles 
 ## Credits
 
 - [XenonRecomp](https://github.com/hedge-dev/XenonRecomp) for the recompiled function layout this follows.
-- [Zydis](https://github.com/zyantific/zydis), [toml++](https://github.com/marzer/tomlplusplus) and [Dear ImGui](https://github.com/ocornut/imgui).
+- [Zydis](https://github.com/zyantific/zydis), [toml++](https://github.com/marzer/tomlplusplus), [Dear ImGui](https://github.com/ocornut/imgui) and [SDL](https://github.com/libsdl-org/SDL).
 - [xemu](https://github.com/xemu-project/xemu) and [Cxbx-Reloaded](https://github.com/Cxbx-Reloaded/Cxbx-Reloaded), read for hardware and API behaviour.

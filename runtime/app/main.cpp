@@ -19,6 +19,7 @@
 #include <backends/imgui_impl_win32.h>
 
 #include "app/app.h"
+#include "core/input.h"
 #include "core/log.h"
 #include "gpu/backend.h"
 #include "image_symbols.h"
@@ -242,6 +243,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard | ImGuiConfigFlags_NavEnableGamepad;
     ImGui_ImplWin32_Init(app::g_hwnd);
 
+    input::Init();
     if (app::kGame.window) app::kGame.window(app::g_hwnd);
     std::wstring hdd = app::Instance() > 1 ? L"hdd" + std::to_wstring(app::Instance()) : L"hdd";
     if (app::Instance())

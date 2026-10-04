@@ -5,7 +5,7 @@
 #   -x regex of sources to leave out (repeatable)   -e extra source file (repeatable)
 #   -G folder for the generated objects (default <out>/gen), shared between builds of the same generated code
 # env: CXX (clang++), JOBS (nproc)
-# Leaves out the window, XInput, XAudio2 and D3D12 parts of the runtime and the sources of the repo's other images
+# Leaves out the window, SDL input, XAudio2 and D3D12 parts of the runtime and the sources of the repo's other images
 # (src/<name> for each other folder beside the generated one); the harness supplies their stand ins.
 set -e
 EXCL=(); EXTRA=()

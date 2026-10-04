@@ -1,51 +1,119 @@
+// controllers through SDL: Xbox, PlayStation and Switch pads read into the console controller's report
 #include "core/input.h"
 
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#include <windows.h>
-#include <xinput.h>
+#include <algorithm>
+#include <iterator>
+#include <mutex>
+
+#include <SDL3/SDL.h>
 
 #include "app/app.h"
+#include "core/log.h"
 
 namespace input {
 
+namespace {
+
+// a controller takes the lowest free port when it is plugged in and keeps it until it is unplugged
+std::mutex g_lock;
+bool g_sdl = false;
+SDL_Gamepad* g_pads[4] = {};
+
+void AddPad(SDL_JoystickID id) {
+    for (SDL_Gamepad* pad : g_pads)
+        if (pad && SDL_GetGamepadID(pad) == id) return;
+    SDL_Gamepad** slot = std::find(std::begin(g_pads), std::end(g_pads), nullptr);
+    if (slot == std::end(g_pads)) return;
+    *slot = SDL_OpenGamepad(id);
+    const char* name = *slot ? SDL_GetGamepadName(*slot) : SDL_GetError();
+    LOGI("input: controller %d %s: %s", int(slot - g_pads) + 1, *slot ? "plugged in" : "failed to open", name ? name : "");
+}
+
+void RemovePad(SDL_JoystickID id) {
+    for (int i = 0; i < 4; i++) {
+        if (!g_pads[i] || SDL_GetGamepadID(g_pads[i]) != id) continue;
+        SDL_CloseGamepad(g_pads[i]);
+        g_pads[i] = nullptr;
+        LOGI("input: controller %d unplugged", i + 1);
+    }
+}
+
+// once a millisecond at most, however many ports and threads read
+void UpdatePads() {
+    static uint64_t last = 0;
+    uint64_t now = SDL_GetTicks();
+    if (!g_sdl || now == last) return;
+    last = now;
+    SDL_PumpEvents();
+    SDL_Event e;
+    while (SDL_PeepEvents(&e, 1, SDL_GETEVENT, SDL_EVENT_FIRST, SDL_EVENT_LAST) == 1) {
+        if (e.type == SDL_EVENT_GAMEPAD_ADDED) AddPad(e.gdevice.which);
+        else if (e.type == SDL_EVENT_GAMEPAD_REMOVED) RemovePad(e.gdevice.which);
+    }
+}
+
+}  // namespace
+
+void Init() {
+    // WGI reads the triggers apart and HIDAPI takes PlayStation and Switch pads. Reads come from the guest's threads,
+    // so SDL's own thread takes the device notices.
+    SDL_SetHint(SDL_HINT_JOYSTICK_THREAD, "1");
+    SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");
+    SDL_SetHint(SDL_HINT_JOYSTICK_WGI, "1");
+    SDL_SetHint(SDL_HINT_JOYSTICK_RAWINPUT, "0");
+    SDL_SetHint(SDL_HINT_XINPUT_ENABLED, "0");
+    SDL_SetHint(SDL_HINT_JOYSTICK_DIRECTINPUT, "0");
+    if (!SDL_Init(SDL_INIT_GAMEPAD)) {
+        LOGE("input: SDL failed to start, no controllers: %s", SDL_GetError());
+        return;
+    }
+    int v = SDL_GetVersion();
+    LOGI("input: SDL %d.%d.%d", SDL_VERSIONNUM_MAJOR(v), SDL_VERSIONNUM_MINOR(v), SDL_VERSIONNUM_MICRO(v));
+    std::lock_guard lock(g_lock);
+    g_sdl = true;
+    int count = 0;
+    if (SDL_JoystickID* ids = SDL_GetGamepads(&count)) {
+        for (int i = 0; i < count; i++) AddPad(ids[i]);
+        SDL_free(ids);
+    }
+}
+
 Pad Poll(int port) {
     Pad p;
-    XINPUT_STATE s{};
-    p.connected = XInputGetState(DWORD(port), &s) == ERROR_SUCCESS;
-    if (p.connected) {
-        const XINPUT_GAMEPAD& g = s.Gamepad;
-        auto b = [&](WORD m) { return (g.wButtons & m) != 0; };
-        p.buttons = uint16_t((b(XINPUT_GAMEPAD_DPAD_UP) << 0) | (b(XINPUT_GAMEPAD_DPAD_DOWN) << 1) |
-                             (b(XINPUT_GAMEPAD_DPAD_LEFT) << 2) | (b(XINPUT_GAMEPAD_DPAD_RIGHT) << 3) |
-                             (b(XINPUT_GAMEPAD_START) << 4) | (b(XINPUT_GAMEPAD_BACK) << 5) |
-                             (b(XINPUT_GAMEPAD_LEFT_THUMB) << 6) | (b(XINPUT_GAMEPAD_RIGHT_THUMB) << 7));
-        auto a = [&](WORD m) { return uint8_t(b(m) ? 0xFF : 0); };
-        p.analog[0] = a(XINPUT_GAMEPAD_A);
-        p.analog[1] = a(XINPUT_GAMEPAD_B);
-        p.analog[2] = a(XINPUT_GAMEPAD_X);
-        p.analog[3] = a(XINPUT_GAMEPAD_Y);
-        p.analog[4] = a(XINPUT_GAMEPAD_RIGHT_SHOULDER);  // black
-        p.analog[5] = a(XINPUT_GAMEPAD_LEFT_SHOULDER);   // white
-        p.analog[6] = g.bLeftTrigger;
-        p.analog[7] = g.bRightTrigger;
-        p.lx = g.sThumbLX;
-        p.ly = g.sThumbLY;
-        p.rx = g.sThumbRX;
-        p.ry = g.sThumbRY;
+    {
+        std::lock_guard lock(g_lock);
+        UpdatePads();
+        if (SDL_Gamepad* pad = port >= 0 && port < 4 ? g_pads[port] : nullptr) {
+            p.connected = true;
+            constexpr SDL_GamepadButton kButtons[] = {
+                SDL_GAMEPAD_BUTTON_DPAD_UP,   SDL_GAMEPAD_BUTTON_DPAD_DOWN,  SDL_GAMEPAD_BUTTON_DPAD_LEFT,
+                SDL_GAMEPAD_BUTTON_DPAD_RIGHT, SDL_GAMEPAD_BUTTON_START,     SDL_GAMEPAD_BUTTON_BACK,
+                SDL_GAMEPAD_BUTTON_LEFT_STICK, SDL_GAMEPAD_BUTTON_RIGHT_STICK};
+            for (int i = 0; i < 8; i++) p.buttons |= uint16_t(SDL_GetGamepadButton(pad, kButtons[i]) << i);
+            // A B X Y black white
+            constexpr SDL_GamepadButton kAnalog[] = {SDL_GAMEPAD_BUTTON_SOUTH, SDL_GAMEPAD_BUTTON_EAST,
+                                                     SDL_GAMEPAD_BUTTON_WEST,  SDL_GAMEPAD_BUTTON_NORTH,
+                                                     SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER, SDL_GAMEPAD_BUTTON_LEFT_SHOULDER};
+            for (int i = 0; i < 6; i++) p.analog[i] = SDL_GetGamepadButton(pad, kAnalog[i]) ? 0xFF : 0;
+            auto axis = [&](SDL_GamepadAxis a) { return int(SDL_GetGamepadAxis(pad, a)); };
+            p.analog[6] = uint8_t(std::max(axis(SDL_GAMEPAD_AXIS_LEFT_TRIGGER), 0) >> 7);
+            p.analog[7] = uint8_t(std::max(axis(SDL_GAMEPAD_AXIS_RIGHT_TRIGGER), 0) >> 7);
+            // SDL's sticks have y down
+            p.lx = int16_t(axis(SDL_GAMEPAD_AXIS_LEFTX));
+            p.ly = int16_t(-1 - axis(SDL_GAMEPAD_AXIS_LEFTY));
+            p.rx = int16_t(axis(SDL_GAMEPAD_AXIS_RIGHTX));
+            p.ry = int16_t(-1 - axis(SDL_GAMEPAD_AXIS_RIGHTY));
+        }
     }
     if (app::kGame.pad) app::kGame.pad(port, p);
     return p;
 }
 
+// the motors run until set again
 void Rumble(int port, uint16_t left, uint16_t right) {
     if (app::kGame.rumble) app::kGame.rumble(port, left, right);
-    XINPUT_VIBRATION v{left, right};
-    XInputSetState(DWORD(port), &v);
+    std::lock_guard lock(g_lock);
+    if (port >= 0 && port < 4 && g_pads[port]) SDL_RumbleGamepad(g_pads[port], left, right, 0);
 }
 
 }  // namespace input
