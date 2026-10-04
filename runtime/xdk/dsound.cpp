@@ -91,6 +91,7 @@ struct Voice {
     uint16_t tag = 1, channels = 1, bits = 16, align = 2;
     uint32_t rate = 48000;
     // buffer
+    // play region in bytes from data, loop region in bytes from the play region
     uint32_t data = 0, bytes = 0, loop_start = 0, loop_len = 0, play_start = 0, play_len = 0;
     bool playing = false, looping = false, paused = false;
     bool sync = false;  // held until IDirectSound_SynchPlayback
@@ -217,6 +218,7 @@ void Render(float* out, uint32_t frames) {
         if (v.paused || v.sync || (!v.stream && !v.playing)) continue;
         float l, r;
         Levels(v, l, r);
+        uint32_t base = v.data + v.play_start;
         double step = double(v.freq ? v.freq : v.rate) / audio::kRate;
         for (uint32_t i = 0; i < frames; i++) {
             uint32_t f = uint32_t(v.pos);
@@ -248,24 +250,23 @@ void Render(float* out, uint32_t frames) {
                     b1 = b;
                 }
             } else {
-                uint32_t end = v.looping && v.loop_len ? FramesOf(v, v.loop_start + v.loop_len)
-                               : FramesOf(v, v.play_len ? std::min(v.play_start + v.play_len, v.bytes) : v.bytes);
+                uint32_t start = v.looping ? FramesOf(v, v.loop_start) : 0;
+                uint32_t end = FramesOf(v, v.looping ? v.loop_start + v.loop_len : v.play_len);
                 if (f >= end) {
-                    if (!v.looping || !end) {
+                    if (!v.looping || end <= start) {
                         v.playing = false;
                         v.pos = 0;
                         break;
                     }
-                    uint32_t start = v.loop_len ? FramesOf(v, v.loop_start) : 0;
-                    v.pos -= end - start;
+                    v.pos = start + std::fmod(v.pos - start, double(end - start));
                     f = uint32_t(v.pos);
                 }
                 if (!v.data) break;
-                a = Sample(v, v.data, f, 0);
-                b = Sample(v, v.data, f, 1);
-                uint32_t g = f + 1 < end ? f + 1 : v.looping && end ? (v.loop_len ? FramesOf(v, v.loop_start) : 0) : f;
-                a1 = Sample(v, v.data, g, 0);
-                b1 = Sample(v, v.data, g, 1);
+                a = Sample(v, base, f, 0);
+                b = Sample(v, base, f, 1);
+                uint32_t next = f + 1 < end ? f + 1 : v.looping ? start : f;
+                a1 = Sample(v, base, next, 0);
+                b1 = Sample(v, base, next, 1);
             }
             float t = float(v.pos - f);
             out[i * 2] += (a + (a1 - a) * t) * l;
@@ -355,7 +356,7 @@ uint32_t NewBuffer(uint32_t desc, uint32_t out) {
     v.is3d = flags & 0x10;
     if (bytes) {
         v.data = mem::AllocContiguous(bytes, 0, 0xFFFFFFFF, 4);
-        v.bytes = bytes;
+        v.bytes = v.play_len = v.loop_len = bytes;
     }
     W32(out, obj);
     return 0;
@@ -559,8 +560,10 @@ BUFFER(Release, 1) {
 }
 BUFFER(Unlock, 5) { return 0; }
 BUFFER(SetBufferData, 3) {
+    if (a[1] == v.data && a[2] == v.bytes) return 0;
     v.data = a[1];
-    v.bytes = a[2];
+    v.bytes = v.play_len = v.loop_len = a[2];
+    v.play_start = v.loop_start = 0;
     v.pos = 0;
     v.block = -1;
     return 0;
@@ -568,7 +571,7 @@ BUFFER(SetBufferData, 3) {
 BUFFER(Play, 4) {
     v.playing = true;
     v.looping = a[3] & 1;
-    if (a[3] & 2) v.pos = FramesOf(v, v.play_start);
+    if (a[3] & 2) v.pos = 0;
     v.sync = a[3] & 4;
     return 0;
 }
@@ -581,15 +584,20 @@ BUFFER(StopEx, 4) {
     v.playing = false;
     return 0;
 }
-// (this, start, length) in bytes, 0 length plays to the end
+// (this, start, length) in bytes, 0 length plays to the end. The loop becomes the whole region.
 BUFFER(SetPlayRegion, 3) {
+    if (a[1] > v.bytes || a[2] > v.bytes - a[1]) return 0x88780032u;
     v.play_start = a[1];
-    v.play_len = a[2];
+    v.play_len = v.loop_len = a[2] ? a[2] : v.bytes - a[1];
+    v.loop_start = 0;
+    v.pos = 0;
+    v.block = -1;
     return 0;
 }
 BUFFER(SetLoopRegion, 3) {
+    if (a[1] > v.play_len || a[2] > v.play_len - a[1]) return 0x88780032u;
     v.loop_start = a[1];
-    v.loop_len = a[2];
+    v.loop_len = a[2] ? a[2] : v.play_len - a[1];
     return 0;
 }
 BUFFER(GetStatus, 2) {
@@ -599,7 +607,7 @@ BUFFER(GetStatus, 2) {
 BUFFER(GetCurrentPosition, 3) {
     uint32_t p = BytesOf(v, uint32_t(v.pos));
     if (a[1]) W32(a[1], p);
-    if (a[2]) W32(a[2], v.bytes ? (p + BytesOf(v, 65 * 4)) % v.bytes : 0);
+    if (a[2]) W32(a[2], v.play_len ? (p + BytesOf(v, 65 * 4)) % v.play_len : 0);
     return 0;
 }
 BUFFER(SetCurrentPosition, 2) {
