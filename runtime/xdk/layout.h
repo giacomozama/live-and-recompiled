@@ -81,6 +81,54 @@ constexpr bool AllKnown(const LayoutKey (&keys)[N]) {
 #ifndef XDK_CDevice_Size
 #define XDK_CDevice_Size 0xFFFFFFFFu
 #endif
+#ifndef XDK_CDevice_Flags
+#define XDK_CDevice_Flags 0xFFFFFFFFu
+#endif
+#ifndef XDK_CDevice_Time
+#define XDK_CDevice_Time 0xFFFFFFFFu
+#endif
+#ifndef XDK_CDevice_PixelShader
+#define XDK_CDevice_PixelShader 0xFFFFFFFFu
+#endif
+#ifndef XDK_CDevice_VertexShader
+#define XDK_CDevice_VertexShader 0xFFFFFFFFu
+#endif
+#ifndef XDK_CDevice_BackBufferScale
+#define XDK_CDevice_BackBufferScale 0xFFFFFFFFu
+#endif
+#ifndef XDK_CDevice_Viewport
+#define XDK_CDevice_Viewport 0xFFFFFFFFu
+#endif
+#ifndef XDK_CDevice_ScreenSpaceOffset
+#define XDK_CDevice_ScreenSpaceOffset 0xFFFFFFFFu
+#endif
+#ifndef XDK_CDevice_AutoDepth
+#define XDK_CDevice_AutoDepth 0xFFFFFFFFu
+#endif
+#ifndef XDK_CDevice_VBlankCallback
+#define XDK_CDevice_VBlankCallback 0xFFFFFFFFu
+#endif
+#ifndef XDK_CDevice_VBlankEvent
+#define XDK_CDevice_VBlankEvent 0xFFFFFFFFu
+#endif
+#ifndef XDK_CDevice_DisplayFlags
+#define XDK_CDevice_DisplayFlags 0xFFFFFFFFu
+#endif
+#ifndef XDK_CDevice_VBlankCount
+#define XDK_CDevice_VBlankCount 0xFFFFFFFFu
+#endif
+#ifndef XDK_CDevice_Field
+#define XDK_CDevice_Field 0xFFFFFFFFu
+#endif
+#ifndef XDK_CDevice_GammaRamps
+#define XDK_CDevice_GammaRamps 0xFFFFFFFFu
+#endif
+#ifndef XDK_CDevice_GammaPending
+#define XDK_CDevice_GammaPending 0xFFFFFFFFu
+#endif
+#ifndef XDK_PixelShader_Definition
+#define XDK_PixelShader_Definition 0xFFFFFFFFu
+#endif
 #ifndef XDK_DirtyFlags_Texture
 #define XDK_DirtyFlags_Texture 0xFFFFFFFFu
 #endif

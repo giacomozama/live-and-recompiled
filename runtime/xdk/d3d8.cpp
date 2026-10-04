@@ -10,11 +10,22 @@
 #include "core/diag.h"
 #include "gpu/backend.h"
 #include "gpu/texture.h"
+#include "gpu/vertex.h"
 #include "xdk/d3d8.h"
 #include "xdk/hle.h"
 #include "xdk/layout.h"
 
 using namespace kernel;
+
+// configs written before the SDK knew the name
+#ifndef SYM_D3DDevice_BeginPush
+#define SYM_D3DDevice_BeginPush FFFFFE00
+#define HAS_D3DDevice_BeginPush 0
+#endif
+#ifndef SYM_D3DDevice_EndPush
+#define SYM_D3DDevice_EndPush FFFFFE01
+#define HAS_D3DDevice_EndPush 0
+#endif
 
 namespace d3d {
 
@@ -36,11 +47,6 @@ constexpr uint32_t kRenderState = SYM(D3D_RenderState);            // [166]
 constexpr uint32_t kStreams = SYM(D3D_Streams);                    // [16] stride, offset, buffer
 constexpr uint32_t kSimpleEncode = SYM(D3D_SimpleRenderStateEncode);
 
-// recompiled D3D helpers kept as guest code
-constexpr uint32_t kInternalAddRef = SYM(D3D_InternalAddRef);
-constexpr uint32_t kInternalRelease = SYM(D3D_InternalRelease);
-constexpr uint32_t kInitDefaultState = SYM(D3D_InitDefaultState);
-
 // CDevice fields mirrored so the recompiled getters and resource code see what the XDK would
 constexpr uint32_t kDevPush = XDK_CDevice_Push, kDevThreshold = XDK_CDevice_PushThreshold,
                    kDevBaseVertex = XDK_CDevice_BaseVertex, kDevIndexBuffer = XDK_CDevice_IndexBuffer,
@@ -60,17 +66,55 @@ std::unordered_map<uint32_t, std::shared_ptr<gpu::PixelShader>> g_ps;
 std::array<uint32_t, 3> g_buffers{};  // front, back surfaces
 uint32_t g_buffer_count = 2;
 uint32_t g_depth = 0;
-uint32_t g_scratch_push = 0;
-
-void AddRef(uint32_t res) {
-    if (res) CallGuest(CurrentContext(), kInternalAddRef, {res});
-}
-void Release(uint32_t res) {
-    if (res) CallGuest(CurrentContext(), kInternalRelease, {res});
-}
+uint32_t g_scratch_push = 0, g_scratch_size = 0;
 
 uint32_t Dev(uint32_t off) { return R32(kDevice + off); }
 void SetDev(uint32_t off, uint32_t v) { W32(kDevice + off, v); }
+
+// The device's own references: a count in bits 19 to 22 of the resource's first dword. A surface's first one
+// also holds its parent. The library's functions do it when the image has them, inlined ones are done here.
+void AddRef(X86Context& ctx, uint32_t res) {
+    if (!res) return;
+#if HAS_D3D_InternalAddRef
+    GUEST_CALL(D3D_InternalAddRef, ctx, {res});
+#else
+    (void)ctx;
+    uint32_t common = R32(res);
+    if (!(common & 0x780000) && (common & 0x70000) == 0x50000)
+        if (uint32_t parent = R32(res + 0x14)) W32(parent, R32(parent) + 0x80000);
+    W32(res, R32(res) + 0x80000);
+#endif
+}
+void Release(X86Context& ctx, uint32_t res) {
+    if (!res) return;
+#if HAS_D3D_InternalRelease
+    GUEST_CALL(D3D_InternalRelease, ctx, {res});
+#else
+    (void)ctx;
+    // the library frees a resource nothing holds any more; without its function the memory stays
+    auto drop = [](uint32_t r) {
+        W32(r, R32(r) - 0x80000);
+        if (!(R32(r) & 0x78FFFF)) LOG_FIRST(8, "d3d: resource %08X is not freed, the image has no D3D_InternalRelease", r);
+    };
+    uint32_t common = R32(res);
+    if ((common & 0x780000) == 0x80000 && (common & 0x70000) == 0x50000)
+        if (uint32_t parent = R32(res + 0x14)) drop(parent);
+    drop(res);
+#endif
+}
+
+// Hardware commands a caller still pushes go to a scratch buffer nothing reads, rewound at every request
+uint32_t ScratchPush(uint32_t bytes = 0) {
+    uint32_t need = std::max<uint32_t>(0x10000, (bytes + 0x1FFF) & ~0xFFFu);
+    if (need > g_scratch_size) {
+        if (g_scratch_push) mem::FreeContiguous(g_scratch_push);
+        g_scratch_push = mem::AllocContiguous(need, 0, 0xFFFFFFFF, 0x1000);
+        g_scratch_size = need;
+    }
+    SetDev(kDevPush, g_scratch_push);
+    SetDev(kDevThreshold, g_scratch_push + g_scratch_size - 0x1000);
+    return g_scratch_push;
+}
 
 gpu::Surface SurfaceOf(uint32_t header) {
     gpu::Surface s;
@@ -122,6 +166,16 @@ void SetComplex(uint32_t rs, uint32_t v) {
     W32(kRenderState + rs * 4, v);
 }
 
+// The library's default render and texture stage states; its pushes land in the scratch buffer
+void ApplyDefaultStates(X86Context& ctx) {
+#if HAS_D3D_InitDefaultState
+    GUEST_CALL(D3D_InitDefaultState, ctx, {});
+#else
+    (void)ctx;
+    LOG_FIRST(1, "d3d: the image has no D3D_InitDefaultState, default states were not applied");
+#endif
+}
+
 }  // namespace
 
 gpu::State& State() { return g_state; }
@@ -154,10 +208,7 @@ HLE_STDCALL(Direct3D_CreateDevice, 6) {
          auto_depth, depth_fmt, interval, R32(pp + 0x28));
     std::memset(HostPtr(kDevice), 0, XDK_CDevice_Size);
     W32(kDevicePtr, kDevice);
-    // anything still pushing hardware commands writes into a scratch buffer that MakeSpace rewinds
-    g_scratch_push = mem::AllocContiguous(0x10000, 0, 0xFFFFFFFF, 0x1000);
-    SetDev(kDevPush, g_scratch_push);
-    SetDev(kDevThreshold, g_scratch_push + 0xF000);
+    ScratchPush();
 
     uint32_t color_fmt = gpu::LinearColorFormat(fmt);
     g_buffer_count = std::min<uint32_t>(count + 1, 3);
@@ -185,8 +236,7 @@ HLE_STDCALL(Direct3D_CreateDevice, 6) {
     g_state.rt = SurfaceOf(g_buffers[1]);
     g_state.zs = SurfaceOf(g_depth);
     UpdateViewportConstants();
-    // the XDK's own default state setup, its pushes land in the scratch buffer
-    CallGuest(ctx, kInitDefaultState, {});
+    ApplyDefaultStates(ctx);
     if (a[5]) W32(a[5], kDevice);
     return 0;
 }
@@ -268,13 +318,11 @@ HLE_FASTCALL(CDevice_KickOff, 0) { return 0; }
 
 HLE_STDCALL(D3DDevice_MakeSpace, 0) {
     LOG_FIRST(16, "d3d: MakeSpace from %08X, some caller still pushes hardware commands", R32(ctx.esp));
-    SetDev(kDevPush, g_scratch_push);
-    return g_scratch_push;
+    return ScratchPush();
 }
 HLE_STDCALL(D3D_MakeRequestedSpace, 2) {
     LOG_FIRST(16, "d3d: MakeRequestedSpace from %08X", R32(ctx.esp));
-    SetDev(kDevPush, g_scratch_push);
-    return g_scratch_push;
+    return ScratchPush();
 }
 
 HLE_STDCALL(D3DDevice_BlockUntilVerticalBlank, 0) {
@@ -310,13 +358,13 @@ HLE_STDCALL(D3DDevice_SetGammaRamp, 2) {
 HLE_STDCALL(D3DDevice_SetRenderTarget, 2) {
     std::lock_guard<std::recursive_mutex> lock(g_lock);
     uint32_t rt = a[0] ? a[0] : Dev(kDevRenderTarget), zs = a[1];
-    AddRef(rt);
+    AddRef(ctx, rt);
     uint32_t old_rt = Dev(kDevRenderTarget), old_zs = Dev(kDevDepth);
     SetDev(kDevRenderTarget, rt);
     SetDev(kDevDepth, zs);
-    AddRef(zs);
-    Release(old_rt);
-    Release(old_zs);
+    AddRef(ctx, zs);
+    Release(ctx, old_rt);
+    Release(ctx, old_zs);
     g_state.rt = SurfaceOf(rt);
     g_state.zs = SurfaceOf(zs);
     // SetRenderTarget resets the viewport to the whole target
@@ -535,9 +583,9 @@ HLE_STDCALL(D3DDevice_SetTexture, 2) {
     std::lock_guard<std::recursive_mutex> lock(g_lock);
     uint32_t stage = a[0] & 3, tex = a[1];
     uint32_t old = Dev(kDevTextures + stage * 4);
-    if (tex) CallGuest(ctx, kInternalAddRef, {tex});
+    AddRef(ctx, tex);
     SetDev(kDevTextures + stage * 4, tex);
-    if (old) CallGuest(ctx, kInternalRelease, {old});
+    Release(ctx, old);
     g_state.textures[stage] = tex;
     W32(kDirtyFlags, R32(kDirtyFlags) | XDK_DirtyFlags_Texture);
     return 0;
@@ -562,10 +610,10 @@ HLE_STDCALL(D3DDevice_SetStreamSource, 3) {
     std::lock_guard<std::recursive_mutex> lock(g_lock);
     uint32_t n = a[0] & 15, vb = a[1], stride = a[2];
     uint32_t old = R32(kStreams + n * kStreamSize + XDK_Stream_Buffer);
-    if (vb) CallGuest(ctx, kInternalAddRef, {vb});
+    AddRef(ctx, vb);
     W32(kStreams + n * kStreamSize + XDK_Stream_Stride, stride);
     W32(kStreams + n * kStreamSize + XDK_Stream_Buffer, vb);
-    if (old) CallGuest(ctx, kInternalRelease, {old});
+    Release(ctx, old);
     g_state.streams[n] = {vb, stride};
     return 0;
 }
@@ -575,11 +623,11 @@ HLE_STDCALL(D3DDevice_SetIndices, 2) {
     std::lock_guard<std::recursive_mutex> lock(g_lock);
     uint32_t ib = a[0];
     uint32_t old = Dev(kDevIndexBuffer);
-    if (ib) CallGuest(ctx, kInternalAddRef, {ib});
+    AddRef(ctx, ib);
     W32(kIndexData, ib ? R32(ib + 4) : 0);
     SetDev(kDevIndexBuffer, ib);
     SetDev(kDevBaseVertex, a[1]);
-    if (old) CallGuest(ctx, kInternalRelease, {old});
+    Release(ctx, old);
     g_state.index_buffer = ib;
     g_state.index_data = ib ? R32(ib + 4) : 0;
     g_state.base_vertex = a[1];
@@ -700,13 +748,25 @@ HLE_STDCALL(D3DDevice_SetPixelShader, 1) {
     g_state.ps = nullptr;
     if (!a[0]) return 0;
     auto it = g_ps.find(a[0]);
-    if (it == g_ps.end()) {
+    if (it != g_ps.end()) {
+        g_state.ps = it->second;
+    } else if (XDK_PixelShader_Definition != xdk::kUnknown) {
+        // made by library code the title inlined: the object points at its definition, handles are reused
+        static std::unordered_map<uint32_t, std::shared_ptr<gpu::PixelShader>> made;
+        const void* def = HostPtr(R32(a[0] + XDK_PixelShader_Definition));
+        auto& ps = made[a[0]];
+        if (!ps || std::memcmp(ps->def, def, sizeof(ps->def))) {
+            ps = std::make_shared<gpu::PixelShader>();
+            ps->handle = a[0];
+            std::memcpy(ps->def, def, sizeof(ps->def));
+        }
+        g_state.ps = ps;
+    } else {
         LOG_FIRST(8, "d3d: SetPixelShader with unknown handle %08X", a[0]);
         return 0;
     }
-    g_state.ps = it->second;
     // the definition loads the combiner state like the XDK pushes it
-    const uint32_t* d = it->second->def;
+    const uint32_t* d = g_state.ps->def;
     auto put = [&](uint32_t method, uint32_t v) { g_state.simple[method >> 2] = v; };
     for (int i = 0; i < 8; i++) {
         put(gpu::kMPsAlphaInputs + i * 4, d[0 + i]);
@@ -760,36 +820,94 @@ namespace {
 constexpr uint32_t kUpRing = 4u << 20, kUpHalf = kUpRing / 2;
 uint32_t g_up_ring = 0, g_up_pos = 0, g_up_header = 0, g_up_fence[2] = {};
 
-uint32_t UpVertices(uint32_t src, uint32_t bytes) {
+uint32_t UpVertices(const void* src, uint32_t bytes) {
     if (!g_up_ring) {
         g_up_ring = mem::AllocContiguous(kUpRing, 0, 0xFFFFFFFF, 0x1000);
         g_up_header = mem::AllocSystem(20);
         std::memset(HostPtr(g_up_header), 0, 20);
         W32(g_up_header, 1);
     }
-    bytes = std::min((bytes + 63) & ~63u, kUpHalf);
-    uint32_t pos = g_up_pos + bytes > kUpRing ? 0 : g_up_pos;
-    uint32_t from = g_up_pos ? (g_up_pos - 1) / kUpHalf : 1, to = (pos + bytes - 1) / kUpHalf;
+    bytes = std::min(bytes, kUpHalf);
+    uint32_t room = (bytes + 63) & ~63u;
+    uint32_t pos = g_up_pos + room > kUpRing ? 0 : g_up_pos;
+    uint32_t from = g_up_pos ? (g_up_pos - 1) / kUpHalf : 1, to = (pos + room - 1) / kUpHalf;
     if (to != from) {
         g_up_fence[from] = g_backend->Fence();
         g_backend->WaitFence(g_up_fence[to]);
     }
-    std::memcpy(HostPtr(g_up_ring + pos), HostPtr(src), bytes);
-    g_up_pos = pos + bytes;
+    std::memcpy(HostPtr(g_up_ring + pos), src, bytes);
+    g_up_pos = pos + room;
     W32(g_up_header + 4, mem::PhysicalFromVirtual(g_up_ring + pos));
     return g_up_header;
 }
+
+void DrawUp(uint32_t prim, uint32_t count, const void* vertices, uint32_t stride) {
+    if (!g_backend || !count || !stride) return;
+    SyncDeferred();
+    auto stream = g_state.streams[0];
+    g_state.streams[0] = {UpVertices(vertices, count * stride), stride};
+    g_backend->Draw(g_state, prim, 0, count, nullptr);
+    g_state.streams[0] = stream;
+}
+
+// bytes per vertex of the bound format: stream 0 of the FVF or of the shader's declaration
+uint32_t VertexBytes() {
+    if (g_state.vs_handle & 1) return g_state.vs ? g_state.vs->stream_stride[0] : 0;
+    gpu::VertexShader fvf;
+    gpu::FvfInputs(g_state.vs_handle, fvf);
+    return fvf.stream_stride[0];
+}
+
+uint32_t g_push_begin = 0;
 }  // namespace
 
 HLE_STDCALL(D3DDevice_DrawVerticesUP, 4) {
     std::lock_guard<std::recursive_mutex> lock(g_lock);
-    if (!g_backend || !a[1] || !a[3]) return 0;
-    SyncDeferred();
-    auto stream = g_state.streams[0];
-    g_state.streams[0] = {UpVertices(a[2], a[1] * a[3]), a[3]};
-    g_backend->Draw(g_state, a[0], 0, a[1], nullptr);
-    g_state.streams[0] = stream;
+    DrawUp(a[0], a[1], HostPtr(a[2]), a[3]);
     return 0;
+}
+
+// BeginPush(dwords) hands out room for raw hardware commands, EndPush(end) runs what the title wrote there:
+// a primitive between two begin/end writes with its vertices inline, any other method as a simple state.
+HLE_STDCALL(D3DDevice_BeginPush, 1) {
+    std::lock_guard<std::recursive_mutex> lock(g_lock);
+    g_push_begin = ScratchPush(a[0] * 4);
+    return g_push_begin;
+}
+
+HLE_STDCALL(D3DDevice_EndPush, 1) {
+    std::lock_guard<std::recursive_mutex> lock(g_lock);
+    constexpr uint32_t kBeginEnd = 0x17FC, kInlineArray = 0x1818;
+    static std::vector<uint32_t> vertices;
+    uint32_t prim = 0;
+    for (uint32_t p = g_push_begin, end = a[0]; g_push_begin && p + 4 <= end;) {
+        // count in bits 18 to 28, bit 30 keeps the method for every value
+        uint32_t head = R32(p), method = head & 0x1FFC, n = (head >> 18) & 0x7FF;
+        p += 4;
+        if ((head & 0xA0030003) || n * 4 > end - p) {
+            LOG_FIRST(8, "d3d: EndPush stops at command %08X, %u bytes before the end", head, end - p);
+            break;
+        }
+        for (uint32_t i = 0; i < n; i++, p += 4) {
+            uint32_t m = head & 0x40000000 ? method : method + i * 4, v = R32(p);
+            if (m == kInlineArray) {
+                if (prim) vertices.push_back(v);
+            } else if (m != kBeginEnd) {
+                if (m >> 2 < g_state.simple.size()) g_state.simple[m >> 2] = v;
+            } else if (v) {
+                prim = v;
+                vertices.clear();
+            } else if (prim) {
+                uint32_t stride = VertexBytes(), bytes = uint32_t(vertices.size()) * 4;
+                if (stride && bytes % stride == 0) DrawUp(prim, bytes / stride, vertices.data(), stride);
+                else LOG_FIRST(8, "d3d: EndPush primitive %u dropped, %u bytes of vertices of %u", prim, bytes, stride);
+                prim = 0;
+            }
+        }
+    }
+    g_push_begin = 0;
+    ScratchPush();
+    return a[0];
 }
 
 // frame buffer compression tiles are the console's memory controller's business
