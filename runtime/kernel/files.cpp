@@ -268,6 +268,9 @@ Target Resolve(const std::string& xbox_path, uint32_t root_handle) {
         if (e > s) parts.push_back(rest.substr(s, e - s));
         s = e + 1;
     }
+    // no Xbox name holds ':', and fs::path would take "D:" as a host drive
+    for (auto& part : parts)
+        if (part.find(':') != std::string::npos) return {};
     if (best->first == kCdRom)
         if (const Disc* disc = MountedDisc()) return {{}, true, disc->Find(parts)};
     return {MatchCase(best->second, parts).string()};
