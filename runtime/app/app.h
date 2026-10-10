@@ -28,6 +28,8 @@ struct Settings {
 Settings& Get();
 void Load();
 void Save();
+void LogSettings();  // every setting, as the settings file has them
+void LogSystem();    // the machine and the settings, at a run's start
 void ApplyDisplay();  // any thread
 struct Mode {
     uint32_t width, height;

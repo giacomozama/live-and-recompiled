@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <atomic>
 #include <fstream>
+#include <sstream>
 
 #include <toml++/toml.hpp>
 
@@ -56,7 +57,9 @@ void Load() {
     if (kGame.load) kGame.load(&t);
 }
 
-void Save() {
+namespace {
+
+toml::table Table() {
     const Settings& s = Get();
     toml::table t{{"display_mode", kModes[uint32_t(s.display_mode)]},
                   {"width", int64_t(s.width)},
@@ -71,8 +74,23 @@ void Save() {
         else t.insert(o.key, int64_t(*o.value));
     }
     if (kGame.save) kGame.save(&t);
+    return t;
+}
+
+}  // namespace
+
+void Save() {
     std::ofstream f(File());
-    f << t << "\n";
+    f << Table() << "\n";
+}
+
+void LogSettings() {
+    std::ostringstream text;
+    text << Table();
+    std::istringstream lines(text.str());
+    LOGR("Settings:");
+    for (std::string line; std::getline(lines, line);)
+        if (!line.empty()) LOGR("  %s", line.c_str());
 }
 
 Mode Desktop() {

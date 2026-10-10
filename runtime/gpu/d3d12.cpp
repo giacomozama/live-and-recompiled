@@ -420,7 +420,7 @@ bool D3D12Backend::Init(uint32_t width, uint32_t height) {
     }
     DXGI_ADAPTER_DESC1 ad{};
     if (adapter) adapter->GetDesc1(&ad);
-    LOGI("d3d12: adapter %ls", adapter ? ad.Description : L"default");
+    LOGR("D3D12 adapter: %ls", adapter ? ad.Description : L"default");
     D3D12_COMMAND_QUEUE_DESC qd{};
     qd.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
     dev_->CreateCommandQueue(&qd, IID_PPV_ARGS(&queue_));

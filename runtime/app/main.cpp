@@ -220,9 +220,15 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
     std::signal(SIGABRT, [](int) { app::WriteCrashDump(nullptr); });
     timeBeginPeriod(1);
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
-    logx::Init((app::ExeDir() / "logs").string(), app::kGame.log);
+    // one log a session: a relaunch into another image carries on its predecessor's
+    bool relaunched = std::wcsstr(GetCommandLineW(), L"--relaunched") != nullptr;
+    std::string log = app::kGame.log;
+    if (app::Instance() > 1) log += "-" + std::to_string(app::Instance());
+    logx::Init((app::ExeDir() / "logs").string(), log, relaunched);
     app::Load();
     if (app::kGame.init) app::kGame.init();
+    if (relaunched && !logx::kVerbose) LOGR("Relaunched: %s", IMAGE_XBE);
+    else app::LogSystem();
 
     app::GameFiles game;
     if (!app::FindGame(game)) return 1;
