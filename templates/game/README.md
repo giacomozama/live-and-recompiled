@@ -1,6 +1,8 @@
 # Game Title - Recomp
 
-A static recompilation of the original Xbox version of Game Title into a native 64 bit Windows executable. The game's x86 code is translated to C++ ahead of time, the Xbox kernel, Direct3D and DirectSound calls are implemented on Windows, and everything is drawn with Direct3D 12 and played through XAudio2.
+An unofficial native PC port of the original Xbox version of Game Title.
+
+This port was created using the [Xbox XBE Recomp](https://github.com/TGP482/XboxXBE-Recomp) tool.
 
 ## Installation
 
@@ -20,23 +22,14 @@ Copy the game disc's files into `assets`: `default.xbe` with the game's folders 
 ## Features
 
 ### Display
-- **Native Renderer** - The game renders through a native Direct3D 12 renderer, no emulation.
-- **Display Mode** - Allows you to change between Fullscreen, Borderless and Windowed modes.
-- **Resolution** - Lists every mode your monitor reports and defaults to the desktop mode.
-- **Render Resolution** - Renders the game at 20% to 200% of the output resolution, independent of the window size.
-- **Max Frame Rate** - Caps the frame rate at your monitor's refresh rate, at a value you pick, or removes the cap.
-- **VSync** - Turns vertical sync on or off.
 
 ### Graphics
-- **Anisotropic Filtering** - Sharper textures at grazing angles.
+- 
 
 ### General
-- **Disc Images** - Runs the game from an `.iso` in the `assets` folder, a whole disc dump or the game partition alone.
-- **Settings** - Saved in the settings file beside the exe.
-- **Crash Dumps** - Minidumps are written to `CrashDumps` beside the exe.
 
 ## Credits
 
-- XboxXBE-Recomp, the recompiler and runtime this is built on.
-- [XenonRecomp](https://github.com/hedge-dev/XenonRecomp) for the recompiled function layout.
-- [Zydis](https://github.com/zyantific/zydis), [toml++](https://github.com/marzer/tomlplusplus), [Dear ImGui](https://github.com/ocornut/imgui) and [SDL](https://github.com/libsdl-org/SDL).
+- [XboxXBE-Recomp](https://github.com/TGP482/XboxXBE-Recomp), the recompiler and runtime this is built on.
+- [XenonRecomp](https://github.com/hedge-dev/XenonRecomp) for the overridable function layout and instruction hooks.
+- [Zydis](https://github.com/zyantific/zydis) for decoding x86 instructions, [toml++](https://github.com/marzer/tomlplusplus) for the configs, [Dear ImGui](https://github.com/ocornut/imgui) for the settings overlay and [SDL](https://github.com/libsdl-org/SDL) for the window, input and controllers.
