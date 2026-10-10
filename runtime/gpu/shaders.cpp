@@ -597,12 +597,14 @@ PixelKey MakePixelKey(const State& s, const TexInfo tex[4]) {
         k.compare_mode = d[42];
         return k;
     }
+    // the console's stages divide by q; a vertex program's q is its own
+    bool program = (s.vs_handle & 1) && s.vs && !s.vs->program.empty();
     for (int i = 0; i < 4; i++) {
         const auto& t = s.tss[size_t(i)];
         uint32_t v[9] = {t[kTssColorOp], t[kTssColorArg1], t[kTssColorArg2], t[kTssColorArg0], t[kTssAlphaOp],
                          t[kTssAlphaArg1],  t[kTssAlphaArg2], t[kTssAlphaArg0], t[kTssResultArg]};
         std::memcpy(k.ff[i], v, sizeof(v));
-        if (t[kTssTextureTransformFlags] & 0x100) k.proj |= 1u << i;
+        if (program || (t[kTssTextureTransformFlags] & 0x100)) k.proj |= 1u << i;
         if (t[kTssColorOp] <= 1) break;
     }
     return k;
