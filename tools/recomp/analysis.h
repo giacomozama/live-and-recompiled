@@ -85,7 +85,7 @@ public:
 private:
     bool DecodeFlow(uint32_t va, Insn& out, JumpTable* jt);
     bool Walk(uint32_t entry, bool trusted, std::vector<uint32_t>* calls);
-    void SeedPointers();
+    void SeedPointers(bool late = false);
     bool PlausibleEntry(uint32_t va) const;
     void Adopt(const std::vector<uint32_t>& calls, bool trusted);
     void GapFill();

@@ -392,7 +392,7 @@ void Analysis::Adopt(const std::vector<uint32_t>& calls, bool trusted) {
     }
 }
 
-void Analysis::SeedPointers() {
+void Analysis::SeedPointers(bool late) {
     std::vector<uint32_t> cands;
     std::set<uint32_t> vtable;  // runs of code pointers, entries even without padding before them
     for (auto& s : img.sections) {
@@ -411,9 +411,22 @@ void Analysis::SeedPointers() {
     std::sort(cands.begin(), cands.end());
     cands.erase(std::unique(cands.begin(), cands.end()), cands.end());
     size_t added = 0, rejected = 0;
+    // late: seeds rejected before the code above them was decoded, then decoded as the tail of the function that
+    // jumps to them. A conditional jump target is a label inside a function.
+    std::set<uint32_t> labels;
+    if (late)
+        for (auto& [va, insn] : insns_)
+            if (insn.flow == Flow::Jcc) labels.insert(insn.target);
     for (uint32_t c : cands) {
         if (functions.count(c)) continue;
         uint8_t cov = cover_[c - lo_];
+        if (late) {
+            if (cov == 1 && PlausibleEntry(c) && !labels.count(c)) {
+                functions.insert(c);
+                added++;
+            }
+            continue;
+        }
         bool vt = vtable.count(c) != 0;
         if (cov == 1) {
             if (PlausibleEntry(c) || (vt && insns_.count(c))) {
@@ -437,7 +450,8 @@ void Analysis::SeedPointers() {
             rejected++;
         }
     }
-    std::fprintf(stderr, "pointer seeds: %zu accepted, %zu rejected\n", added, rejected);
+    if (late) std::fprintf(stderr, "late pointer seeds: %zu\n", added);
+    else std::fprintf(stderr, "pointer seeds: %zu accepted, %zu rejected\n", added, rejected);
 }
 
 void Analysis::GapFill() {
@@ -533,6 +547,7 @@ void Analysis::Run() {
             changed = true;
         }
     }
+    if (cfg.pointer_seeds) SeedPointers(true);
     size_t bytes = 0, overlaps = 0;
     for (auto& [va, insn] : insns_) {
         bytes += insn.len;
