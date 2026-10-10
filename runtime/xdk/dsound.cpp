@@ -199,16 +199,18 @@ void Complete(Voice& v, Packet& pk, uint32_t status) {
     }
 }
 
-// gain of voice channel c on host left and right. Channel c owns slots [c * n / channels, (c + 1) * n / channels).
+// gain of voice channel c on host left and right. A hardware voice holds two channels and owns a run of slots,
+// which alternate left and right.
 void Levels(Voice& v, float g[2][2]) {
     static const uint8_t kFront[2] = {0, 1};
     const uint8_t* bin = v.nbins ? v.bin : kFront;
-    uint32_t n = v.nbins ? v.nbins : 2, per = std::max<uint32_t>(n / v.channels, 1);
+    uint32_t n = v.nbins ? v.nbins : 2, voices = (std::max<uint32_t>(v.channels, 1) - 1) / 2 + 1;
+    uint32_t per = std::max<uint32_t>(n / voices, 2), step = v.channels == 1 ? 1 : 2;
     bool speakers = false;
     for (uint32_t s = 0; s < n; s++) speakers |= bin[s] < 10 && bin[s] != 3;
     for (uint32_t c = 0; c < 2; c++) {
         g[c][0] = g[c][1] = 0;
-        for (uint32_t s = c * per; c < v.channels && s < (c + 1) * per && s < n; s++) {
+        for (uint32_t s = c; c < v.channels && s < per && s < n; s += step) {
             uint32_t b = bin[s];
             if (speakers && (b == 3 || b > 9)) continue;  // sub and effect sends
             float x = Db(v.bin_mb[b]) * v.volume * v.headroom * (b == 2 ? 0.707f : 1.0f);
