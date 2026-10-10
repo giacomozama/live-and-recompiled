@@ -1043,6 +1043,13 @@ void Walk(uint32_t end) {
                 a += (m - 0x1A00) / 16 * 4;
                 last = ((m - 0x1A00) / 4 & 3) == 3;
                 a[(m - 0x1A00) / 4 & 3] = f;
+            } else if (m >= 0x1500 && m < 0x150C) {  // position, 3 floats and w = 1
+                last = m == 0x1508;
+                a[(m - 0x1500) / 4] = f;
+                a[3] = 1;
+            } else if (m >= 0x1518 && m < 0x1528) {  // position, 4 floats
+                last = m == 0x1524;
+                a[(m - 0x1518) / 4] = f;
             } else {
                 continue;
             }
