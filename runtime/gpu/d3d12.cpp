@@ -380,6 +380,8 @@ private:
     bool ramp_dirty_ = false, gamma_ = false;
     Target* bound_rt_ = nullptr;
     Target* bound_ds_ = nullptr;
+    Target* draw_rt_ = nullptr;  // the draw's targets, the bound ones go when a texture's copy is drawn
+    Target* draw_ds_ = nullptr;
     uint32_t guest_w_ = 640, guest_h_ = 480, bb_w_ = 0, bb_h_ = 0;
     float scale_ = 1.0f;
     // surfaces locked without a wait: copies in flight, the newest finished one goes to guest memory
@@ -1090,8 +1092,8 @@ ID3D12Resource* D3D12Backend::BindTexture(const State& s, int stage, TexInfo& in
     auto tit = targets_.find((uint64_t(d.data) << 1 | (fi.depth ? 1 : 0)) | alt);
     if (tit != targets_.end() && !d.cube && d.depth == 1 && !fi.compressed) {
         Target& t = tit->second;
-        if (&t == bound_ds_) return nullptr;
-        bool feedback = &t == bound_rt_;
+        if (&t == draw_ds_) return nullptr;
+        bool feedback = &t == draw_rt_;
         tex_rt_[stage] = true;
         if (!t.depth && CpuWrote(t)) {
             Surface su;
@@ -1320,6 +1322,8 @@ void D3D12Backend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t 
     D3D12_SHADER_RESOURCE_VIEW_DESC sv[4];
     ID3D12Resource* res[4];
     perf_t = PerfClock::now();
+    draw_rt_ = bound_rt_;
+    draw_ds_ = bound_ds_;
     for (int i = 0; i < 4; i++) res[i] = BindTexture(s, i, info[i], sv[i]);
     g_perf.bind += PerfMs(perf_t);
     // textures may have recorded copies that unbound the targets
