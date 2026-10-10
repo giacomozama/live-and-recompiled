@@ -566,6 +566,7 @@ HLE_STDCALL(D3DDevice_SetRenderStateNotInline, 2) {
     if (rs < gpu::kRsDeferredFirst) {
         uint32_t method = R32(kSimpleEncode + rs * 4) & 0x1FFC;
         g_state.simple[method >> 2] = v;
+        W32(kRenderState + rs * 4, v);  // titles read their states back from the library's table
     } else if (rs < gpu::kRsMax) {
         SetComplex(rs, v);
     }
