@@ -362,7 +362,12 @@ HLE_STDCALL(D3DResource_BlockUntilNotBusy, 1) {
 }
 HLE_STDCALL(D3DResource_IsBusy, 1) {
     std::lock_guard<std::recursive_mutex> lock(g_lock);
-    return a[0] && g_backend && g_backend->Busy(a[0]) ? 1 : 0;
+    uint32_t res = a[0];
+    if (!res) return 0;
+    // set on the device, a surface also through its texture
+    uint32_t common = R32(res), parent = (common & 0x70000) == 0x50000 ? R32(res + 0x14) : 0;
+    if ((common & 0x780000) || (parent && (R32(parent) & 0x780000))) return 1;
+    return g_backend && g_backend->Busy(res) ? 1 : 0;
 }
 HLE_STDCALL(D3D_BlockOnTime, 2) { return 0; }
 HLE_STDCALL(D3DDevice_BlockOnFence, 1) {
