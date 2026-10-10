@@ -171,13 +171,17 @@ float ZScale(const gpu::Surface& zs) {
     return f == 0x2C || f == 0x30 ? 65535.0f : 16777215.0f;
 }
 
+bool g_own_constants = false;  // D3DSCM_NORESERVEDCONSTANTS: c-38 and c-37 are the title's
+
 // c-38 and c-37 hold the viewport scale and offset, as D3D_GetViewportOffsetAndScale computes them
 void UpdateViewportConstants() {
     auto& v = g_state.viewport;
     g_state.zscale = ZScale(g_state.zs);
     float hw = v.w * 0.5f, hh = v.h * 0.5f;
-    g_state.vsc[58] = {hw, -hh, (v.max_z - v.min_z) * g_state.zscale, 0};
-    g_state.vsc[59] = {v.x + g_state.ss_offset_x + hw, v.y + g_state.ss_offset_y + hh, v.min_z * g_state.zscale, 0};
+    if (!g_own_constants) {
+        g_state.vsc[58] = {hw, -hh, (v.max_z - v.min_z) * g_state.zscale, 0};
+        g_state.vsc[59] = {v.x + g_state.ss_offset_x + hw, v.y + g_state.ss_offset_y + hh, v.min_z * g_state.zscale, 0};
+    }
     // the viewport as the library's SetViewport stores it, for inlined readers
     if (XDK_CDevice_Viewport != xdk::kUnknown) {
         uint32_t p = kDevice + XDK_CDevice_Viewport;
@@ -844,7 +848,12 @@ HLE_STDCALL(D3DDevice_SelectVertexShader, 2) {
     LOG_FIRST(4, "d3d: SelectVertexShader %08X at %u is not supported", a[0], a[1]);
     return 0;
 }
-HLE_STDCALL(D3DDevice_SetShaderConstantMode, 1) { return 0; }
+HLE_STDCALL(D3DDevice_SetShaderConstantMode, 1) {
+    std::lock_guard<std::recursive_mutex> lock(g_lock);
+    g_own_constants = a[0] & 0x10;
+    UpdateViewportConstants();
+    return 0;
+}
 
 HLE_STDCALL(D3DDevice_CreatePixelShader, 2) {
     std::lock_guard<std::recursive_mutex> lock(g_lock);
