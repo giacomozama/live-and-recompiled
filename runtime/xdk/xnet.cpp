@@ -351,6 +351,17 @@ void Random(uint32_t va, uint32_t n) {
 
 }  // namespace
 
+namespace xnet {
+
+void CloseSockets() {
+    std::lock_guard<std::mutex> lock(g_lock);
+    for (auto& [id, socket] : g_sockets) ::closesocket(socket.s);
+    g_sockets.clear();
+    g_pending.clear();
+}
+
+}  // namespace xnet
+
 HLE_STDCALL(XNetStartup, 1) {
     Init();
     return 0;

@@ -24,6 +24,10 @@ void Init();
 uint32_t KernelThunkAddress(uint32_t ordinal);
 }  // namespace dispatch
 
+namespace xnet {
+void CloseSockets();  // xdk/xnet.cpp
+}
+
 namespace kernel {
 
 uint8_t* g_base = nullptr;
@@ -176,6 +180,8 @@ void Relaunch(const char* exe) {
     size_t args = line[0] == L'"' ? line.find(L'"', 1) + 1 : line.find(L' ');
     line = L"\"" + path + L"\"" + (args == std::wstring::npos ? L"" : line.substr(args));
     if (line.find(L"--relaunched") == std::wstring::npos) line += L" --relaunched";  // no boot splash again
+    // this process lives on through the handover: the new one binds the same ports
+    xnet::CloseSockets();
     STARTUPINFOW si{sizeof(si)};
     PROCESS_INFORMATION pi{};
     if (CreateProcessW(path.c_str(), line.data(), nullptr, nullptr, FALSE, CREATE_SUSPENDED, nullptr, nullptr, &si, &pi)) {
