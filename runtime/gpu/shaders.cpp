@@ -867,6 +867,25 @@ std::string PixelHlsl(const PixelKey& k) {
     }
     body += "alphatest(outc.a);\n" + Hooks().Output() + "return outc;\n}\n";
     s += body;
+    return k.quad ? QuadHlsl(std::move(s)) : s;
+}
+
+// the vertex shader hands on the pixel position as drawn and as pulled (e), the pixel shader takes the stretch back out
+std::string QuadHlsl(std::string s) {
+    auto sub = [&](const char* at, const char* before, const char* after) {
+        size_t p = s.find(at);
+        if (p != std::string::npos) s.replace(p, std::strlen(at), std::string(before) + at + after);
+    };
+    sub("    float fogamt : TEXCOORD4;\n", "", "    noperspective float4 e : TEXCOORD5;\n");
+    sub("    if (abs(p.x - (surf.x - 0.5)) < 1e-3) p.x = surf.x;\n", "    o.e.xy = p.xy;\n", "");
+    sub("    if (abs(p.y - (surf.y - 0.5)) < 1e-3) p.y = surf.y;\n", "", "    o.e.zw = p.xy;\n");
+    sub("    o.pos = cp;\n", "    o.e = float4(sp, (float2(cp.x, -cp.y) / cp.w + 1) * 0.5 * surf.xy);\n", "");
+    sub("float4 main(VOut i, bool front", R"(float4 unstretch(float4 t, float4 e) {
+    float2 d = e.zw - e.xy, g = float2(ddx(e.x), ddy(e.y));
+    return t + (d.x ? d.x / g.x * ddx(t) : 0) + (d.y ? d.y / g.y * ddy(t) : 0);
+}
+)", "");
+    for (int i = 0; i < 4; i++) sub(F("i.tc%d", i).c_str(), "unstretch(", ", i.e)");
     return s;
 }
 
