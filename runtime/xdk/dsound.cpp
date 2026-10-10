@@ -71,6 +71,10 @@ X86Func* Find(uint32_t guest);
 #define SYM_DirectSoundUseLightHRTF FFFFFF0B
 #define HAS_DirectSoundUseLightHRTF 0
 #endif
+#ifndef SYM_IDirectSoundStream_SetEG
+#define SYM_IDirectSoundStream_SetEG FFFFFF0C
+#define HAS_IDirectSoundStream_SetEG 0
+#endif
 
 namespace {
 
@@ -442,7 +446,7 @@ static void AuditExports() {
         SYM(CDirectSoundStream_SetFrequency), SYM(CDirectSoundStream_SetFilter), SYM(CDirectSoundStream_SetHeadroom),
         SYM(CDirectSoundStream_SetMixBinVolumes), SYM(CDirectSoundStream_SetMixBins), SYM(CDirectSoundStream_SetMaxDistance),
         SYM(CDirectSoundStream_SetMinDistance), SYM(CDirectSoundStream_SetPosition), SYM(CDirectSoundStream_SetVelocity),
-        SYM(CDirectSoundStream_SetI3DL2Source)};
+        SYM(CDirectSoundStream_SetI3DL2Source), SYM(IDirectSoundStream_SetEG)};
     std::string left;
     // the library's own section: the WMA decoder shares the export ids and touches no DSOUND object
     uint32_t lo = 0, hi = 0;
@@ -858,6 +862,8 @@ STREAM(SetFrequency, 2) {
     return 0;
 }
 STREAM(SetFilter, 2) { return 0; }
+// the library's own writes voice registers a host stream does not have; envelopes are not played
+HLE_STDCALL(IDirectSoundStream_SetEG, 2) { return 0; }
 STREAM(SetHeadroom, 2) {
     v.headroom = Db(-int32_t(a[1]));
     return 0;
