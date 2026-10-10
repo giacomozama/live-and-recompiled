@@ -35,6 +35,10 @@ using namespace kernel;
 #define SYM_D3DDevice_SetPalette FFFFFE02
 #define HAS_D3DDevice_SetPalette 0
 #endif
+#ifndef SYM_D3DDevice_GetVertexShaderFunction
+#define SYM_D3DDevice_GetVertexShaderFunction FFFFFE03
+#define HAS_D3DDevice_GetVertexShaderFunction 0
+#endif
 
 namespace d3d {
 
@@ -772,6 +776,20 @@ HLE_STDCALL(D3DDevice_DeleteVertexShader, 1) {
         mem::FreeSystem(a[0] & ~1u);
         g_vs.erase(it);
     }
+    return 0;
+}
+
+// (handle, data, size in and out): the program as it was given, the size alone without data or room
+HLE_STDCALL(D3DDevice_GetVertexShaderFunction, 3) {
+    std::lock_guard<std::recursive_mutex> lock(g_lock);
+    auto it = g_vs.find(a[0]);
+    uint32_t words = it == g_vs.end() ? 0 : uint32_t(it->second->program.size());
+    uint32_t need = words ? 4 + words * 4 : 0, room = R32(a[2]);
+    W32(a[2], need);
+    if (need > room) return a[1] ? 0x88760867 : 0;
+    if (!a[1] || !need) return 0;
+    W32(a[1], it->second->program_type | words / 4 << 16);
+    for (uint32_t i = 0; i < words; i++) W32(a[1] + 4 + i * 4, it->second->program[i]);
     return 0;
 }
 
