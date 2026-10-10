@@ -93,6 +93,7 @@ struct Voice {
     // buffer
     // play region in bytes from data, loop region in bytes from the play region
     uint32_t data = 0, bytes = 0, loop_start = 0, loop_len = 0, play_start = 0, play_len = 0;
+    uint32_t owned = 0;  // memory the library made for the buffer
     bool playing = false, looping = false, paused = false;
     bool sync = false;  // held until IDirectSound_SynchPlayback
     double pos = 0;  // frames
@@ -386,7 +387,7 @@ uint32_t NewBuffer(uint32_t desc, uint32_t out) {
     v.is3d = flags & 0x10;
     v.headroom = DefaultHeadroom(flags);
     if (bytes) {
-        v.data = mem::AllocContiguous(bytes, 0, 0xFFFFFFFF, 4);
+        v.data = v.owned = mem::AllocContiguous(bytes, 0, 0xFFFFFFFF, 4);
         v.bytes = v.play_len = v.loop_len = bytes;
     }
     W32(out, obj);
@@ -584,6 +585,7 @@ HLE_STDCALL(IDirectSound_CreateSoundBuffer, 4) { return NewBuffer(a[1], a[2]); }
 
 BUFFER(Release, 1) {
     if (--v.refs > 0) return uint32_t(v.refs);
+    if (v.owned) mem::FreeContiguous(v.owned);
     uint32_t obj = v.obj;
     g_voices.erase(obj);
     mem::FreeSystem(obj);
@@ -592,7 +594,13 @@ BUFFER(Release, 1) {
 BUFFER(Unlock, 5) { return 0; }
 BUFFER(SetBufferData, 3) {
     if (a[1] == v.data && a[2] == v.bytes) return 0;
+    // the library frees its own memory, and makes it again for a size with no data
+    if (v.owned && v.owned != a[1]) {
+        mem::FreeContiguous(v.owned);
+        v.owned = 0;
+    }
     v.data = a[1];
+    if (!a[1] && a[2]) v.data = v.owned = mem::AllocContiguous(a[2], 0, 0xFFFFFFFF, 4);
     v.bytes = v.play_len = v.loop_len = a[2];
     v.play_start = v.loop_start = 0;
     v.pos = 0;

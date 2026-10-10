@@ -350,7 +350,8 @@ uint32_t AllocContiguous(uint32_t size, uint32_t lowest, uint32_t highest, uint3
     uint32_t hi = highest >= kPhysicalSize - 1 ? kContiguousBase + kPhysicalSize - 1 : kContiguousBase | highest;
     uint32_t a = g_contig.Alloc(size, align, lo, hi, false);
     if (!a) {
-        LOGE("memory: contiguous allocation of %X bytes failed (%X..%X align %X)", size, lowest, highest, align);
+        LOGE("memory: contiguous allocation of %X bytes failed (%X..%X align %X), %llu KB in use", size, lowest, highest, align,
+             (unsigned long long)(g_contig.Used() >> 10));
         return 0;
     }
     Commit(a, size);
