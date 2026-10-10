@@ -1,6 +1,6 @@
 # Xbox XBE Recomp
 
-An SDK for statically recompiling original Xbox (x86 XBE) games into native 64 bit Windows executables. The game's x86 code is translated to C++ ahead of time. The Xbox kernel and the XDK libraries (Direct3D 8, DirectSound, XAPI, XNet) are implemented at the API level on Windows. Everything is drawn with Direct3D 12 and played through XAudio2.
+An SDK for statically recompiling original Xbox (x86 XBE) games into native 64 bit Windows executables. The game's x86 code is translated to C++ ahead of time. The Xbox kernel and the XDK libraries (Direct3D 8, DirectSound, XAPI, XNet) are implemented at the API level on Windows. Everything is drawn with a native Direct3D 12 renderer and played through XAudio2.
 
 This tool was originally created for porting [Tom Clancy's Splinter Cell: Double Agent](https://github.com/TGP482/SCDoubleAgent-XBERecomp).
 
