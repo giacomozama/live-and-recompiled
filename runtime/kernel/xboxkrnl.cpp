@@ -1196,7 +1196,13 @@ KERNEL_EXPORT(49, HalReturnToFirmware, 1) {
 KERNEL_EXPORT(360, HalInitiateShutdown, 0) { Shutdown(0); }
 KERNEL_EXPORT(358, HalIsResetOrShutdownPending, 0) { return 0; }
 KERNEL_EXPORT(47, HalRegisterShutdownNotification, 2) { return 0; }
-KERNEL_EXPORT(37, FscSetCacheSize, 1) { return kSuccess; }
+// the file cache in pages: nothing is cached here, the size only goes back to the title
+static uint32_t g_cache_pages = 16;
+KERNEL_EXPORT(35, FscGetCacheSize, 0) { return g_cache_pages; }
+KERNEL_EXPORT(37, FscSetCacheSize, 1) {
+    g_cache_pages = a[0];
+    return kSuccess;
+}
 KERNEL_EXPORT(36, FscInvalidateIdleBlocks, 0) { return kSuccess; }
 KERNEL_EXPORT(366, HalWriteSMCScratchRegister, 1) { return 0; }
 KERNEL_EXPORT(365, HalEnableSecureTrayEject, 0) { return 0; }
