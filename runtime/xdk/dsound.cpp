@@ -96,6 +96,7 @@ struct Voice {
     uint32_t owned = 0;  // memory the library made for the buffer
     bool playing = false, looping = false, paused = false;
     bool sync = false;  // held until IDirectSound_SynchPlayback
+    bool active = false, ending = false;  // stream: took a packet since it went quiet, quiet again once they run out
     double pos = 0;  // frames
     uint32_t freq = 0;
     // stream
@@ -241,6 +242,12 @@ void Levels(Voice& v, float g[2][2]) {
     }
 }
 
+// a stream goes quiet: the synch hold ends, a started one loses its pause as well
+void Deactivate(Voice& v) {
+    v.sync = false;
+    if (v.active) v.active = v.paused = v.ending = false;
+}
+
 void Render(float* out, uint32_t frames) {
     std::memset(out, 0, frames * 2 * sizeof(float));
     std::lock_guard<std::recursive_mutex> lock(g_lock);
@@ -264,6 +271,7 @@ void Render(float* out, uint32_t frames) {
                 }
                 if (v.packets.empty()) {
                     v.pos = 0;
+                    if (v.ending) Deactivate(v);
                     break;
                 }
                 Packet& pk = v.packets.front();
@@ -778,10 +786,12 @@ static void FlushStream(Voice& v) {
         t_flushed.push_back(*it);
         it = g_done.erase(it);
     }
+    Deactivate(v);
 }
 
 STREAM(AddRef, 1) { return uint32_t(++v.refs); }
 STREAM(SetFormat, 2) {
+    FlushStream(v);
     ReadFormat(v, a[1]);
     v.freq = 0;  // the XDK sets the pitch back to the new format's own rate
     v.block = -1;
@@ -814,14 +824,21 @@ STREAM(Process, 3) {
     if (pk.completed_ptr) W32(pk.completed_ptr, 0);
     if (pk.status_ptr) W32(pk.status_ptr, kPacketPending);
     v.packets.push_back(pk);
+    v.active = true;
+    v.ending = false;
     return 0;
 }
-STREAM(Discontinuity, 1) { return 0; }
+STREAM(Discontinuity, 1) {
+    if (!v.packets.empty()) v.ending = true;
+    else if (v.active) FlushStream(v);
+    return 0;
+}
 STREAM(Flush, 1) {
     FlushStream(v);
     return 0;
 }
 STREAM(FlushEx, 4) {
+    if (a[3] && !v.active) return 0;
     FlushStream(v);
     return 0;
 }
