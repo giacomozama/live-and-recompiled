@@ -44,6 +44,8 @@ namespace {
 
 constexpr int kFrames = 3;
 constexpr uint64_t kUploadSize = 64ull << 20;
+// a draw starting with less than this left in the frame's ring waits for the GPU and starts the ring over
+constexpr uint64_t kUploadReserve = 8ull << 20;
 constexpr uint32_t kSrvCount = 3 * 32768;
 constexpr uint32_t kSamplerCount = 2048;
 constexpr uint32_t kRtvCount = 1024, kDsvCount = 256;
@@ -554,6 +556,7 @@ void D3D12Backend::Submit(bool wait) {
         f.alloc->Reset();
         f.garbage.clear();
         f.used = 0;
+        f.srv = 0;
         cl_->Reset(f.alloc.Get(), nullptr);
         Begin();
     }
@@ -1282,6 +1285,8 @@ void D3D12Backend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t 
     g_perf.verts += a.vertex_count;
     g_perf.raw += a.vertices.empty();
     if (!assembled) return;
+    // past the ring every upload is a buffer of its own: seconds lost on a frame that draws a whole level once
+    if (frames_[frame_ % kFrames].used > kUploadSize - kUploadReserve) Submit(true);
     if (!BindTargets(s)) return;
     if (ext_ && ext_->Bound(*this, s, bound_rt_, bound_ds_, a.pretransformed) && !BindTargets(s)) return;
 
