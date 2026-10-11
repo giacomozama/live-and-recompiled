@@ -59,7 +59,7 @@ uint32_t SwizzleOffset(uint32_t x, uint32_t y, uint32_t w, uint32_t h) {
     return out;
 }
 
-// ---------------------------------------------------------------- a surface in guest memory
+// a surface in guest memory
 
 struct Plane {
     bool ok = false, swizzled = false;
@@ -139,7 +139,7 @@ Plane OpenPlane(const Surface& s) {
     return p;
 }
 
-// ---------------------------------------------------------------- textures, level 0 decoded to floats
+// textures, level 0 decoded to floats
 
 struct Image {
     uint32_t w = 1, h = 1, faces = 1;
@@ -317,7 +317,7 @@ struct Unit {
     }
 };
 
-// ---------------------------------------------------------------- vertex programs
+// vertex programs
 
 // the microcode fields, as shaders.cpp names them
 struct Tok {
@@ -333,6 +333,7 @@ float MagClamp(float v) {
 float MacMul(float a, float b) { return (a == 0 || b == 0) ? 0 : a * b; }
 Vec Splat(float v) { return V(v, v, v, v); }
 
+// 1 mov, 2 mul, 3 add, 4 mad, 5 dp3, 6 dph, 7 dp4, 8 dst, 9 min, 10 max, 11 slt, 12 sge, 13 arl
 Vec Mac(uint32_t op, const Vec& a, const Vec& b, const Vec& c) {
     Vec r;
     switch (op) {
@@ -353,6 +354,7 @@ Vec Mac(uint32_t op, const Vec& a, const Vec& b, const Vec& c) {
     }
 }
 
+// 1 mov, 2 rcp, 3 rcc, 4 rsq, 5 exp, 6 log, 7 lit
 Vec Ilu(uint32_t op, const Vec& c) {
     float v = c[0];
     switch (op) {
@@ -468,7 +470,7 @@ float FogAmount(const State& s, float d) {
     }
 }
 
-// ---------------------------------------------------------------- per fragment shading
+// per fragment shading
 
 enum Attr { kD0, kD1, kB0, kB1, kFog, kT0, kAttrs = kT0 + 4 };
 
@@ -531,7 +533,7 @@ struct Combiners {
         float top = u0.img && u0.img->depth16 ? 65535.f : 16777215.f;
         float texel = u0.Sample(0, u, v)[0] * top, z = compare ? std::clamp(ref, 0.f, top) : 0;
         bool pass;
-        switch (m.s->rs[kRsShadowFunc]) {
+        switch (m.s->rs[kRsShadowFunc]) {  // GL compare enums, as in Passes
             case 0x200: pass = false; break;
             case 0x201: pass = texel < z; break;
             case 0x202: pass = texel == z; break;
@@ -656,6 +658,7 @@ struct Combiners {
         bool a = v & 0x10;
         for (int i = 0; i < 3; i++) {
             float c = a ? x[3] : alpha ? x[2] : x[i];
+            // unsigned, unsigned invert, expand, expand negate, half bias, half bias negate, signed, signed negate
             switch (v & 0xE0) {
                 case 0x00: c = std::max(c, 0.f); break;
                 case 0x20: c = 1 - Sat(c); break;
@@ -670,6 +673,7 @@ struct Combiners {
         }
     }
 
+    // bias, shift left 1, bias then shift left 1, shift left 2, shift right 1
     static float OutMap(float v, uint32_t map) {
         switch (map) {
             case 0x08: return v - 0.5f;
@@ -881,7 +885,7 @@ bool ShadeStages(const Material& m, const Fragment& f, Vec& out) {
     return true;
 }
 
-// ---------------------------------------------------------------- output merger, GL enums as the pushbuffer holds them
+// output merger, GL enums as the pushbuffer holds them
 
 bool Passes(uint32_t func, uint32_t a, uint32_t b) {
     switch (func) {
@@ -895,6 +899,7 @@ bool Passes(uint32_t func, uint32_t a, uint32_t b) {
         default: return true;
     }
 }
+// GL ops: zero, replace, saturating incr and decr, invert, wrapping incr and decr, else keep
 uint32_t StencilResult(uint32_t op, uint32_t v, uint32_t ref) {
     switch (op) {
         case 0: return 0;
@@ -907,6 +912,7 @@ uint32_t StencilResult(uint32_t op, uint32_t v, uint32_t ref) {
         default: return v;
     }
 }
+// GL blend factors, 0x8001 to 0x8004 take the constant colour
 float BlendFactor(uint32_t f, const Vec& src, const Vec& dst, const Vec& k, int ch) {
     switch (f) {
         case 0: return 0;
@@ -928,7 +934,7 @@ float BlendFactor(uint32_t f, const Vec& src, const Vec& dst, const Vec& k, int 
     }
 }
 
-// ---------------------------------------------------------------- probes
+// probes
 
 struct Pixel {
     int x, y;
@@ -960,7 +966,7 @@ const Probes& Watch() {
 
 uint32_t g_draws = 0;  // this frame's
 
-// ---------------------------------------------------------------- triangles
+// triangles
 
 struct Shaded {
     Vec pos;  // screen x y, depth units z, w
@@ -1005,6 +1011,7 @@ void Clear(const State& s, uint32_t count, const uint8_t* rects, uint32_t flags,
             for (int y = std::max(r[1], 0); y < std::min<int>(r[3], int(p.h)); y++)
                 for (int x = std::max(r[0], 0); x < std::min<int>(r[2], int(p.w)); x++) fn(uint32_t(x), uint32_t(y));
     };
+    // D3DCLEAR: 1 z, 2 stencil, 0x10 to 0x80 red, green, blue, alpha
     if ((flags & 0xF0) && rt.ok) {
         uint32_t mask = (flags & 0x10 ? 4u : 0u) | (flags & 0x20 ? 2u : 0u) | (flags & 0x40 ? 1u : 0u) | (flags & 0x80 ? 8u : 0u);
         Vec c = Unpack(color);
@@ -1162,7 +1169,7 @@ void Draw(const State& s, uint32_t prim, uint32_t start, uint32_t count, const u
     bool atest = simple(kMAlphaTestEnable) != 0;
     uint32_t afunc = simple(kMAlphaFunc), aref = simple(kMAlphaRef) & 0xFF;
     uint32_t cull = s.rs[kRsCullMode];
-    bool flat = simple(kMShadeMode) == 0x1D00, two_sided = s.rs[kRsTwoSidedLighting] != 0;
+    bool flat = simple(kMShadeMode) == 0x1D00, two_sided = s.rs[kRsTwoSidedLighting] != 0;  // 0x1D00 GL_FLAT
     Vec blend_color = Unpack(simple(kMBlendColor));
     int left = int(s.viewport.x), top = int(s.viewport.y), right = left + int(s.viewport.w), bottom = top + int(s.viewport.h);
     if (s.scissor_count) {
@@ -1220,6 +1227,7 @@ void Draw(const State& s, uint32_t prim, uint32_t start, uint32_t count, const u
             float area = (p1.x - p0.x) * (p2.y - p0.y) - (p2.x - p0.x) * (p1.y - p0.y);
             if (area == 0 || !std::isfinite(area)) continue;
             bool clockwise = area > 0;  // y down
+            // GL_CW 0x900, GL_CCW 0x901
             if ((cull == 0x900 && clockwise) || (cull == 0x901 && !clockwise)) continue;
             bool front = s.rs[kRsFrontFace] == 0x901 ? !clockwise : clockwise;
             int x0 = std::max(left, int(std::floor(std::min({p0.x, p1.x, p2.x})))), x1 = std::min(right - 1, int(std::ceil(std::max({p0.x, p1.x, p2.x}))));
@@ -1273,7 +1281,7 @@ void Draw(const State& s, uint32_t prim, uint32_t start, uint32_t count, const u
                         for (int j = 0; j < 4; j++) {
                             float a = col[j] * BlendFactor(src_factor, col, d, blend_color, j);
                             float b = d[j] * BlendFactor(dst_factor, col, d, blend_color, j);
-                            switch (blend_op) {
+                            switch (blend_op) {  // GL subtract, reverse subtract, min, max, else add
                                 case 0x800A: r[j] = a - b; break;
                                 case 0x800B: r[j] = b - a; break;
                                 case 0x8007: r[j] = std::min(col[j], d[j]); break;

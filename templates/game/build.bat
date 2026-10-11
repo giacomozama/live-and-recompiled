@@ -17,7 +17,7 @@ set "OUT=%CD%\out\build\release"
 
 if not exist assets\%GAME_XBE% goto :nogame
 
-rem ---------------------------------------------------------------- toolchain
+rem toolchain
 echo [1/3] Toolchain
 for /f "usebackq tokens=*" %%i in (`"%VSWHERE%" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do set "VSDIR=%%i"
 if not defined VSDIR (
@@ -41,7 +41,7 @@ if not defined TOOLS_OK (
 )
 for /f "tokens=*" %%v in ('clang++ --version ^| findstr /i version') do echo       %%v
 
-rem ---------------------------------------------------------------- symbols
+rem symbols
 echo [2/3] XDK symbols
 cmake --preset release >nul || goto :fail
 findstr /b /l /c:"[symbols]" config\game.toml >nul 2>nul && echo       config\game.toml already written && goto :game
@@ -52,7 +52,7 @@ set /p SDK=<out\build\release\sdk_dir.txt
 if not exist config mkdir config
 "%OUT%\xbe_symbols.exe" assets\%GAME_XBE% "%SDK%\xdk" --out config\game.toml || goto :fail
 
-rem ---------------------------------------------------------------- game
+rem game
 :game
 echo [3/3] Game code
 echo       first build recompiles %GAME_XBE%, expect 30 to 90 minutes ...
@@ -67,7 +67,7 @@ choice /c YN /n /m "  Play now? [Y/N] "
 if not errorlevel 2 (start "" /d "%OUT%" "%OUT%\%GAME_EXE%.exe") else (pause)
 exit /b 0
 
-rem ---------------------------------------------------------------- helpers
+rem helpers
 :setuptools
 set TOOLS_OK=
 set MISSING=
