@@ -5,7 +5,7 @@ A tool for creating unofficial native PC ports of original Xbox games. Games are
 This tool was originally created for porting [Tom Clancy's Splinter Cell: Double Agent](https://github.com/TGP482/SCDoubleAgent-XBERecomp).
 
 > [!NOTE]
-> This project does not include any game assets, keys or generated code. You must provide the files from your own legally acquired copy of the game to build.
+> This project does not include any game assets. You must provide the files from your own legally acquired copy of the game to install or build.
 
 ## Installation
 
@@ -82,4 +82,4 @@ Supports Xbox, PlayStation and Switch controllers through SDL3, with hot pluggin
 
 - [XenonRecomp](https://github.com/hedge-dev/XenonRecomp) for the overridable function layout and instruction hooks this follows.
 - [Zydis](https://github.com/zyantific/zydis) for decoding x86 instructions, [toml++](https://github.com/marzer/tomlplusplus) for the configs, [Dear ImGui](https://github.com/ocornut/imgui) for the settings overlay and [SDL](https://github.com/libsdl-org/SDL) for the window, input and controllers.
-- [xemu](https://github.com/xemu-project/xemu) and [Cxbx-Reloaded](https://github.com/Cxbx-Reloaded/Cxbx-Reloaded), read for hardware and API behaviour.
+- [xemu](https://github.com/xemu-project/xemu) and [Cxbx-Reloaded](https://github.com/Cxbx-Reloaded/Cxbx-Reloaded) as references for the Xbox's hardware and API behaviour. This project does not use emulation or any emulator code.
