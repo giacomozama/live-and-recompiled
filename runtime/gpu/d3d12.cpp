@@ -467,6 +467,9 @@ private:
               float blend) override;
     bool BindTargets(const State& s);
     bool DepthCopy(const State& s);
+    ID3D12PipelineState* EnsurePassPipeline(const char* hlsl, const char* entry, DXGI_FORMAT rtv, float blend);
+    ID3D12PipelineState* EnsureDepthCopyPipeline();
+    void DrawDepthCopy(Target& src, Target& dst, ID3D12PipelineState* pso);
     // Draw, in call order, each callee right after its caller
     bool AssembleDraw(const State& s, uint32_t prim, uint32_t start, uint32_t count, const uint8_t* indices);
     void EnsureVertexShader(const State& s, const Assembled& a, DrawShaders& sh);
@@ -503,6 +506,8 @@ private:
     ID3DBlob* Compile(const std::string& src, const char* entry, const char* profile, uint64_t& hash);
     ID3D12PipelineState* Pipeline(const PsoKey& k, ID3DBlob* vs, ID3DBlob* ps);
     ID3D12PipelineState* BlitPipeline(DXGI_FORMAT rtv, bool over = false);
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC FullScreenPipelineDesc(ID3DBlob* vs, ID3DBlob* ps, DXGI_FORMAT rtv) const;
+    void FillPipelineDesc(const PsoKey& k, ID3DBlob* vs, ID3DBlob* ps, D3D12_GRAPHICS_PIPELINE_STATE_DESC& d) const;
     void ResizeSwap();
     // Init, in order
     bool CreateDevice();
@@ -954,39 +959,36 @@ bool D3D12Backend::BindTargets(const State& s) {
     return true;
 }
 
-// a depth buffer drawn as colour into another depth buffer's memory: copied as depth
-bool D3D12Backend::DepthCopy(const State& s) {
-    TextureDesc d;
-    if (!s.rt.header || !s.textures[0] || !Describe(s.textures[0], d) || Format(d.format).depth || d.cube ||
-        d.depth != 1)
-        return false;
-    auto di = targets_.find(uint64_t(mem::VirtualFromPhysical(s.rt.data)) << 1 | 1);
-    auto si = targets_.find(uint64_t(d.data) << 1 | 1);
-    if (di == targets_.end() || si == targets_.end() || di == si) return false;
-    Target& dst = di->second;
-    Target& src = si->second;
-    auto& pso = blit_psos_[~0ull];
-    if (!pso) {
-        uint64_t h;
-        ID3DBlob* vs = Compile(kDepthHlsl, "vs", "vs_5_0", h);
-        ID3DBlob* ps = Compile(kDepthHlsl, "psmain", "ps_5_0", h);
-        if (!vs || !ps) return false;
-        D3D12_GRAPHICS_PIPELINE_STATE_DESC p{};
-        p.pRootSignature = root_.Get();
-        p.VS = {vs->GetBufferPointer(), vs->GetBufferSize()};
-        p.PS = {ps->GetBufferPointer(), ps->GetBufferSize()};
-        p.SampleMask = UINT_MAX;
-        p.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
-        p.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
-        p.RasterizerState.DepthClipEnable = TRUE;
-        p.DepthStencilState.DepthEnable = TRUE;
-        p.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
-        p.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_ALWAYS;
-        p.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
-        p.DSVFormat = DXGI_FORMAT_D24_UNORM_S8_UINT;
-        p.SampleDesc.Count = 1;
-        if (FAILED(dev_->CreateGraphicsPipelineState(&p, IID_PPV_ARGS(&pso)))) return false;
-    }
+constexpr uint64_t kDepthCopyKey = ~0ull;  // DepthCopy's pipeline in blit_psos_
+
+// DepthCopy's pipeline, kept in blit_psos_: writes depth only, always passing; null when it can't be made
+ID3D12PipelineState* D3D12Backend::EnsureDepthCopyPipeline() {
+    auto& pso = blit_psos_[kDepthCopyKey];
+    if (pso) return pso.Get();
+    uint64_t h;
+    ID3DBlob* vs = Compile(kDepthHlsl, "vs", "vs_5_0", h);
+    ID3DBlob* ps = Compile(kDepthHlsl, "psmain", "ps_5_0", h);
+    if (!vs || !ps) return nullptr;
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC p{};
+    p.pRootSignature = root_.Get();
+    p.VS = {vs->GetBufferPointer(), vs->GetBufferSize()};
+    p.PS = {ps->GetBufferPointer(), ps->GetBufferSize()};
+    p.SampleMask = UINT_MAX;
+    p.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+    p.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+    p.RasterizerState.DepthClipEnable = TRUE;
+    p.DepthStencilState.DepthEnable = TRUE;
+    p.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
+    p.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_ALWAYS;
+    p.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    p.DSVFormat = DXGI_FORMAT_D24_UNORM_S8_UINT;
+    p.SampleDesc.Count = 1;
+    if (FAILED(dev_->CreateGraphicsPipelineState(&p, IID_PPV_ARGS(&pso)))) return nullptr;
+    return pso.Get();
+}
+
+// src's depth drawn into dst's depth buffer
+void D3D12Backend::DrawDepthCopy(Target& src, Target& dst, ID3D12PipelineState* pso) {
     if (cap_) fprintf(cap_, "%04u depth copy %08X to %08X\n", cap_i_++, src.data, dst.data);
     Transition(src.res.Get(), src.state, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
     Transition(dst.res.Get(), dst.state, D3D12_RESOURCE_STATE_DEPTH_WRITE);
@@ -1001,7 +1003,7 @@ bool D3D12Backend::DepthCopy(const State& s) {
     sv.Texture2D.MipLevels = 1;
     dev_->CreateShaderResourceView(src.res.Get(), &sv, Cpu(srv_heap_.Get(), slot, srv_inc_));
     Alloc cb = Upload(256, 256);
-    cl_->SetPipelineState(pso.Get());
+    cl_->SetPipelineState(pso);
     cl_->SetGraphicsRootConstantBufferView(0, cb.gpu);
     cl_->SetGraphicsRootConstantBufferView(1, cb.gpu);
     cl_->SetGraphicsRootDescriptorTable(2, Gpu(srv_heap_.Get(), slot, srv_inc_));
@@ -1010,6 +1012,23 @@ bool D3D12Backend::DepthCopy(const State& s) {
     cl_->DrawInstanced(3, 1, 0, 0);
     dst.drawn = true;
     bound_rt_ = bound_ds_ = nullptr;
+}
+
+// a depth buffer drawn as colour into another depth buffer's memory: copied as depth
+bool D3D12Backend::DepthCopy(const State& s) {
+    TextureDesc d;
+    if (!s.rt.header || !s.textures[0] || !Describe(s.textures[0], d) || Format(d.format).depth || d.cube ||
+        d.depth != 1) {
+        return false;
+    }
+    auto di = targets_.find(uint64_t(mem::VirtualFromPhysical(s.rt.data)) << 1 | 1);
+    auto si = targets_.find(uint64_t(d.data) << 1 | 1);
+    if (di == targets_.end() || si == targets_.end() || di == si) return false;
+    Target& dst = di->second;
+    Target& src = si->second;
+    ID3D12PipelineState* pso = EnsureDepthCopyPipeline();
+    if (!pso) return false;
+    DrawDepthCopy(src, dst, pso);
     return true;
 }
 
@@ -1123,10 +1142,13 @@ void D3D12Backend::Blit(ID3D12Resource* src, DXGI_FORMAT fmt, const float uvrect
 
 ID3DBlob* D3D12Backend::Compile(const std::string& src, const char* entry, const char* profile, uint64_t& hash) {
     // one source can hold several entry points
-    hash = Hash(src.data(), src.size(), Hash(entry, std::strlen(entry), Hash(profile, std::strlen(profile))));
+    uint64_t profile_seed = Hash(profile, std::strlen(profile));
+    uint64_t entry_seed = Hash(entry, std::strlen(entry), profile_seed);
+    hash = Hash(src.data(), src.size(), entry_seed);
     auto it = blobs_.find(hash);
     if (it != blobs_.end()) return it->second.Get();
-    ComPtr<ID3DBlob> code, err;
+    ComPtr<ID3DBlob> code;
+    ComPtr<ID3DBlob> err;
     PerfScope perf_compile{g_perf.compile};
     g_perf.shaders++;
     HRESULT hr = D3DCompile(src.data(), src.size(), nullptr, nullptr, nullptr, entry, profile,
@@ -1141,27 +1163,14 @@ ID3DBlob* D3D12Backend::Compile(const std::string& src, const char* entry, const
     return code.Get();
 }
 
-ID3D12PipelineState* D3D12Backend::BlitPipeline(DXGI_FORMAT rtv, bool over) {
-    auto& pso = blit_psos_[uint64_t(rtv) | uint64_t(over) << 32];
-    if (pso) return pso.Get();
-    uint64_t h;
-    ID3DBlob* vs = Compile(kBlitHlsl, "vs", "vs_5_0", h);
-    ID3DBlob* ps = Compile(kBlitHlsl, "psmain", "ps_5_0", h);
+// a full screen pass's pipeline: solid, no culling, one target, writing all channels; callers set the blend
+D3D12_GRAPHICS_PIPELINE_STATE_DESC D3D12Backend::FullScreenPipelineDesc(ID3DBlob* vs, ID3DBlob* ps,
+                                                                        DXGI_FORMAT rtv) const {
     D3D12_GRAPHICS_PIPELINE_STATE_DESC d{};
     d.pRootSignature = root_.Get();
     d.VS = {vs->GetBufferPointer(), vs->GetBufferSize()};
     d.PS = {ps->GetBufferPointer(), ps->GetBufferSize()};
-    auto& blend = d.BlendState.RenderTarget[0];
-    blend.RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
-    if (over) {
-        // premultiplied colour, the target keeps its alpha
-        blend.BlendEnable = TRUE;
-        blend.SrcBlend = D3D12_BLEND_ONE;
-        blend.DestBlend = D3D12_BLEND_INV_SRC_ALPHA;
-        blend.SrcBlendAlpha = D3D12_BLEND_ZERO;
-        blend.DestBlendAlpha = D3D12_BLEND_ONE;
-        blend.BlendOp = blend.BlendOpAlpha = D3D12_BLEND_OP_ADD;
-    }
+    d.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
     d.SampleMask = UINT_MAX;
     d.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
     d.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
@@ -1170,44 +1179,59 @@ ID3D12PipelineState* D3D12Backend::BlitPipeline(DXGI_FORMAT rtv, bool over) {
     d.NumRenderTargets = 1;
     d.RTVFormats[0] = rtv;
     d.SampleDesc.Count = 1;
+    return d;
+}
+
+ID3D12PipelineState* D3D12Backend::BlitPipeline(DXGI_FORMAT rtv, bool over) {
+    auto& pso = blit_psos_[uint64_t(rtv) | uint64_t(over) << 32];
+    if (pso) return pso.Get();
+    uint64_t h;
+    ID3DBlob* vs = Compile(kBlitHlsl, "vs", "vs_5_0", h);
+    ID3DBlob* ps = Compile(kBlitHlsl, "psmain", "ps_5_0", h);
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC d = FullScreenPipelineDesc(vs, ps, rtv);
+    if (over) {
+        auto& blend = d.BlendState.RenderTarget[0];
+        // premultiplied colour, the target keeps its alpha
+        blend.BlendEnable = TRUE;
+        blend.SrcBlend = D3D12_BLEND_ONE;
+        blend.DestBlend = D3D12_BLEND_INV_SRC_ALPHA;
+        blend.SrcBlendAlpha = D3D12_BLEND_ZERO;
+        blend.DestBlendAlpha = D3D12_BLEND_ONE;
+        blend.BlendOp = blend.BlendOpAlpha = D3D12_BLEND_OP_ADD;
+    }
     dev_->CreateGraphicsPipelineState(&d, IID_PPV_ARGS(&pso));
+    return pso.Get();
+}
+
+// Pass's pipeline for the shader, kept in blit_psos_; null when it can't be made
+ID3D12PipelineState* D3D12Backend::EnsurePassPipeline(const char* hlsl, const char* entry, DXGI_FORMAT rtv,
+                                                      float blend) {
+    uint64_t seed = uint64_t(rtv) << 1 | (blend >= 0 ? 1 : 0);
+    uint64_t source_seed = Hash(hlsl, std::strlen(hlsl), seed);
+    auto& pso = blit_psos_[Hash(entry, std::strlen(entry), source_seed)];
+    if (pso) return pso.Get();
+    uint64_t hv;
+    uint64_t hp;
+    ID3DBlob* vs = Compile(hlsl, "vs", "vs_5_0", hv);
+    ID3DBlob* ps = Compile(hlsl, entry, "ps_5_0", hp);
+    if (!vs || !ps) return nullptr;
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC d = FullScreenPipelineDesc(vs, ps, rtv);
+    if (blend >= 0) {
+        auto& b = d.BlendState.RenderTarget[0];
+        b.BlendEnable = TRUE;
+        b.SrcBlend = b.SrcBlendAlpha = D3D12_BLEND_BLEND_FACTOR;
+        b.DestBlend = b.DestBlendAlpha = D3D12_BLEND_INV_BLEND_FACTOR;
+        b.BlendOp = b.BlendOpAlpha = D3D12_BLEND_OP_ADD;
+    }
+    if (FAILED(dev_->CreateGraphicsPipelineState(&d, IID_PPV_ARGS(&pso)))) return nullptr;
     return pso.Get();
 }
 
 void D3D12Backend::Pass(const char* hlsl, const char* entry, DXGI_FORMAT rtv, D3D12_CPU_DESCRIPTOR_HANDLE rh,
                         uint32_t w, uint32_t h, ID3D12Resource* const src[3], const DXGI_FORMAT fmt[3],
                         const float p[8], float blend) {
-    uint64_t key =
-        Hash(entry, std::strlen(entry), Hash(hlsl, std::strlen(hlsl), uint64_t(rtv) << 1 | (blend >= 0 ? 1 : 0)));
-    auto& pso = blit_psos_[key];
-    if (!pso) {
-        uint64_t hv;
-        uint64_t hp;
-        ID3DBlob* vs = Compile(hlsl, "vs", "vs_5_0", hv);
-        ID3DBlob* ps = Compile(hlsl, entry, "ps_5_0", hp);
-        if (!vs || !ps) return;
-        D3D12_GRAPHICS_PIPELINE_STATE_DESC d{};
-        d.pRootSignature = root_.Get();
-        d.VS = {vs->GetBufferPointer(), vs->GetBufferSize()};
-        d.PS = {ps->GetBufferPointer(), ps->GetBufferSize()};
-        auto& b = d.BlendState.RenderTarget[0];
-        b.RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
-        if (blend >= 0) {
-            b.BlendEnable = TRUE;
-            b.SrcBlend = b.SrcBlendAlpha = D3D12_BLEND_BLEND_FACTOR;
-            b.DestBlend = b.DestBlendAlpha = D3D12_BLEND_INV_BLEND_FACTOR;
-            b.BlendOp = b.BlendOpAlpha = D3D12_BLEND_OP_ADD;
-        }
-        d.SampleMask = UINT_MAX;
-        d.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
-        d.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
-        d.RasterizerState.DepthClipEnable = TRUE;
-        d.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
-        d.NumRenderTargets = 1;
-        d.RTVFormats[0] = rtv;
-        d.SampleDesc.Count = 1;
-        if (FAILED(dev_->CreateGraphicsPipelineState(&d, IID_PPV_ARGS(&pso)))) return;
-    }
+    ID3D12PipelineState* pso = EnsurePassPipeline(hlsl, entry, rtv, blend);
+    if (!pso) return;
     uint32_t slot = SrvSlots(4);
     for (int i = 0; i < 4; i++) {
         D3D12_SHADER_RESOURCE_VIEW_DESC sv{};
@@ -1225,7 +1249,7 @@ void D3D12Backend::Pass(const char* hlsl, const char* entry, DXGI_FORMAT rtv, D3
         float f[4] = {blend, blend, blend, blend};
         cl_->OMSetBlendFactor(f);
     }
-    cl_->SetPipelineState(pso.Get());
+    cl_->SetPipelineState(pso);
     cl_->SetGraphicsRootConstantBufferView(0, cb.gpu);
     cl_->SetGraphicsRootConstantBufferView(1, cb.gpu);
     cl_->SetGraphicsRootDescriptorTable(2, Gpu(srv_heap_.Get(), slot, srv_inc_));
@@ -1243,8 +1267,9 @@ ID3D12Resource* D3D12Backend::Feedback(Target& t) {
         td.Flags = D3D12_RESOURCE_FLAG_NONE;
         t.fb_state = D3D12_RESOURCE_STATE_COPY_DEST;
         if (FAILED(dev_->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &td, t.fb_state, nullptr,
-                                                 IID_PPV_ARGS(&t.fb))))
+                                                 IID_PPV_ARGS(&t.fb)))) {
             return nullptr;
+        }
     }
     Transition(t.res.Get(), t.state, D3D12_RESOURCE_STATE_COPY_SOURCE);
     Transition(t.fb.Get(), t.fb_state, D3D12_RESOURCE_STATE_COPY_DEST);
@@ -1253,23 +1278,45 @@ ID3D12Resource* D3D12Backend::Feedback(Target& t) {
     return t.fb.Get();
 }
 
-ID3D12PipelineState* D3D12Backend::Pipeline(const PsoKey& k, ID3DBlob* vs, ID3DBlob* ps) {
-    uint64_t h = Hash(&k, sizeof(k));
-    auto it = psos_.find(h);
-    if (it != psos_.end()) return it->second.Get();
-    D3D12_INPUT_ELEMENT_DESC el[16];
+// the key's vertex attributes, ATTR0 to ATTR15 in register order; returns how many
+uint32_t FillInputLayout(const PsoKey& k, D3D12_INPUT_ELEMENT_DESC el[16]) {
     uint32_t n = 0;
-    for (uint32_t r = 0; r < 16; r++)
-        if ((k.regs >> r) & 1) {
-            uint32_t e = k.elements[r];
-            el[n++] = {"ATTR", r, DXGI_FORMAT(e & 0xFF), (e >> 8) & 0xFF, e >> 16,
-                       D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0};
-        }
-    D3D12_GRAPHICS_PIPELINE_STATE_DESC d{};
+    for (uint32_t r = 0; r < 16; r++) {
+        if (!((k.regs >> r) & 1)) continue;
+        uint32_t e = k.elements[r];
+        el[n++] = {"ATTR", r, DXGI_FORMAT(e & 0xFF), (e >> 8) & 0xFF, e >> 16,
+                   D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0};
+    }
+    return n;
+}
+
+D3D12_PRIMITIVE_TOPOLOGY_TYPE TopologyType(uint32_t topo) {
+    switch (topo) {
+        case 0: return D3D12_PRIMITIVE_TOPOLOGY_TYPE_POINT;
+        case 1: return D3D12_PRIMITIVE_TOPOLOGY_TYPE_LINE;
+        default: return D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    }
+}
+
+constexpr uint32_t kFillWireframe = 0x1B01;  // D3DFILL_WIREFRAME
+
+void FillDepthStencilDesc(const PsoKey& k, D3D12_DEPTH_STENCIL_DESC& ds) {
+    ds.DepthEnable = k.zen;
+    ds.DepthWriteMask = k.zwrite ? D3D12_DEPTH_WRITE_MASK_ALL : D3D12_DEPTH_WRITE_MASK_ZERO;
+    ds.DepthFunc = Cmp(k.zfunc);
+    ds.StencilEnable = k.sten;
+    ds.StencilReadMask = UINT8(k.smask);
+    ds.StencilWriteMask = UINT8(k.swmask);
+    D3D12_DEPTH_STENCILOP_DESC so{StencilOp(k.sfail), StencilOp(k.szfail), StencilOp(k.spass), Cmp(k.sfunc)};
+    ds.FrontFace = ds.BackFace = so;
+}
+
+// everything of the pipeline but its input layout
+void D3D12Backend::FillPipelineDesc(const PsoKey& k, ID3DBlob* vs, ID3DBlob* ps,
+                                    D3D12_GRAPHICS_PIPELINE_STATE_DESC& d) const {
     d.pRootSignature = root_.Get();
     d.VS = {vs->GetBufferPointer(), vs->GetBufferSize()};
     d.PS = {ps->GetBufferPointer(), ps->GetBufferSize()};
-    d.InputLayout = {el, n};
     auto& b = d.BlendState.RenderTarget[0];
     b.BlendEnable = k.blend;
     b.SrcBlend = Blend(k.src, false);
@@ -1280,28 +1327,29 @@ ID3D12PipelineState* D3D12Backend::Pipeline(const PsoKey& k, ID3DBlob* vs, ID3DB
     b.BlendOpAlpha = BlendOp(k.op);
     b.RenderTargetWriteMask = UINT8(k.wmask);
     d.SampleMask = UINT_MAX;
-    // D3DFILL_WIREFRAME
-    d.RasterizerState.FillMode = k.fill == 0x1B01 ? D3D12_FILL_MODE_WIREFRAME : D3D12_FILL_MODE_SOLID;
+    d.RasterizerState.FillMode = k.fill == kFillWireframe ? D3D12_FILL_MODE_WIREFRAME : D3D12_FILL_MODE_SOLID;
     d.RasterizerState.CullMode = k.cull ? D3D12_CULL_MODE_BACK : D3D12_CULL_MODE_NONE;
     d.RasterizerState.FrontCounterClockwise = k.ccw;
     d.RasterizerState.DepthBias = k.zbias;
     d.RasterizerState.SlopeScaledDepthBias = k.zslope;
     d.RasterizerState.DepthClipEnable = TRUE;
-    d.DepthStencilState.DepthEnable = k.zen;
-    d.DepthStencilState.DepthWriteMask = k.zwrite ? D3D12_DEPTH_WRITE_MASK_ALL : D3D12_DEPTH_WRITE_MASK_ZERO;
-    d.DepthStencilState.DepthFunc = Cmp(k.zfunc);
-    d.DepthStencilState.StencilEnable = k.sten;
-    d.DepthStencilState.StencilReadMask = UINT8(k.smask);
-    d.DepthStencilState.StencilWriteMask = UINT8(k.swmask);
-    D3D12_DEPTH_STENCILOP_DESC so{StencilOp(k.sfail), StencilOp(k.szfail), StencilOp(k.spass), Cmp(k.sfunc)};
-    d.DepthStencilState.FrontFace = d.DepthStencilState.BackFace = so;
-    d.PrimitiveTopologyType = k.topo == 0 ? D3D12_PRIMITIVE_TOPOLOGY_TYPE_POINT
-                             : k.topo == 1 ? D3D12_PRIMITIVE_TOPOLOGY_TYPE_LINE
-                                           : D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    FillDepthStencilDesc(k, d.DepthStencilState);
+    d.PrimitiveTopologyType = TopologyType(k.topo);
     d.NumRenderTargets = k.has_rt ? 1 : 0;
     d.RTVFormats[0] = k.has_rt ? DXGI_FORMAT(k.rtfmt) : DXGI_FORMAT_UNKNOWN;
     d.DSVFormat = k.has_ds ? DXGI_FORMAT_D24_UNORM_S8_UINT : DXGI_FORMAT_UNKNOWN;
     d.SampleDesc.Count = 1;
+}
+
+ID3D12PipelineState* D3D12Backend::Pipeline(const PsoKey& k, ID3DBlob* vs, ID3DBlob* ps) {
+    uint64_t h = Hash(&k, sizeof(k));
+    auto it = psos_.find(h);
+    if (it != psos_.end()) return it->second.Get();
+    D3D12_INPUT_ELEMENT_DESC el[16];
+    uint32_t n = FillInputLayout(k, el);
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC d{};
+    d.InputLayout = {el, n};
+    FillPipelineDesc(k, vs, ps, d);
     ComPtr<ID3D12PipelineState> pso;
     g_perf.psos++;
     if (FAILED(dev_->CreateGraphicsPipelineState(&d, IID_PPV_ARGS(&pso)))) LOGE("d3d12: pipeline creation failed");
