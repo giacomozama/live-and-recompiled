@@ -116,7 +116,7 @@ void Rc4Key(void* ks, const uint8_t* key, size_t len) {
         j = uint8_t(j + s[i] + key[i % len]);
         std::swap(s[i], s[j]);
     }
-    s[256] = 0;
+    s[256] = 0;  // the i and j indices live after the table
     s[257] = 0;
 }
 

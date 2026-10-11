@@ -153,7 +153,6 @@ uint32_t CallGuest(X86Context& ctx, uint32_t fn, const uint32_t* args, size_t co
     W32(ctx.esp, 0xFFFFFFF0u);  // never used as a target, calls return through the host stack
     x86_icall(ctx, g_base, fn);
     uint32_t result = ctx.eax;
-    uint32_t edx = ctx.edx;
     ctx.eax = saved.eax;
     ctx.ecx = saved.ecx;
     ctx.edx = saved.edx;
@@ -162,7 +161,6 @@ uint32_t CallGuest(X86Context& ctx, uint32_t fn, const uint32_t* args, size_t co
     ctx.edi = saved.edi;
     ctx.ebp = saved.ebp;
     ctx.esp = esp;
-    (void)edx;
     return result;
 }
 

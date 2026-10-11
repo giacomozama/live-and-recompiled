@@ -115,16 +115,16 @@ void InitKernelData() {
     }).detach();
 }
 
-// ---------------------------------------------------------------- critical sections
+// critical sections
 
 KERNEL_EXPORT(291, RtlInitializeCriticalSection, 1) {
     uint32_t cs = a[0];
     G<uint8_t>(cs) = 1;  // SynchronizationEvent
     G<uint8_t>(cs + 1) = 0;
-    G<uint8_t>(cs + 2) = 4;
+    G<uint8_t>(cs + 2) = 4;  // Header.Size in dwords
     G<uint8_t>(cs + 3) = 0;
     W32(cs + 4, 0);
-    W32(cs + 8, cs + 8);
+    W32(cs + 8, cs + 8);  // empty WaitListHead
     W32(cs + 12, cs + 8);
     W32(cs + 0x10, 0xFFFFFFFF);  // LockCount
     W32(cs + 0x14, 0);           // RecursionCount
@@ -169,7 +169,7 @@ KERNEL_EXPORT(294, RtlLeaveCriticalSection, 1) {
 KERNEL_EXPORT(306, RtlTryEnterCriticalSection, 1) {
     uint32_t cs = a[0];
     uint32_t me = Current()->ethread;
-    int32_t idle = -1;
+    int32_t idle = -1;  // LockCount of a free section
     if (__atomic_compare_exchange_n(reinterpret_cast<int32_t*>(HostPtr(cs + 0x10)), &idle, 0, false, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST)) {
         W32(cs + 0x18, me);
         W32(cs + 0x14, 1);
@@ -187,7 +187,7 @@ KERNEL_EXPORT(295, RtlLeaveCriticalSectionAndRegion, 1) { return kimpl_RtlLeaveC
 KERNEL_EXPORT(101, KeEnterCriticalRegion, 0) { return 0; }
 KERNEL_EXPORT(122, KeLeaveCriticalRegion, 0) { return 0; }
 
-// ---------------------------------------------------------------- irql, time
+// irql, time
 
 KERNEL_FASTCALL(160, KfRaiseIrql) {
     uint8_t old = Irql();
@@ -320,11 +320,12 @@ KERNEL_EXPORT(305, RtlTimeToTimeFields, 2) {
     W16(tf + 8, uint16_t(rem / 60 % 60));
     W16(tf + 10, uint16_t(rem % 60));
     W16(tf + 12, uint16_t(ms));
+    // weekday, 1 Jan 1970 was a Thursday
     W16(tf + 14, uint16_t((days + 4) % 7 < 0 ? (days + 4) % 7 + 7 : (days + 4) % 7));
     return 0;
 }
 
-// ---------------------------------------------------------------- memory
+// memory
 
 KERNEL_EXPORT(184, NtAllocateVirtualMemory, 5) {
     uint32_t base = R32(a[0]), size = R32(a[2]);
@@ -374,12 +375,13 @@ KERNEL_EXPORT(175, MmLockUnlockBufferPages, 3) { return 0; }
 KERNEL_EXPORT(176, MmLockUnlockPhysicalPage, 2) { return 0; }
 KERNEL_EXPORT(180, MmQueryAllocationSize, 1) { return mem::AllocationSize(a[0]); }
 KERNEL_EXPORT(182, MmSetAddressProtect, 3) { return 0; }
-KERNEL_EXPORT(179, MmQueryAddressProtect, 1) { return 4; }
+KERNEL_EXPORT(179, MmQueryAddressProtect, 1) { return 4; }  // PAGE_READWRITE
 KERNEL_EXPORT(167, MmAllocateSystemMemory, 2) { return mem::AllocSystem(a[0], 0x1000); }
 KERNEL_EXPORT(172, MmFreeSystemMemory, 2) {
     mem::FreeSystem(a[0]);
     return a[1];
 }
+// returns the end of the claimed block
 KERNEL_EXPORT(168, MmClaimGpuInstanceMemory, 2) {
     if (a[1]) W32(a[1], 0);
     return mem::AllocContiguous(a[0], 0, 0xFFFFFFFF, 0x1000) + a[0];
@@ -405,7 +407,7 @@ KERNEL_EXPORT(23, ExQueryPoolBlockSize, 1) { return mem::AllocationSize(a[0]); }
 
 KERNEL_EXPORT(181, MmQueryStatistics, 1) {
     uint32_t o = a[0];
-    if (R32(o) != 36) return kInvalidParameter;
+    if (R32(o) != 36) return kInvalidParameter;  // MM_STATISTICS.Length
     mem::Stats s = mem::Query();
     W32(o + 4, s.total_pages);
     W32(o + 8, s.available_pages);
@@ -418,6 +420,7 @@ KERNEL_EXPORT(181, MmQueryStatistics, 1) {
     return kSuccess;
 }
 
+// sec is an XBE section header, +0x18 its reference count
 KERNEL_EXPORT(327, XeLoadSection, 1) {
     uint32_t sec = a[0];
     uint32_t refs = R32(sec + 0x18);
@@ -441,7 +444,7 @@ KERNEL_EXPORT(328, XeUnloadSection, 1) {
     return kSuccess;
 }
 
-// ---------------------------------------------------------------- objects and waits
+// objects and waits
 
 KERNEL_EXPORT(187, NtClose, 1) { return CloseHandle(a[0]) ? kSuccess : kInvalidHandle; }
 
@@ -468,7 +471,7 @@ KERNEL_EXPORT(189, NtCreateEvent, 4) {
     o->notification = a[2] == 0;
     o->signal = (a[3] & 0xFF) ? 1 : 0;
     uint32_t body = mem::AllocSystem(16);
-    G<uint8_t>(body) = uint8_t(a[2]);
+    G<uint8_t>(body) = uint8_t(a[2]);  // NotificationEvent or SynchronizationEvent
     G<uint8_t>(body + 2) = 4;
     W32(body + 4, uint32_t(o->signal));
     Bind(o, body);
@@ -500,7 +503,7 @@ KERNEL_EXPORT(192, NtCreateMutant, 3) {
     }
     auto o = std::make_shared<Object>(ObjType::Mutant);
     uint32_t body = mem::AllocSystem(32);
-    G<uint8_t>(body) = 2;
+    G<uint8_t>(body) = 2;  // MutantObject
     G<uint8_t>(body + 2) = 8;
     if (a[2] & 0xFF) {
         o->owner = Current()->ethread;
@@ -537,7 +540,7 @@ KERNEL_EXPORT(193, NtCreateSemaphore, 4) {
     o->signal = count;
     o->limit = limit;
     uint32_t body = mem::AllocSystem(20);
-    G<uint8_t>(body) = 5;
+    G<uint8_t>(body) = 5;  // SemaphoreObject
     G<uint8_t>(body + 2) = 5;
     W32(body + 4, uint32_t(count));
     W32(body + 0x10, uint32_t(limit));
@@ -587,8 +590,8 @@ KERNEL_EXPORT(205, NtPulseEvent, 2) {
 }
 
 KERNEL_EXPORT(112, KeInitializeSemaphore, 3) {
-    InitHeader(a[0], 5, 5, int32_t(a[1]));
-    W32(a[0] + 0x10, a[2]);
+    InitHeader(a[0], 5, 5, int32_t(a[1]));  // SemaphoreObject
+    W32(a[0] + 0x10, a[2]);  // Limit
     return 0;
 }
 
@@ -601,7 +604,7 @@ KERNEL_EXPORT(132, KeReleaseSemaphore, 4) {
 
 KERNEL_EXPORT(110, KeInitializeMutant, 2) {
     bool owned = a[1] & 0xFF;
-    InitHeader(a[0], 2, 8, owned ? 0 : 1);
+    InitHeader(a[0], 2, 8, owned ? 0 : 1);  // MutantObject, signalled while unowned
     if (owned) {
         ObjectRef o = FromPointer(a[0]);
         std::lock_guard<std::mutex> lock(DispatchLock());
@@ -686,12 +689,12 @@ KERNEL_EXPORT(247, ObReferenceObjectByName, 5) {
 
 KERNEL_FASTCALL(250, ObfDereferenceObject) { return 0; }
 
-// ---------------------------------------------------------------- timers, DPCs, interrupts
+// timers, DPCs, interrupts
 
 KERNEL_EXPORT(113, KeInitializeTimerEx, 2) {
     uint32_t t = a[0];
     std::memset(HostPtr(t), 0, 0x28);
-    G<uint8_t>(t) = uint8_t(8 + a[1]);
+    G<uint8_t>(t) = uint8_t(8 + a[1]);  // TimerNotificationObject or TimerSynchronizationObject
     G<uint8_t>(t + 2) = 10;
     W32(t + 8, t + 8);
     W32(t + 12, t + 8);
@@ -702,8 +705,8 @@ KERNEL_EXPORT(150, KeSetTimerEx, 5) {
     ObjectRef t = FromPointer(a[0]);
     bool was = CancelTimer(*t);
     int64_t due = int64_t(uint64_t(a[1]) | uint64_t(a[2]) << 32);
-    W32(a[0] + 0x20, a[4]);
-    W32(a[0] + 0x24, a[3]);
+    W32(a[0] + 0x20, a[4]);  // KTIMER.Dpc
+    W32(a[0] + 0x24, a[3]);  // KTIMER.Period
     SetTimer(t, due, int32_t(a[3]), a[4]);
     return was;
 }
@@ -727,7 +730,7 @@ KERNEL_EXPORT(194, NtCreateTimer, 3) {
     auto o = std::make_shared<Object>(ObjType::Timer);
     o->notification = a[2] == 0;
     uint32_t body = mem::AllocSystem(0x28);
-    InitHeader(body, uint8_t(8 + (a[2] & 1)), 10, 0);
+    InitHeader(body, uint8_t(8 + (a[2] & 1)), 10, 0);  // TimerNotificationObject or TimerSynchronizationObject
     Bind(o, body);
     if (!name.empty()) AddNamed(name, o);
     W32(a[0], NewHandle(o));
@@ -756,7 +759,7 @@ KERNEL_EXPORT(185, NtCancelTimer, 2) {
 KERNEL_EXPORT(107, KeInitializeDpc, 3) {
     uint32_t d = a[0];
     std::memset(HostPtr(d), 0, 0x1C);
-    W16(d, 19);
+    W16(d, 19);  // DpcObject
     W32(d + 0x0C, a[1]);
     W32(d + 0x10, a[2]);
     return 0;
@@ -764,7 +767,7 @@ KERNEL_EXPORT(107, KeInitializeDpc, 3) {
 
 KERNEL_EXPORT(119, KeInsertQueueDpc, 3) {
     uint32_t d = a[0];
-    if (G<uint8_t>(d + 2)) return 0;
+    if (G<uint8_t>(d + 2)) return 0;  // already Inserted
     G<uint8_t>(d + 2) = 1;
     QueueDpc(d, a[1], a[2]);
     return 1;
@@ -781,11 +784,11 @@ KERNEL_EXPORT(98, KeConnectInterrupt, 1) { return 1; }
 KERNEL_EXPORT(100, KeDisconnectInterrupt, 1) { return 1; }
 KERNEL_EXPORT(44, HalGetInterruptVector, 2) {
     if (a[1]) G<uint8_t>(a[1]) = uint8_t(a[0]);
-    return a[0] + 0x30;
+    return a[0] + 0x30;  // PRIMARY_VECTOR_BASE
 }
 KERNEL_EXPORT(153, KeSynchronizeExecution, 3) { return CallGuest(ctx, a[1], {a[2]}) & 0xFF; }
 
-// ---------------------------------------------------------------- threads
+// threads
 
 KERNEL_EXPORT(255, PsCreateSystemThreadEx, 10) {
     uint32_t handle_out = a[0], stack = a[2], tls = a[3], id_out = a[4], start = a[5], context = a[6];
@@ -885,7 +888,7 @@ KERNEL_EXPORT(143, KeSetBasePriorityThread, 2) {
 KERNEL_EXPORT(139, KeRestoreFloatingPointState, 1) { return kSuccess; }
 KERNEL_EXPORT(142, KeSaveFloatingPointState, 1) { return kSuccess; }
 
-// ---------------------------------------------------------------- strings
+// strings
 
 KERNEL_EXPORT(289, RtlInitAnsiString, 2) {
     uint32_t d = a[0], s = a[1];
@@ -1011,7 +1014,7 @@ KERNEL_EXPORT(301, RtlNtStatusToDosError, 1) {
     }
 }
 
-// ---------------------------------------------------------------- exceptions, debug, shutdown
+// exceptions, debug, shutdown
 
 // Exceptions dispatch like NT on x86: each handler of the fs:[0] chain is called (record, frame, context,
 // dispatcher context) until one returns ExceptionContinueExecution. A C++ catch never returns: the CRT jumps to the
@@ -1217,7 +1220,7 @@ KERNEL_EXPORT(29, ExSaveNonVolatileSetting, 4) {
     return kSuccess;
 }
 
-// ---------------------------------------------------------------- settings and hardware
+// settings and hardware
 
 // widescreen (a 4:3 output plays the console's 4:3), 480p
 static uint32_t VideoFlags() { return (app::Widescreen() ? 0x00010000 : 0) | 0x00080000; }
@@ -1274,10 +1277,10 @@ KERNEL_EXPORT(46, HalReadWritePCISpace, 6) {
 KERNEL_EXPORT(252, PhyGetLinkState, 1) { return 0; }
 KERNEL_EXPORT(253, PhyInitialize, 2) { return kSuccess; }
 
-// ---------------------------------------------------------------- I/O manager, not used by the replaced libraries
+// I/O manager, not used by the replaced libraries
 
 KERNEL_EXPORT(65, IoCreateDevice, 6) { return kUnsuccessful; }
-KERNEL_EXPORT(74, IoInvalidDeviceRequest, 2) { return 0xC0000010; }
+KERNEL_EXPORT(74, IoInvalidDeviceRequest, 2) { return 0xC0000010; }  // STATUS_INVALID_DEVICE_REQUEST
 KERNEL_EXPORT(62, IoBuildSynchronousFsdRequest, 7) { return 0; }
 KERNEL_EXPORT(85, IoSynchronousFsdRequest, 5) { return kUnsuccessful; }
 KERNEL_EXPORT(84, IoSynchronousDeviceIoControlRequest, 8) {
@@ -1291,7 +1294,7 @@ KERNEL_EXPORT(359, IoMarkIrpMustComplete, 1) { return 0; }
 KERNEL_FASTCALL(86, IofCallDriver) { return kUnsuccessful; }
 KERNEL_FASTCALL(87, IofCompleteRequest) { return 0; }
 
-// ---------------------------------------------------------------- crypto
+// crypto
 
 KERNEL_EXPORT(335, XcSHAInit, 1) {
     crypto::ShaInit(HostPtr(a[0]));

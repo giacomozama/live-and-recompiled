@@ -42,7 +42,7 @@ uint32_t NewHandle(ObjectRef obj) {
 }
 
 ObjectRef FromHandle(uint32_t handle) {
-    if (handle == 0xFFFFFFFE) return CurrentRef();
+    if (handle == 0xFFFFFFFE) return CurrentRef();  // NtCurrentThread pseudo handle
     std::lock_guard<std::mutex> lock(g_handles_lock);
     auto it = g_handles.find(handle);
     return it == g_handles.end() ? nullptr : it->second;
@@ -58,6 +58,7 @@ uint32_t DuplicateHandle(uint32_t handle) {
     return o ? NewHandle(o) : 0;
 }
 
+// serial in WaitListHead.Flink, stamp in Blink
 static void Stamp(uint32_t guest, uint32_t serial) {
     W32(guest + 8, serial);
     W32(guest + 12, kStamp);
@@ -181,7 +182,7 @@ int64_t Now100ns() {
 int64_t ToDeadline(int64_t due) {
     using namespace std::chrono;
     int64_t now = duration_cast<nanoseconds>(steady_clock::now().time_since_epoch()).count();
-    if (due < 0) return now + (-due) * 100;
+    if (due < 0) return now + (-due) * 100;  // negative due is relative, positive is absolute system time
     int64_t rel = due - Now100ns();
     return now + std::max<int64_t>(rel, 0) * 100;
 }
@@ -291,7 +292,7 @@ int32_t ReleaseMutant(Object& o, uint32_t& status) {
     return old;
 }
 
-// ---------------------------------------------------------------- timers and DPCs
+// timers and DPCs
 
 namespace {
 
@@ -331,14 +332,14 @@ void RunDpcs(X86Context& ctx) {
         }
         uint32_t dpc = d[0];
         G<uint8_t>(dpc + 2) = 0;  // Inserted
-        uint32_t routine = R32(dpc + 0x0C), context = R32(dpc + 0x10);
+        uint32_t routine = R32(dpc + 0x0C), context = R32(dpc + 0x10);  // KDPC.DeferredRoutine and DeferredContext
         if (routine) CallGuest(ctx, routine, {dpc, context, d[1], d[2]});
     }
 }
 
 void QueueDpc(uint32_t dpc, uint32_t arg1, uint32_t arg2) {
     std::lock_guard<std::mutex> lock(g_dpc_lock);
-    W32(dpc + 0x14, arg1);
+    W32(dpc + 0x14, arg1);  // KDPC.SystemArgument1 and 2
     W32(dpc + 0x18, arg2);
     g_dpcs.push_back({dpc, arg1, arg2});
     g_dpc_cv.notify_one();

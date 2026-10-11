@@ -46,7 +46,7 @@ void SetupGuestBlocks(Thread& t, uint32_t stack_size, uint32_t tls_size) {
     W32(k + 0x28, t.ethread);                   // PrcbData.CurrentThread
     uint32_t e = t.ethread;
     G<uint8_t>(e + 0) = 6;                      // dispatcher type ThreadObject
-    G<uint8_t>(e + 2) = uint8_t(kEthreadSize / 4);
+    G<uint8_t>(e + 2) = uint8_t(kEthreadSize / 4);  // Header.Size in dwords
     W32(e + 0x1C, t.stack_top);                 // KTHREAD.StackBase
     W32(e + 0x20, t.stack_top - stack_size);    // KTHREAD.StackLimit
     W32(e + 0x28, t.tls);                       // KTHREAD.TlsData
@@ -57,8 +57,8 @@ void InitContext(Thread& t, X86Context& ctx) {
     std::memset(&ctx, 0, sizeof(ctx));
     ctx.esp = (t.tls & ~15u) - 16;
     ctx.fs_base = t.kpcr;
-    ctx.fcw = 0x27F;
-    ctx.mxcsr = 0x1F80;
+    ctx.fcw = 0x27F;  // x87 53 bit precision, exceptions masked
+    ctx.mxcsr = 0x1F80;  // SSE exceptions masked, round to nearest
     ctx.thread_handle = 0;
     t.ctx = &ctx;
 }

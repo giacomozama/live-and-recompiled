@@ -14,7 +14,7 @@ struct alignas(64) X86Context {
     uint32_t df;
     uint32_t xflags;  // AC and ID, kept so feature probes see them toggle
     uint32_t fs_base;
-    uint32_t top;
+    uint32_t top;  // x87 stack top
     uint16_t fcw, fsw;
     uint32_t mxcsr;
     double st[8];

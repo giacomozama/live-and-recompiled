@@ -94,7 +94,7 @@ std::string Digits(uint32_t v, uint32_t base) {
 
 }  // namespace
 
-// ---------------------------------------------------------------- memory
+// memory
 
 KERNEL_EXPORT(320, RtlZeroMemory, 2) {
     std::memset(HostPtr(a[0]), 0, a[1]);
@@ -121,7 +121,7 @@ KERNEL_EXPORT(268, RtlCompareMemory, 3) {
 KERNEL_FASTCALL(307, RtlUlongByteSwap) { return __builtin_bswap32(ctx.ecx); }
 KERNEL_FASTCALL(318, RtlUshortByteSwap) { return __builtin_bswap16(uint16_t(ctx.ecx)); }
 
-// ---------------------------------------------------------------- 64 bit helpers, results in edx:eax
+// 64 bit helpers, results in edx:eax
 
 KERNEL_EXPORT(281, RtlExtendedIntegerMultiply, 3) {
     int64_t r = int64_t(uint64_t(a[0]) | uint64_t(a[1]) << 32) * int32_t(a[2]);
@@ -149,7 +149,7 @@ KERNEL_EXPORT(283, RtlExtendedMagicDivide, 5) {
     return uint32_t(q);
 }
 
-// ---------------------------------------------------------------- characters and counted strings
+// characters and counted strings
 
 KERNEL_EXPORT(296, RtlLowerChar, 1) { return uint32_t(std::tolower(int(a[0] & 0xFF))) & 0xFF; }
 KERNEL_EXPORT(275, RtlDowncaseUnicodeChar, 1) { return Lower16(uint16_t(a[0])); }
@@ -283,7 +283,7 @@ KERNEL_EXPORT(266, RtlCaptureStackBackTrace, 4) {
 }
 KERNEL_EXPORT(319, RtlWalkFrameChain, 3) { return 0; }
 
-// ---------------------------------------------------------------- interlocked, fastcall
+// interlocked, fastcall
 
 KERNEL_FASTCALL(53, InterlockedIncrement) { return uint32_t(__atomic_add_fetch(&G<int32_t>(ctx.ecx), 1, __ATOMIC_SEQ_CST)); }
 KERNEL_FASTCALL(52, InterlockedDecrement) { return uint32_t(__atomic_sub_fetch(&G<int32_t>(ctx.ecx), 1, __ATOMIC_SEQ_CST)); }

@@ -223,26 +223,6 @@ std::string CodeGen::Cond(ZydisMnemonic m) {
     }
 }
 
-static std::string Mask(unsigned bits) {
-    return bits == 8 ? "0xFFu" : bits == 16 ? "0xFFFFu" : "0xFFFFFFFFu";
-}
-
-// the operand width of an instruction: first explicit operand's size
-static unsigned OpBits(const ZydisDecodedInstruction& in, const ZydisDecodedOperand* ops) {
-    unsigned b = ops[0].size;
-    return b == 8 || b == 16 ? b : 32;
-}
-
-static bool HasMem(const ZydisDecodedInstruction& in, const ZydisDecodedOperand* ops, int& idx) {
-    for (int i = 0; i < in.operand_count_visible; i++)
-        if (ops[i].type == ZYDIS_OPERAND_TYPE_MEMORY && ops[i].visibility != ZYDIS_OPERAND_VISIBILITY_HIDDEN) {
-            idx = i;
-            return true;
-        }
-    idx = -1;
-    return false;
-}
-
 void CodeGen::EmitInsn(uint32_t va, const ZydisDecodedInstruction& in, const ZydisDecodedOperand* ops, uint32_t next_body) {
     insn_count_++;
     bool keep_pending = false;
@@ -254,7 +234,7 @@ void CodeGen::EmitInsn(uint32_t va, const ZydisDecodedInstruction& in, const Zyd
         case ZYDIS_MNEMONIC_CALL: {
             if (ops[0].type == ZYDIS_OPERAND_TYPE_IMMEDIATE) {
                 uint32_t t = uint32_t(next + ops[0].imm.value.s);
-                if (t == next) {
+                if (t == next) {  // call $+5 only pushes eip
                     Line(Fmt("\tX86_PUSH32(0x%Xu);", next));
                 } else if (an_.functions.count(t)) {
                     Line(Fmt("\tX86_PUSH32(0x%Xu); %s(ctx, base);", next, FuncName(t).c_str()));
@@ -278,6 +258,7 @@ void CodeGen::EmitInsn(uint32_t va, const ZydisDecodedInstruction& in, const Zyd
         case ZYDIS_MNEMONIC_JMP: {
             if (ops[0].type == ZYDIS_OPERAND_TYPE_IMMEDIATE) {
                 uint32_t t = uint32_t(next + ops[0].imm.value.s);
+                // backward jumps get a compiler barrier so spin loops reread memory other threads write
                 if (t <= va) Line("\tX86_BARRIER();");
                 Line("\t" + Target(t));
             } else {

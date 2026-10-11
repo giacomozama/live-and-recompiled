@@ -6,6 +6,7 @@
 
 namespace xbe {
 
+// the header XORs the entry point and kernel thunk address with these
 constexpr uint32_t kRetailEntryKey = 0xA8FC57AB;
 constexpr uint32_t kDebugEntryKey = 0x94859D4B;
 constexpr uint32_t kRetailThunkKey = 0x5B6D40B6;
@@ -129,10 +130,10 @@ struct Image {
             char n[9] = {};
             std::memcpy(n, file.data() + o, 8);
             l.name = n;
-            std::memcpy(&l.major, file.data() + o + 8, 8);
+            std::memcpy(&l.major, file.data() + o + 8, 8);  // major, minor, build and flags, four uint16 in order
             libraries.push_back(l);
         }
-        if (cert - base + 12 <= file.size()) title_id = U32(cert - base + 8);
+        if (cert - base + 12 <= file.size()) title_id = U32(cert - base + 8);  // certificate +8 is the title id
         if (tls_addr) {
             int64_t o = Offset(tls_addr);
             if (o >= 0) {

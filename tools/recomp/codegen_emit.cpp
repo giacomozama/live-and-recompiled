@@ -117,7 +117,7 @@ std::string CodeGen::EmitFunction(uint32_t entry) {
     out += "}\n";
     if (an_.cfg.trace.count(entry))
         out += F("X86_TRACED_FUNC(%s, __imp__%s, 0x%XU)\n\n", FuncName(entry).c_str(), FuncName(entry).c_str(), entry);
-    else
+    else  // weak, so a host function of the same name replaces it
         out += F("X86_WEAK_FUNC(%s, __imp__%s)\n\n", FuncName(entry).c_str(), FuncName(entry).c_str());
     return out;
 }
@@ -180,7 +180,7 @@ void CodeGen::EmitHooks(uint32_t va, bool after) {
         const Hook& h = it->second;
         if (h.after != after) continue;
         auto leave = [&](const Hook::Exit& x) {
-            if (x.ret) return F("ctx.esp += %d; return;", 4 + ret_bytes_);
+            if (x.ret) return F("ctx.esp += %d; return;", 4 + ret_bytes_);  // return address plus the ret n bytes
             return (x.to <= va ? std::string("X86_BARRIER(); ") : std::string()) + Target(x.to);
         };
         Line("\tX86_SAVE_FLAGS();");

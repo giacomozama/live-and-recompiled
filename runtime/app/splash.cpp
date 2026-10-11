@@ -106,6 +106,7 @@ bool OpenSplash() {
     if (bitmap) DeleteObject(bitmap);
     DeleteDC(dc);
     ReleaseDC(nullptr, screen);
+    // to the front once, without staying on top
     SetWindowPos(g_splash, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
     SetWindowPos(g_splash, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
     g_until = std::chrono::steady_clock::now() + kMinimum;

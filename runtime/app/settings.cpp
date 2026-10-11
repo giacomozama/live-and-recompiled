@@ -118,7 +118,7 @@ bool Widescreen() {
     uint64_t k = uint64_t(s.width) << 32 | s.height;
     if (key.exchange(k) != k) {
         Mode m = Output();
-        wide = m.width * 2 >= m.height * 3;
+        wide = m.width * 2 >= m.height * 3;  // 3:2 or wider
     }
     return wide;
 }

@@ -312,7 +312,7 @@ bool Analysis::Walk(uint32_t entry, bool trusted, std::vector<uint32_t>* calls) 
                     tables.push_back(jt);
                 }
                 break;
-            } else if (insn.flow == Flow::Ret || insn.flow == Flow::Stop || insn.flow == Flow::CallIndirect && false) {
+            } else if (insn.flow == Flow::Ret || insn.flow == Flow::Stop) {
                 break;
             }
             if (insn.flow == Flow::Ret || insn.flow == Flow::Stop) break;
@@ -356,10 +356,10 @@ bool Analysis::PlausibleEntry(uint32_t va) const {
     }
     if (va > lo_ && cover_[va - 1 - lo_] == 3) return true;  // right after a jump table
     int p1 = byte(va - 1);
-    if (p1 == 0xCC || p1 == 0x90 || p1 == 0xC3) return true;
+    if (p1 == 0xCC || p1 == 0x90 || p1 == 0xC3) return true;  // int3 or nop padding, ret
     if (byte(va - 3) == 0xC2 && byte(va - 1) == 0) return true;  // ret n, n below 256
-    if (va >= lo_ + 5 && byte(va - 5) == 0xE9 && cover_[va - 5 - lo_] == 1) return true;
-    if (va >= lo_ + 2 && byte(va - 2) == 0xEB && cover_[va - 2 - lo_] == 1) return true;
+    if (va >= lo_ + 5 && byte(va - 5) == 0xE9 && cover_[va - 5 - lo_] == 1) return true;  // jmp rel32
+    if (va >= lo_ + 2 && byte(va - 2) == 0xEB && cover_[va - 2 - lo_] == 1) return true;  // jmp rel8
     if (byte(va - 6) == 0xFF && byte(va - 5) == 0x25) return true;  // jmp [import]
     if (byte(va - 2) == 0xFF && (byte(va - 1) & 0xF8) == 0xE0) return true;  // jmp reg
     for (uint32_t n = 1; n <= 15 && va >= lo_ + n; n++) {
@@ -581,15 +581,18 @@ void Analysis::EhContinuations() {
             continue;
         uint32_t info = uint32_t(ops[1].imm.value.u), magic = 0, max_state = 0, unwind = 0, tries = 0, map = 0;
         if (!Decode(f + in.length, in, ops) || in.mnemonic != ZYDIS_MNEMONIC_JMP) continue;
+        // FuncInfo: magic, maxState, pUnwindMap, nTryBlocks, pTryBlockMap
         if (!img.Read32(info, magic) || magic < 0x19930520 || magic > 0x19930522) continue;
         img.Read32(info + 4, max_state);
         img.Read32(info + 8, unwind);
         img.Read32(info + 12, tries);
         img.Read32(info + 16, map);
+        // unwind map entries are 8 bytes, the action at +4
         for (uint32_t i = 0; i < max_state && i < 4096; i++) {
             uint32_t action = 0;
             if (img.Read32(unwind + i * 8 + 4, action) && action) MakeFunction(action);
         }
+        // try blocks are 20 bytes, nCatches at +12, handler array at +16; handlers are 16 bytes, the address at +12
         for (uint32_t t = 0; t < tries && t < 1024; t++) {
             uint32_t count = 0, handlers = 0;
             img.Read32(map + t * 20 + 12, count);

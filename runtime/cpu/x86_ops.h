@@ -80,10 +80,11 @@ inline void x87_compare(X86Context& ctx, double a, double b) {
     ctx.fsw = uint16_t((ctx.fsw & ~0x4500) | c);
 }
 
+// TOP lives in status word bits 11 to 13
 inline uint16_t x87_status(X86Context& ctx) { return uint16_t((ctx.fsw & ~0x3800) | ((ctx.top & 7) << 11)); }
 
 inline double x87_round(X86Context& ctx, double v) {
-    switch ((ctx.fcw >> 10) & 3) {
+    switch ((ctx.fcw >> 10) & 3) {  // control word RC field
         case 0: return std::nearbyint(v);
         case 1: return std::floor(v);
         case 2: return std::ceil(v);
@@ -91,6 +92,7 @@ inline double x87_round(X86Context& ctx, double v) {
     }
 }
 
+// out of range gives the integer indefinite value, as the FPU does
 inline int32_t x87_to_i32(X86Context& ctx, double v) {
     double r = x87_round(ctx, v);
     if (!(r >= -2147483648.0 && r <= 2147483647.0)) return INT32_MIN;

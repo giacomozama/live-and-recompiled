@@ -236,7 +236,7 @@ void ReserveImage(uint32_t base, uint32_t size) {
     uint32_t b = base & ~0xFFFFu;
     uint32_t e = (base + size + 0xFFFF) & ~0xFFFFu;
     g_user.Remove(b, e - b);
-    Reservation r{e - b, 4, std::vector<uint8_t>((e - b) / kPage, 1)};
+    Reservation r{e - b, 4, std::vector<uint8_t>((e - b) / kPage, 1)};  // 4 is PAGE_READWRITE
     g_reserved[b] = std::move(r);
     Commit(b, e - b);
 }
@@ -280,7 +280,7 @@ uint32_t AllocateVirtual(uint32_t& base, uint32_t& size, uint32_t type, uint32_t
         if (!r) return 0xC0000045;  // STATUS_INVALID_PAGE_PROTECTION stands in for not reserved
         uint32_t first = base & ~(kPage - 1);
         uint32_t end = (base + size + kPage - 1) & ~(kPage - 1);
-        if (end > start + r->size) return 0xC0000018;
+        if (end > start + r->size) return 0xC0000018;  // STATUS_CONFLICTING_ADDRESSES
         Commit(first, end - first);
         for (uint32_t p = first; p < end; p += kPage) r->commit[(p - start) / kPage] = 1;
         base = first;

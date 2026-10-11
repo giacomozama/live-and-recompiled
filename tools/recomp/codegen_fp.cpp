@@ -115,6 +115,7 @@ bool CodeGen::EmitX87(uint32_t va, const ZydisDecodedInstruction& in, const Zydi
             const char* pop = m != ZYDIS_MNEMONIC_FIST ? " x87_pop(ctx);" : "";
             auto& o = ops[mi];
             std::string v = m == ZYDIS_MNEMONIC_FISTTP ? "std::trunc(X87_ST(0))" : "X87_ST(0)";
+            // fcw 0xC00 sets rounding to truncate for the store
             std::string pre = m == ZYDIS_MNEMONIC_FISTTP ? "uint16_t cw = ctx.fcw; ctx.fcw |= 0xC00; " : "";
             std::string post = m == ZYDIS_MNEMONIC_FISTTP ? " ctx.fcw = cw;" : "";
             if (o.size == 16) emit(pre + "X86_MEM16(ea) = (uint16_t)x87_to_i16(ctx, " + v + ");" + post + pop);
@@ -161,6 +162,7 @@ bool CodeGen::EmitX87(uint32_t va, const ZydisDecodedInstruction& in, const Zydi
         case ZYDIS_MNEMONIC_FCHS: emit("X87_ST(0) = -X87_ST(0);"); return true;
         case ZYDIS_MNEMONIC_FABS: emit("X87_ST(0) = std::fabs(X87_ST(0));"); return true;
         case ZYDIS_MNEMONIC_FSQRT: emit("X87_ST(0) = x87_prec(ctx, std::sqrt(X87_ST(0)));"); return true;
+        // clearing C2 (0x400) reports the argument in range
         case ZYDIS_MNEMONIC_FSIN: emit("X87_ST(0) = std::sin(X87_ST(0)); ctx.fsw &= ~0x400;"); return true;
         case ZYDIS_MNEMONIC_FCOS: emit("X87_ST(0) = std::cos(X87_ST(0)); ctx.fsw &= ~0x400;"); return true;
         case ZYDIS_MNEMONIC_FSINCOS:
@@ -205,8 +207,8 @@ bool CodeGen::EmitX87(uint32_t va, const ZydisDecodedInstruction& in, const Zydi
             if (mi >= 0) emit("X86_MEM16(ea) = x87_status(ctx);");
             else emit("ctx.eax = (ctx.eax & 0xFFFF0000u) | x87_status(ctx);");
             return true;
-        case ZYDIS_MNEMONIC_FNINIT: emit("ctx.fcw = 0x37F; ctx.fsw = 0; ctx.top = 0;"); return true;
-        case ZYDIS_MNEMONIC_FNCLEX: emit("ctx.fsw &= 0x7F00;"); return true;
+        case ZYDIS_MNEMONIC_FNINIT: emit("ctx.fcw = 0x37F; ctx.fsw = 0; ctx.top = 0;"); return true;  // 0x37F is the power on control word
+        case ZYDIS_MNEMONIC_FNCLEX: emit("ctx.fsw &= 0x7F00;"); return true;  // keeps condition codes and TOP
         case ZYDIS_MNEMONIC_FFREE: return true;
         case ZYDIS_MNEMONIC_FINCSTP: emit("ctx.top = (ctx.top + 1) & 7;"); return true;
         case ZYDIS_MNEMONIC_FDECSTP: emit("ctx.top = (ctx.top - 1) & 7;"); return true;

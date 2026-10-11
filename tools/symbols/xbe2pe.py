@@ -21,6 +21,7 @@ cfg = load(cfg_path, {})
 root = cfg_path.parent.parent
 d = (root / cfg['xbe']['path']).read_bytes()
 u32 = lambda o: struct.unpack_from('<I', d, o)[0]
+# XBE header: base, headers size, image size; the entry is xored with the retail key, else the debug key
 base, hsize, isize = u32(0x104), u32(0x108), u32(0x10C)
 entry = u32(0x128) ^ 0xA8FC57AB
 if not base <= entry < base + isize:
@@ -28,6 +29,7 @@ if not base <= entry < base + isize:
 
 img = bytearray(isize)
 img[:hsize] = d[:hsize]
+# section headers are 56 bytes, virtual address, virtual size, raw address and raw size from +4
 for i in range(u32(0x11C)):
     va, vs, raw, rs = struct.unpack_from('<IIII', d, u32(0x120) - base + i * 56 + 4)
     n = min(vs, rs)
@@ -47,6 +49,7 @@ for name, va in cfg['symbols'].items():
 exp = sorted(names)
 nm = [names[a].encode() for a in exp]
 order = sorted(range(len(exp)), key=lambda i: nm[i])
+# export directory (40 bytes), address table, name pointers, ordinals and names, page aligned after the image
 ert = (isize + 0xFFF) & ~0xFFF
 eat = ert + 40
 npt = eat + 4 * len(exp)

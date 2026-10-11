@@ -104,6 +104,7 @@ bool Boot(std::vector<uint8_t> xbe, const std::string& xbe_name, const std::stri
 
     mem::ReserveImage(img.base, img.image_size);
     std::memcpy(g_base + img.base, img.file.data(), std::min<size_t>(img.header_size, img.file.size()));
+    // XBE header 0x120 points at the section headers, 56 bytes each, +0x18 is the reference count that marks one loaded
     uint32_t sec_hdr = img.U32(0x120);
     for (size_t i = 0; i < img.sections.size(); i++) {
         auto& s = img.sections[i];
@@ -120,7 +121,7 @@ bool Boot(std::vector<uint8_t> xbe, const std::string& xbe_name, const std::stri
     for (uint32_t slot = img.kernel_thunk;; slot += 4) {
         uint32_t v = R32(slot);
         if (!v) break;
-        uint32_t ord = v & 0x7FFFFFFF;
+        uint32_t ord = v & 0x7FFFFFFF;  // high bit flags an import by ordinal
         uint32_t data = DataAddress(ord);
         W32(slot, data ? data : dispatch::KernelThunkAddress(ord));
         if (!HasExport(ord)) {

@@ -443,7 +443,7 @@ bool CodeGen::EmitInteger(uint32_t va, const ZydisDecodedInstruction& in, const 
             Line("\t{ uint32_t s = ctx.esp; ctx.edi = X86_MEM32(s); ctx.esi = X86_MEM32(s + 4); ctx.ebp = X86_MEM32(s + 8); "
                  "ctx.ebx = X86_MEM32(s + 16); ctx.edx = X86_MEM32(s + 20); ctx.ecx = X86_MEM32(s + 24); ctx.eax = X86_MEM32(s + 28); ctx.esp = s + 32; }");
             return true;
-        case ZYDIS_MNEMONIC_PUSHFD:
+        case ZYDIS_MNEMONIC_PUSHFD:  // bit 1 always reads 1, IF (0x200) always set, AC and ID kept in xflags
             Line("\tX86_PUSH32(cf | 2u | pf << 2 | zf << 6 | sf << 7 | 0x200u | ctx.df << 10 | of << 11 | ctx.xflags);");
             return true;
         case ZYDIS_MNEMONIC_POPFD:

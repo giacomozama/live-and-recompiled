@@ -279,7 +279,7 @@ Target Resolve(const std::string& xbox_path, uint32_t root_handle) {
 // the disc image is read only: nothing on it is created, replaced or written
 uint32_t OpenOnDisc(const Disc::Entry* e, const std::string& name, uint32_t handle_out, uint32_t iosb, uint32_t disposition,
                     uint32_t options) {
-    if (!e && (disposition == 1 || disposition == 4)) {
+    if (!e && (disposition == 1 || disposition == 4)) {  // FILE_OPEN or FILE_OVERWRITE need an existing file
         LOG_FIRST(200, "missing %s", name.c_str());
         IoStatus(iosb, kObjectNameNotFound, 5);
         return kObjectNameNotFound;
@@ -288,7 +288,7 @@ uint32_t OpenOnDisc(const Disc::Entry* e, const std::string& name, uint32_t hand
         IoStatus(iosb, kAccessDenied, 0);
         return kAccessDenied;
     }
-    if (e->dir && !(options & 1) && (options & 0x40)) {
+    if (e->dir && !(options & 1) && (options & 0x40)) {  // options 1 FILE_DIRECTORY_FILE, 0x40 FILE_NON_DIRECTORY_FILE
         IoStatus(iosb, kFileIsADirectory, 0);
         return kFileIsADirectory;
     }
@@ -319,7 +319,7 @@ bool ReadGameFile(const std::string& xbox_path, std::vector<uint8_t>& out) {
     return true;
 }
 
-// ---------------------------------------------------------------- exports
+// exports
 
 KERNEL_EXPORT(190, NtCreateFile, 9) {
     uint32_t handle_out = a[0], access = a[1], attrs = a[2], iosb = a[3], disposition = a[7], options = a[8];
@@ -413,7 +413,7 @@ KERNEL_EXPORT(190, NtCreateFile, 9) {
     f->host = host;
     f->xbox = Normalize(name);
     f->fp = fp;
-    f->delete_on_close = options & 0x1000;
+    f->delete_on_close = options & 0x1000;  // FILE_DELETE_ON_CLOSE
     W32(handle_out, NewHandle(f));
     IoStatus(iosb, kSuccess, info);
     LOG_FIRST(400, "open %s", name.c_str());
@@ -517,8 +517,8 @@ KERNEL_EXPORT(211, NtQueryInformationFile, 5) {
         case 5:  // FileStandardInformation
             W64(out, (size + 0xFFF) & ~0xFFFull);
             W64(out + 8, size);
-            W32(out + 0x10, 1);
-            G<uint8_t>(out + 0x15) = f->dir;
+            W32(out + 0x10, 1);  // NumberOfLinks
+            G<uint8_t>(out + 0x15) = f->dir;  // Directory, after DeletePending
             IoStatus(iosb, kSuccess, 0x18);
             return kSuccess;
         case 14:  // FilePositionInformation
@@ -587,7 +587,7 @@ KERNEL_EXPORT(218, NtQueryVolumeInformationFile, 5) {
     uint32_t iosb = a[1], out = a[2], len = a[3], cls = a[4];
     std::memset(HostPtr(out), 0, len);
     switch (cls) {
-        case 3:  // FileFsSizeInformation
+        case 3:  // FileFsSizeInformation: 16 GiB total, 8 GiB free in 16 KiB units
             W64(out, 0x100000);
             W64(out + 8, 0x80000);
             W32(out + 0x10, 32);
@@ -603,7 +603,7 @@ KERNEL_EXPORT(218, NtQueryVolumeInformationFile, 5) {
             IoStatus(iosb, kSuccess, 0x20);
             return kSuccess;
         case 1:  // FileFsVolumeInformation
-            W32(out + 8, 0x12345678);
+            W32(out + 8, 0x12345678);  // VolumeSerialNumber
             IoStatus(iosb, kSuccess, 0x18);
             return kSuccess;
         case 5:  // FileFsAttributeInformation: attributes, max name, name length, "FATX"
@@ -656,6 +656,7 @@ KERNEL_EXPORT(207, NtQueryDirectoryFile, 10) {
     // times, sizes and attributes sit at the same place
     if (f->entry) FillNetworkInfo(out + 8, *f->disc_entries[i]);
     else FillNetworkInfo(out + 8, f->entries[i].path());
+    // FILE_DIRECTORY_INFORMATION has EndOfFile before AllocationSize, the reverse of the network info
     W32(out + 0x38, R32(out + 8 + 0x30));
     uint64_t alloc = R64(out + 8 + 0x20), eof = R64(out + 8 + 0x28);
     W64(out + 0x28, eof);

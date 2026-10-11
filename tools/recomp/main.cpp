@@ -212,7 +212,7 @@ int main(int argc, char** argv) {
             std::fprintf(stderr, "%s: [abi] %s is not a [symbols] name\n", args[0].c_str(), name.c_str());
             return 1;
         }
-    fs::path root = cfg_path.parent_path().parent_path();
+    fs::path root = cfg_path.parent_path().parent_path();  // the config sits in <game>/config
     fs::path xbe_path = args.size() > 1 ? fs::path(args[1]) : root / cfg.xbe_path;
     fs::path out_dir = args.size() > 2 ? fs::path(args[2]) : root / cfg.out_dir;
 

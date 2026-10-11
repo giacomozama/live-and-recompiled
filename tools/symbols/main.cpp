@@ -23,7 +23,7 @@ namespace fs = std::filesystem;
 
 namespace {
 
-constexpr uint64_t kMul = 0x100000001B3ull;
+constexpr uint64_t kMul = 0x100000001B3ull;  // FNV 64 bit prime, the rolling hash base
 
 // operand values taken as image addresses; one range for every title so masks agree
 bool IsAddr(uint64_t v) { return v >= 0x10000 && v < 0x4000000; }
@@ -747,6 +747,7 @@ int Scan(const fs::path& xbe_path, const fs::path& xdk, const fs::path& out, con
     for (auto& l : x.libraries) std::fprintf(stderr, " %s %u.%u.%u", l.name.c_str(), l.major, l.minor, l.build);
     std::fprintf(stderr, "\n");
 
+    // the D3D8 or XAPILIB build picks the signature set first, then any library's build
     std::vector<uint16_t> want;
     for (const char* pick : {"D3D8", "D3D8LTCG", "XAPILIB"})
         for (auto& l : x.libraries)
@@ -923,6 +924,7 @@ int Scan(const fs::path& xbe_path, const fs::path& xdk, const fs::path& out, con
 
     uint64_t code = 0;
     for (auto& c : img.code) code += c.b.size();
+    // doubled from 8 until a partition holds about 60 KB of code or less
     uint32_t parts = 8;
     while (parts < 256 && code / 40000 > parts * 3 / 2) parts *= 2;
     std::string s = "# Recompiler input for " + xbe_path.filename().string() + ", written by xbe_symbols\n\n[xbe]\n";
