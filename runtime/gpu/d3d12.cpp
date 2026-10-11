@@ -44,6 +44,7 @@ namespace gpu {
 namespace {
 
 constexpr int kFrames = 3;
+constexpr uint64_t kStaleFrames = 8;  // frames a target may go unused and still be read back
 constexpr uint64_t kUploadSize = 64ull << 20;
 // a draw starting with less than this left in the frame's ring waits for the GPU and starts the ring over
 constexpr uint64_t kUploadReserve = 8ull << 20;
@@ -576,6 +577,7 @@ private:
     // EnsureTarget's steps, in call order
     TargetSlot FindTargetSlot(const Surface& s, bool depth, uint64_t alt);
     uint64_t SizedTargetKey(uint32_t data, bool depth, uint32_t gw, uint32_t gh) const;
+    bool TargetStale(uint32_t data) const;
     void ReleaseTarget(std::unordered_map<uint64_t, Target>::iterator it);
     bool CreateTargetResource(Target& t, const Surface& s);
     bool CreateTargetView(Target& t);
@@ -643,6 +645,7 @@ private:
     std::unordered_map<uint64_t, uint32_t> samplers_;
     uint32_t smp_used_ = 0;
     std::unordered_map<uint64_t, Target> targets_;
+    std::unordered_map<uint32_t, uint64_t> target_used_;  // target address to the frame it was last used
     std::unordered_map<uint64_t, Tex> textures_;  // by data address, a P8 texture's with its palette's above
     std::unordered_map<uint64_t, ComPtr<ID3D12PipelineState>> blit_psos_;
     Extension* ext_ = nullptr;
@@ -1038,7 +1041,9 @@ Target* D3D12Backend::FindTarget(const Surface& s, bool depth) {
     uint64_t alt = 0;
     if (ext_ && !ext_->TargetKey(s, depth, alt)) return nullptr;
     TargetSlot slot = FindTargetSlot(s, depth, alt);
-    return slot.sized ? &slot.it->second : nullptr;
+    if (!slot.sized) return nullptr;
+    target_used_[slot.data] = frame_;
+    return &slot.it->second;
 }
 
 // the surface's target, made again at its size when that changed
@@ -1047,6 +1052,7 @@ Target* D3D12Backend::EnsureTarget(const Surface& s, bool depth) {
     uint64_t alt = 0;
     if (ext_ && !ext_->TargetKey(s, depth, alt)) return nullptr;
     TargetSlot slot = FindTargetSlot(s, depth, alt);
+    target_used_[slot.data] = frame_;
     if (slot.sized) return &slot.it->second;
     if (slot.it != targets_.end()) ReleaseTarget(slot.it);
     Target t;
@@ -2890,10 +2896,17 @@ D3D12Backend::CopySource D3D12Backend::PrepareCopySource(Target& t, const Shrink
     return out;
 }
 
+// long unused: the title freed it and other data is at this address now
+bool D3D12Backend::TargetStale(uint32_t data) const {
+    auto it = target_used_.find(data);
+    uint64_t used = it == target_used_.end() ? 0 : it->second;
+    return frame_ - used > kStaleFrames;
+}
+
 // the CPU reads a surface the GPU drew: bring the pixels back
 void D3D12Backend::Sync(uint32_t data, uint32_t) {
     auto it = targets_.find(TargetMapKey(data, false));
-    if (it == targets_.end() || !it->second.drawn) return;
+    if (it == targets_.end() || !it->second.drawn || TargetStale(data)) return;
     PerfScope perf_sync{g_perf.sync};
     g_perf.syncs++;
     if (diag::Perf()) {
@@ -3011,7 +3024,7 @@ void D3D12Backend::RecordLateCopy(Late& l, uint32_t slot, ID3D12Resource* src) {
 
 void D3D12Backend::RecordLate(uint32_t data) {
     auto it = targets_.find(TargetMapKey(data, false));
-    if (it == targets_.end()) return;
+    if (it == targets_.end() || TargetStale(data)) return;
     Target& t = it->second;
     PerfScope perf_sync{g_perf.sync};
     g_perf.lates++;
