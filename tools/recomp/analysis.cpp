@@ -315,7 +315,6 @@ bool Analysis::Walk(uint32_t entry, bool trusted, std::vector<uint32_t>* calls) 
             } else if (insn.flow == Flow::Ret || insn.flow == Flow::Stop) {
                 break;
             }
-            if (insn.flow == Flow::Ret || insn.flow == Flow::Stop) break;
             va += insn.len;
             if (functions.count(va) && va != entry) break;  // fall into the next function
         }
