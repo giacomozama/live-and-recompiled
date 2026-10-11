@@ -1,6 +1,6 @@
 # Xbox XBE Recomp
 
-An SDK for statically recompiling original Xbox (x86 XBE) games into native 64 bit Windows executables. The game's x86 code is translated to C++ ahead of time. The Xbox kernel and the XDK libraries (Direct3D 8, DirectSound, XAPI, XNet) are implemented at the API level on Windows. Everything is drawn with a native Direct3D 12 renderer and played through XAudio2.
+A tool for creating unofficial native PC ports of original Xbox games. Games are statically recompiled from their x86 XBE into native 64 bit Windows executables. The game's x86 code is translated to C++ ahead of time. The Xbox kernel and the XDK libraries (Direct3D 8, DirectSound, XAPI, XNet) are implemented at the API level on Windows. Everything is drawn with a native Direct3D 12 renderer and played through XAudio2.
 
 This tool was originally created for porting [Tom Clancy's Splinter Cell: Double Agent](https://github.com/TGP482/SCDoubleAgent-XBERecomp).
 
@@ -37,39 +37,46 @@ A new XDK build needs `xdk/<build>/layout.toml` and signatures made from titles 
 ## Features
 
 ### Recompiler
-- **Function Discovery** - Finds functions with a direct call fixpoint, pointer seeds, gap fill and trusted walks across guessed entries.
-- **Jump Tables** - Resolves bounded, byte indexed and backwards tables, MSVC memcpy tables and movsb/movsd sleds.
-- **C++ Exceptions** - Supports MSVC FuncInfo thunks and catch funclet continuations.
-- **x87, SSE and MMX** - Translates x87 with a dynamic top of stack, SSE and MMX, along with the CPUID probe flags.
-- **Overridable Output** - Makes every function a weak `sub_X` over `__imp__sub_X`, allowing the host to replace any of them without editing generated code.
-- **Instruction Hooks** - Adds `[[hook]]`, which calls a game defined function before or after any guest instruction, with guest flags kept in `ctx`; a bool hook can return from the function or jump within it.
-- **Analysis Overrides** - Adds `[[function]]` to add an entry with an optional decode end, `[[switch]]` to set the targets of an indirect jmp and `[xbe] data_ranges` to mark bytes that are never code.
-- **Incremental** - Only rewrites generated files when their content changes.
-- **XDK Signatures** - Finds the XDK functions and data of a new title by masked hashes and writes its config.
+- **Function Discovery** - Finds every function in the XBE by following direct calls, code pointers and the gaps between known functions.
+- **Jump Tables** - Resolves switch tables of every form the Xbox compiler writes, including byte indexed and backwards tables, memcpy tables and copy sleds.
+- **C++ Exceptions** - Supports C++ exceptions, with try and catch blocks working as on the Xbox.
+- **x87, SSE and MMX** - Translates x87, SSE and MMX instructions, with the x87 register stack tracked at run time.
+- **Overridable Functions** - Makes every recompiled function replaceable, allowing a game to override any of them without editing generated code.
+- **Instruction Hooks** - Adds `[[hook]]`, which calls a game function before or after any instruction, and can return from or jump within the function.
+- **Analysis Overrides** - Adds `[[function]]`, `[[switch]]` and `[xbe] data_ranges` to add functions, set switch targets and mark data the analysis gets wrong.
+- **Incremental Builds** - Only rewrites generated files when their content changes, keeping rebuilds fast.
+- **XDK Signatures** - Finds the XDK functions and data in a new game automatically and writes its config.
+- **LTCG Libraries** - Supports games built with link time code generation, where library functions take their arguments in registers.
 
 ### CPU and Kernel
-- **Guest Calls** - Adds an indirect call table over the code and host calls into guest code, with RDTSC at 733.33 MHz and a Pentium III CPUID.
-- **Kernel** - Implements objects and waits, host threads, files mapped to host folders or read from a disc image, memory with the physical mirrors at 0x80000000 and 0xF0000000, crypto, EEPROM settings and C++ exception dispatch.
-- **Image Switching** - Relaunches into the matching executable on XLaunchNewImage and quick reboots, handing the kept display over without a gap.
+- **Guest Calls** - Adds indirect calls and host calls into game code, with the Xbox's 733 MHz timer and Pentium III CPUID.
+- **x87 Precision** - Follows the game's x87 precision setting, giving the same results as on the Xbox.
+- **CRT Math** - Computes the game's math functions on the host, fixing math that returned invalid results at random.
+- **Kernel** - Implements threads, waits, files, memory, crypto and EEPROM settings, with game files read from host folders or a disc image.
+- **Image Switching** - Relaunches into the matching executable when the game loads another XBE, keeping the window on screen without a gap.
 
 ### Graphics
-- **Direct3D 8 at the API Level** - Implements the device, targets, states, shaders, CopyRects and Swap as the XDK does them.
-- **Native Direct3D 12 Renderer** - Translates NV2A vertex programs, register combiners, texture modes and the fixed function pipeline to HLSL, with a threaded command stream and target and texture caches.
-- **Render Scale** - Renders the game at any scale with integer pixel centre correction and upscale aware blur passes.
-- **Renderer Extensions** - Allows a game to change target sizes and formats, add passes where frames are read and add to the generated HLSL through `gpu::Extension` (`runtime/gpu/ext.h`), set with `gpu::SetExtension` from `GameInfo::init`. Without one the console path is drawn.
+- **Direct3D 8** - Implements Direct3D 8 as the XDK does it, including immediate mode draws, palettes, gamma ramps and Direct3D code built into the game.
+- **Native Direct3D 12 Renderer** - Translates the Xbox's vertex programs, pixel combiners and fixed function pipeline to HLSL, with rendering on its own thread.
+- **Renderer Extensions** - Allows a game to change render targets, add passes and add to the generated shaders through `gpu::Extension`, set with `gpu::SetExtension` from `GameInfo::init`.
 
 ### Audio
-- **DirectSound at the API Level** - Mixes in software on XAudio2 with Xbox ADPCM, streams and the effects image.
+- **DirectSound** - Mixes sound in software through XAudio2, with Xbox ADPCM, streams, mix bins and the effects image.
 
-### Input
-- **Controllers** - Supports hot plugged Xbox, PlayStation and Switch controllers through SDL3, with rumble.
+### Controller
+Supports Xbox, PlayStation and Switch controllers through SDL3, with hot plugging and rumble.
 
 ### General
-- **Disc Images** - Runs the game from an `.iso` in `assets` (whole disc dump or game partition) as well as from extracted files in release builds.
-- **System Link** - Implements XNet over Winsock for LAN play.
-- **Crash Dumps** - Writes minidumps to a CrashDumps folder beside the exe.
-- **Diagnostics** - Logs frame timing with `XBE_PERF`, captures a frame with F3 when `XBE_CAPTURE_DIR` is set and turns on the D3D12 debug layer with `XBE_D3D12_DEBUG`.
-- **Bink** - Fixes BinkGetSummary for instant host reads.
+- **Disc Images** - Runs the game from an ISO in the `assets` folder, either a whole disc dump or the game partition, or from the extracted data files.
+- **System Link** - System Link can be played over LAN, or by directly connecting to a friend's IP address.
+- **Bink Movies** - Fixes Bink movies playing too fast above 30 FPS and crashing on fast reads, for games that use Bink.
+- **Crash Dumps** - Writes crash dumps to a `CrashDumps` folder beside the exe.
+
+### Miscellaneous
+- **Boot Splash** - Place a `splash.png` (or `.bmp`) beside the exe to display a splash screen at launch.
+- **Diagnostics** - Logs frame timing with `XBE_PERF`, captures a frame with F3 when `XBE_CAPTURE_DIR` is set and enables the Direct3D 12 debug layer with `XBE_D3D12_DEBUG`.
+- **Headless Harness** - Builds and runs a game on Linux without a window, GPU, audio or controller, for testing.
+- **SDK Sync** - Keeps the `sdk/` copies in game repositories in step with this repository.
 
 ## Credits
 
