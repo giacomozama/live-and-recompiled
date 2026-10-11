@@ -575,6 +575,7 @@ private:
     Target* EnsureTarget(const Surface& s, bool depth);
     // EnsureTarget's steps, in call order
     TargetSlot FindTargetSlot(const Surface& s, bool depth, uint64_t alt);
+    uint64_t SizedTargetKey(uint32_t data, bool depth, uint32_t gw, uint32_t gh) const;
     void ReleaseTarget(std::unordered_map<uint64_t, Target>::iterator it);
     bool CreateTargetResource(Target& t, const Surface& s);
     bool CreateTargetView(Target& t);
@@ -1008,12 +1009,24 @@ bool D3D12Backend::CreateTargetView(Target& t) {
 // targets_ key of a surface's colour or depth target
 uint64_t TargetMapKey(uint32_t data, bool depth) { return uint64_t(data) << 1 | (depth ? 1 : 0); }
 
+// a smaller depth surface's console size, above the address bits
+constexpr int kKeyWidthShift = 34;
+constexpr int kKeyHeightShift = 48;
+
+// a smaller depth surface laid on the depth buffer's memory is a target of its own
+uint64_t D3D12Backend::SizedTargetKey(uint32_t data, bool depth, uint32_t gw, uint32_t gh) const {
+    uint64_t key = TargetMapKey(data, depth);
+    bool small_depth = depth && (gw != guest_w_ || gh != guest_h_);
+    if (!small_depth) return key;
+    return key | uint64_t(gw) << kKeyWidthShift | uint64_t(gh) << kKeyHeightShift;
+}
+
 // alt: the extension's bits of the key
 D3D12Backend::TargetSlot D3D12Backend::FindTargetSlot(const Surface& s, bool depth, uint64_t alt) {
     TargetSlot slot;
     slot.data = mem::VirtualFromPhysical(s.data);
-    slot.key = TargetMapKey(slot.data, depth) | alt;
     SurfaceSize(s, slot.gw, slot.gh);
+    slot.key = SizedTargetKey(slot.data, depth, slot.gw, slot.gh) | alt;
     slot.it = targets_.find(slot.key);
     slot.sized = slot.it != targets_.end() && slot.it->second.gw == slot.gw && slot.it->second.gh == slot.gh;
     return slot;
@@ -1133,8 +1146,11 @@ bool D3D12Backend::DepthCopy(const State& s) {
         d.depth != 1) {
         return false;
     }
-    auto di = targets_.find(TargetMapKey(mem::VirtualFromPhysical(s.rt.data), true));
-    auto si = targets_.find(TargetMapKey(d.data, true));
+    uint32_t gw;
+    uint32_t gh;
+    SurfaceSize(s.rt, gw, gh);
+    auto di = targets_.find(SizedTargetKey(mem::VirtualFromPhysical(s.rt.data), true, gw, gh));
+    auto si = targets_.find(SizedTargetKey(d.data, true, d.width, d.height));
     if (di == targets_.end() || si == targets_.end() || di == si) return false;
     Target& dst = di->second;
     Target& src = si->second;
@@ -1700,7 +1716,7 @@ ID3D12Resource* D3D12Backend::BindTexture(const State& s, int stage, DrawTexture
     uint64_t alt = 0;
     bool box = true;
     if (ext_) ext_->Sample(d.data, fi.depth, stage, alt, stages.k[stage], box);
-    auto tit = targets_.find(TargetMapKey(d.data, fi.depth) | alt);
+    auto tit = targets_.find(SizedTargetKey(d.data, fi.depth, d.width, d.height) | alt);
     if (tit != targets_.end() && !d.cube && d.depth == 1 && !fi.compressed) {
         return BindTargetTexture(s, stage, d, tit->second, box, stages);
     }
@@ -2127,7 +2143,7 @@ void D3D12Backend::CaptureTextures(const State& s, const DrawTextures& stages) {
         ID3D12Resource* res = stages.res[i];
         TextureDesc d;
         if (!s.textures[size_t(i)] || !Describe(s.textures[size_t(i)], d)) continue;
-        bool tg = targets_.count(TargetMapKey(d.data, Format(d.format).depth));
+        bool tg = targets_.count(SizedTargetKey(d.data, Format(d.format).depth, d.width, d.height));
         fprintf(cap_, " | t%d %08X fmt %X %ux%u%s%s", i, d.data, d.format, d.width, d.height, tg ? " target" : "",
                 res ? "" : " unbound");
         if (res && !tg && stages.info[i].kind == kTex2D && cap_seen_.insert(d.data).second) {
