@@ -401,7 +401,11 @@ KERNEL_EXPORT(190, NtCreateFile, 9) {
         default:
             return kInvalidParameter;
     }
-    if (!exists) fs::create_directories(fs::path(host).parent_path(), ec);
+    // a file in a missing folder fails as on the console: XAPI probes saves with OPEN_ALWAYS
+    if (!exists && !fs::is_directory(fs::path(host).parent_path(), ec)) {
+        IoStatus(iosb, kObjectPathNotFound, 0);
+        return kObjectPathNotFound;
+    }
     FILE* fp = std::fopen(host.c_str(), mode);
     if (!fp && std::string(mode) == "r+b") fp = std::fopen(host.c_str(), "rb");  // read only media
     if (!fp) {
