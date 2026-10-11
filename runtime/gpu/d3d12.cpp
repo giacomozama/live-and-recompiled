@@ -297,7 +297,7 @@ bool Changed(const Target& t) {
 }
 
 // a lock alone proves nothing, reads lock too: only changed bytes mean the CPU wrote it
-bool CpuWrote(Target& t) {
+bool LatchCpuWrite(Target& t) {
     uint64_t e = DirtyEpoch(t.data);
     if (e <= t.epoch) return false;
     t.epoch = e;
@@ -443,7 +443,7 @@ private:
     };
 
     Alloc Upload(uint64_t size, uint64_t align = 256);
-    uint32_t SrvSlots(uint32_t n);
+    uint32_t AllocSrvSlots(uint32_t n);
     D3D12_CPU_DESCRIPTOR_HANDLE Cpu(ID3D12DescriptorHeap* h, uint32_t i, uint32_t inc) {
         auto c = h->GetCPUDescriptorHandleForHeapStart();
         c.ptr += size_t(i) * inc;
@@ -466,7 +466,7 @@ private:
         Blit(src, fmt, uvrect, BlitOptions{.gamma = gamma, .alpha = alpha, .taps = taps, .mul = mul, .rtv = rtv});
     }
     void Blit(ID3D12Resource* src, DXGI_FORMAT fmt, const float uvrect[4], const BlitOptions& o);
-    uint32_t BlitSamplers();
+    uint32_t EnsureBlitSamplers();
     ID3D12Resource* Feedback(Target& t) override;
     void Resolve(Target& t) {
         if (t.range != 1 && ext_) ext_->Resolve(*this, t);
@@ -513,8 +513,8 @@ private:
     void DrawGeometry(const Assembled& a);
     void UploadVertexBuffers(const Assembled& a);
     ID3DBlob* Compile(const std::string& src, const char* entry, const char* profile, uint64_t& hash);
-    ID3D12PipelineState* Pipeline(const PsoKey& k, ID3DBlob* vs, ID3DBlob* ps);
-    ID3D12PipelineState* BlitPipeline(DXGI_FORMAT rtv, bool over = false);
+    ID3D12PipelineState* EnsurePipeline(const PsoKey& k, ID3DBlob* vs, ID3DBlob* ps);
+    ID3D12PipelineState* EnsureBlitPipeline(DXGI_FORMAT rtv, bool over = false);
     D3D12_GRAPHICS_PIPELINE_STATE_DESC FullScreenPipelineDesc(ID3DBlob* vs, ID3DBlob* ps, DXGI_FORMAT rtv) const;
     void FillPipelineDesc(const PsoKey& k, ID3DBlob* vs, ID3DBlob* ps, D3D12_GRAPHICS_PIPELINE_STATE_DESC& d) const;
     void ResizeSwap();
@@ -888,7 +888,7 @@ D3D12Backend::Alloc D3D12Backend::Upload(uint64_t size, uint64_t align) {
     return {r.Get(), 0, p, r->GetGPUVirtualAddress()};
 }
 
-uint32_t D3D12Backend::SrvSlots(uint32_t n) {
+uint32_t D3D12Backend::AllocSrvSlots(uint32_t n) {
     Frame& f = frames_[frame_ % kFrames];
     const uint32_t per = kSrvCount / kFrames;
     if (f.srv + n > per) {
@@ -1004,7 +1004,7 @@ bool D3D12Backend::BindTargets(const State& s) {
     if (rt && ds && (rt->w != ds->w || rt->h != ds->h)) ds = nullptr;
     if (!rt && !ds) return false;
     if (rt) {
-        if (CpuWrote(*rt)) UploadTarget(*rt, s.rt);
+        if (LatchCpuWrite(*rt)) UploadTarget(*rt, s.rt);
         Transition(rt->res.Get(), rt->state, D3D12_RESOURCE_STATE_RENDER_TARGET);
         rt->drawn = true;
     }
@@ -1058,7 +1058,7 @@ void D3D12Backend::DrawDepthCopy(Target& src, Target& dst, ID3D12PipelineState* 
     D3D12_CPU_DESCRIPTOR_HANDLE dh = Cpu(dsv_heap_.Get(), dst.view, dsv_inc_);
     cl_->OMSetRenderTargets(0, nullptr, FALSE, &dh);
     SetFullViewport(dst.w, dst.h);
-    uint32_t slot = SrvSlots(1);
+    uint32_t slot = AllocSrvSlots(1);
     D3D12_SHADER_RESOURCE_VIEW_DESC sv{};
     sv.Format = DXGI_FORMAT_R24_UNORM_X8_TYPELESS;
     sv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
@@ -1070,7 +1070,7 @@ void D3D12Backend::DrawDepthCopy(Target& src, Target& dst, ID3D12PipelineState* 
     cl_->SetGraphicsRootConstantBufferView(0, cb.gpu);
     cl_->SetGraphicsRootConstantBufferView(1, cb.gpu);
     cl_->SetGraphicsRootDescriptorTable(2, Gpu(srv_heap_.Get(), slot, srv_inc_));
-    cl_->SetGraphicsRootDescriptorTable(3, Gpu(smp_heap_.Get(), BlitSamplers(), smp_inc_));
+    cl_->SetGraphicsRootDescriptorTable(3, Gpu(smp_heap_.Get(), EnsureBlitSamplers(), smp_inc_));
     cl_->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     cl_->DrawInstanced(3, 1, 0, 0);
     dst.drawn = true;
@@ -1165,7 +1165,7 @@ void D3D12Backend::UploadTarget(Target& t, const Surface& s) {
 }
 
 // samplers: linear clamp, then point clamp
-uint32_t D3D12Backend::BlitSamplers() {
+uint32_t D3D12Backend::EnsureBlitSamplers() {
     uint64_t key = 0xB117;
     auto it = samplers_.find(key);
     uint32_t si;
@@ -1191,7 +1191,7 @@ uint32_t D3D12Backend::BlitSamplers() {
 }
 
 void D3D12Backend::Blit(ID3D12Resource* src, DXGI_FORMAT fmt, const float uvrect[4], const BlitOptions& o) {
-    uint32_t slot = SrvSlots(2);
+    uint32_t slot = AllocSrvSlots(2);
     D3D12_SHADER_RESOURCE_VIEW_DESC sv{};
     sv.Format = fmt;
     sv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
@@ -1200,12 +1200,12 @@ void D3D12Backend::Blit(ID3D12Resource* src, DXGI_FORMAT fmt, const float uvrect
     dev_->CreateShaderResourceView(src, &sv, Cpu(srv_heap_.Get(), slot, srv_inc_));
     sv.Format = kBgra;
     dev_->CreateShaderResourceView(lut_.Get(), &sv, Cpu(srv_heap_.Get(), slot + 1, srv_inc_));
-    uint32_t si = BlitSamplers();
+    uint32_t si = EnsureBlitSamplers();
     Alloc cb = Upload(256, 256);
     float c[8] = {uvrect[0], uvrect[1], uvrect[2], uvrect[3],
                   o.gamma ? 1.0f : 0.0f, o.alpha ? 1.0f : 0.0f, float(o.taps), o.mul};
     std::memcpy(cb.cpu, c, sizeof(c));
-    cl_->SetPipelineState(BlitPipeline(o.rtv, o.over));
+    cl_->SetPipelineState(EnsureBlitPipeline(o.rtv, o.over));
     cl_->SetGraphicsRootConstantBufferView(0, cb.gpu);
     cl_->SetGraphicsRootConstantBufferView(1, cb.gpu);
     cl_->SetGraphicsRootDescriptorTable(2, Gpu(srv_heap_.Get(), slot, srv_inc_));
@@ -1256,7 +1256,7 @@ D3D12_GRAPHICS_PIPELINE_STATE_DESC D3D12Backend::FullScreenPipelineDesc(ID3DBlob
     return d;
 }
 
-ID3D12PipelineState* D3D12Backend::BlitPipeline(DXGI_FORMAT rtv, bool over) {
+ID3D12PipelineState* D3D12Backend::EnsureBlitPipeline(DXGI_FORMAT rtv, bool over) {
     auto& pso = blit_psos_[uint64_t(rtv) | uint64_t(over) << 32];
     if (pso) return pso.Get();
     uint64_t h;
@@ -1306,7 +1306,7 @@ void D3D12Backend::Pass(const char* hlsl, const char* entry, DXGI_FORMAT rtv, D3
                         const float p[8], float blend) {
     ID3D12PipelineState* pso = EnsurePassPipeline(hlsl, entry, rtv, blend);
     if (!pso) return;
-    uint32_t slot = SrvSlots(4);
+    uint32_t slot = AllocSrvSlots(4);
     for (int i = 0; i < 4; i++) {
         D3D12_SHADER_RESOURCE_VIEW_DESC sv{};
         sv.Format = i < 3 && src[i] ? fmt[i] : kBgra;
@@ -1327,7 +1327,7 @@ void D3D12Backend::Pass(const char* hlsl, const char* entry, DXGI_FORMAT rtv, D3
     cl_->SetGraphicsRootConstantBufferView(0, cb.gpu);
     cl_->SetGraphicsRootConstantBufferView(1, cb.gpu);
     cl_->SetGraphicsRootDescriptorTable(2, Gpu(srv_heap_.Get(), slot, srv_inc_));
-    cl_->SetGraphicsRootDescriptorTable(3, Gpu(smp_heap_.Get(), BlitSamplers(), smp_inc_));
+    cl_->SetGraphicsRootDescriptorTable(3, Gpu(smp_heap_.Get(), EnsureBlitSamplers(), smp_inc_));
     cl_->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     cl_->DrawInstanced(3, 1, 0, 0);
     bound_rt_ = bound_ds_ = nullptr;
@@ -1415,7 +1415,7 @@ void D3D12Backend::FillPipelineDesc(const PsoKey& k, ID3DBlob* vs, ID3DBlob* ps,
     d.SampleDesc.Count = 1;
 }
 
-ID3D12PipelineState* D3D12Backend::Pipeline(const PsoKey& k, ID3DBlob* vs, ID3DBlob* ps) {
+ID3D12PipelineState* D3D12Backend::EnsurePipeline(const PsoKey& k, ID3DBlob* vs, ID3DBlob* ps) {
     uint64_t h = Hash(&k, sizeof(k));
     auto it = psos_.find(h);
     if (it != psos_.end()) return it->second.Get();
@@ -1444,7 +1444,7 @@ ID3D12Resource* D3D12Backend::BindTargetTexture(const State& s, int stage, const
     if (&t == draw_ds_) return nullptr;
     bool feedback = &t == draw_rt_;
     stages.rt[stage] = true;
-    if (!t.depth && CpuWrote(t)) {
+    if (!t.depth && LatchCpuWrite(t)) {
         Surface su;
         su.header = s.textures[size_t(stage)];
         UploadTarget(t, su);
@@ -1554,7 +1554,7 @@ void D3D12Backend::UploadTexture(Tex& tx, const TextureDesc& d, const FormatInfo
     Transition(tx.res.Get(), st, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
 }
 
-void TextureView(const Tex& tx, const TextureDesc& d, D3D12_SHADER_RESOURCE_VIEW_DESC& sv) {
+void FillTextureView(const Tex& tx, const TextureDesc& d, D3D12_SHADER_RESOURCE_VIEW_DESC& sv) {
     sv.Format = tx.fmt;
     if (d.cube) {
         sv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURECUBE;
@@ -1615,7 +1615,7 @@ ID3D12Resource* D3D12Backend::BindGuestTexture(const State& s, int stage, const 
             UploadTexture(tx, d, fi, p, palette.va ? palette.colours : nullptr, same);
         }
     }
-    TextureView(tx, d, stages.sv[stage]);
+    FillTextureView(tx, d, stages.sv[stage]);
     if (fi.depth) info.shadow = ShadowDepthKind(d.format);
     if (ext_) ext_->Sampled(d, nullptr, tx.flags, info);
     return tx.res.Get();
@@ -2100,7 +2100,7 @@ D3D12_SRV_DIMENSION NullViewDimension(uint8_t kind) {
 
 // a stage without a texture gets a null view of its kind; the samplers read the views after
 void D3D12Backend::SetTextureViewsAndSamplers(const State& s, DrawTextures& stages) {
-    uint32_t slot = SrvSlots(4);
+    uint32_t slot = AllocSrvSlots(4);
     for (int i = 0; i < 4; i++) {
         D3D12_SHADER_RESOURCE_VIEW_DESC& sv = stages.sv[i];
         if (!stages.res[i]) {
@@ -2228,7 +2228,7 @@ void D3D12Backend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t 
     // pipeline
     PsoKey k;
     BuildPipelineKey(s, a, sh.vh, sh.ph, k);
-    ID3D12PipelineState* pso = Pipeline(k, sh.vs_code, sh.ps_code);
+    ID3D12PipelineState* pso = EnsurePipeline(k, sh.vs_code, sh.ps_code);
     if (!pso) return;
     cl_->SetPipelineState(pso);
 
@@ -2281,7 +2281,7 @@ void D3D12Backend::ClearTarget(Target& t, const State& s, const ClearArgs& c, st
                                    UINT8(c.stencil), UINT(rs.size()), rs.data());
     } else {
         // pixels the CPU wrote before this clear go in first, a later upload would paint over the clear
-        if (CpuWrote(t)) UploadTarget(t, s.rt);
+        if (LatchCpuWrite(t)) UploadTarget(t, s.rt);
         Transition(t.res.Get(), t.state, D3D12_RESOURCE_STATE_RENDER_TARGET);
         float col[4];
         Color(c.color, col);
@@ -2687,7 +2687,7 @@ void D3D12Backend::Present(const Surface& front) {
     }
     ResizeSwap();
     Target* t = GetTarget(front, false);
-    if (t && CpuWrote(*t)) UploadTarget(*t, front);
+    if (t && LatchCpuWrite(*t)) UploadTarget(*t, front);
     if (t) Resolve(*t);
     if (ramp_dirty_) UploadGammaRamp();
     Transition(lut_.Get(), lut_state_, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
