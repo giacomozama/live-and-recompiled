@@ -63,8 +63,8 @@ A new XDK build needs `xdk/<build>/layout.toml` and signatures made from titles 
 ### Audio
 - **DirectSound** - Mixes sound in software through XAudio2, with Xbox ADPCM, streams, mix bins and the effects image.
 
-### Controller
-Supports Xbox, PlayStation and Switch controllers through SDL3, with hot plugging and rumble.
+### Input
+- **Controller** - Supports Xbox, PlayStation and Switch controllers through SDL3, with hot plugging and rumble.
 
 ### General
 - **Disc Images** - Runs the game from an ISO in the `assets` folder, either a whole disc dump or the game partition, or from the extracted data files.
