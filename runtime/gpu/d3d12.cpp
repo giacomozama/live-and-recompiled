@@ -359,6 +359,36 @@ struct ShrinkOptions {
     float mul = 1;
 };
 
+// a draw's four texture stages: BindStageTexturesAndTargets fills them, the constants, views and samplers read them
+struct DrawTextures {
+    TexInfo info[4];
+    D3D12_SHADER_RESOURCE_VIEW_DESC sv[4];
+    ID3D12Resource* res[4];
+    bool rt[4] = {};            // stage samples a render target
+    float k[4] = {1, 1, 1, 1};  // Extension::Sample's k
+    float wide[4] = {};         // host texels per console texel of a target read into a smaller one, 0 otherwise
+};
+
+// a draw's shaders: what they are made from, their cache keys, the hashes Compile returned and the compiled blobs
+struct DrawShaders {
+    bool prog = false;  // a vertex program, else the fixed function pipeline
+    bool quad = false;
+    bool fixed_transform = false;  // fixed function on untransformed vertices: the shader reads matrices and lights
+    FixedKey fk;
+    uint64_t vkey = 0;
+    uint64_t vh = 0;
+    uint64_t pkh = 0;
+    uint64_t ph = 0;
+    ID3DBlob* vs_code = nullptr;
+    ID3DBlob* ps_code = nullptr;
+};
+
+// the render target's console size in pixels, or the depth buffer's without one
+struct GuestExtent {
+    uint32_t w;
+    uint32_t h;
+};
+
 class D3D12Backend final : public Backend, public Context {
 public:
     bool Init(uint32_t width, uint32_t height) override;
@@ -437,44 +467,39 @@ private:
               float blend) override;
     bool BindTargets(const State& s);
     bool DepthCopy(const State& s);
-    ID3D12Resource* BindTexture(const State& s, int stage, TexInfo& info, D3D12_SHADER_RESOURCE_VIEW_DESC& srv);
+    // Draw, in call order, each callee right after its caller
+    bool AssembleDraw(const State& s, uint32_t prim, uint32_t start, uint32_t count, const uint8_t* indices);
+    void EnsureVertexShader(const State& s, const Assembled& a, DrawShaders& sh);
+    bool BindStageTexturesAndTargets(const State& s, DrawTextures& stages);
+    ID3D12Resource* BindTexture(const State& s, int stage, DrawTextures& stages);
     ID3D12Resource* BindTargetTexture(const State& s, int stage, const TextureDesc& d, Target& t, bool box,
-                                      TexInfo& info, D3D12_SHADER_RESOURCE_VIEW_DESC& sv);
+                                      DrawTextures& stages);
+    ID3D12Resource* BindGuestTexture(const State& s, int stage, const TextureDesc& d, const FormatInfo& fi,
+                                     DrawTextures& stages);
     bool CreateTexture(Tex& tx, const TextureDesc& d, const FormatInfo& fi, uint64_t key);
     void UploadTexture(Tex& tx, const TextureDesc& d, const FormatInfo& fi, const uint8_t* p, const uint32_t* colours,
                        bool same);
     void UploadTextureLevel(Tex& tx, uint32_t f, uint32_t l, const std::vector<uint8_t>& px, uint32_t pitch);
-    // Draw, in order
-    uint64_t FindVertexShader(uint64_t vkey, const State& s, const Assembled& a, bool prog, bool quad,
-                              const FixedKey& fk, ID3DBlob*& vs);
-    bool PrepareTextures(const State& s, TexInfo info[4], D3D12_SHADER_RESOURCE_VIEW_DESC sv[4],
-                         ID3D12Resource* res[4]);
-    uint64_t FindPixelShader(const PixelKey& pk, uint64_t pkh, ID3DBlob*& ps);
+    void EnsurePixelShader(const PixelKey& pk, DrawShaders& sh);
     void BuildPipelineKey(const State& s, const Assembled& a, uint64_t vh, uint64_t ph, PsoKey& k);
     void KeyDepthStencil(const State& s, const Assembled& a, PsoKey& k);
-    void UploadConstants(const State& s, const Assembled& a, bool prog, const FixedKey& fk, const PsoKey& k,
-                         DrawConstants& c, uint32_t& gw, uint32_t& gh);
-    void FillTextureConstants(const State& s, DrawConstants& c);
-    void FillTexelConstants(int i, const TextureDesc& d, DrawConstants& c);
-    void CaptureDraw(const State& s, const Assembled& a, uint32_t prim, uint32_t count, const PsoKey& k,
-                     const DrawConstants& c, ID3D12Resource* const res[4], const TexInfo info[4],
-                     const D3D12_SHADER_RESOURCE_VIEW_DESC sv[4]);
-    void CaptureTextures(const State& s, ID3D12Resource* const res[4], const TexInfo info[4],
-                         const D3D12_SHADER_RESOURCE_VIEW_DESC sv[4]);
+    void UploadConstants(const State& s, const DrawShaders& sh, const PsoKey& k, const DrawTextures& stages,
+                         GuestExtent size, DrawConstants& c);
+    void FillTextureConstants(const State& s, const DrawTextures& stages, DrawConstants& c);
+    void FillTexelConstants(int i, const TextureDesc& d, const DrawTextures& stages, DrawConstants& c);
+    void CaptureDraw(const State& s, uint32_t prim, uint32_t count, const PsoKey& k, const DrawConstants& c,
+                     const DrawTextures& stages);
+    void CaptureTextures(const State& s, const DrawTextures& stages);
+    void EndDrawCapture(const State& s, const Assembled& a, uint32_t count, const DrawConstants& c);
     void CaptureInputs(const State& s, const Assembled& a, const DrawConstants& c);
-    void CaptureShaders(const State& s, const Assembled& a, bool prog, bool quad, const FixedKey& fk, uint64_t vkey,
-                        const PixelKey& pk, uint64_t pkh);
+    void CaptureShaders(const State& s, const Assembled& a, const DrawShaders& sh, const PixelKey& pk);
     void CaptureShader(const char* kind, uint64_t key, const std::string& src);
-    void SetShaderResources(const State& s, const TexInfo info[4], D3D12_SHADER_RESOURCE_VIEW_DESC sv[4],
-                            ID3D12Resource* const res[4]);
+    void SetTextureViewsAndSamplers(const State& s, DrawTextures& stages);
+    uint32_t EnsureStageSamplers(const State& s, const DrawTextures& stages);
     void SetViewportScissor(const State& s, uint32_t gw);
     void SetBlendFactorStencilRef(const State& s);
-    void UploadVertexBuffers(const Assembled& a);
     void DrawGeometry(const Assembled& a);
-    bool tex_rt_[4] = {};  // stage samples a render target
-    float tex_k_[4] = {1, 1, 1, 1};  // Extension::Sample's k
-    float tex_wide_[4] = {};  // host texels per console texel of a target read into a smaller one, 0 otherwise
-    uint32_t Samplers(const State& s, const TexInfo info[4], const D3D12_SHADER_RESOURCE_VIEW_DESC sv[4]);
+    void UploadVertexBuffers(const Assembled& a);
     ID3DBlob* Compile(const std::string& src, const char* entry, const char* profile, uint64_t& hash);
     ID3D12PipelineState* Pipeline(const PsoKey& k, ID3DBlob* vs, ID3DBlob* ps);
     ID3D12PipelineState* BlitPipeline(DXGI_FORMAT rtv, bool over = false);
@@ -1291,10 +1316,12 @@ TexKind TextureKind(const TextureDesc& d) {
 }
 
 ID3D12Resource* D3D12Backend::BindTargetTexture(const State& s, int stage, const TextureDesc& d, Target& t, bool box,
-                                                TexInfo& info, D3D12_SHADER_RESOURCE_VIEW_DESC& sv) {
+                                                DrawTextures& stages) {
+    TexInfo& info = stages.info[stage];
+    D3D12_SHADER_RESOURCE_VIEW_DESC& sv = stages.sv[stage];
     if (&t == draw_ds_) return nullptr;
     bool feedback = &t == draw_rt_;
-    tex_rt_[stage] = true;
+    stages.rt[stage] = true;
     if (!t.depth && CpuWrote(t)) {
         Surface su;
         su.header = s.textures[size_t(stage)];
@@ -1303,9 +1330,9 @@ ID3D12Resource* D3D12Backend::BindTargetTexture(const State& s, int stage, const
     info.kind = kTex2D;
     // a pass shrinking it averages each tap over a console texel, else upscaled taps skip texels and ghost
     Target* rt = GetTarget(s.rt, false, false);
-    float k = float(t.w) / (t.gw * tex_k_[stage]);
+    float k = float(t.w) / (t.gw * stages.k[stage]);
     if (!t.depth && box && k > 1.01f && rt && rt != &t && (t.gw > rt->gw || t.gh > rt->gh)) {
-        tex_wide_[stage] = k;
+        stages.wide[stage] = k;
         info.flags |= kTexWide;
     }
     if (ext_) ext_->Sampled(d, &t, 0, info);
@@ -1418,13 +1445,68 @@ void TextureView(const Tex& tx, const TextureDesc& d, D3D12_SHADER_RESOURCE_VIEW
     }
 }
 
-ID3D12Resource* D3D12Backend::BindTexture(const State& s, int stage, TexInfo& info,
-                                          D3D12_SHADER_RESOURCE_VIEW_DESC& sv) {
+// a P8 texture's palette: its colours, their address (part of the texture's key) and their hash, all 0 without one
+struct StagePalette {
+    uint32_t colours[256] = {};
+    uint32_t va = 0;
+    uint64_t hash = 0;
+};
+
+// a P8 texture is decoded with the stage's palette: 256 colours, fewer by the size code in the top two bits
+void ReadStagePalette(const State& s, int stage, const TextureDesc& d, StagePalette& palette) {
+    constexpr uint32_t kFmtP8 = 0x0B;          // D3DFMT_P8
+    constexpr uint32_t kPaletteCommon = 0;     // D3DPalette: Common, its top two bits the size code
+    constexpr uint32_t kPaletteData = 4;       // D3DPalette: Data, physical address of the colours
+    constexpr uint32_t kPaletteSizeShift = 30;
+    if (d.format != kFmtP8 || !s.palettes[size_t(stage)]) return;
+    uint32_t header = s.palettes[size_t(stage)];
+    palette.va = mem::VirtualFromPhysical(kernel::R32(header + kPaletteData));
+    uint32_t size_code = kernel::R32(header + kPaletteCommon) >> kPaletteSizeShift;
+    std::memcpy(palette.colours, kernel::HostPtr(palette.va), (256u >> size_code) * 4);
+    palette.hash = Hash(palette.colours, sizeof(palette.colours));
+}
+
+// a texture in guest memory: made again when its layout changed, uploaded again when its bytes did
+ID3D12Resource* D3D12Backend::BindGuestTexture(const State& s, int stage, const TextureDesc& d, const FormatInfo& fi,
+                                               DrawTextures& stages) {
+    TexInfo& info = stages.info[stage];
+    StagePalette palette;
+    ReadStagePalette(s, stage, d, palette);
+    const uint64_t key = uint64_t(palette.va) << 32 | d.data;
+    Tex& tx = textures_[key];
+    uint32_t total = TotalSize(d);
+    bool same = SameTexture(tx, d);
+    if (!same && !CreateTexture(tx, d, fi, key)) return nullptr;
+    // cheap change check once per frame: lock epochs plus a sample of the bytes
+    if (tx.frame != presents_ + 1 || !same || tx.palette != palette.hash) {
+        tx.frame = presents_ + 1;
+        tx.palette = palette.hash;
+        const uint8_t* p = static_cast<const uint8_t*>(kernel::HostPtr(d.data));
+        auto perf_t = PerfClock::now();
+        uint64_t sig = MemSig(d.data, total) ^ DirtyEpoch(d.data) ^ palette.hash;
+        g_perf.sig += PerfMs(perf_t);
+        if (sig != tx.sig || !same) {
+            PerfScope perf_up{g_perf.texup};
+            g_perf.texups++;
+            g_perf.texup_bytes += total;
+            tx.sig = sig;
+            UploadTexture(tx, d, fi, p, palette.va ? palette.colours : nullptr, same);
+        }
+    }
+    TextureView(tx, d, stages.sv[stage]);
+    if (fi.depth) info.shadow = ShadowDepthKind(d.format);
+    if (ext_) ext_->Sampled(d, nullptr, tx.flags, info);
+    return tx.res.Get();
+}
+
+ID3D12Resource* D3D12Backend::BindTexture(const State& s, int stage, DrawTextures& stages) {
+    TexInfo& info = stages.info[stage];
+    D3D12_SHADER_RESOURCE_VIEW_DESC& sv = stages.sv[stage];
     info = {};
     sv = {};
-    tex_rt_[stage] = false;
-    tex_k_[stage] = 1;
-    tex_wide_[stage] = 0;
+    stages.rt[stage] = false;
+    stages.k[stage] = 1;
+    stages.wide[stage] = 0;
     sv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
     sv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
     sv.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
@@ -1438,88 +1520,58 @@ ID3D12Resource* D3D12Backend::BindTexture(const State& s, int stage, TexInfo& in
     // rendered by the GPU: sample the target itself; DXT data loaded over a target's memory is not it
     uint64_t alt = 0;
     bool box = true;
-    if (ext_) ext_->Sample(d.data, fi.depth, stage, alt, tex_k_[stage], box);
+    if (ext_) ext_->Sample(d.data, fi.depth, stage, alt, stages.k[stage], box);
     auto tit = targets_.find((uint64_t(d.data) << 1 | (fi.depth ? 1 : 0)) | alt);
     if (tit != targets_.end() && !d.cube && d.depth == 1 && !fi.compressed)
-        return BindTargetTexture(s, stage, d, tit->second, box, info, sv);
-
-    // a P8 texture is decoded with the stage's palette: 256 colours, fewer by the size code in the top two bits
-    constexpr uint32_t kFmtP8 = 0x0B;          // D3DFMT_P8
-    constexpr uint32_t kPaletteCommon = 0;     // D3DPalette: Common, its top two bits the size code
-    constexpr uint32_t kPaletteData = 4;       // D3DPalette: Data, physical address of the colours
-    constexpr uint32_t kPaletteSizeShift = 30;
-    uint32_t colours[256] = {};
-    uint32_t palette_va = 0;
-    uint64_t palette = 0;
-    if (d.format == kFmtP8 && s.palettes[size_t(stage)]) {
-        uint32_t header = s.palettes[size_t(stage)];
-        palette_va = mem::VirtualFromPhysical(kernel::R32(header + kPaletteData));
-        uint32_t size_code = kernel::R32(header + kPaletteCommon) >> kPaletteSizeShift;
-        std::memcpy(colours, kernel::HostPtr(palette_va), (256u >> size_code) * 4);
-        palette = Hash(colours, sizeof(colours));
-    }
-    const uint64_t key = uint64_t(palette_va) << 32 | d.data;
-    Tex& tx = textures_[key];
-    uint32_t total = TotalSize(d);
-    bool same = SameTexture(tx, d);
-    if (!same && !CreateTexture(tx, d, fi, key)) return nullptr;
-    // cheap change check once per frame: lock epochs plus a sample of the bytes
-    if (tx.frame != presents_ + 1 || !same || tx.palette != palette) {
-        tx.frame = presents_ + 1;
-        tx.palette = palette;
-        const uint8_t* p = static_cast<const uint8_t*>(kernel::HostPtr(d.data));
-        auto perf_t = PerfClock::now();
-        uint64_t sig = MemSig(d.data, total) ^ DirtyEpoch(d.data) ^ palette;
-        g_perf.sig += PerfMs(perf_t);
-        if (sig != tx.sig || !same) {
-            PerfScope perf_up{g_perf.texup};
-            g_perf.texups++;
-            g_perf.texup_bytes += total;
-            tx.sig = sig;
-            UploadTexture(tx, d, fi, p, palette_va ? colours : nullptr, same);
-        }
-    }
-    TextureView(tx, d, sv);
-    if (fi.depth) info.shadow = ShadowDepthKind(d.format);
-    if (ext_) ext_->Sampled(d, nullptr, tx.flags, info);
-    return tx.res.Get();
+        return BindTargetTexture(s, stage, d, tit->second, box, stages);
+    return BindGuestTexture(s, stage, d, fi, stages);
 }
 
-uint32_t D3D12Backend::Samplers(const State& s, const TexInfo info[4], const D3D12_SHADER_RESOURCE_VIEW_DESC sv[4]) {
-    D3D12_SAMPLER_DESC sd[4] = {};
-    uint32_t aniso = app::Get().aniso;
-    for (int i = 0; i < 4; i++) {
-        const auto& t = s.tss[size_t(i)];
-        uint32_t mag = t[kTssMagFilter], min = t[kTssMinFilter], mip = t[kTssMipFilter];
-        // D3DTEXF: 1 point, 2 linear, 3 anisotropic
-        auto lin = [](uint32_t f) { return f >= 2; };
-        D3D12_FILTER_TYPE fmin = lin(min) ? D3D12_FILTER_TYPE_LINEAR : D3D12_FILTER_TYPE_POINT;
-        D3D12_FILTER_TYPE fmag = lin(mag) ? D3D12_FILTER_TYPE_LINEAR : D3D12_FILTER_TYPE_POINT;
-        D3D12_FILTER_TYPE fmip = mip == 2 ? D3D12_FILTER_TYPE_LINEAR : D3D12_FILTER_TYPE_POINT;
-        sd[i].Filter = D3D12_FILTER(fmin << 4 | fmag << 2 | fmip);
-        uint32_t an = min == 3 || mag == 3 ? std::max<uint32_t>(t[kTssMaxAnisotropy], 1) : 1;
-        // forced only where the title filters across mip levels and the texture has them
-        if (aniso && lin(min) && mip && sv[i].Texture2D.MipLevels > 1 && !info[i].shadow) an = aniso;
-        if (an > 1) {
-            sd[i].Filter = D3D12_FILTER_ANISOTROPIC;
-            sd[i].MaxAnisotropy = std::min<uint32_t>(an, 16);
-        }
-        sd[i].AddressU = Address(t[kTssAddressU]);
-        sd[i].AddressV = Address(t[kTssAddressV]);
-        sd[i].AddressW = Address(t[kTssAddressW]);
-        sd[i].MipLODBias = Bits(t[kTssMipLodBias]);
-        sd[i].MinLOD = float(t[kTssMaxMipLevel]);
-        sd[i].MaxLOD = mip ? D3D12_FLOAT32_MAX : sd[i].MinLOD;
-        Color(t[kTssBorderColor], sd[i].BorderColor);
-        if (info[i].shadow) {
-            // the console tests texel OP r, D3D12 tests r OP texel
-            static const uint8_t swap[8] = {0, 4, 2, 6, 1, 5, 3, 7};
-            sd[i].Filter = lin(min) || lin(mag) ? D3D12_FILTER_COMPARISON_MIN_MAG_LINEAR_MIP_POINT
-                                                : D3D12_FILTER_COMPARISON_MIN_MAG_MIP_POINT;
-            sd[i].ComparisonFunc = D3D12_COMPARISON_FUNC(swap[Cmp(s.rs[kRsShadowFunc]) - 1] + 1);
-            sd[i].MaxAnisotropy = 0;
-        }
+// D3DTEXF: 1 point, 2 linear, 3 anisotropic
+constexpr uint32_t kTexfLinear = 2;
+constexpr uint32_t kTexfAnisotropic = 3;
+
+D3D12_SAMPLER_DESC StageSampler(const State& s, int i, const DrawTextures& stages, uint32_t aniso) {
+    D3D12_SAMPLER_DESC sd = {};
+    const auto& t = s.tss[size_t(i)];
+    uint32_t mag = t[kTssMagFilter];
+    uint32_t min = t[kTssMinFilter];
+    uint32_t mip = t[kTssMipFilter];
+    auto lin = [](uint32_t f) { return f >= kTexfLinear; };
+    D3D12_FILTER_TYPE fmin = lin(min) ? D3D12_FILTER_TYPE_LINEAR : D3D12_FILTER_TYPE_POINT;
+    D3D12_FILTER_TYPE fmag = lin(mag) ? D3D12_FILTER_TYPE_LINEAR : D3D12_FILTER_TYPE_POINT;
+    D3D12_FILTER_TYPE fmip = mip == kTexfLinear ? D3D12_FILTER_TYPE_LINEAR : D3D12_FILTER_TYPE_POINT;
+    sd.Filter = D3D12_FILTER(fmin << 4 | fmag << 2 | fmip);
+    bool anisotropic = min == kTexfAnisotropic || mag == kTexfAnisotropic;
+    uint32_t an = anisotropic ? std::max<uint32_t>(t[kTssMaxAnisotropy], 1) : 1;
+    // forced only where the title filters across mip levels and the texture has them
+    if (aniso && lin(min) && mip && stages.sv[i].Texture2D.MipLevels > 1 && !stages.info[i].shadow) an = aniso;
+    if (an > 1) {
+        sd.Filter = D3D12_FILTER_ANISOTROPIC;
+        sd.MaxAnisotropy = std::min<uint32_t>(an, 16);
     }
+    sd.AddressU = Address(t[kTssAddressU]);
+    sd.AddressV = Address(t[kTssAddressV]);
+    sd.AddressW = Address(t[kTssAddressW]);
+    sd.MipLODBias = Bits(t[kTssMipLodBias]);
+    sd.MinLOD = float(t[kTssMaxMipLevel]);
+    sd.MaxLOD = mip ? D3D12_FLOAT32_MAX : sd.MinLOD;
+    Color(t[kTssBorderColor], sd.BorderColor);
+    if (stages.info[i].shadow) {
+        // the console tests texel OP r, D3D12 tests r OP texel
+        static const uint8_t swap[8] = {0, 4, 2, 6, 1, 5, 3, 7};
+        sd.Filter = lin(min) || lin(mag) ? D3D12_FILTER_COMPARISON_MIN_MAG_LINEAR_MIP_POINT
+                                         : D3D12_FILTER_COMPARISON_MIN_MAG_MIP_POINT;
+        sd.ComparisonFunc = D3D12_COMPARISON_FUNC(swap[Cmp(s.rs[kRsShadowFunc]) - 1] + 1);
+        sd.MaxAnisotropy = 0;
+    }
+    return sd;
+}
+
+uint32_t D3D12Backend::EnsureStageSamplers(const State& s, const DrawTextures& stages) {
+    D3D12_SAMPLER_DESC sd[4];
+    uint32_t aniso = app::Get().aniso;
+    for (int i = 0; i < 4; i++) sd[i] = StageSampler(s, i, stages, aniso);
     uint64_t key = Hash(sd, sizeof(sd));
     auto it = samplers_.find(key);
     if (it != samplers_.end()) return it->second;
@@ -1538,43 +1590,61 @@ uint32_t SimpleState(const State& s, uint32_t method) {
     return s.simple[method >> 2];
 }
 
-uint64_t VertexKey(const State& s, const Assembled& a, bool prog, bool quad, FixedKey& fk) {
-    if (prog && !s.vs->hash) s.vs->hash = Hash(s.vs->program.data(), s.vs->program.size() * 4) | 1;
-    uint64_t vkey = Hash(&a.decode, 8, prog ? s.vs->hash ^ a.regs : Hash(&s.vs_handle, 4, a.regs | 0x10000));
-    if (!prog && a.pretransformed) vkey ^= 0x5A5A;
-    if (quad) vkey ^= 0xC3C30000;
-    if (!prog) {
-        fk = MakeFixedKey(s);
-        vkey = Hash(&fk, sizeof(fk), vkey);
-    }
+constexpr uint32_t kQuadVertices = 6;  // a quad drawn as two triangles
+
+DrawShaders ClassifyShaders(const State& s, const Assembled& a, uint32_t count) {
+    DrawShaders sh;
+    // a shader made from a declaration alone (no program) is the fixed function pipeline on those inputs
+    sh.prog = (s.vs_handle & 1) && s.vs && !s.vs->program.empty();
+    // up to a quad with no depth test: it may be a pass over the whole target, see QuadHlsl
+    sh.quad = count <= kQuadVertices && !s.rs[kRsZEnable];
+    sh.fixed_transform = !sh.prog && !a.pretransformed;
+    if (!sh.prog) sh.fk = MakeFixedKey(s);
+    return sh;
+}
+
+// the program's hash is cached in the guest shader object
+void EnsureProgramHash(const State& s) {
+    if (!s.vs->hash) s.vs->hash = Hash(s.vs->program.data(), s.vs->program.size() * 4) | 1;
+}
+
+// vertex shader cache key salts
+constexpr uint64_t kDeclarationSalt = 0x10000;    // fixed function seed, above the 16 bit register mask
+constexpr uint64_t kPretransformedSalt = 0x5A5A;  // screen space fixed function vertices, apart from untransformed
+constexpr uint64_t kQuadSalt = 0xC3C30000;        // the QuadHlsl variant, apart from the plain shader
+
+uint64_t VertexKey(const State& s, const Assembled& a, const DrawShaders& sh) {
+    uint64_t seed = sh.prog ? s.vs->hash ^ a.regs : Hash(&s.vs_handle, 4, a.regs | kDeclarationSalt);
+    uint64_t vkey = Hash(&a.decode, 8, seed);
+    if (!sh.prog && a.pretransformed) vkey ^= kPretransformedSalt;
+    if (sh.quad) vkey ^= kQuadSalt;
+    if (!sh.prog) vkey = Hash(&sh.fk, sizeof(sh.fk), vkey);
     return vkey;
 }
 
-std::string VertexHlsl(const State& s, const Assembled& a, bool prog, const FixedKey& fk) {
-    if (prog) return VertexProgramHlsl(s.vs->program, a.regs, a.decode);
-    return FixedVertexHlsl(a.regs, a.pretransformed, a.decode, fk);
+std::string VertexHlsl(const State& s, const Assembled& a, const DrawShaders& sh) {
+    if (sh.prog) return VertexProgramHlsl(s.vs->program, a.regs, a.decode);
+    return FixedVertexHlsl(a.regs, a.pretransformed, a.decode, sh.fk);
 }
 
-uint64_t D3D12Backend::FindVertexShader(uint64_t vkey, const State& s, const Assembled& a, bool prog, bool quad,
-                                        const FixedKey& fk, ID3DBlob*& vs) {
-    auto vit = shader_src_.find(vkey);
+// sets sh.vh and sh.vs_code, compiling the shader on a cache miss
+void D3D12Backend::EnsureVertexShader(const State& s, const Assembled& a, DrawShaders& sh) {
+    auto vit = shader_src_.find(sh.vkey);
     if (vit != shader_src_.end()) {
-        vs = blobs_[vit->second].Get();
-        return vit->second;
+        sh.vs_code = blobs_[vit->second].Get();
+        sh.vh = vit->second;
+        return;
     }
-    std::string src = VertexHlsl(s, a, prog, fk);
-    uint64_t vh;
-    vs = Compile(quad ? QuadHlsl(std::move(src)) : src, "main", "vs_5_0", vh);
-    shader_src_[vkey] = vh;
-    return vh;
+    std::string src = VertexHlsl(s, a, sh);
+    sh.vs_code = Compile(sh.quad ? QuadHlsl(std::move(src)) : src, "main", "vs_5_0", sh.vh);
+    shader_src_[sh.vkey] = sh.vh;
 }
 
-bool D3D12Backend::PrepareTextures(const State& s, TexInfo info[4], D3D12_SHADER_RESOURCE_VIEW_DESC sv[4],
-                                   ID3D12Resource* res[4]) {
+bool D3D12Backend::BindStageTexturesAndTargets(const State& s, DrawTextures& stages) {
     auto perf_t = PerfClock::now();
     draw_rt_ = bound_rt_;
     draw_ds_ = bound_ds_;
-    for (int i = 0; i < 4; i++) res[i] = BindTexture(s, i, info[i], sv[i]);
+    for (int i = 0; i < 4; i++) stages.res[i] = BindTexture(s, i, stages);
     g_perf.bind += PerfMs(perf_t);
     // textures may have recorded copies that unbound the targets
     return BindTargets(s);
@@ -1582,17 +1652,17 @@ bool D3D12Backend::PrepareTextures(const State& s, TexInfo info[4], D3D12_SHADER
 
 constexpr uint64_t kPixelKeySalt = 0x9E3779B97F4A7C15ull;
 
-uint64_t D3D12Backend::FindPixelShader(const PixelKey& pk, uint64_t pkh, ID3DBlob*& ps) {
+// sets sh.ph and sh.ps_code, compiling the shader on a cache miss
+void D3D12Backend::EnsurePixelShader(const PixelKey& pk, DrawShaders& sh) {
     // pixel shaders share the map with vertex shaders, the salt keeps their keys apart
-    auto pit = shader_src_.find(pkh ^ kPixelKeySalt);
+    auto pit = shader_src_.find(sh.pkh ^ kPixelKeySalt);
     if (pit != shader_src_.end()) {
-        ps = blobs_[pit->second].Get();
-        return pit->second;
+        sh.ps_code = blobs_[pit->second].Get();
+        sh.ph = pit->second;
+        return;
     }
-    uint64_t ph;
-    ps = Compile(PixelHlsl(pk), "main", "ps_5_0", ph);
-    shader_src_[pkh ^ kPixelKeySalt] = ph;
-    return ph;
+    sh.ps_code = Compile(PixelHlsl(pk), "main", "ps_5_0", sh.ph);
+    shader_src_[sh.pkh ^ kPixelKeySalt] = sh.ph;
 }
 
 void KeyBlend(const State& s, PsoKey& k) {
@@ -1656,9 +1726,12 @@ void D3D12Backend::BuildPipelineKey(const State& s, const Assembled& a, uint64_t
     KeyRasterizer(s, a, k);
 }
 
-void FillSurfaceConstants(const State& s, uint32_t gw, uint32_t gh, DrawConstants& c) {
-    c.surf[0] = float(gw);
-    c.surf[1] = float(gh);
+// alpha test off: compare always, in Cmp() - 1 terms like the enabled test
+constexpr float kAlphaTestAlways = float(D3D12_COMPARISON_FUNC_ALWAYS - 1);
+
+void FillSurfaceConstants(const State& s, GuestExtent size, DrawConstants& c) {
+    c.surf[0] = float(size.w);
+    c.surf[1] = float(size.h);
     c.surf[2] = 1.0f / s.zscale;
     if (s.rs[kRsFogEnable]) {
         c.fog[0] = Bits(s.rs[kRsFogStart]);
@@ -1668,7 +1741,7 @@ void FillSurfaceConstants(const State& s, uint32_t gw, uint32_t gh, DrawConstant
     }
     Color(s.rs[kRsFogColor], c.fog_color);
     c.misc[0] = float(SimpleState(s, kMAlphaRef) & 0xFF);
-    c.misc[1] = SimpleState(s, kMAlphaTestEnable) ? float(Cmp(SimpleState(s, kMAlphaFunc)) - 1) : 7.0f;
+    c.misc[1] = SimpleState(s, kMAlphaTestEnable) ? float(Cmp(SimpleState(s, kMAlphaFunc)) - 1) : kAlphaTestAlways;
     c.misc[2] = float(Cmp(s.rs[kRsShadowFunc]) - 1);
     c.misc[3] = s.rs[kRsSpecularEnable] ? 1.0f : 0.0f;
 }
@@ -1683,28 +1756,28 @@ void FillCombinerConstants(const State& s, DrawConstants& c) {
     Color(s.rs[kRsTextureFactor], c.tfactor);
 }
 
-void D3D12Backend::FillTexelConstants(int i, const TextureDesc& d, DrawConstants& c) {
+void D3D12Backend::FillTexelConstants(int i, const TextureDesc& d, const DrawTextures& stages, DrawConstants& c) {
     c.texsize[i][0] = float(d.width);
     c.texsize[i][1] = float(d.height);
     // the console samples pixels at integer positions, D3D12 half a pixel on: targets are read half a texel back
-    if (!tex_rt_[i]) return;
-    float k = tex_k_[i];
+    if (!stages.rt[i]) return;
+    float k = stages.k[i];
     c.texsize[i][2] = -0.5f / (float(d.width) * k);
     c.texsize[i][3] = -0.5f / (float(d.height) * k);
     // a 3 console texel box per tap keeps the console chain's glow width and brightness
-    if (tex_wide_[i] > 0) {
+    if (stages.wide[i] > 0) {
         float fw = 3.0f;
-        float n = std::ceil(fw * tex_wide_[i] * 0.5f);
+        float n = std::ceil(fw * stages.wide[i] * 0.5f);
         c.spread[i][0] = fw / (n * float(d.width) * k);
         c.spread[i][1] = fw / (n * float(d.height) * k);
         c.spread[i][2] = n;
     }
 }
 
-void D3D12Backend::FillTextureConstants(const State& s, DrawConstants& c) {
+void D3D12Backend::FillTextureConstants(const State& s, const DrawTextures& stages, DrawConstants& c) {
     for (int i = 0; i < 4; i++) {
         TextureDesc d;
-        if (s.textures[size_t(i)] && Describe(s.textures[size_t(i)], d)) FillTexelConstants(i, d, c);
+        if (s.textures[size_t(i)] && Describe(s.textures[size_t(i)], d)) FillTexelConstants(i, d, stages, c);
         const auto& t = s.tss[size_t(i)];
         c.bump[i][0] = Bits(t[kTssBumpEnvMat00]);
         c.bump[i][1] = Bits(t[kTssBumpEnvMat01]);
@@ -1742,12 +1815,20 @@ void InverseTranspose3x3(const float* wv, float* n) {
         }
 }
 
-void FillTransformConstants(const State& s, uint32_t gw, uint32_t gh, DrawConstants& c) {
+// D3DTRANSFORMSTATETYPE indices into s.transforms
+constexpr size_t kTsView = 2;
+constexpr size_t kTsProjection = 3;
+constexpr size_t kTsTexture0 = 16;
+constexpr size_t kTsWorld = 256;
+
+void FillTransformConstants(const State& s, GuestExtent size, DrawConstants& c) {
+    uint32_t gw = size.w;
+    uint32_t gh = size.h;
     // world, view, projection, then the viewport inside the target
     float wv[16];
     float wvp[16];
-    MatMul(s.transforms[256].data(), s.transforms[2].data(), wv);
-    MatMul(wv, s.transforms[3].data(), wvp);
+    MatMul(s.transforms[kTsWorld].data(), s.transforms[kTsView].data(), wv);
+    MatMul(wv, s.transforms[kTsProjection].data(), wvp);
     const auto& v = s.viewport;
     float sx = float(v.w) / gw;
     float sy = float(v.h) / gh;
@@ -1762,7 +1843,7 @@ void FillTransformConstants(const State& s, uint32_t gw, uint32_t gh, DrawConsta
     float n[16] = {};
     InverseTranspose3x3(wv, n);
     Transpose(n, c.wvn);
-    for (int t = 0; t < 4; t++) Transpose(s.transforms[size_t(16 + t)].data(), c.tm[t]);
+    for (int t = 0; t < 4; t++) Transpose(s.transforms[kTsTexture0 + size_t(t)].data(), c.tm[t]);
 }
 
 void LightToView(const std::array<uint32_t, 26>& l, const float* vm, float (&o)[7][4]) {
@@ -1792,44 +1873,47 @@ void FillLightConstants(const State& s, const FixedKey& fk, DrawConstants& c) {
     c.mat[4][0] = s.material[16];
     Color(s.rs[kRsAmbient], c.amb);
     // lights to view space
-    const float* vm = s.transforms[2].data();
+    const float* vm = s.transforms[kTsView].data();
     for (int i = 0; i < 8; i++) {
         if (!((fk.types >> (i * 2)) & 3)) continue;
         LightToView(s.lights[size_t(i)], vm, c.lt[i]);
     }
 }
 
-void D3D12Backend::UploadConstants(const State& s, const Assembled& a, bool prog, const FixedKey& fk, const PsoKey& k,
-                                   DrawConstants& c, uint32_t& gw, uint32_t& gh) {
+void D3D12Backend::UploadConstants(const State& s, const DrawShaders& sh, const PsoKey& k, const DrawTextures& stages,
+                                   GuestExtent size, DrawConstants& c) {
     Alloc vc = Upload(sizeof(s.vsc), 256);
     std::memcpy(vc.cpu, s.vsc.data(), sizeof(s.vsc));
     Alloc dc = Upload(sizeof(DrawConstants), 256);
-    SurfaceSize(bound_rt_ ? s.rt : s.zs, gw, gh);
-    FillSurfaceConstants(s, gw, gh, c);
+    FillSurfaceConstants(s, size, c);
     FillCombinerConstants(s, c);
     if (ext_) ext_->Constants(reinterpret_cast<float(*)[4]>(vc.cpu), c.ext, bound_rt_, k.blend ? k.src : 1);
-    FillTextureConstants(s, c);
-    if (!prog && !a.pretransformed) {
-        FillTransformConstants(s, gw, gh, c);
-        FillLightConstants(s, fk, c);
+    FillTextureConstants(s, stages, c);
+    if (sh.fixed_transform) {
+        FillTransformConstants(s, size, c);
+        FillLightConstants(s, sh.fk, c);
     }
     std::memcpy(dc.cpu, &c, sizeof(c));
     cl_->SetGraphicsRootConstantBufferView(0, vc.gpu);
     cl_->SetGraphicsRootConstantBufferView(1, dc.gpu);
 }
 
-void D3D12Backend::CaptureTextures(const State& s, ID3D12Resource* const res[4], const TexInfo info[4],
-                                   const D3D12_SHADER_RESOURCE_VIEW_DESC sv[4]) {
+void D3D12Backend::CaptureTextures(const State& s, const DrawTextures& stages) {
     for (int i = 0; i < 4; i++) {
+        ID3D12Resource* res = stages.res[i];
         TextureDesc d;
         if (!s.textures[size_t(i)] || !Describe(s.textures[size_t(i)], d)) continue;
         bool tg = targets_.count(uint64_t(d.data) << 1 | (Format(d.format).depth ? 1 : 0));
         fprintf(cap_, " | t%d %08X fmt %X %ux%u%s%s", i, d.data, d.format, d.width, d.height, tg ? " target" : "",
-                res[i] ? "" : " unbound");
-        if (res[i] && !tg && info[i].kind == kTex2D && cap_seen_.insert(d.data).second)
-            cap_tex_.push_back({res[i], sv[i].Format, d.data, d.width, d.height});
+                res ? "" : " unbound");
+        if (res && !tg && stages.info[i].kind == kTex2D && cap_seen_.insert(d.data).second)
+            cap_tex_.push_back({res, stages.sv[i].Format, d.data, d.width, d.height});
     }
 }
+
+// s.vsc holds the 192 vertex shader constants in hardware order: D3D register + 96
+constexpr int kVsConstants = 192;
+constexpr int kVsConstantBias = 96;
 
 void D3D12Backend::CaptureInputs(const State& s, const Assembled& a, const DrawConstants& c) {
     fprintf(cap_, "\n     verts");
@@ -1840,25 +1924,31 @@ void D3D12Backend::CaptureInputs(const State& s, const Assembled& a, const DrawC
         for (uint32_t k = 0; k < n * 4; k++) fprintf(cap_, " %g", a.vertices[v * n * 4 + k]);
         fprintf(cap_, " ]");
     }
-    for (int r = 0; r < 192; r++)
-        if (s.vsc[r][0] || s.vsc[r][1] || s.vsc[r][2] || s.vsc[r][3])
-            fprintf(cap_, "\n     c%d %g %g %g %g", r - 96, s.vsc[r][0], s.vsc[r][1], s.vsc[r][2], s.vsc[r][3]);
+    for (int r = 0; r < kVsConstants; r++) {
+        const auto& v = s.vsc[r];
+        if (v[0] || v[1] || v[2] || v[3])
+            fprintf(cap_, "\n     c%d %g %g %g %g", r - kVsConstantBias, v[0], v[1], v[2], v[3]);
+    }
     fprintf(cap_, "\n     pc");
     for (int r = 0; r < 18; r++)
         fprintf(cap_, " (%.3f %.3f %.3f %.3f)", c.pc[r][0], c.pc[r][1], c.pc[r][2], c.pc[r][3]);
 }
 
-void D3D12Backend::CaptureDraw(const State& s, const Assembled& a, uint32_t prim, uint32_t count, const PsoKey& k,
-                               const DrawConstants& c, ID3D12Resource* const res[4], const TexInfo info[4],
-                               const D3D12_SHADER_RESOURCE_VIEW_DESC sv[4]) {
+// the draw's line: its state, then its textures
+void D3D12Backend::CaptureDraw(const State& s, uint32_t prim, uint32_t count, const PsoKey& k, const DrawConstants& c,
+                               const DrawTextures& stages) {
     fprintf(cap_,
             "%04u draw rt %08X ds %08X prim %u count %u vs %08X ps %08X blend %u %X %X zen %u %X zwrite %u "
             "zbias %d %.2f cull %u cw %X c0 %.3f %.3f %.3f %.3f",
             cap_i_++, s.rt.data, bound_ds_ ? s.zs.data : 0, prim, count, s.vs_handle, s.ps ? s.ps->handle : 0, k.blend,
             k.src, k.dst, k.zen, k.zfunc, k.zwrite, k.zbias, k.zslope, k.cull, k.wmask, c.pc[0][0], c.pc[0][1],
             c.pc[0][2], c.pc[0][3]);
-    CaptureTextures(s, res, info, sv);
-    if (count <= 6) CaptureInputs(s, a, c);
+    CaptureTextures(s, stages);
+}
+
+// small draws: their inputs and constants; then ends the draw's line
+void D3D12Backend::EndDrawCapture(const State& s, const Assembled& a, uint32_t count, const DrawConstants& c) {
+    if (count <= kQuadVertices) CaptureInputs(s, a, c);
     fputc('\n', cap_);
 }
 
@@ -1874,11 +1964,10 @@ void D3D12Backend::CaptureShader(const char* kind, uint64_t key, const std::stri
     fprintf(cap_, "     %s\n", name);
 }
 
-void D3D12Backend::CaptureShaders(const State& s, const Assembled& a, bool prog, bool quad, const FixedKey& fk,
-                                  uint64_t vkey, const PixelKey& pk, uint64_t pkh) {
-    std::string src = VertexHlsl(s, a, prog, fk);
-    CaptureShader("vs", vkey, quad ? QuadHlsl(std::move(src)) : src);
-    CaptureShader("ps", pkh, PixelHlsl(pk));
+void D3D12Backend::CaptureShaders(const State& s, const Assembled& a, const DrawShaders& sh, const PixelKey& pk) {
+    std::string src = VertexHlsl(s, a, sh);
+    CaptureShader("vs", sh.vkey, sh.quad ? QuadHlsl(std::move(src)) : src);
+    CaptureShader("ps", sh.pkh, PixelHlsl(pk));
 }
 
 D3D12_SRV_DIMENSION NullViewDimension(uint8_t kind) {
@@ -1887,18 +1976,20 @@ D3D12_SRV_DIMENSION NullViewDimension(uint8_t kind) {
     return D3D12_SRV_DIMENSION_TEXTURE2D;
 }
 
-void D3D12Backend::SetShaderResources(const State& s, const TexInfo info[4], D3D12_SHADER_RESOURCE_VIEW_DESC sv[4],
-                                      ID3D12Resource* const res[4]) {
+// a stage without a texture gets a null view of its kind; the samplers read the views after
+void D3D12Backend::SetTextureViewsAndSamplers(const State& s, DrawTextures& stages) {
     uint32_t slot = SrvSlots(4);
     for (int i = 0; i < 4; i++) {
-        if (!res[i]) {
-            sv[i].ViewDimension = NullViewDimension(info[i].kind);
-            sv[i].Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+        D3D12_SHADER_RESOURCE_VIEW_DESC& sv = stages.sv[i];
+        if (!stages.res[i]) {
+            sv.ViewDimension = NullViewDimension(stages.info[i].kind);
+            sv.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
         }
-        dev_->CreateShaderResourceView(res[i], &sv[i], Cpu(srv_heap_.Get(), slot + i, srv_inc_));
+        dev_->CreateShaderResourceView(stages.res[i], &sv, Cpu(srv_heap_.Get(), slot + i, srv_inc_));
     }
     cl_->SetGraphicsRootDescriptorTable(2, Gpu(srv_heap_.Get(), slot, srv_inc_));
-    cl_->SetGraphicsRootDescriptorTable(3, Gpu(smp_heap_.Get(), Samplers(s, info, sv), smp_inc_));
+    uint32_t samplers = EnsureStageSamplers(s, stages);
+    cl_->SetGraphicsRootDescriptorTable(3, Gpu(smp_heap_.Get(), samplers, smp_inc_));
 }
 
 // viewport covers the target, the guest viewport is in the shader; scissor clips to it
@@ -1963,71 +2054,77 @@ void D3D12Backend::DrawGeometry(const Assembled& a) {
     }
 }
 
-void D3D12Backend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t count, const uint8_t* indices) {
-    PerfScope perf_draw{g_perf.draw};
-    g_perf.draws++;
-    if (cap_) CapStep(s.rt);
-    if (DepthCopy(s)) return;
-    struct DrawEnd {
-        Extension* e;
-        ~DrawEnd() {
-            if (e) e->EndDraw();
-        }
-    } draw_end{ext_};
-    if (ext_) ext_->BeginDraw(s);
+// calls the extension's EndDraw on every return from Draw once made
+struct DrawEnd {
+    Extension* e;
+    ~DrawEnd() {
+        if (e) e->EndDraw();
+    }
+};
+
+// assembles the draw into asm_, timed and counted
+bool D3D12Backend::AssembleDraw(const State& s, uint32_t prim, uint32_t start, uint32_t count,
+                                const uint8_t* indices) {
     Assembled& a = asm_;
     auto perf_t = PerfClock::now();
     bool assembled = Assemble(s, prim, start, count, indices, a);
     g_perf.assemble += PerfMs(perf_t);
     g_perf.verts += a.vertex_count;
     g_perf.raw += a.vertices.empty();
-    if (!assembled) return;
+    return assembled;
+}
+
+void D3D12Backend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t count, const uint8_t* indices) {
+    PerfScope perf_draw{g_perf.draw};
+    g_perf.draws++;
+    if (cap_) CapStep(s.rt);
+    if (DepthCopy(s)) return;
+    DrawEnd draw_end{ext_};
+    if (ext_) ext_->BeginDraw(s);
+    Assembled& a = asm_;
+    if (!AssembleDraw(s, prim, start, count, indices)) return;
     // past the ring every upload is a buffer of its own: seconds lost on a frame that draws a whole level once
     if (frames_[frame_ % kFrames].used > kUploadSize - kUploadReserve) Submit(true);
     if (!BindTargets(s)) return;
     if (ext_ && ext_->Bound(*this, s, bound_rt_, bound_ds_, a.pretransformed) && !BindTargets(s)) return;
 
-    // shaders
-    // a shader made from a declaration alone (no program) is the fixed function pipeline on those inputs
-    bool prog = (s.vs_handle & 1) && s.vs && !s.vs->program.empty();
-    // up to a quad with no depth test: it may be a pass over the whole target, see QuadHlsl
-    bool quad = count <= 6 && !s.rs[kRsZEnable];
-    FixedKey fk;
-    uint64_t vkey = VertexKey(s, a, prog, quad, fk);
-    ID3DBlob* vs;
-    uint64_t vh = FindVertexShader(vkey, s, a, prog, quad, fk, vs);
-    TexInfo info[4];
-    D3D12_SHADER_RESOURCE_VIEW_DESC sv[4];
-    ID3D12Resource* res[4];
-    if (!PrepareTextures(s, info, sv, res)) return;
-    PixelKey pk = MakePixelKey(s, info);
-    pk.quad = quad;
-    uint64_t pkh = Hash(&pk, sizeof(pk));
-    ID3DBlob* ps;
-    uint64_t ph = FindPixelShader(pk, pkh, ps);
-    if (!vs || !ps) return;
+    // vertex shader
+    DrawShaders sh = ClassifyShaders(s, a, count);
+    if (sh.prog) EnsureProgramHash(s);
+    sh.vkey = VertexKey(s, a, sh);
+    EnsureVertexShader(s, a, sh);
+
+    // stage textures, then the pixel shader made for them
+    DrawTextures stages;
+    if (!BindStageTexturesAndTargets(s, stages)) return;
+    PixelKey pk = MakePixelKey(s, stages.info);
+    pk.quad = sh.quad;
+    sh.pkh = Hash(&pk, sizeof(pk));
+    EnsurePixelShader(pk, sh);
+    if (!sh.vs_code || !sh.ps_code) return;
 
     // pipeline
     PsoKey k;
-    BuildPipelineKey(s, a, vh, ph, k);
-    ID3D12PipelineState* pso = Pipeline(k, vs, ps);
+    BuildPipelineKey(s, a, sh.vh, sh.ph, k);
+    ID3D12PipelineState* pso = Pipeline(k, sh.vs_code, sh.ps_code);
     if (!pso) return;
     cl_->SetPipelineState(pso);
 
     // constants
+    GuestExtent size;
+    SurfaceSize(bound_rt_ ? s.rt : s.zs, size.w, size.h);
     DrawConstants c{};
-    uint32_t gw;
-    uint32_t gh;
-    UploadConstants(s, a, prog, fk, k, c, gw, gh);
+    UploadConstants(s, sh, k, stages, size, c);
 
     if (cap_) {
-        CaptureDraw(s, a, prim, count, k, c, res, info, sv);
-        CaptureShaders(s, a, prog, quad, fk, vkey, pk, pkh);
+        CaptureDraw(s, prim, count, k, c, stages);
+        EndDrawCapture(s, a, count, c);
+        CaptureShaders(s, a, sh, pk);
     }
 
-    // textures and samplers
-    SetShaderResources(s, info, sv, res);
-    SetViewportScissor(s, gw);
+    // texture views and samplers, viewport and scissor, blend factor and stencil reference
+    SetTextureViewsAndSamplers(s, stages);
+    SetViewportScissor(s, size.w);
     SetBlendFactorStencilRef(s);
 
     // geometry
