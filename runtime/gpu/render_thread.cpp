@@ -274,7 +274,7 @@ private:
     uint32_t Header(uint32_t header) {
         if (!header || !ring_) return header;
         // vertex buffer, index buffer and palette headers are 12 bytes: reading 20 can run off the end of the heap
-        const uint32_t type = kernel::R32(header) & 0x70000;
+        const uint32_t type = kernel::R32(header) & 0x70000;  // 0 vertex, 0x10000 index, 0x30000 palette
         uint8_t now[kHeaderBytes] = {};
         std::memcpy(now, kernel::HostPtr(header), type < 0x20000 || type == 0x30000 ? 12 : kHeaderBytes);
         Recent<HeaderCopy>& r = recent_headers_[(header >> 3) & 63];

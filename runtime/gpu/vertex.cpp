@@ -168,6 +168,7 @@ void FvfInputs(uint32_t fvf, VertexShader& vs) {
         vs.inputs[size_t(reg)] = {0, off, type};
         off += TypeBytes(type);
     };
+    // D3DFVF: position 0xE, normal 0x10, point size 0x20, diffuse 0x40, specular 0x80, texture count bits 8 to 11, sizes from bit 16
     switch (fvf & 0xE) {
         case 0x2: add(0, 0x32); break;
         case 0x4: add(0, 0x42); break;

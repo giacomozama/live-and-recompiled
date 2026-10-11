@@ -63,7 +63,7 @@ const ShaderHooks& Hooks() {
 
 std::string Common() { return kCommonHead + Hooks().Constants() + kCommonTail; }
 
-// ---------------------------------------------------------------- vertex programs
+// vertex programs
 
 const char* kVsHelpers = R"(
 float4 mac_mul(float4 a, float4 b) { return (a == 0 || b == 0) ? (float4)0 : a * b; }
@@ -125,6 +125,7 @@ std::string Src(const Tok& k, int which, uint16_t regs) {
         uint32_t ilu = k.f(1, 25, 3);
         if (ilu >= 2 && ilu <= 6) sw[1] = sw[2] = sw[3] = sw[0];  // scalar ops read x
     }
+    // mux: 1 temporary (R12 reads oPos), 2 input, 3 constant
     std::string base;
     if (mux == 1) {
         base = reg == 12 ? "oPos" : F("R%u", reg);
@@ -140,6 +141,7 @@ std::string Src(const Tok& k, int which, uint16_t regs) {
     return s;
 }
 
+// MAC opcodes from 1: mov mul add mad dp3 dph dp4 dst min max slt sge arl
 std::string MacExpr(uint32_t op, const std::string& a, const std::string& b, const std::string& c) {
     switch (op) {
         case 1: return a;
@@ -159,6 +161,7 @@ std::string MacExpr(uint32_t op, const std::string& a, const std::string& b, con
     }
 }
 
+// ILU opcodes from 1: mov rcp rcc rsq exp log lit
 std::string IluExpr(uint32_t op, const std::string& c) {
     switch (op) {
         case 1: return c;
@@ -249,7 +252,7 @@ const char* kVsPrologue = R"(
     float4 oT0 = float4(0, 0, 0, 1), oT1 = float4(0, 0, 0, 1), oT2 = float4(0, 0, 0, 1), oT3 = float4(0, 0, 0, 1);
 )";
 
-// ---------------------------------------------------------------- combiners
+// combiners
 
 struct In {
     uint32_t reg, chan, mod;
@@ -264,7 +267,7 @@ struct Ps {
     std::string code;
 
     std::string Var(uint32_t reg) {
-        uint32_t flags = k.count >> 8;
+        uint32_t flags = k.count >> 8;  // PS_COMBINERCOUNT flags: 0x10 unique C0 per stage, 0x100 unique C1
         switch (reg) {
             case 0: return "float4(0,0,0,0)";
             case 1: return F("pc[%d]", stage == 8 ? 16 : ((flags & 0x10) ? stage * 2 : 0));
@@ -291,6 +294,7 @@ struct Ps {
         if (!alpha) r += in.chan ? ".aaa" : ".rgb";
         else r += in.chan ? ".a" : ".b";
         switch (in.mod) {
+            // PS_INPUTMAPPING
             case 0x00: return "max(" + r + ", 0)";
             case 0x20: return "(1 - saturate(" + r + "))";
             case 0x40: return "(2 * max(" + r + ", 0) - 1)";
@@ -304,6 +308,7 @@ struct Ps {
 
     static std::string Map(const std::string& v, uint32_t m) {
         switch (m) {
+            // PS_COMBINEROUTPUT bias and shift
             case 0x08: return "(" + v + " - 0.5)";
             case 0x10: return "(" + v + " * 2)";
             case 0x18: return "((" + v + " - 0.5) * 2)";
@@ -331,6 +336,7 @@ struct Ps {
     std::string Stage(uint32_t inputs, uint32_t output, bool alpha) {
         In d = ParseIn(inputs & 0xFF), c = ParseIn((inputs >> 8) & 0xFF), b = ParseIn((inputs >> 16) & 0xFF),
            a = ParseIn(inputs >> 24);
+        // fl: 1 cd dot, 2 ab dot, 4 mux, 0x38 mapping, 0x40 and 0x80 blue to alpha
         uint32_t cd_dst = output & 0xF, ab_dst = (output >> 4) & 0xF, sum_dst = (output >> 8) & 0xF, fl = output >> 12;
         const char* m = alpha ? "a" : "rgb";
         const char* T = alpha ? "float" : "float3";
@@ -410,6 +416,7 @@ std::string TexFetch(const PixelKey& k, int i) {
     };
     std::string s;
     switch (mode) {
+        // PS_TEXTUREMODES: 1 project2d, 2 project3d, 3 cubemap, 4 passthru, 5 clipplane, 6 and 7 bumpenvmap, 9 dot_st, 0xA dot_zw, 0xD dot_str_3d, 0xE dot_str_cube, 0xF dpndnt_ar, 0x10 dpndnt_gb, 0x11 dotproduct
         case 0: return put("float4(0,0,0,1)");
         case 1: return t.shadow ? depth("0") : put(sample2(F("%s.xy / %s.w", q, q)));
         case 2: return t.shadow ? depth(F("%s.z / %s.w", q, q)) : put(sample3(F("%s.xyz / %s.w", q, q)));
@@ -486,6 +493,7 @@ std::string FfArg(uint32_t a, int stage, bool alpha) {
     return "(" + v + ")" + (alpha ? ".a" : ".rgb");
 }
 
+// D3DTOP
 std::string FfOp(uint32_t op, const std::string& a1, const std::string& a2, const std::string& a0, int stage, bool alpha) {
     switch (op) {
         case 2: return a1;
@@ -566,13 +574,14 @@ PixelKey MakePixelKey(const State& s, const TexInfo tex[4]) {
     std::memset(&k, 0, sizeof(k));
     for (int i = 0; i < 4; i++) {
         k.tex[i] = tex[i];
-        if (s.tss[size_t(i)][kTssAlphaKill] == 4) k.alphakill |= 1u << i;
+        if (s.tss[size_t(i)][kTssAlphaKill] == 4) k.alphakill |= 1u << i;  // D3DTALPHAKILL_ENABLE
     }
-    k.flat = s.simple[kMShadeMode >> 2] == 0x1D00;
+    k.flat = s.simple[kMShadeMode >> 2] == 0x1D00;  // D3DSHADE_FLAT
     k.two_sided = s.rs[kRsTwoSidedLighting] != 0;
     if (s.ps) {
         const uint32_t* d = s.ps->def;
         k.programmable = 1;
+        // D3DPIXELSHADERDEF dwords: alpha inputs 0, final 8 and 9, alpha outputs 26, rgb inputs 34, compare mode 42, rgb outputs 45, count 53, dot mapping 55, input texture 56
         k.count = d[53];
         for (int i = 0; i < 8; i++) {
             k.a_in[i] = d[i];
@@ -604,7 +613,7 @@ PixelKey MakePixelKey(const State& s, const TexInfo tex[4]) {
         uint32_t v[9] = {t[kTssColorOp], t[kTssColorArg1], t[kTssColorArg2], t[kTssColorArg0], t[kTssAlphaOp],
                          t[kTssAlphaArg1],  t[kTssAlphaArg2], t[kTssAlphaArg0], t[kTssResultArg]};
         std::memcpy(k.ff[i], v, sizeof(v));
-        if (program || (t[kTssTextureTransformFlags] & 0x100)) k.proj |= 1u << i;
+        if (program || (t[kTssTextureTransformFlags] & 0x100)) k.proj |= 1u << i;  // D3DTTFF_PROJECTED
         if (t[kTssColorOp] <= 1) break;
     }
     return k;
@@ -646,7 +655,7 @@ std::string VertexProgramHlsl(const std::vector<uint32_t>& prog, uint16_t regs, 
             }
             s += "    }\n";
         }
-        if (k.f(3, 0, 1)) break;
+        if (k.f(3, 0, 1)) break;  // last instruction
     }
     s += kVsEpilogue;
     return s;
@@ -667,7 +676,7 @@ FixedKey MakeFixedKey(const State& s) {
         uint32_t set = tci & 3, size = 2;
         if (s.vs && (s.vs_handle & 1)) {
             uint32_t ty = s.vs->inputs[9 + set].type;
-            size = ty == 0x16 ? 3 : std::min<uint32_t>(ty >> 4, 4);
+            size = ty == 0x16 ? 3 : std::min<uint32_t>(ty >> 4, 4);  // 0x16 NORMPACKED3
             if (ty >> 4 > 4) size = 3;
             if (!size) size = 2;
         } else {
@@ -711,7 +720,7 @@ std::string FixedVertexHlsl(uint16_t regs, bool pretransformed, uint64_t decode,
         s += "    float3 la = 0, ld = 0, ls = 0;\n";
         s += (f.light & 4) ? "    float3 eye = -normalize(vp);\n" : "    float3 eye = float3(0, 0, 1);\n";
         for (int n = 0; n < 8; n++) {
-            uint32_t type = (f.types >> (n * 2)) & 3;
+            uint32_t type = (f.types >> (n * 2)) & 3;  // D3DLIGHTTYPE: 1 point, 2 spot, 3 directional
             if (!type) continue;
             int b = n * 7;
             s += "    {\n        float3 l;\n        float att = 1;\n";

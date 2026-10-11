@@ -11,6 +11,7 @@ X86_EXTERN_FUNC(GUEST_ORIG(BinkGetSummary));
 X86_FUNC(GUEST(BinkGetSummary)) {
     uint32_t bink = R32(ctx.esp + 4);
     if (bink) {
+        // 0x134 bytes read, 0x13C read time in ms
         uint64_t scaled = uint64_t(R32(bink + 0x134)) * 1000;
         uint32_t time = R32(bink + 0x13C);
         if (scaled >> 32 > time) W32(bink + 0x13C, uint32_t(scaled >> 32));

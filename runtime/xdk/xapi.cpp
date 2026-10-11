@@ -97,7 +97,7 @@ HLE_STDCALL(XInputGetState, 2) {
     if (std::memcmp(&p, &h.last, sizeof(p))) h.packet++;
     h.last = p;
     uint32_t s = a[1];
-    W32(s, h.packet);
+    W32(s, h.packet);  // XINPUT_STATE: packet, buttons, 8 analog buttons, thumbs
     W16(s + 4, p.buttons);
     std::memcpy(HostPtr(s + 6), p.analog, 8);
     W16(s + 14, uint16_t(p.lx));

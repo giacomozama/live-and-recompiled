@@ -247,7 +247,7 @@ std::recursive_mutex& Lock() { return g_lock; }
 
 using namespace d3d;
 
-// ---------------------------------------------------------------- device
+// device
 
 HLE_STDCALL(Direct3D_CreateDevice, 6) {
     XDK_REQUIRE("d3d", XDK_DATA(D3D_Device), XDK_DATA(D3D_pDevice), XDK_DATA(D3D_DirtyFlags),
@@ -261,7 +261,7 @@ HLE_STDCALL(Direct3D_CreateDevice, 6) {
                 XDK_KEY(DirtyFlags_Texture), XDK_KEY(TextureState_Stage), XDK_KEY(Stream_Size),
                 XDK_KEY(Stream_Stride), XDK_KEY(Stream_Buffer));
     std::lock_guard<std::recursive_mutex> lock(g_lock);
-    uint32_t pp = a[4];
+    uint32_t pp = a[4];  // D3DPRESENT_PARAMETERS
     uint32_t w = R32(pp), h = R32(pp + 4), fmt = R32(pp + 8), count = std::max<uint32_t>(R32(pp + 12), 1);
     uint32_t auto_depth = R32(pp + 0x20), depth_fmt = R32(pp + 0x24), interval = R32(pp + 0x30);
     if (!w) w = 640;
@@ -278,7 +278,7 @@ HLE_STDCALL(Direct3D_CreateDevice, 6) {
     g_depth = 0;
     if (auto_depth) {
         uint32_t zf = gpu::LinearDepthFormat(depth_fmt);
-        g_depth = NewSurface(w, h, zf, zf == 0x30 || zf == 0x31 ? 2 : 4);
+        g_depth = NewSurface(w, h, zf, zf == 0x30 || zf == 0x31 ? 2 : 4);  // 0x30 LIN_D16, 0x31 LIN_F16
     }
     if (!g_backend) {
         g_backend = gpu::CreateBackend();
@@ -324,13 +324,13 @@ HLE_STDCALL(Direct3D_CreateDevice, 6) {
 
 HLE_STDCALL(D3DDevice_Release, 0) { return 1; }
 
-// ---------------------------------------------------------------- synchronisation, the renderer never runs behind
+// synchronisation, the renderer never runs behind
 
 HLE_STDCALL(D3D_BlockOnResource, 1) {
     uint32_t res = a[0];
     if (res && g_backend) {
         std::lock_guard<std::recursive_mutex> lock(g_lock);
-        uint32_t type = R32(res) & 0x70000;
+        uint32_t type = R32(res) & 0x70000;  // 0x40000 texture, 0x50000 surface
         if (type == 0x40000 || type == 0x50000) {
             uint32_t data = mem::VirtualFromPhysical(R32(res + 4));
             // perf diagnostic: who blocks on which surface, once each
@@ -355,7 +355,7 @@ HLE_STDCALL(D3D_BlockOnResource, 1) {
 // title may read what the GPU drew
 HLE_WRAP(Lock2DSurface, 6) {
     uint32_t res = a[0];
-    if ((a[5] & 0x20) && res && g_backend) {
+    if ((a[5] & 0x20) && res && g_backend) {  // D3DLOCK_NOOVERWRITE
         std::lock_guard<std::recursive_mutex> lock(g_lock);
         g_backend->SyncLate(mem::VirtualFromPhysical(R32(res + 4)));
     }
@@ -374,7 +374,7 @@ HLE_STDCALL(D3DResource_IsBusy, 1) {
     if (!res) return 0;
     // set on the device, a surface also through its texture
     uint32_t common = R32(res), parent = (common & 0x70000) == 0x50000 ? R32(res + 0x14) : 0;
-    if ((common & 0x780000) || (parent && (R32(parent) & 0x780000))) return 1;
+    if ((common & 0x780000) || (parent && (R32(parent) & 0x780000))) return 1;  // internal reference count
     return g_backend && g_backend->Busy(res) ? 1 : 0;
 }
 HLE_STDCALL(D3D_BlockOnTime, 2) { return 0; }
@@ -441,7 +441,7 @@ HLE_STDCALL(D3DDevice_SetGammaRamp, 2) {
     return 0;
 }
 
-// ---------------------------------------------------------------- targets and presentation
+// targets and presentation
 
 HLE_STDCALL(D3DDevice_SetRenderTarget, 2) {
     std::lock_guard<std::recursive_mutex> lock(g_lock);
@@ -561,7 +561,7 @@ HLE_STDCALL(D3DDevice_SetScreenSpaceOffset, 2) {
     return 0;
 }
 
-// ---------------------------------------------------------------- render states
+// render states
 
 HLE_FASTCALL(D3DDevice_SetRenderState_Simple, 0) {
     uint32_t method = a[0] & 0x1FFC, value = a[1];
@@ -674,7 +674,7 @@ HLE_WRAP(D3DDevice_LightEnable, 2) {
     }
 }
 
-// ---------------------------------------------------------------- resources in use
+// resources in use
 
 HLE_STDCALL(D3DDevice_SetTexture, 2) {
     std::lock_guard<std::recursive_mutex> lock(g_lock);
@@ -706,6 +706,7 @@ HLE_STDCALL(D3DDevice_SetPalette, 2) {
 HLE_FASTCALL(D3DDevice_SwitchTexture, 1) {
     std::lock_guard<std::recursive_mutex> lock(g_lock);
     static uint32_t headers[4];
+    // texture methods from 0x1B00, 0x40 per stage
     uint32_t stage = (((a[0] & 0x1FFC) - 0x1B00) >> 6) & 3, cur = g_state.textures[stage];
     uint32_t& h = headers[stage];
     if (!h) h = mem::AllocSystem(20);
@@ -744,7 +745,7 @@ HLE_STDCALL(D3DDevice_SetIndices, 2) {
     return 0;
 }
 
-// ---------------------------------------------------------------- shaders
+// shaders
 
 HLE_STDCALL(D3DDevice_CreateVertexShader, 4) {
     std::lock_guard<std::recursive_mutex> lock(g_lock);
@@ -790,7 +791,7 @@ HLE_STDCALL(D3DDevice_GetVertexShaderFunction, 3) {
     uint32_t words = it == g_vs.end() ? 0 : uint32_t(it->second->program.size());
     uint32_t need = words ? 4 + words * 4 : 0, room = R32(a[2]);
     W32(a[2], need);
-    if (need > room) return a[1] ? 0x88760867 : 0;
+    if (need > room) return a[1] ? 0x88760867 : 0;  // D3DERR_MOREDATA
     if (!a[1] || !need) return 0;
     W32(a[1], it->second->program_type | words / 4 << 16);
     for (uint32_t i = 0; i < words; i++) W32(a[1] + 4 + i * 4, it->second->program[i]);
@@ -850,7 +851,7 @@ HLE_STDCALL(D3DDevice_SelectVertexShader, 2) {
 }
 HLE_STDCALL(D3DDevice_SetShaderConstantMode, 1) {
     std::lock_guard<std::recursive_mutex> lock(g_lock);
-    g_own_constants = a[0] & 0x10;
+    g_own_constants = a[0] & 0x10;  // D3DSCM_NORESERVEDCONSTANTS
     UpdateViewportConstants();
     return 0;
 }
@@ -925,7 +926,7 @@ HLE_STDCALL(D3DDevice_SetPixelShaderConstant, 3) {
     return 0;
 }
 
-// ---------------------------------------------------------------- drawing
+// drawing
 
 HLE_STDCALL(D3DDevice_DrawVertices, 3) {
     std::lock_guard<std::recursive_mutex> lock(g_lock);
@@ -954,7 +955,7 @@ uint32_t UpVertices(const void* src, uint32_t bytes) {
         g_up_ring = mem::AllocContiguous(kUpRing, 0, 0xFFFFFFFF, 0x1000);
         g_up_header = mem::AllocSystem(20);
         std::memset(HostPtr(g_up_header), 0, 20);
-        W32(g_up_header, 1);
+        W32(g_up_header, 1);  // a vertex buffer, one reference
     }
     bytes = std::min(bytes, kUpHalf);
     uint32_t room = (bytes + 63) & ~63u;
@@ -1042,13 +1043,13 @@ void Walk(uint32_t end) {
         // count in bits 18 to 28, bit 30 keeps the method for every value
         uint32_t head = R32(p), method = head & 0x1FFC, n = (head >> 18) & 0x7FF;
         p += 4;
-        if ((head & 0xA0030003) || n * 4 > end - p) break;
+        if ((head & 0xA0030003) || n * 4 > end - p) break;  // anything but a method header
         for (uint32_t i = 0; i < n; i++, p += 4) {
             uint32_t m = head & 0x40000000 ? method : method + i * 4, v = R32(p);
             float f, *a = g_im_attr;
             bool last = true;  // the slot's last component
             std::memcpy(&f, &v, 4);
-            if (m == 0x17FC) {
+            if (m == 0x17FC) {  // begin/end, 0 ends
                 if (v) {
                     g_im_prim = v;
                     g_im_mask = 0;
@@ -1113,7 +1114,7 @@ HLE_STDCALL(D3DDevice_EndPush, 1) {
         // count in bits 18 to 28, bit 30 keeps the method for every value
         uint32_t head = R32(p), method = head & 0x1FFC, n = (head >> 18) & 0x7FF;
         p += 4;
-        if ((head & 0xA0030003) || n * 4 > end - p) {
+        if ((head & 0xA0030003) || n * 4 > end - p) {  // anything but a method header
             LOG_FIRST(8, "d3d: EndPush stops at command %08X, %u bytes before the end", head, end - p);
             break;
         }

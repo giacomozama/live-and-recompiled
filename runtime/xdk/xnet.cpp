@@ -5,10 +5,9 @@
 // With --instance N the game binds 127.0.0.N and a broadcast goes to the other loopback instances.
 // Join IP (a host past the LAN): the system link search's broadcasts also go to that address, and the host's
 // broadcasts (a LAN discovery may answer every search with one, to 255.255.255.255) go to the public addresses
-// that have reached it. With one peer
-// (co-op) a LAN address in an XNADDR, which only means something on its owner's LAN, stands for the peer's public
-// one: the join address on the client, the address its packets come from on the host. Ports a NAT rewrote are
-// answered on the port the peer's packets came from.
+// that have reached it. With one peer (co-op) a LAN address in an XNADDR, which only means something on its
+// owner's LAN, stands for the peer's public one: the join address on the client, the address its packets come
+// from on the host. Ports a NAT rewrote are answered on the port the peer's packets came from.
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
@@ -337,6 +336,7 @@ void Pump() {
 void OwnXnAddr(uint8_t* x) {
     std::memset(x, 0, kXnAddrSize);
     std::memcpy(x, &g_local, 4);
+    // Microsoft's OUI, then the address's last three bytes
     const uint8_t mac[6] = {0x00, 0x50, 0xF2, uint8_t(g_local >> 8), uint8_t(g_local >> 16), uint8_t(g_local >> 24)};
     std::memcpy(x + kXnAddrEnet, mac, 6);
 }

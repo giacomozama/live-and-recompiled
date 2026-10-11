@@ -80,7 +80,7 @@ namespace {
 
 constexpr uint32_t kStreamVtable = SYM(DSound_StreamVtable);  // CDirectSoundStream XMediaObject vtable
 constexpr uint32_t kStreamVtable2 = SYM(DSound_StreamVtable2);
-constexpr uint32_t kPacketPending = 0x8000000A, kFlushed = 0x80004004;
+constexpr uint32_t kPacketPending = 0x8000000A, kFlushed = 0x80004004;  // E_PENDING, E_ABORT
 
 struct Packet {
     uint32_t data, size, completed_ptr, status_ptr, context;
@@ -138,7 +138,7 @@ uint32_t g_ds = 0;
 float Db(int32_t hundredths) { return hundredths <= -10000 ? 0.0f : std::pow(10.0f, hundredths / 2000.0f); }
 
 uint32_t FramesOf(const Voice& v, uint32_t bytes) {
-    if (v.tag == 0x69) return bytes / (36u * v.channels) * 64;
+    if (v.tag == 0x69) return bytes / (36u * v.channels) * 64;  // WAVE_FORMAT_XBOX_ADPCM
     return bytes / std::max<uint32_t>(v.align, 1);
 }
 uint32_t BytesOf(const Voice& v, uint32_t frames) {
@@ -353,6 +353,7 @@ void Start() {
     });
 }
 
+// WAVEFORMATEX
 void ReadFormat(Voice& v, uint32_t wfx) {
     if (!wfx) return;
     v.tag = R16(wfx);
@@ -395,10 +396,10 @@ uint32_t NewBuffer(uint32_t desc, uint32_t out) {
     std::memset(HostPtr(obj), 0, 0x40);
     Voice& v = g_voices[obj];
     v.obj = obj;
-    uint32_t flags = R32(desc + 4), bytes = R32(desc + 8);
+    uint32_t flags = R32(desc + 4), bytes = R32(desc + 8);  // DSBUFFERDESC: size, flags, bytes, format, mix bins
     ReadFormat(v, R32(desc + 12));
     SetBins(v, R32(desc + 16));
-    v.is3d = flags & 0x10;
+    v.is3d = flags & 0x10;  // DSBCAPS_CTRL3D
     v.headroom = DefaultHeadroom(flags);
     if (bytes) {
         v.data = v.owned = mem::AllocContiguous(bytes, 0, 0xFFFFFFFF, 4);
@@ -416,7 +417,7 @@ float F32(uint32_t v) {
 
 }  // namespace
 
-// ---------------------------------------------------------------- device
+// device
 
 // DSOUND objects are the host's; .XTLID names linked exports that would still run console code on them
 static void AuditExports() {
@@ -457,7 +458,7 @@ static void AuditExports() {
             uint32_t id = g_image->U32(s.raw + o), va = g_image->U32(s.raw + o + 4);
             auto done = [&](uint32_t f) { return std::find(std::begin(handled), std::end(handled), f) != std::end(handled); };
             // a jmp to a host version is covered by it
-            if (id >> 16 != 0xB || va < lo || va >= hi || !dispatch::Find(va) || done(va) ||
+            if (id >> 16 != 0xB || va < lo || va >= hi || !dispatch::Find(va) || done(va) ||  // 0xB: DSOUND's library id
                 (G<uint8_t>(va) == 0xE9 && done(va + 5 + R32(va + 1))))
                 continue;
             char b[24];
@@ -583,7 +584,7 @@ HLE_STDCALL(IDirectSound_GetOutputLevels, 3) {
     return 0;
 }
 
-// ---------------------------------------------------------------- buffers
+// buffers
 
 HLE_STDCALL(DirectSoundCreateBuffer, 2) { return NewBuffer(a[0], a[1]); }
 HLE_STDCALL(IDirectSound_CreateSoundBuffer, 4) { return NewBuffer(a[1], a[2]); }
@@ -639,7 +640,7 @@ BUFFER(StopEx, 4) {
 }
 // (this, start, length) in bytes, 0 length plays to the end. The loop becomes the whole region.
 BUFFER(SetPlayRegion, 3) {
-    if (a[1] > v.bytes || a[2] > v.bytes - a[1]) return 0x88780032u;
+    if (a[1] > v.bytes || a[2] > v.bytes - a[1]) return 0x88780032u;  // DSERR_INVALIDCALL
     v.play_start = a[1];
     v.play_len = v.loop_len = a[2] ? a[2] : v.bytes - a[1];
     v.loop_start = 0;
@@ -654,7 +655,7 @@ BUFFER(SetLoopRegion, 3) {
     return 0;
 }
 BUFFER(GetStatus, 2) {
-    W32(a[1], (v.playing ? 1u : 0u) | (v.playing && v.looping ? 4u : 0u));
+    W32(a[1], (v.playing ? 1u : 0u) | (v.playing && v.looping ? 4u : 0u));  // DSBSTATUS_PLAYING, DSBSTATUS_LOOPING
     return 0;
 }
 BUFFER(GetCurrentPosition, 3) {
@@ -670,7 +671,7 @@ BUFFER(SetCurrentPosition, 2) {
 BUFFER(Lock, 8) {
     uint32_t off = a[1], n = a[2];
     if (a[7] & 1) n = v.bytes;  // DSBLOCK_ENTIREBUFFER
-    if (!v.bytes) return 0x80004005u;
+    if (!v.bytes) return 0x80004005u;  // E_FAIL
     off %= v.bytes;
     uint32_t first = std::min(n, v.bytes - off);
     W32(a[3], v.data + off);
@@ -736,7 +737,7 @@ BUFFER(SetFormat, 2) {
     return 0;
 }
 
-// ---------------------------------------------------------------- streams, the object carries the XDK's own vtable
+// streams, the object carries the XDK's own vtable
 
 HLE_STDCALL(DirectSoundCreateStream, 2) {
     XDK_REQUIRE("dsound", XDK_KEY(CDirectSoundStream_Vtable), XDK_KEY(CDirectSoundStream_Vtable2),
@@ -757,7 +758,7 @@ HLE_STDCALL(DirectSoundCreateStream, 2) {
     v.callback = R32(desc + 12);
     v.context = R32(desc + 16);
     SetBins(v, R32(desc + 20));
-    v.is3d = flags & 0x10;
+    v.is3d = flags & 0x10;  // DSBCAPS_CTRL3D
     v.headroom = DefaultHeadroom(flags);
     W32(a[1], obj);
     return 0;
@@ -820,7 +821,7 @@ STREAM(GetInfo, 2) {
     return 0;
 }
 STREAM(GetStatus, 2) {
-    W32(a[1], v.packets.size() < v.max_packets ? 1u : 0u);
+    W32(a[1], v.packets.size() < v.max_packets ? 1u : 0u);  // XMEDIASTATUS_ACCEPT_INPUT
     return 0;
 }
 STREAM(Process, 3) {

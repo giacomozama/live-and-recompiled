@@ -270,10 +270,12 @@ bool Describe(uint32_t header, TextureDesc& d) {
     using namespace kernel;
     if (!header) return false;
     uint32_t common = R32(header);
-    uint32_t type = common & 0x70000;
+    uint32_t type = common & 0x70000;  // 0x40000 texture, 0x50000 surface
     if (type != 0x40000 && type != 0x50000) return false;
+    // D3DPixelContainer: Common, Data, Lock, Format, Size
     uint32_t fmt = R32(header + 12), size = R32(header + 16);
     d.data = mem::VirtualFromPhysical(R32(header + 4));
+    // Format: cube bit 2, dimensions bits 4 to 7, format 8 to 15, levels 16 to 19, log2 sizes from bit 20
     d.format = (fmt >> 8) & 0xFF;
     d.cube = fmt & 4;
     uint32_t dims = (fmt >> 4) & 0xF;
@@ -356,7 +358,7 @@ void DecodeLevel(const TextureDesc& d, uint32_t level, uint32_t face, const uint
                 const uint8_t* p = src + y * d.pitch + x * 2;
                 int y0 = yuy2 ? p[0] : p[1], u = yuy2 ? p[1] : p[0], y1 = yuy2 ? p[2] : p[3], v = yuy2 ? p[3] : p[2];
                 for (int k = 0; k < 2 && x + uint32_t(k) < w; k++) {
-                    int c = (k ? y1 : y0) - 16, dd = u - 128, e = v - 128;
+                    int c = (k ? y1 : y0) - 16, dd = u - 128, e = v - 128;  // BT.601 studio range
                     uint8_t* o = &out[(y * w + x + uint32_t(k)) * 4];
                     o[2] = Clamp255((298 * c + 409 * e + 128) >> 8);
                     o[1] = Clamp255((298 * c - 100 * dd - 208 * e + 128) >> 8);
@@ -483,7 +485,7 @@ bool CopySurfaceMemory(const Surface& src, const Surface& dst, uint32_t count, u
     return true;
 }
 
-// ---------------------------------------------------------------- declarations
+// declarations
 
 static uint32_t TypeSize(uint32_t t) {
     uint32_t kind = t & 15, count = (t >> 4) & 15;
@@ -503,7 +505,7 @@ void ParseDeclaration(VertexShader& vs) {
     vs.stream_stride.fill(0);
     for (size_t i = 0; i < vs.decl.size(); i++) {
         uint32_t t = vs.decl[i];
-        if (t == 0xFFFFFFFF) break;
+        if (t == 0xFFFFFFFF) break;  // D3DVSD_END
         uint32_t kind = t >> 29;
         if (kind == 1) {  // STREAM
             if (t & (1u << 28)) continue;  // tessellator stream
@@ -517,7 +519,7 @@ void ParseDeclaration(VertexShader& vs) {
                 offset += (t & (1u << 27)) ? n : n * 4;
             } else {
                 uint32_t reg = t & 15, type = (t >> 16) & 0xFF;
-                if (type != 0x02) vs.inputs[reg] = {stream, offset, type};
+                if (type != 0x02) vs.inputs[reg] = {stream, offset, type};  // 0x02 D3DVSDT_NONE
                 offset += type == 0x02 ? 0 : TypeSize(type);
             }
         } else if (kind == 4) {  // CONSTMEM
@@ -533,7 +535,7 @@ void ParseDeclaration(VertexShader& vs) {
     vs.stream_stride[size_t(stream)] = std::max(vs.stream_stride[size_t(stream)], offset);
 }
 
-// ---------------------------------------------------------------- pixel shader constants
+// pixel shader constants
 
 uint32_t PackColor(const std::array<float, 4>& c) {
     auto q = [](float v) { return uint32_t(std::clamp(v, 0.0f, 1.0f) * 255.0f + 0.5f); };

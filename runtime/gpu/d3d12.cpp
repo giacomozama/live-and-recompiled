@@ -126,6 +126,7 @@ void Color(uint32_t argb, float* o) {
     o[3] = (argb >> 24) / 255.0f;
 }
 
+// D3DBLEND, the console uses GL values
 D3D12_BLEND Blend(uint32_t v, bool alpha) {
     switch (v) {
         case 0: return D3D12_BLEND_ZERO;
@@ -145,6 +146,7 @@ D3D12_BLEND Blend(uint32_t v, bool alpha) {
     }
 }
 
+// D3DBLENDOP, GL values
 D3D12_BLEND_OP BlendOp(uint32_t v) {
     switch (v) {
         case 0x800A: return D3D12_BLEND_OP_SUBTRACT;
@@ -155,11 +157,13 @@ D3D12_BLEND_OP BlendOp(uint32_t v) {
     }
 }
 
+// D3DCMP_NEVER 0x200 to D3DCMP_ALWAYS 0x207, D3D12's order from 1
 D3D12_COMPARISON_FUNC Cmp(uint32_t v) {
     uint32_t n = v >= 0x200 && v <= 0x207 ? v - 0x200 : 7;
     return D3D12_COMPARISON_FUNC(n + 1);
 }
 
+// D3DSTENCILOP, GL values
 D3D12_STENCIL_OP StencilOp(uint32_t v) {
     switch (v) {
         case 0: return D3D12_STENCIL_OP_ZERO;
@@ -173,6 +177,7 @@ D3D12_STENCIL_OP StencilOp(uint32_t v) {
     }
 }
 
+// D3DTADDRESS: 1 wrap, 2 mirror, 3 clamp, 4 border, 5 clamp to edge
 D3D12_TEXTURE_ADDRESS_MODE Address(uint32_t v) {
     switch (v) {
         case 2: return D3D12_TEXTURE_ADDRESS_MODE_MIRROR;
@@ -1041,7 +1046,7 @@ ID3D12PipelineState* D3D12Backend::Pipeline(const PsoKey& k, ID3DBlob* vs, ID3DB
     b.BlendOpAlpha = BlendOp(k.op);
     b.RenderTargetWriteMask = UINT8(k.wmask);
     d.SampleMask = UINT_MAX;
-    d.RasterizerState.FillMode = k.fill == 0x1B01 ? D3D12_FILL_MODE_WIREFRAME : D3D12_FILL_MODE_SOLID;
+    d.RasterizerState.FillMode = k.fill == 0x1B01 ? D3D12_FILL_MODE_WIREFRAME : D3D12_FILL_MODE_SOLID;  // D3DFILL_WIREFRAME
     d.RasterizerState.CullMode = k.cull ? D3D12_CULL_MODE_BACK : D3D12_CULL_MODE_NONE;
     d.RasterizerState.FrontCounterClockwise = k.ccw;
     d.RasterizerState.DepthBias = k.zbias;
@@ -1228,6 +1233,7 @@ uint32_t D3D12Backend::Samplers(const State& s, const TexInfo info[4], const D3D
     for (int i = 0; i < 4; i++) {
         const auto& t = s.tss[size_t(i)];
         uint32_t mag = t[kTssMagFilter], min = t[kTssMinFilter], mip = t[kTssMipFilter];
+        // D3DTEXF: 1 point, 2 linear, 3 anisotropic
         auto lin = [](uint32_t f) { return f >= 2; };
         D3D12_FILTER_TYPE fmin = lin(min) ? D3D12_FILTER_TYPE_LINEAR : D3D12_FILTER_TYPE_POINT;
         D3D12_FILTER_TYPE fmag = lin(mag) ? D3D12_FILTER_TYPE_LINEAR : D3D12_FILTER_TYPE_POINT;
@@ -1333,6 +1339,7 @@ void D3D12Backend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t 
     uint64_t pkh = Hash(&pk, sizeof(pk));
     uint64_t ph;
     ID3DBlob* ps;
+    // pixel shaders share the map with vertex shaders, the salt keeps their keys apart
     auto pit = vs_src_.find(pkh ^ 0x9E3779B97F4A7C15ull);
     if (pit != vs_src_.end()) {
         ph = pit->second;
@@ -1366,7 +1373,7 @@ void D3D12Backend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t 
         k.op = sm(kMBlendOp);
     }
     uint32_t cw = sm(kMColorWriteEnable);
-    k.wmask = ((cw >> 16) & 1) | ((cw >> 8) & 1) << 1 | (cw & 1) << 2 | ((cw >> 24) & 1) << 3;
+    k.wmask = ((cw >> 16) & 1) | ((cw >> 8) & 1) << 1 | (cw & 1) << 2 | ((cw >> 24) & 1) << 3;  // console ARGB bytes to D3D12 RGBA bits
     if (k.has_ds) {
         k.zen = s.rs[kRsZEnable] != 0;
         if (k.zen) {
@@ -1495,6 +1502,7 @@ void D3D12Backend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t 
         for (int i = 0; i < 8; i++) {
             if (!((fk.types >> (i * 2)) & 3)) continue;
             const auto& l = s.lights[size_t(i)];
+            // D3DLIGHT8: type, diffuse, specular, ambient, position, direction, range, falloff, attenuation, theta, phi
             float f[26];
             std::memcpy(f, l.data(), sizeof(f));
             auto& o = c.lt[i];
@@ -2148,7 +2156,7 @@ void D3D12Backend::CapSave(ID3D12Resource* res, D3D12_RESOURCE_STATES& st, DXGI_
     if (!down || !ReadBack(down.Get(), w, h, px)) return;
     FILE* f = _wfopen((cap_dir_ / (std::string(name) + ".bmp")).c_str(), L"wb");
     if (!f) return;
-    uint8_t hd[54] = {'B', 'M'};
+    uint8_t hd[54] = {'B', 'M'};  // BITMAPFILEHEADER and BITMAPINFOHEADER, top down 32 bit
     auto put = [&](int o, uint32_t v) { std::memcpy(hd + o, &v, 4); };
     put(2, 54 + uint32_t(px.size()));
     put(10, 54);
