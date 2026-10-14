@@ -222,8 +222,9 @@ const char* kVsEpilogue = R"(
     precise float4 q;
     // full screen passes drawn half a pixel up-left for the console's integer pixel centers stop half a pixel short
     // of the far edges on D3D12's, which upscaled leaves the last host columns and rows undrawn
-    if (abs(p.x - (surf.x - 0.5)) < 1e-3) p.x = surf.x;
-    if (abs(p.y - (surf.y - 0.5)) < 1e-3) p.y = surf.y;
+    // surf.w set: a point, which stays put since pulled out it would leave the target
+    if (surf.w == 0 && abs(p.x - (surf.x - 0.5)) < 1e-3) p.x = surf.x;
+    if (surf.w == 0 && abs(p.y - (surf.y - 0.5)) < 1e-3) p.y = surf.y;
     q.x = p.x * 2 / surf.x - 1;
     q.y = 1 - p.y * 2 / surf.y;
     q.z = p.z * surf.z;
@@ -775,8 +776,8 @@ std::string FixedVertexHlsl(uint16_t regs, bool pretransformed, uint64_t decode,
     VOut o;
     // like the pretransformed ones, target sized passes end half a console pixel short of the far edges
     float2 sp = (float2(cp.x, -cp.y) / cp.w + 1) * 0.5 * surf.xy;
-    if (abs(sp.x - (surf.x - 0.5)) < 1e-3) cp.x = cp.w;
-    if (abs(sp.y - (surf.y - 0.5)) < 1e-3) cp.y = -cp.w;
+    if (surf.w == 0 && abs(sp.x - (surf.x - 0.5)) < 1e-3) cp.x = cp.w;
+    if (surf.w == 0 && abs(sp.y - (surf.y - 0.5)) < 1e-3) cp.y = -cp.w;
     o.pos = cp;
     o.d0 = saturate(oD0);
     o.d1 = saturate(oD1);
@@ -886,8 +887,8 @@ std::string QuadHlsl(std::string s) {
         if (p != std::string::npos) s.replace(p, std::strlen(at), std::string(before) + at + after);
     };
     sub("    float fogamt : TEXCOORD4;\n", "", "    noperspective float4 e : TEXCOORD5;\n");
-    sub("    if (abs(p.x - (surf.x - 0.5)) < 1e-3) p.x = surf.x;\n", "    o.e.xy = p.xy;\n", "");
-    sub("    if (abs(p.y - (surf.y - 0.5)) < 1e-3) p.y = surf.y;\n", "", "    o.e.zw = p.xy;\n");
+    sub("    if (surf.w == 0 && abs(p.x - (surf.x - 0.5)) < 1e-3) p.x = surf.x;\n", "    o.e.xy = p.xy;\n", "");
+    sub("    if (surf.w == 0 && abs(p.y - (surf.y - 0.5)) < 1e-3) p.y = surf.y;\n", "", "    o.e.zw = p.xy;\n");
     sub("    o.pos = cp;\n", "    o.e = float4(sp, (float2(cp.x, -cp.y) / cp.w + 1) * 0.5 * surf.xy);\n", "");
     sub("float4 main(VOut i, bool front", R"(float4 unstretch(float4 t, float4 e) {
     float2 d = e.zw - e.xy, g = float2(ddx(e.x), ddy(e.y));
@@ -896,6 +897,24 @@ std::string QuadHlsl(std::string s) {
 )", "");
     for (int i = 0; i < 4; i++) sub(F("i.tc%d", i).c_str(), "unstretch(", ", i.e)");
     return s;
+}
+
+// a point covers its console pixel, several host pixels on an upscaled target: drawn as a quad of that size
+std::string PointHlsl() {
+    return Common() + R"(
+[maxvertexcount(4)]
+void main(point VOut v[1], inout TriangleStream<VOut> strip) {
+    float2 half_pixel = v[0].pos.w / surf.xy;  // in clip units, the target spans 2 across surf.xy pixels
+    // a target is read half a host pixel back (surf.w host pixels per console pixel): left and top reach that far
+    float2 back = (0.5 - 1e-3) * 2 * half_pixel / surf.w;
+    for (int i = 0; i < 4; i++) {
+        VOut o = v[0];
+        o.pos.x += (i & 1) ? half_pixel.x : -half_pixel.x - back.x;
+        o.pos.y += (i & 2) ? -half_pixel.y : half_pixel.y + back.y;
+        strip.Append(o);
+    }
+}
+)";
 }
 
 }  // namespace gpu
