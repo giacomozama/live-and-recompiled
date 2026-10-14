@@ -13,12 +13,33 @@ The game **statically recompiles and boots** on both the Linux headless harness 
 under Proton**:
 
 - kernel init, disc mount (`D:`), XOnline/controller init
-- `Direct3D_CreateDevice` (×2), 640×480, 4 vertex shaders created
-- volume query (`IoQueryVolumeInformation`), into **engine initialisation**
-- reaches ~0.9 s of guest execution, then **crashes** writing guest address `0x18` from engine function
-  `0x62A60` (see [Current blocker](#current-blocker)).
+- `Direct3D_CreateDevice` (×2), 640×480, ~50 vertex shaders created, per-frame D3D through the runtime
+- volume queries (`IoQueryVolumeInformation`), XNet, DirectSound + XACT/audio, the frontend level
+  (`Level\Frontend`), fonts, text and package (`*.rba`/`*.rbm`/`*.xwb`) loads all run
+- reaches ~0.26 s of guest execution, then **crashes** inside a DirectSound library method that reads a
+  field the runtime's host-side DSound object does not have (see [Current blocker](#current-blocker)).
 
 Pipeline: 21,956 functions / 1.47 M instructions recompiled → 227 MB of C++ → `Game.exe`.
+
+## Progress since the previous handoff
+
+The previous state stopped in engine init writing guest `0x18` from `0x62A60`. That was a **kernel
+stack-argument-count bug** (`IoQueryVolumeInformation` popped 4 args while the engine's CRT pushes 5),
+which corrupted the caller's frame and only looked like an engine/subsystem bug. Fixing it, and then six
+later issues, carried the port from that bogus write deep into the frontend and audio setup:
+
+| # | Fix | Where |
+|---|-----|-------|
+| 1 | `IoQueryVolumeInformation` pops 5 args, not 4 (the CRT's `_findfirst` pushes `Device, Class, Length, Buffer, IoStatus`) | `runtime/kernel/xboxkrnl.cpp` |
+| 2 | `D3DDevice_DrawVerticesUP = 0x53A600` (was unmapped; the engine calls the library internal directly, which read uninitialised device state) | `config/game.toml` |
+| 3 | `D3D_FvfShader = 0x547040` so `CreateDevice` points `device->vs` at the library's FVF shader object; ~68 D3D internals guard on it | `config/game.toml` |
+| 4 | back the MCPX APU register window `0xFE800000` with scratch; XACT polls `0xFE80200C` | `runtime/kernel/memory.{h,cpp}` |
+| 5 | `0x4C67B9` (a second `CreateSoundBuffer` thunk the signature scan missed) routes to the runtime's `IDirectSound_CreateSoundBuffer` HLE | `src/game/hooks.cpp` |
+| 6 | `0x4C3F2F`, a DSound buffer flag helper that touches a sub-object the runtime's objects lack, becomes a no-op | `src/game/hooks.cpp` |
+| 7 | `NewBuffer` ignores a descriptor whose `dwSize != 0x18` (the engine's XACT path passes one) so it cannot request a multi-GB block | `runtime/xdk/dsound.cpp` |
+
+Each fix was verified on the headless harness; the crash point moved forward every time. The remaining
+work is the DSound object layout (below).
 
 ## Layout
 
@@ -164,6 +185,12 @@ D3D_IndexData               = 0x54A898
 D3D_RenderState             = 0x5499F8   # rep movsd 0x39 dwords in SetPixelShader
 D3D_Streams                 = 0x547160   # [n*12]
 D3D_SimpleRenderStateEncode = 0x5499F8   # this SDK build never reads it; only needs to be non-zero
+D3D_FvfShader               = 0x547040   # CDevice_VertexShader (device+0x794); see progress table #3
+```
+
+Additional `[symbols]` hand-mappings (the signature scan misses some Conker internals):
+```toml
+D3DDevice_DrawVerticesUP    = 0x53A600   # writes NV2A method 0x17FC (primitive) + 0x1818 (inline array)
 ```
 
 `D3D_DeviceInit` (0x53E5D0) is present but **commented out**: running the library's own device init performs
@@ -181,11 +208,16 @@ The internals that need it are host-replaced instead.
   `[symbols]` and are hook candidates (`tools/xbe_d3d_internals.py` regenerates it).
 - **Miniport**: `[device+0x1C28]` (read as a pointer by `0x54085F`/`0x540B13`) is only ever set by the
   library's hardware init, never by the runtime — hence host-replacing the frame paths that need it.
-- **First host replacements** (`src/game/hooks.cpp`):
+- **Host replacements** (`src/game/hooks.cpp`):
   - `0x538D50` (per-frame buffer clear): `SetRenderTarget(backbuffer, autoDepth)` + `Clear(target|depth,0,z=1)`
     through `GUEST_CALL(D3DDevice_*)`.
   - `0x543170` (library deferred state flush): no-op that clears the handled dirty bits — the runtime keeps
     its own state and decodes the engine's pushbuffer writes.
+  - `0x4C67B9` (second `CreateSoundBuffer` thunk the SDK scan missed): forwards to
+    `GUEST_CALL(IDirectSound_CreateSoundBuffer, …)` so the library's console object builder does not run.
+  - `0x4C3F2F` (DSound buffer flag helper touching a sub-object the runtime's objects lack): no-op.
+- **MMIO**: the NV2A (`0xFD000000`) and MCPX APU (`0xFE800000`) register windows are backed by scratch in
+  `runtime/kernel/memory.cpp`; Conker's D3D and XACT code read/write them directly.
 - **Kernel export 76** `IoQueryVolumeInformation` implemented in `runtime/kernel/xboxkrnl.cpp` (size/device
   class for the mounted volumes).
 
@@ -194,37 +226,59 @@ The internals that need it are host-replaced instead.
 - `cmake/XbeRecomp.cmake` — adds `XBE_CODEGEN_TOOL` so codegen can run with a **native** `xbe_recomp` while
   cross-compiling the game for Windows.
 - `runtime/kernel/memory.cpp` / `memory.h` — Linux build needs `<unistd.h>`; backs the NV2A register window
-  `0xFD000000` with scratch on both platforms (Conker's library code pokes it directly).
+  `0xFD000000` **and** the MCPX APU window `0xFE800000` with scratch on both platforms (Conker's library
+  and XACT audio code poke them directly).
 - `runtime/gpu/shaders.cpp` — replaces the `1.#INF` / `-1.#INF` HLSL literals with
   `asfloat(0x7F800000u)` / `asfloat(0xFF800000u)`; vkd3d-proton cannot parse the old literals.
 - `runtime/xdk/d3d8.cpp` — optional, config-gated `D3D_DeviceInit` call after `CreateDevice` (disabled for
   Conker; kept as a generic hook).
-- `runtime/kernel/xboxkrnl.cpp` — `IoQueryVolumeInformation` (export 76).
-- `harness/build.sh`, `harness/run.sh` — executable bit only.
+- `runtime/xdk/dsound.cpp` — `NewBuffer` requires a `DSBUFFERDESC` (`dwSize == 0x18`) and caps the byte
+  count, so the engine's XACT descriptor cannot ask for a multi-GB contiguous block.
+- `runtime/kernel/xboxkrnl.cpp` — `IoQueryVolumeInformation` (export 76), now popping its 5 stack arguments.
+- `harness/build.sh`, `harness/run.sh` — executable bit only. Regenerate the whole patch with
+  `git -C XboxXBERecomp diff > ../patches/xboxxberecomp.patch`.
 
 ## Current blocker
 
-Engine init crashes on a bogus object write:
+Engine/frontend init now runs deep into the audio path and **crashes inside a DirectSound library method
+the runtime does not replace**:
 
 ```
-exception C0000005 ... write ... guest 00000018
-... from 0x62A60 (sub_00062A60) <- 0x62330 <- 0x5E5A0 <- 0x63680 <- 0x1F5440 <- 0x2A6970 (main loop)
+exception SIGSEGV, write/read guest 0xb0
+  __imp__sub_004C5708+105  (mov esi,[esi+...], null base + 0xb0)
+  <- __imp__sub_004C5A03    (an un-HLE'd DSound export)
+  <- __imp__sub_0054E22F    (XACT: setting up an XACT sound's DSound buffer)
 ```
 
-`0x62A60` is a fastcall-style function (`esi` = object, `ecx`/`edx` args). `esi` is invalid (~`0x10`), so a
-subsystem structure — likely behind the globals `0x84a190` / `0x84a19c` loaded in `0x62330` — is not
-populated. Both the harness and the Proton build stop at the same point.
+The runtime implements DirectSound as **host-side objects** (`runtime/xdk/dsound.cpp`'s `Voice` map): the
+guest objects it hands out are small, zeroed blocks with just the two stream vtables. The engine also calls
+several DSound library exports through their console addresses, and `dsound.cpp`'s own `AuditExports()`
+warns about exactly these ("exports running their original code"). Those bodies read fields of a real
+console `CDirectSoundBuffer` / `CDirectSoundStream` (e.g. `[buffer+0x10]`, and the object behind `+0xb0`
+here) that the runtime's objects never build. Two of them are already patched in `hooks.cpp` (see the
+progress table); `0x4C5A03`/`0x4C5708` are the next.
 
 ### Suggested next steps
-1. Debug `0x62A60`/`0x62330` with `tools/xbe_disasm.py` and gdb (set a timer interrupt; the headless harness
-   is the fast loop). Find what should populate `[0x84a190]` (probably an engine init that a missing XDK
-   return or an unimplemented export skipped).
-2. Compare against a second reference port built with this exact SDK (e.g. the SCDA recomp,
-   <https://github.com/TGP482/SCDA-XBERecomp>) for `[abi]`/`[data]` and hook patterns.
-3. Continue host-replacing the remaining D3D internals from
-   `notes/d3d_internals_called_from_text.txt` as crashes surface (the runtime's HLE already implements the
-   public API; each replacement just routes the internal's intent to it).
-4. Implement more kernel exports on demand (the running log names each missing one).
+1. **Finish the DSound surface.** For every export `AuditExports()` lists as running original code
+   (`notes/…` / the run log), either HLE it in `runtime/xdk/dsound.cpp` or no-op it from
+   `src/game/hooks.cpp` the way `0x4C3F2F` is. The engine reaches these through XACT in `0x54E05E`/
+   `0x54E22F`; `0x4C5A03`, `0x4C519C`, `0x4C51D4`, `0x4C5230` are the ones called here. A more robust fix
+   would grow/build the runtime's buffer object so the library bodies see the fields they expect.
+2. Keep host-replacing the remaining D3D internals from `notes/d3d_internals_called_from_text.txt` as
+   crashes surface (mapping an internal to an existing HLE in `config/game.toml`, like
+   `D3DDevice_DrawVerticesUP`).
+3. Implement more kernel exports on demand (the running log names each missing one).
+4. Rebuild and smoke-test the Windows/Proton exe after config or SDK changes (same commands as
+   [Reproduce from scratch](#6b-build-the-windows-exe-and-run-under-proton)).
+
+### Asides found while fixing
+- Kernel HLE exports are `stdcall`: the `KERNEL_EXPORT(ord, name, nargs)` count must equal the pushes at
+  *every* call site. A mismatch corrupts guest `esp` one call and crashes somewhere unrelated later —
+  which is what the old `0x62A60` blocker really was.
+- Conker's XACT region (`0x54xxxx`) and DSOUND (`0x4Cxxxx`) both run console code that pokes memory-mapped
+  I/O; anything the runtime does not back faults instead of returning a plausible value.
+- `CDevice_VertexShader` (`+0x794`) is dereferenced by a widely-called D3D internal (`0x536810`, ~68
+  callers) as soon as any settable state changes, so it must never be null.
 
 ## Gotchas
 
