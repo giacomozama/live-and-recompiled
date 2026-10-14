@@ -26,6 +26,7 @@ Pipeline: 21,956 functions / 1.47 M instructions recompiled â†’ 227 MB of C++ â†
 conker-lar/
   Conker Live and Reloaded.iso     the user's disc image (gitignored via iso/)
   iso/                             extracted disc (default.xbe, dvddata/, media/)
+  umu-run                          umu-launcher 1.4.1, runs the Windows build under Proton
   XboxXBERecomp/                   the SDK (pristine upstream + patches/, see below)
   clr_unpack/  xemu/               provided references (unused so far)
   REVERSE_ENGINEERING.md           forum notes for Conker internals
@@ -120,7 +121,7 @@ cd winrun
 WINEPREFIX=$PWD/../prefix \
 PROTONPATH=~/.local/share/Steam/compatibilitytools.d/GE-Proton11-7 \
 GAMEID=conker-lar \
-  ~/Downloads/umu-launcher-1.4.1-zipapp/umu/umu-run "$PWD/Game.exe"
+  ../../umu-run "$PWD/Game.exe"          # umu-run 1.4.1, provided at the repo root
 # logs: winrun/logs/game.log
 ```
 `-municode` is needed for the `wWinMain` entry; `-static` links the mingw runtimes so the exe imports only
@@ -231,6 +232,7 @@ populated. Both the harness and the Proton build stop at the same point.
 - `xbe_symbols` **overwrites** `config/game.toml`, including hand-written `[abi]`/`[data]`. Keep a copy, or
   re-merge after regenerating.
 - Proton needs a display and Vulkan; this host has `DISPLAY=:0`/Wayland and an NVIDIA GPU.
-- `umu-run` is not on `PATH` here; the command above uses the 1.4.1 zipapp under `~/Downloads`.
+- `umu-run` (umu-launcher 1.4.1) is provided at the repository root as `./umu-run`; GE-Proton11-7 lives in
+  the Steam `compatibilitytools.d` directory.
 - `.gitignore` files: `iso/`, `game/{out,assets,prefix,winrun,generated,third_party/mingw/lib}` are ignored;
   the SDK changes live only in `patches/`, so **apply the patch after any fresh SDK checkout**.
