@@ -78,7 +78,9 @@ D3DDevice_DeletePixelShader                          = 0
 D3DDevice_DeleteVertexShader                         = 0
 D3DDevice_DrawIndexedVertices                        = 0x53AA00
 D3DDevice_DrawVertices                               = 0x53A930
-D3DDevice_DrawVerticesUP                             = 0
+# Conker's build was not matched by the signature table; identified by hand: it writes NV2A method 0x17FC
+# (primitive) and 0x1818 (inline array) and copies user vertices, so the runtime's DrawVerticesUP HLE serves it
+D3DDevice_DrawVerticesUP                             = 0x53A600
 D3DDevice_EnableOverlay                              = 0
 D3DDevice_End                                        = 0
 D3DDevice_EndPush                                    = 0
@@ -264,6 +266,10 @@ XOnlineStartup                                       = 0x4A0A8E
 #   SetPixelShader rep movsd 0x39 dwords to 0x5499F8     -> render state shadow [166]
 D3D_DeferredTextureState    = 0x5473A0
 D3D_Device                  = 0x547540
+# the library's FVF vertex shader object: SetVertexShader points device->vs (CDevice+0x794) at it when the
+# handle is a plain FVF. The runtime skips that body (it HLEs SetVertexShader), so it points the device at
+# this object itself; library internals that guard on its flags then find a valid (zeroed) object
+D3D_FvfShader               = 0x547040
 # The library's own device init (miniport at device+0x1C28 + NV2A bring-up) does real hardware waits the
 # runtime cannot answer, so it is NOT run; the internals that need it are host-replaced in src/game/hooks.cpp.
 # D3D_DeviceInit            = 0x53E5D0

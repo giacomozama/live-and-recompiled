@@ -24,6 +24,12 @@ index a237161..964c467 100644
          WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
          COMMENT "Recompiling ${xbe}"
          VERBATIM)
+diff --git a/harness/build.sh b/harness/build.sh
+old mode 100644
+new mode 100755
+diff --git a/harness/run.sh b/harness/run.sh
+old mode 100644
+new mode 100755
 diff --git a/runtime/gpu/shaders.cpp b/runtime/gpu/shaders.cpp
 index 1685b16..47a4bac 100644
 --- a/runtime/gpu/shaders.cpp
@@ -47,7 +53,7 @@ index 1685b16..47a4bac 100644
  // power clamped to 128 less 1/256
  float4 ilu_lit(float4 s) {
 diff --git a/runtime/kernel/memory.cpp b/runtime/kernel/memory.cpp
-index be024fa..33f3cd5 100644
+index be024fa..4352d55 100644
 --- a/runtime/kernel/memory.cpp
 +++ b/runtime/kernel/memory.cpp
 @@ -13,6 +13,7 @@
@@ -58,17 +64,19 @@ index be024fa..33f3cd5 100644
  #endif
  
  namespace mem {
-@@ -54,6 +55,9 @@ bool Init() {
+@@ -54,6 +55,11 @@ bool Init() {
          UnmapViewOfFile(b + kContiguousBase);
          UnmapViewOfFile(b + kWriteCombineBase);
      }
 +    // guest library code that pokes the NV2A register window directly (Conker's device init does) reads
 +    // and writes back registers; commit the window as scratch rather than faulting
 +    if (g_base) VirtualAlloc(g_base + kGpuRegisterBase, kGpuRegisterSize, MEM_COMMIT, PAGE_READWRITE);
++    // the XACT audio engine polls MCPX APU registers the same way
++    if (g_base) VirtualAlloc(g_base + kApuRegisterBase, kApuRegisterSize, MEM_COMMIT, PAGE_READWRITE);
  #else
      void* p = mmap(reinterpret_cast<void*>(0x100000000ull), size, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
      g_base = p == MAP_FAILED ? nullptr : static_cast<uint8_t*>(p);
-@@ -62,6 +66,10 @@ bool Init() {
+@@ -62,6 +68,13 @@ bool Init() {
          mmap(g_base + kContiguousBase, kPhysicalSize, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED, fd, 0) == MAP_FAILED ||
          mmap(g_base + kWriteCombineBase, kPhysicalSize, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED, fd, 0) == MAP_FAILED)
          g_base = nullptr;
@@ -76,33 +84,40 @@ index be024fa..33f3cd5 100644
 +    // and writes back registers; back the window with scratch rather than faulting
 +    if (g_base) mmap(g_base + kGpuRegisterBase, kGpuRegisterSize, PROT_READ | PROT_WRITE,
 +                     MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
++    // the XACT audio engine polls MCPX APU registers the same way
++    if (g_base) mmap(g_base + kApuRegisterBase, kApuRegisterSize, PROT_READ | PROT_WRITE,
++                     MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
  #endif
      if (!g_base) {
          LOGE("memory: could not reserve the 4 GB guest space");
 diff --git a/runtime/kernel/memory.h b/runtime/kernel/memory.h
-index 019aaff..eac8acf 100644
+index 019aaff..d857937 100644
 --- a/runtime/kernel/memory.h
 +++ b/runtime/kernel/memory.h
-@@ -15,6 +15,8 @@ constexpr uint32_t kSystemBase = 0xB0000000;       // pool, system memory, threa
+@@ -15,6 +15,10 @@ constexpr uint32_t kSystemBase = 0xB0000000;       // pool, system memory, threa
  constexpr uint32_t kSystemSize = 0x10000000;
  constexpr uint32_t kStackBase = 0xD0000000;
  constexpr uint32_t kStackSize = 0x10000000;
 +constexpr uint32_t kGpuRegisterBase = 0xFD000000;  // NV2A register window, backed by scratch
 +constexpr uint32_t kGpuRegisterSize = 0x01000000;
++constexpr uint32_t kApuRegisterBase = 0xFE800000;  // MCPX APU register window, backed by scratch
++constexpr uint32_t kApuRegisterSize = 0x01000000;
  
  // NT allocation flags
  constexpr uint32_t kMemCommit = 0x1000, kMemReserve = 0x2000, kMemDecommit = 0x4000, kMemRelease = 0x8000,
 diff --git a/runtime/kernel/xboxkrnl.cpp b/runtime/kernel/xboxkrnl.cpp
-index 86cf14a..66298d2 100644
+index 86cf14a..dbef3f8 100644
 --- a/runtime/kernel/xboxkrnl.cpp
 +++ b/runtime/kernel/xboxkrnl.cpp
-@@ -1211,6 +1211,27 @@ KERNEL_EXPORT(366, HalWriteSMCScratchRegister, 1) { return 0; }
+@@ -1211,6 +1211,29 @@ KERNEL_EXPORT(366, HalWriteSMCScratchRegister, 1) { return 0; }
  KERNEL_EXPORT(365, HalEnableSecureTrayEject, 0) { return 0; }
  KERNEL_EXPORT(90, IoDismountVolume, 1) { return kSuccess; }
  KERNEL_EXPORT(91, IoDismountVolumeByName, 1) { return kSuccess; }
 +
 +// the title asks its mounted volumes for size and device class before saving
-+KERNEL_EXPORT(76, IoQueryVolumeInformation, 4) {
++// (DeviceObject, FsInformationClass, Length, FsInformation, IoStatusBlock): five args, as the CRT's
++// _findfirst pushes; popping only four left a word on the guest stack and corrupted the caller's frame
++KERNEL_EXPORT(76, IoQueryVolumeInformation, 5) {
 +    uint32_t cls = a[1], len = a[2], out = a[3];
 +    LOG_FIRST(16, "IoQueryVolumeInformation device %08X class %u len %u", a[0], cls, len);
 +    if (out && len) std::memset(HostPtr(out), 0, len);
@@ -148,3 +163,17 @@ index cb38363..9616ef9 100644
      if (a[5]) W32(a[5], kDevice);
      return 0;
  }
+diff --git a/runtime/xdk/dsound.cpp b/runtime/xdk/dsound.cpp
+index 05977b5..167f0fb 100644
+--- a/runtime/xdk/dsound.cpp
++++ b/runtime/xdk/dsound.cpp
+@@ -397,6 +397,9 @@ uint32_t NewBuffer(uint32_t desc, uint32_t out) {
+     Voice& v = g_voices[obj];
+     v.obj = obj;
+     uint32_t flags = R32(desc + 4), bytes = R32(desc + 8);  // DSBUFFERDESC: size, flags, bytes, format, mix bins
++    // the engine's XACT path also reaches a second CreateSoundBuffer thunk whose descriptor this build never
++    // fills in as a DSBUFFERDESC; a bogus byte count would ask for a huge contiguous block, so trust the size
++    if (R32(desc) != 0x18 || bytes > (16u << 20)) bytes = 0;
+     ReadFormat(v, R32(desc + 12));
+     SetBins(v, R32(desc + 16));
+     v.is3d = flags & 0x10;  // DSBCAPS_CTRL3D
