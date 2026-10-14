@@ -110,6 +110,10 @@ enum : uint32_t {
     kMPsDotMapping = 0x1E74,
     kMPsInputTexture = 0x1E78,
     kMDepthClipControl = 0x1D78,
+    // visibility tests, sent as raw commands rather than render states
+    kMClearReport = 0x17C8,
+    kMCountEnable = 0x17CC,
+    kMGetReport = 0x17D0,
 };
 
 // texture stage state indices

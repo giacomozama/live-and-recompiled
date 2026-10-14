@@ -17,6 +17,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <deque>
 #include <filesystem>
 #include <mutex>
 #include <optional>
@@ -53,6 +54,8 @@ constexpr uint32_t kSamplerCount = 2048;
 constexpr uint32_t kRtvCount = 1024;
 constexpr uint32_t kDsvCount = 256;
 constexpr DXGI_FORMAT kBgra = DXGI_FORMAT_B8G8R8A8_UNORM;
+constexpr uint32_t kQueries = 8192;  // occlusion queries in flight, several frames of counted draws
+constexpr uint32_t kNoQuery = ~0u;
 
 // perf diagnostic: where a frame's time goes, logged once a second with diag::Perf
 using PerfClock = std::chrono::steady_clock;
@@ -414,6 +417,9 @@ public:
     void RecordLate(uint32_t data) override;
     void Flush() override;
     void SetGamma(const uint8_t* ramp) override;
+    void ClearReport() override { counted_.clear(); }
+    // done once the list being recorded, the next fence value, has run
+    void GetReport(uint32_t report) override { reports_.push_back({report, counted_, fence_value_ + 1}); }
 
     ID3D12Device* Device() override { return dev_.Get(); }
     ID3D12GraphicsCommandList* List() override { return cl_.Get(); }
@@ -521,6 +527,12 @@ private:
     void SetBlendFactorStencilRef(const State& s);
     void DrawGeometry(const Assembled& a);
     void UploadVertexBuffers(const Assembled& a);
+    // visibility tests
+    bool EnsureQueries();
+    uint32_t BeginCountedDraw(const State& s);
+    void EndCountedDraw(uint32_t query);
+    float SamplesPerPixel() const;
+    void DeliverReports();
     // shaders by source hash: Compile returns the bytecode and sets hash
     ID3DBlob* Compile(const std::string& src, const char* entry, const char* profile, uint64_t& hash);
     // Blit's pipeline
@@ -695,6 +707,22 @@ private:
     std::mutex late_lock_;                      // DeliverLate runs on the title's thread
     std::atomic<uint64_t> presents_seen_{0};    // presents_ for DeliverLate
     Assembled asm_;  // kept between draws for its buffers
+    // visibility tests: an occlusion query per counted draw, summed into report memory once the GPU is done
+    struct Query {
+        uint32_t index;
+        float samples_per_pixel;  // host samples one console pixel covers
+    };
+    struct Report {
+        uint32_t va;
+        std::vector<Query> queries;
+        uint64_t fence;
+    };
+    ComPtr<ID3D12QueryHeap> query_heap_;
+    ComPtr<ID3D12Resource> query_rb_;
+    const uint64_t* query_counts_ = nullptr;
+    uint32_t query_next_ = 0;
+    std::vector<Query> counted_;  // since the last ClearReport
+    std::deque<Report> reports_;
     bool tearing_ = false;
     uint64_t presents_ = 0;
     double fps_ = 0;
@@ -2348,6 +2376,68 @@ bool D3D12Backend::AssembleDraw(const State& s, uint32_t prim, uint32_t start, u
     return assembled;
 }
 
+bool D3D12Backend::EnsureQueries() {
+    if (query_counts_) return true;
+    D3D12_QUERY_HEAP_DESC qd{D3D12_QUERY_HEAP_TYPE_OCCLUSION, kQueries, 0};
+    D3D12_HEAP_PROPERTIES hp{D3D12_HEAP_TYPE_READBACK};
+    D3D12_RESOURCE_DESC bd = BufferDesc(uint64_t(kQueries) * sizeof(uint64_t));
+    void* p = nullptr;
+    bool made = SUCCEEDED(dev_->CreateQueryHeap(&qd, IID_PPV_ARGS(&query_heap_))) &&
+                SUCCEEDED(dev_->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &bd, D3D12_RESOURCE_STATE_COPY_DEST,
+                                                        nullptr, IID_PPV_ARGS(&query_rb_))) &&
+                SUCCEEDED(query_rb_->Map(0, nullptr, &p));
+    if (!made) {
+        LOG_FIRST(1, "d3d12: no occlusion queries, visibility tests stay pending");
+        return false;
+    }
+    query_counts_ = static_cast<const uint64_t*>(p);
+    return true;
+}
+
+// a draw while the title counts visible pixels gets an occlusion query of its own, kNoQuery otherwise
+uint32_t D3D12Backend::BeginCountedDraw(const State& s) {
+    if (!s.simple[kMCountEnable >> 2] || !EnsureQueries()) return kNoQuery;
+    uint32_t query = query_next_++ % kQueries;
+    cl_->BeginQuery(query_heap_.Get(), D3D12_QUERY_TYPE_OCCLUSION, query);
+    return query;
+}
+
+void D3D12Backend::EndCountedDraw(uint32_t query) {
+    if (query == kNoQuery) return;
+    cl_->EndQuery(query_heap_.Get(), D3D12_QUERY_TYPE_OCCLUSION, query);
+    uint64_t at = uint64_t(query) * sizeof(uint64_t);
+    cl_->ResolveQueryData(query_heap_.Get(), D3D12_QUERY_TYPE_OCCLUSION, query, 1, query_rb_.Get(), at);
+    counted_.push_back({query, SamplesPerPixel()});
+}
+
+// the console counts its own pixels: the bound target's scale and multisampling come out
+float D3D12Backend::SamplesPerPixel() const {
+    const Target* t = bound_rt_ ? bound_rt_ : bound_ds_;
+    if (!t || !t->gw || !t->gh) return 1;
+    float area = float(t->w) * float(t->h) / (float(t->gw) * float(t->gh));
+    return area * float(t->res->GetDesc().SampleDesc.Count);
+}
+
+// reports whose draws the GPU has finished, written as the console's GPU writes them: time, count, then 0 for done
+void D3D12Backend::DeliverReports() {
+    constexpr uint32_t kTime = 0;
+    constexpr uint32_t kTimeHigh = 4;
+    constexpr uint32_t kCount = 8;
+    constexpr uint32_t kStatus = 12;
+    uint64_t done = fence_->GetCompletedValue();
+    while (!reports_.empty() && reports_.front().fence <= done) {
+        const Report& r = reports_.front();
+        double pixels = 0;
+        for (const Query& q : r.queries) pixels += double(query_counts_[q.index]) / q.samples_per_pixel;
+        kernel::W32(r.va + kTime, uint32_t(presents_));
+        kernel::W32(r.va + kTimeHigh, 0);
+        kernel::W32(r.va + kCount, uint32_t(std::lround(pixels)));
+        std::atomic_thread_fence(std::memory_order_release);
+        kernel::W32(r.va + kStatus, 0);
+        reports_.pop_front();
+    }
+}
+
 void D3D12Backend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t count, const uint8_t* indices) {
     PerfScope perf_draw{g_perf.draw};
     g_perf.draws++;
@@ -2401,8 +2491,10 @@ void D3D12Backend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t 
     SetViewportScissor(s, size.w);
     SetBlendFactorStencilRef(s);
 
-    // geometry
+    // geometry, counted while the title runs a visibility test
+    uint32_t query = BeginCountedDraw(s);
     DrawGeometry(a);
+    EndCountedDraw(query);
 }
 
 // a guest rect scaled to the target and clamped to it
@@ -2855,6 +2947,7 @@ void D3D12Backend::Present(const Surface& front) {
     uint32_t bi = swap_->GetCurrentBackBufferIndex();
     DrawFrame(t, bi);
     Submit(false);
+    DeliverReports();
     bool vsync = app::Get().vsync;
     auto perf_swap = PerfClock::now();
     swap_->Present(vsync ? 1 : 0, !vsync && tearing_ ? DXGI_PRESENT_ALLOW_TEARING : 0);

@@ -37,6 +37,10 @@ public:
     virtual void RecordLate(uint32_t) {}
     virtual void Flush() = 0;
     virtual void SetGamma(const uint8_t* ramp /*3 x 256*/) = 0;
+    // visibility tests: draws count passing pixels while simple[kMCountEnable / 4] is set, ClearReport zeroes the
+    // count, GetReport writes it to a 16 byte report once the GPU is past those draws; without them it stays pending
+    virtual void ClearReport() {}
+    virtual void GetReport(uint32_t /*report*/) {}
 
     // the XDK's fences and busy checks against the render thread; a backend that draws at once is never behind
     virtual uint32_t Fence() { return ++fence_; }
