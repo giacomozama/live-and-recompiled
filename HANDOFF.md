@@ -1168,3 +1168,10 @@ and the `0x4E1D20..0x4E1D40` table of DSP function pointers the library's device
 - Traces: `XBE_TRACE_DSOUND=1` (voice calls, packets with the `.xwb` they came from, per-voice RMS every second,
   3D descriptors), `=all` adds volume/mix calls, `XBE_TRACE_VOICE=<obj>` logs one stream's status polls. Harness runs
   keep the title's saves in their folder: use a fresh one for a reproducible run.
+- **Asynchronous reads**: a read on a handle opened without `FILE_SYNCHRONOUS_IO_*` now returns `STATUS_PENDING` and
+  completes about 1 ms later, or when the issuing thread waits, sleeps or yields (`files.cpp`, `FlushPendingIo`).
+  XACT fills a stream's two slots and then asks whether a packet is still in flight (`0x552DF9` -> `0x54BBC0`); with
+  reads that had already completed, a short sound was ended before its only packet played, and a prepared cue (the
+  title tune in `m_hungover.xwb`) was dropped and only started much later. Held streams start on `Pause(0)` (rain).
+- Harness: with FMVs on, the movie now starts a little later, so a fixed-frame A press can miss it (the intro then
+  plays its full 67 s); press A later or more than once.
