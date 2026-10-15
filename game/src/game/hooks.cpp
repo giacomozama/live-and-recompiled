@@ -6,6 +6,8 @@
 // A strong X86_FUNC replaces the recompiled function at that address.
 #include "xdk/hle.h"
 #include "cpu/x86_ops.h"
+#include "core/diag.h"
+#include "xdk/d3d8.h"
 
 namespace {
 
@@ -15,6 +17,18 @@ constexpr uint32_t kDevBackBuffer = 0x1A14;  // CDevice_BackBuffer
 constexpr uint32_t kDevAutoDepth = 0x1A20;   // CDevice_AutoDepth
 
 }  // namespace
+
+// 0x4E2801: the XMV movie decoder's per-frame update. The transition manager treats a negative return as a
+// failed movie: its open loop (0x252470) leaves and its playing state (0x2529xx) closes and releases the
+// decoder. With XBE_SKIP_FMV set it always reports that, so the intro FMVs never decode in real time.
+X86_EXTERN_FUNC(__imp__sub_004E2801);
+X86_FUNC(sub_004E2801) {
+    if (diag::SkipFmv()) {
+        kernel::Return(ctx, 0xFFFFFFFFu, 4);  // stdcall: the callee pops the 4 arguments
+        return;
+    }
+    __imp__sub_004E2801(ctx, base);
+}
 
 // 0x538D50: begin a frame's render target and clear it. It called the library's pushbuffer submit/kickoff
 // (0x53F0E0, 0x53F2F0) which read the miniport; do the same work through the host's D3D8 implementation.
@@ -29,16 +43,6 @@ X86_FUNC(sub_00538D50) {
     kernel::Return(ctx, 0, 0);
 }
 
-// 0x4C67B9: the engine calls this CreateSoundBuffer thunk, which the SDK's symbol scan did not name, so its
-// library body would build a console DSound object (fatal without the MCPX DSP). Route it to the runtime's
-// host-side IDirectSound_CreateSoundBuffer, the same HLE the sibling thunk 0x4C6795 uses.
-X86_FUNC(sub_004C67B9) {
-    uint32_t a0 = kernel::R32(ctx.esp + 4), a1 = kernel::R32(ctx.esp + 8);
-    uint32_t a2 = kernel::R32(ctx.esp + 12), a3 = kernel::R32(ctx.esp + 16);
-    uint32_t r = GUEST_CALL(IDirectSound_CreateSoundBuffer, ctx, {a0, a1, a2, a3});
-    kernel::Return(ctx, r, 4);
-}
-
 // 0x4C3F2F: a DSound buffer helper (buffer, flag). It reads a sub-object the library's buffer constructor
 // allocates at [buffer+0x10] and sets or clears bit 0 of its byte 0xb. The runtime keeps DSound objects
 // host-side (dsound.cpp's Voice map), so a buffer made by its HLE has no such sub-object, and the engine's
@@ -48,12 +52,45 @@ X86_FUNC(sub_004C3F2F) {
     kernel::Return(ctx, 0, 2);
 }
 
+// 0x4C3DFE: the shared body of the library's two voice-descriptor setters (buffer 0x4C51B8 and stream
+// 0x4C5235 both reach it, neither is an ordinal import, so the signature scan never named them). It stores a
+// descriptor through the console voice's [voice+0xb8] field, which the runtime's host objects do not build.
+// The host mixer recomputes voice state from the API calls it HLEs, so the console write is skipped.
+X86_FUNC(sub_004C3DFE) {
+    (void)base;
+    kernel::Return(ctx, 0, 2);
+}
+
+// 0x4C5D4C (reached directly, and through the 0x4C606D export thunk): the library's 3D-parameter apply. It
+// pushes a voice's position/velocity/orientation into the console DSP through function pointers the library's
+// device init installs at 0x4E1D1C / 0x4E1D28. The runtime HLEs DirectSoundCreate and never runs that init, so
+// those pointers stay null and the call traps. The host mixer derives 3D attenuation from the voice's own
+// SetPosition/3D state, so the console write is skipped, like the other voice-register paths above.
+X86_FUNC(sub_004C5D4C) {
+    (void)base;
+    kernel::Return(ctx, 0, 2);
+}
+
+// The listener's 3D parameter helpers (0x4C4613 and 0x4C9C86 reach them): each tail forwards to a DSP
+// function pointer the library's skipped device init installs in the 0x4E1D20..0x4E1D40 table, so calling it
+// traps on null. They are console voice writes the host mixer does not need; skip them.
+X86_FUNC(sub_004C37C1) { (void)base; kernel::Return(ctx, 0, 8); }
+X86_FUNC(sub_004C37EA) { (void)base; kernel::Return(ctx, 0, 8); }
+X86_FUNC(sub_004C3821) { (void)base; kernel::Return(ctx, 0, 5); }
+X86_FUNC(sub_004C3841) { (void)base; kernel::Return(ctx, 0, 7); }
+X86_FUNC(sub_004C3875) { (void)base; kernel::Return(ctx, 0, 4); }
+X86_FUNC(sub_004C3897) { (void)base; kernel::Return(ctx, 0, 4); }
+X86_FUNC(sub_004C9C86) { (void)base; kernel::Return(ctx, 0, 4); }
+
 // 0x543170: the library's deferred state flush, which re-pushes hardware state for the dirty flags it finds.
 // The runtime translates the D3D8 API directly and decodes the engine's own pushbuffer writes (d3d::Walk), so
 // this path only reads guest texture/sampler structures the library would have kept. Skip it and leave the
 // dirty bits it did not handle, exactly as its own tail did.
 X86_FUNC(sub_00543170) {
     (void)base;
+    // what the skipped sub-flushes would have pushed still has to win over the engine's raw writes (fog, the fixed
+    // function combiner); the runtime models that from the dirty bits
+    d3d::DeferredFlush(kernel::R32(0x5499F0));
     kernel::W32(0x5499F0, kernel::R32(0x5499F0) & 0xC0000070u);
     kernel::Return(ctx, 0, 0);
 }

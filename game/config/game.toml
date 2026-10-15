@@ -172,6 +172,9 @@ getsockopt                                           = 0
 IDirectSound_CommitDeferredSettings                  = 0x4C652D
 IDirectSound_CommitEffectData                        = 0
 IDirectSound_CreateSoundBuffer                       = 0x4C6795
+# ordinal B003B at 0x4C67B9 is the stream sibling of B003A (the .XTLID table is alphabetical per interface);
+# the runtime HLEs it as IDirectSound_CreateSoundStream (dsound.cpp)
+IDirectSound_CreateSoundStream                       = 0x4C67B9
 IDirectSound_DownloadEffectsImage                    = 0x4C4F97
 IDirectSound_EnableHeadphones                        = 0
 IDirectSound_GetEffectData                           = 0
@@ -190,23 +193,27 @@ IDirectSound_SetVelocity                             = 0
 IDirectSound_SynchPlayback                           = 0x4C5008
 IDirectSoundBuffer_GetCurrentPosition                = 0
 IDirectSoundBuffer_GetStatus                         = 0x4C5164
+IDirectSoundBuffer_GetVoiceProperties                = 0x4C519C
 IDirectSoundBuffer_Lock                              = 0
 IDirectSoundBuffer_Play                              = 0x4C50E4
 IDirectSoundBuffer_Release                           = 0x4C3960
 IDirectSoundBuffer_SetAllParameters                  = 0
 IDirectSoundBuffer_SetBufferData                     = 0x4C6048
 IDirectSoundBuffer_SetCurrentPosition                = 0x4C5180
+IDirectSoundBuffer_SetEG                             = 0x4C5074
 IDirectSoundBuffer_SetFilter                         = 0x4C5090
 IDirectSoundBuffer_SetFormat                         = 0x4C602C
 IDirectSoundBuffer_SetFrequency                      = 0
 IDirectSoundBuffer_SetHeadroom                       = 0x4C50AC
 IDirectSoundBuffer_SetI3DL2Source                    = 0
+IDirectSoundBuffer_SetLFO                            = 0x4C5058
 IDirectSoundBuffer_SetLoopRegion                     = 0x4C5144
 IDirectSoundBuffer_SetMaxDistance                    = 0
 IDirectSoundBuffer_SetMinDistance                    = 0
 IDirectSoundBuffer_SetMixBins                        = 0x4C59C7
 IDirectSoundBuffer_SetMixBinVolumes                  = 0x4C50C8
 IDirectSoundBuffer_SetOutputBuffer                   = 0x4C59AB
+IDirectSoundBuffer_SetPitch                          = 0x4C503C
 IDirectSoundBuffer_SetPlayRegion                     = 0x4C59E3
 IDirectSoundBuffer_SetPosition                       = 0
 IDirectSoundBuffer_SetRolloffCurve                   = 0
@@ -216,6 +223,12 @@ IDirectSoundBuffer_Stop                              = 0x4C5108
 IDirectSoundBuffer_StopEx                            = 0x4C5120
 IDirectSoundBuffer_Unlock                            = 0
 IDirectSoundStream_SetEG                             = 0x4C51FF
+# export B0098 at 0x4C5A03 jmps to 0x4C5907; the library body read a console voice sub-object the runtime's
+# stream object does not build, so the runtime HLEs it (dsound.cpp)
+IDirectSoundStream_SetOutputBuffer                   = 0x4C5A03
+IDirectSoundStream_SetLFO                            = 0x4C51FA
+IDirectSoundStream_SetPitch                          = 0x4C51F5
+IDirectSoundStream_GetVoiceProperties                = 0x4C5230
 ioctlsocket                                          = 0x48D736
 listen                                               = 0
 Lock2DSurface                                        = 0
@@ -259,12 +272,14 @@ XOnlineStartup                                       = 0x4A0A8E
 
 [data]
 # proven from Conker's own inlined D3D8LTCG code (tools/xbe_disasm.py):
-#   SetTextureState_TexCoordIndex stage*0x80 + 0x5473A0  -> stage state table [4][32]
+#   SetTextureStageState writes [0x547330 + stage*0x80 + field*4]  -> stage state table [4][32]
+#     (0x5473A0, which the signature scan reported, is stage*0x80 + TEXCOORDINDEX (field 28*4),
+#      NOT the table base; the sibling bodies at 0x537B2D/0x537B7B/0x537BC7 write the same base)
 #   SetTexture/SetPixelShader or [0x5499F0],0x4800       -> dirty flags
 #   SetIndices writes [0x54A898]                         -> index data base
-#   SetStreamSource indexes [0x547160 + n*12]            -> stream table
+#   SetStreamSource (0x535F00) writes [0x547158 + n*12]  -> stream table
 #   SetPixelShader rep movsd 0x39 dwords to 0x5499F8     -> render state shadow [166]
-D3D_DeferredTextureState    = 0x5473A0
+D3D_DeferredTextureState    = 0x547330
 D3D_Device                  = 0x547540
 # the library's FVF vertex shader object: SetVertexShader points device->vs (CDevice+0x794) at it when the
 # handle is a plain FVF. The runtime skips that body (it HLEs SetVertexShader), so it points the device at
@@ -282,7 +297,10 @@ D3D_RenderState             = 0x5499F8
 # Conker's library computes the render state method arithmetically (no table); this SDK build never reads
 # the symbol, so it only has to be non-zero for XDK_REQUIRE. Point it at the state shadow.
 D3D_SimpleRenderStateEncode = 0x5499F8
-D3D_Streams                 = 0x547160
+# Conker's SetStreamSource (0x535F00) stores stride at [n*12 + 0x547158] and the vertex buffer at
+# [n*12 + 0x547160], so the table base is 0x547158; 0x547160 (which the scan reported) is entry 0's buffer
+# field. With the wrong base the runtime's SetStreamSource HLE overwrote slot 0's buffer with the stride.
+D3D_Streams                 = 0x547158
 DSound_StreamVtable         = 0x586038
 DSound_StreamVtable2        = 0x586028
 XPP_GamepadType             = 0x558454
