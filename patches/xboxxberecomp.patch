@@ -2781,7 +2781,7 @@ index 977d028..1fb1b00 100644
 +
  }  // namespace d3d
 diff --git a/runtime/xdk/dsound.cpp b/runtime/xdk/dsound.cpp
-index 05977b5..5d43233 100644
+index 05977b5..0af6d81 100644
 --- a/runtime/xdk/dsound.cpp
 +++ b/runtime/xdk/dsound.cpp
 @@ -6,10 +6,12 @@
@@ -2840,11 +2840,12 @@ index 05977b5..5d43233 100644
  
  namespace {
  
-@@ -101,6 +139,11 @@ struct Voice {
+@@ -101,6 +139,12 @@ struct Voice {
      bool playing = false, looping = false, paused = false;
      bool sync = false;  // held until IDirectSound_SynchPlayback
      bool active = false, ending = false;  // stream: took a packet since it went quiet, quiet again once they run out
 +    bool hold = false;      // stream: paused with no activate, plays nothing until resumed
++    bool starved = false;   // stream: played out the last packet it was given
 +    bool flushing = false;  // stream: stopped by an async FlushEx, its packets are flushed at the next DoWork
 +    // stream: that FlushEx asked for the release envelope, and the flush that ends it is done. XACT waits for the
 +    // ENVELOPECOMPLETE status before it stops reading the wave; without it, it streamed the rest after every stop.
@@ -2852,7 +2853,7 @@ index 05977b5..5d43233 100644
      double pos = 0;  // frames
      uint32_t freq = 0;
      // stream
-@@ -114,6 +157,9 @@ struct Voice {
+@@ -114,6 +158,9 @@ struct Voice {
      bool is3d = false;
      uint32_t mode = 0;  // DS3DMODE: 1 head relative, 2 disabled
      float p[3] = {}, min_dist = 1, max_dist = 1e9f;
@@ -2862,7 +2863,7 @@ index 05977b5..5d43233 100644
      // ADPCM block cache
      int64_t block = -1;
      int16_t decoded[65 * 8];
-@@ -135,6 +181,12 @@ std::atomic<int64_t> g_pumped{0};          // the last DirectSoundDoWork, steady
+@@ -135,6 +182,12 @@ std::atomic<int64_t> g_pumped{0};          // the last DirectSoundDoWork, steady
  bool g_started = false;
  uint32_t g_ds = 0;
  
@@ -2875,7 +2876,7 @@ index 05977b5..5d43233 100644
  float Db(int32_t hundredths) { return hundredths <= -10000 ? 0.0f : std::pow(10.0f, hundredths / 2000.0f); }
  
  uint32_t FramesOf(const Voice& v, uint32_t bytes) {
-@@ -223,6 +275,13 @@ void Levels(Voice& v, float g[2][2]) {
+@@ -223,6 +276,13 @@ void Levels(Voice& v, float g[2][2]) {
              if (!speakers || b == 2 || (b & 1)) g[c][1] = std::max(g[c][1], x);
          }
      }
@@ -2889,7 +2890,16 @@ index 05977b5..5d43233 100644
      if (!v.is3d || v.mode == 2) return;
      bool rel = v.mode == 1;  // the position is already in listener space
      float d[3] = {v.p[0], v.p[1], v.p[2]};
-@@ -258,7 +317,7 @@ void Render(float* out, uint32_t frames) {
+@@ -250,7 +310,7 @@ void Levels(Voice& v, float g[2][2]) {
+ 
+ // a stream goes quiet: the synch hold ends, a started one loses its pause as well
+ void Deactivate(Voice& v) {
+-    v.sync = false;
++    v.sync = v.starved = false;
+     if (v.active) v.active = v.paused = v.ending = false;
+ }
+ 
+@@ -258,7 +318,7 @@ void Render(float* out, uint32_t frames) {
      std::memset(out, 0, frames * 2 * sizeof(float));
      std::lock_guard<std::recursive_mutex> lock(g_lock);
      for (auto& [obj, v] : g_voices) {
@@ -2898,7 +2908,15 @@ index 05977b5..5d43233 100644
          float g[2][2];
          Levels(v, g);
          uint32_t base = v.data + v.play_start;
-@@ -315,12 +374,28 @@ void Render(float* out, uint32_t frames) {
+@@ -274,6 +334,7 @@ void Render(float* out, uint32_t frames) {
+                     Complete(v, pk, 0);
+                     v.pos -= FramesOf(v, pk.size);
+                     f = uint32_t(v.pos);
++                    if (v.packets.empty() && !v.ending) v.starved = true;
+                 }
+                 if (v.packets.empty()) {
+                     v.pos = 0;
+@@ -315,12 +376,28 @@ void Render(float* out, uint32_t frames) {
              float t = float(v.pos - f);
              a += (a1 - a) * t;
              b += (b1 - b) * t;
@@ -2929,7 +2947,7 @@ index 05977b5..5d43233 100644
  }
  
  int64_t NowMs() {
-@@ -328,6 +403,22 @@ int64_t NowMs() {
+@@ -328,6 +405,22 @@ int64_t NowMs() {
      return duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count();
  }
  
@@ -2952,7 +2970,7 @@ index 05977b5..5d43233 100644
  void Run(X86Context& ctx, const std::vector<Done>& done) {
      for (const Done& d : done) CallGuest(ctx, d.callback, {d.context, d.packet_context, d.status});
  }
-@@ -336,6 +427,17 @@ void Start() {
+@@ -336,6 +429,17 @@ void Start() {
      if (g_started) return;
      g_started = true;
      audio::StartOutput(Render);
@@ -2970,7 +2988,7 @@ index 05977b5..5d43233 100644
      // for a title that never calls DirectSoundDoWork: its callbacks come from here instead
      StartHostThread("dsound", [](X86Context& ctx) {
          constexpr int64_t kPumpMs = 250;
-@@ -345,6 +447,7 @@ void Start() {
+@@ -345,6 +449,7 @@ void Start() {
                  std::unique_lock<std::recursive_mutex> lock(g_lock);
                  g_done_cv.wait_for(lock, std::chrono::milliseconds(50));
                  if (NowMs() - g_pumped < kPumpMs) continue;
@@ -2978,7 +2996,15 @@ index 05977b5..5d43233 100644
                  done.assign(g_done.begin(), g_done.end());
                  g_done.clear();
              }
-@@ -397,6 +500,9 @@ uint32_t NewBuffer(uint32_t desc, uint32_t out) {
+@@ -361,6 +466,7 @@ void ReadFormat(Voice& v, uint32_t wfx) {
+     v.rate = R32(wfx + 4);
+     v.align = std::max<uint16_t>(R16(wfx + 12), 1);
+     v.bits = R16(wfx + 14);
++    DSTRACE("dsound: %08X format tag %X %u ch %u Hz align %u bits %u", v.obj, v.tag, v.channels, v.rate, v.align, v.bits);
+     if (v.tag != 1 && v.tag != 0x69) LOG_FIRST(8, "dsound: format tag %X not supported", v.tag);
+ }
+ 
+@@ -397,6 +503,9 @@ uint32_t NewBuffer(uint32_t desc, uint32_t out) {
      Voice& v = g_voices[obj];
      v.obj = obj;
      uint32_t flags = R32(desc + 4), bytes = R32(desc + 8);  // DSBUFFERDESC: size, flags, bytes, format, mix bins
@@ -2988,7 +3014,7 @@ index 05977b5..5d43233 100644
      ReadFormat(v, R32(desc + 12));
      SetBins(v, R32(desc + 16));
      v.is3d = flags & 0x10;  // DSBCAPS_CTRL3D
-@@ -409,6 +515,34 @@ uint32_t NewBuffer(uint32_t desc, uint32_t out) {
+@@ -409,6 +518,34 @@ uint32_t NewBuffer(uint32_t desc, uint32_t out) {
      return 0;
  }
  
@@ -3023,7 +3049,7 @@ index 05977b5..5d43233 100644
  float F32(uint32_t v) {
      float f;
      std::memcpy(&f, &v, 4);
-@@ -417,6 +551,15 @@ float F32(uint32_t v) {
+@@ -417,6 +554,15 @@ float F32(uint32_t v) {
  
  }  // namespace
  
@@ -3039,7 +3065,7 @@ index 05977b5..5d43233 100644
  // device
  
  // DSOUND objects are the host's; .XTLID names linked exports that would still run console code on them
-@@ -447,7 +590,10 @@ static void AuditExports() {
+@@ -447,7 +593,10 @@ static void AuditExports() {
          SYM(CDirectSoundStream_SetFrequency), SYM(CDirectSoundStream_SetFilter), SYM(CDirectSoundStream_SetHeadroom),
          SYM(CDirectSoundStream_SetMixBinVolumes), SYM(CDirectSoundStream_SetMixBins), SYM(CDirectSoundStream_SetMaxDistance),
          SYM(CDirectSoundStream_SetMinDistance), SYM(CDirectSoundStream_SetPosition), SYM(CDirectSoundStream_SetVelocity),
@@ -3051,7 +3077,7 @@ index 05977b5..5d43233 100644
      std::string left;
      // the library's own section: the WMA decoder shares the export ids and touches no DSOUND object
      uint32_t lo = 0, hi = 0;
-@@ -513,6 +659,7 @@ HLE_STDCALL(DirectSoundDoWork, 0) {
+@@ -513,6 +662,7 @@ HLE_STDCALL(DirectSoundDoWork, 0) {
      std::vector<Done> done;
      {
          std::lock_guard<std::recursive_mutex> lock(g_lock);
@@ -3059,7 +3085,7 @@ index 05977b5..5d43233 100644
          done.assign(g_done.begin(), g_done.end());
          g_done.clear();
      }
-@@ -589,11 +736,24 @@ HLE_STDCALL(IDirectSound_GetOutputLevels, 3) {
+@@ -589,11 +739,24 @@ HLE_STDCALL(IDirectSound_GetOutputLevels, 3) {
  HLE_STDCALL(DirectSoundCreateBuffer, 2) { return NewBuffer(a[0], a[1]); }
  HLE_STDCALL(IDirectSound_CreateSoundBuffer, 4) { return NewBuffer(a[1], a[2]); }
  
@@ -3084,7 +3110,7 @@ index 05977b5..5d43233 100644
          return v ? buf_##name(*v, a) : 0x80004005u;         \
      }                                                       \
      static uint32_t buf_##name([[maybe_unused]] Voice& v, [[maybe_unused]] const Args& a)
-@@ -739,30 +899,11 @@ BUFFER(SetFormat, 2) {
+@@ -739,30 +902,11 @@ BUFFER(SetFormat, 2) {
  
  // streams, the object carries the XDK's own vtable
  
@@ -3120,7 +3146,7 @@ index 05977b5..5d43233 100644
  
  #define STREAM(name, nargs)                                     \
      static uint32_t str_##name(Voice& v, const Args& a);        \
-@@ -772,6 +913,7 @@ HLE_STDCALL(DirectSoundCreateStream, 2) {
+@@ -772,6 +916,7 @@ HLE_STDCALL(DirectSoundCreateStream, 2) {
          {                                                       \
              std::lock_guard<std::recursive_mutex> lock(g_lock); \
              Voice* v = Find(a[0]);                              \
@@ -3128,7 +3154,7 @@ index 05977b5..5d43233 100644
              r = v ? str_##name(*v, a) : 0x80004005u;            \
              flushed.swap(t_flushed);                            \
          }                                                       \
-@@ -785,6 +927,7 @@ static void FlushStream(Voice& v) {
+@@ -785,6 +930,7 @@ static void FlushStream(Voice& v) {
      for (auto& pk : v.packets) Complete(v, pk, kFlushed);
      v.packets.clear();
      v.pos = 0;
@@ -3136,17 +3162,18 @@ index 05977b5..5d43233 100644
      for (auto it = g_done.begin(); it != g_done.end();) {
          if (it->voice != v.obj) {
              ++it;
-@@ -820,8 +963,18 @@ STREAM(GetInfo, 2) {
+@@ -820,8 +966,19 @@ STREAM(GetInfo, 2) {
      W32(info + 12, 0);
      return 0;
  }
-+// DSSTREAMSTATUS: READY (room for a packet), then for a started stream PLAYING, or PAUSED, with STARVED when it ran
-+// out of packets. A stream releasing after an async flush still plays until the flush, and reports
++// DSSTREAMSTATUS: READY (room for a packet), then for a started stream PLAYING, or PAUSED, with STARVED when it played
++// out its packets. A stream started before its first packet plays (XACT starts a prepared sound, then feeds it, and
++// takes "not playing" as finished). A stream releasing after an async flush still plays until the flush, and reports
 +// ENVELOPECOMPLETE once it is done (the library's 0x4C8943 reads its voice flag 0x2000).
  STREAM(GetStatus, 2) {
 -    W32(a[1], v.packets.size() < v.max_packets ? 1u : 0u);  // XMEDIASTATUS_ACCEPT_INPUT
 +    uint32_t st = v.packets.size() < v.max_packets ? 1u : 0u;
-+    if (v.active && v.packets.empty() && !v.flushing) st |= 0x60000;
++    if (v.active && v.starved && !v.flushing) st |= 0x60000;
 +    else if (v.active) st |= v.paused || v.sync ? 0x20000u : 0x10000u;
 +    if (v.released) st |= 0x80000;
 +    W32(a[1], st);
@@ -3156,7 +3183,7 @@ index 05977b5..5d43233 100644
      return 0;
  }
  STREAM(Process, 3) {
-@@ -830,9 +983,10 @@ STREAM(Process, 3) {
+@@ -830,9 +987,10 @@ STREAM(Process, 3) {
      Packet pk{R32(in), R32(in + 4), R32(in + 8), R32(in + 12), R32(in + 16)};
      if (pk.completed_ptr) W32(pk.completed_ptr, 0);
      if (pk.status_ptr) W32(pk.status_ptr, kPacketPending);
@@ -3164,11 +3191,11 @@ index 05977b5..5d43233 100644
      v.packets.push_back(pk);
      v.active = true;
 -    v.ending = false;
-+    v.ending = v.released = false;
++    v.ending = v.released = v.starved = false;
      return 0;
  }
  STREAM(Discontinuity, 1) {
-@@ -844,12 +998,23 @@ STREAM(Flush, 1) {
+@@ -844,12 +1002,28 @@ STREAM(Flush, 1) {
      FlushStream(v);
      return 0;
  }
@@ -3184,17 +3211,22 @@ index 05977b5..5d43233 100644
 +    }
      return 0;
  }
-+// DSSTREAMPAUSE: 0 resume, 1 pause, 2 synch playback, 3 resume a started stream and hold one that has not started
++// DSSTREAMPAUSE: 0 resume, 1 pause, 2 synch playback, 3 resume a started stream and hold one that has not started.
++// Resuming a held stream starts it, packets or not (the library's 0x4C9426 activates it through 0x4C90A0).
  STREAM(Pause, 2) {
 +    if (a[1] == 3 && !v.active) {
 +        v.hold = true;
 +        return 0;
 +    }
++    if (a[1] == 0 && v.hold) {
++        v.active = true;
++        v.starved = false;
++    }
 +    v.hold = false;
      v.paused = a[1] == 1;
      v.sync = a[1] == 2;
      return 0;
-@@ -891,3 +1056,25 @@ STREAM(SetPosition, 5) {
+@@ -891,3 +1065,25 @@ STREAM(SetPosition, 5) {
  }
  STREAM(SetVelocity, 5) { return 0; }
  STREAM(SetI3DL2Source, 3) { return 0; }
