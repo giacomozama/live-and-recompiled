@@ -17,6 +17,7 @@
 #include "app/app.h"
 #include "core/log.h"
 #include "gpu/backend.h"
+#include "gpu/shaders.h"
 #include "gpu/texture.h"
 #include "harness.h"
 #include "kernel/kernel.h"
@@ -187,6 +188,16 @@ private:
                      s.vs_handle, s.ps ? s.ps->handle : 0, s.rt.data, s.rt.header, s.textures[0], s.rs[kRsLighting], s.simple[kMBlendEnable >> 2],
                      s.simple[kMSrcBlend >> 2], s.simple[kMDestBlend >> 2], s.simple[kMColorWriteEnable >> 2],
                      s.simple[kMAlphaTestEnable >> 2], s.rs[kRsZEnable], s.simple[0x1B00 >> 2], s.simple[0x1B04 >> 2], s.simple[0x1B0C >> 2]);
+        // DUMP_PS=<hex pixel shader handle>: the HLSL its combiner translates to, once
+        if (const char* dp = std::getenv("DUMP_PS"); dp && s.ps && s.ps->handle == uint32_t(std::strtoul(dp, nullptr, 16))) {
+            static bool done = false;
+            if (!done) {
+                done = true;
+                TexInfo ti[4] = {};
+                std::fprintf(f, "PIXELHLSL\n%s\nENDPIXELHLSL\n", PixelHlsl(MakePixelKey(s, ti)).c_str());
+            }
+        }
+        std::fprintf(f, "  spec rs %u chip %u\n", s.rs[kRsSpecularEnable], s.simple[0x3B8 >> 2]);
         const auto& t0 = s.tss[0];
         TextureDesc d;
         if (s.textures[0] && Describe(s.textures[0], d)) {
@@ -198,7 +209,24 @@ private:
                     reference::DumpTexture(s.textures[0], File("cap/tex_%08X.tga", s.textures[0]).c_str());
             }
         }
-        std::fprintf(f, "  ttf %X tci %X addr %u %u t16", t0[kTssTextureTransformFlags], t0[kTssTexCoordIndex], t0[kTssAddressU],
+        for (int i = 1; i < 4; i++) {
+            TextureDesc di;
+            const auto& ti = s.tss[size_t(i)];
+            if (s.textures[size_t(i)] && Describe(s.textures[size_t(i)], di))
+            {
+                std::fprintf(f, "  tex%d %ux%u fmt %X data %08X addr %u %u filt %u %u ttf %X tci %X\n", i, di.width, di.height,
+                             di.format, di.data, ti[kTssAddressU], ti[kTssAddressV], ti[kTssMagFilter], ti[kTssMinFilter],
+                             ti[kTssTextureTransformFlags], ti[kTssTexCoordIndex]);
+                // DUMP_TEX=2: every stage's textures, once per data address and frame (render targets change)
+                static const bool all = harness::Env("DUMP_TEX") == 2;
+                static std::unordered_set<uint64_t> seen;
+                if (all && drawing_ && seen.insert(uint64_t(frames_) << 32 | di.data).second)
+                    reference::DumpTexture(s.textures[size_t(i)],
+                                           File("cap/tex_%llu", frames_).append(std::to_string(i)).append("_").append(
+                                               [&] { char b[16]; std::snprintf(b, sizeof b, "%08X.tga", di.data); return std::string(b); }()).c_str());
+            }
+        }
+        std::fprintf(f, "  ttf %X tci %X addr %u %u t16",t0[kTssTextureTransformFlags], t0[kTssTexCoordIndex], t0[kTssAddressU],
                      t0[kTssAddressV]);
         auto matrix = [&](const char* name, uint32_t which) {
             std::fprintf(f, "%s", name);
@@ -215,6 +243,8 @@ private:
                 std::fprintf(f, " c%d", r - 96);
                 for (int c = 0; c < 4; c++) std::fprintf(f, " %g", s.vsc[r][c]);
             }
+            std::fprintf(f, "\n  viewport c-38 %g %g %g %g c-37 %g %g %g %g", s.vsc[58][0], s.vsc[58][1], s.vsc[58][2], s.vsc[58][3],
+                         s.vsc[59][0], s.vsc[59][1], s.vsc[59][2], s.vsc[59][3]);
             std::fprintf(f, "\n  decl");
             for (int r = 0; r < 16; r++) {
                 const auto& in = s.vs->inputs[size_t(r)];

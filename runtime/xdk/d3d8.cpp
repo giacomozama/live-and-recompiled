@@ -174,12 +174,16 @@ uint32_t NewSurface(uint32_t w, uint32_t h, uint32_t fmt, uint32_t bpp) {
     return hdr;
 }
 
+// NV097_SET_SPECULAR_ENABLE as the title wrote it raw, which holds until the library's lighting flush pushes the D3D
+// state again (dirty 0x1000). xemu, as the chip, zeroes a vertex program's oD1 while it is off.
+bool g_spec_raw = false;
+uint32_t g_spec_value = 0;
+
 void SyncDeferred() {
     // deferred states live in the title's memory, the inline SetRenderState and SetTextureStageState write them
-    // a fog state the title changed through D3D since its last raw fog write takes the fog unit back
-    for (uint32_t i = gpu::kRsFogEnable; i <= gpu::kRsRangeFogEnable; i++)
-        if (g_state.rs[i] != R32(kRenderState + i * 4)) g_state.chip_fog = 0;
+    // a D3D fog state only marks the fog dirty: the fog unit changes when the library's flush pushes it (ApplyFlush)
     for (uint32_t i = gpu::kRsDeferredFirst; i < gpu::kRsComplexFirst; i++) g_state.rs[i] = R32(kRenderState + i * 4);
+    if (g_spec_raw) g_state.rs[gpu::kRsSpecularEnable] = g_spec_value;
     // the whole [4][32] table is authoritative for a title that inlines the D3D8 library (its state never
     // reaches an API HLE), so read all of it. A title that does call the API has its dedicated SetTextureState_*
     // HLEs write g_state directly, and those do not write the table, so leave their fields alone.
@@ -284,10 +288,12 @@ gpu::State& State() { return g_state; }
 std::recursive_mutex& Lock() { return g_lock; }
 
 namespace {
-constexpr uint32_t kDirtyFog = 0x2000, kDirtyCombiners = 0x800;  // D3D_DirtyFlags bits of this library
+constexpr uint32_t kDirtyFog = 0x2000, kDirtyCombiners = 0x800, kDirtyLights = 0x1000;  // D3D_DirtyFlags bits of this library
+constexpr uint32_t kDirtyVertexFormat = 0x10, kDirtyStreams = 0x40, kDirtyNoVertexState = 0x40000000;
 
 void ApplyFlush(uint32_t dirty) {
     if (dirty & kDirtyFog) g_state.chip_fog = 0;  // the library pushes FOG_* from the D3D fog states
+    if (dirty & kDirtyLights) g_spec_raw = false;  // and SPECULAR_ENABLE from D3DRS_SPECULARENABLE
     // with no pixel shader set the library compiles its fixed function combiner from the stage states and pushes it
     if ((dirty & kDirtyCombiners) && !g_ps_handle && g_state.ps && g_state.ps->handle == kRawCombiner) g_state.ps = nullptr;
 }
@@ -295,7 +301,7 @@ void ApplyFlush(uint32_t dirty) {
 // A D3D draw's library body flushes the deferred state before it pushes the primitive; the HLE'd draws do the part
 // of that flush which decides between the D3D states and the title's raw writes, and clear those bits as it would
 void FlushForDraw() {
-    uint32_t d = R32(kDirtyFlags), mine = d & (kDirtyFog | kDirtyCombiners);
+    uint32_t d = R32(kDirtyFlags), mine = d & (kDirtyFog | kDirtyCombiners | kDirtyLights);
     if (!mine) return;
     ApplyFlush(mine);
     W32(kDirtyFlags, d & ~mine);
@@ -844,11 +850,14 @@ HLE_STDCALL(D3DDevice_SetStreamSource, 3) {
     Walk(Dev(kDevPush));  // state set around a raw push must not reach the pending commands first
     uint32_t n = a[0] & 15, vb = a[1], stride = a[2];
     uint32_t old = R32(kStreams + n * kStreamSize + XDK_Stream_Buffer);
+    bool new_stride = stride != R32(kStreams + n * kStreamSize + XDK_Stream_Stride);
     AddRef(ctx, vb);
     W32(kStreams + n * kStreamSize + XDK_Stream_Stride, stride);
     W32(kStreams + n * kStreamSize + XDK_Stream_Buffer, vb);
     Release(ctx, old);
-    g_state.streams[n] = {vb, stride};
+    // as the library: the draw re-points the arrays, and pushes the formats again for a new stride
+    W32(kDirtyFlags, R32(kDirtyFlags) | (new_stride ? kDirtyVertexFormat | kDirtyStreams | 0x20 : kDirtyStreams));
+    if (!g_state.streams[n].fmt) g_state.streams[n] = {vb, stride};
     return 0;
 }
 
@@ -929,6 +938,7 @@ HLE_STDCALL(D3DDevice_SetVertexShader, 1) {
     g_state.vs_handle = h;
     g_state.vs = nullptr;
     g_chip_program = false;  // the library body would have uploaded this shader's program over the chip's
+    W32(kDirtyFlags, R32(kDirtyFlags) | kDirtyVertexFormat | kDirtyStreams | 0x20);
     if (h & 1) {
         auto it = g_vs.find(h);
         if (it != g_vs.end()) {
@@ -1172,8 +1182,21 @@ void LogDrawCaller(const char* kind, uint32_t prim, uint32_t count, uint32_t cal
 // body, so drop the inline formats the same way: the declaration is the layout again. Without this a D3D draw made
 // right after one of the title's raw draws read its vertices through that draw's attribute layout - Conker's
 // visibility test boxes then collapsed to a point, counted 0 pixels, and the animated meshes they cull flashed out.
+// The library's draw (SetStateVB, 0x543200 in Conker) pushes the vertex attribute formats of the shader's
+// declaration only while the vertex format is dirty (SetVertexShader, a SetStreamSource with a new stride), and
+// re-points the arrays at the D3D streams when those changed; otherwise the chip keeps the formats and arrays the
+// title last bound inline. The bits are cleared as the library does.
 void DeclarationBinds() {
-    for (auto& st : g_state.streams) st.fmt = 0;
+    uint32_t d = R32(kDirtyFlags);
+    W32(kDirtyFlags, d & ~(kDirtyVertexFormat | kDirtyStreams));
+    if (d & kDirtyNoVertexState) return;
+    bool format = d & kDirtyVertexFormat;
+    if (!format && !(d & kDirtyStreams)) return;
+    for (uint32_t n = 0; n < 16; n++) {
+        auto& st = g_state.streams[n];
+        if (!format && st.fmt) continue;
+        st = {R32(kStreams + n * kStreamSize + XDK_Stream_Buffer), R32(kStreams + n * kStreamSize + XDK_Stream_Stride)};
+    }
 }
 
 HLE_STDCALL(D3DDevice_DrawVertices, 3) {
@@ -1791,6 +1814,11 @@ void Walk(uint32_t end) {
                 NoteRawMethod(m, v);
                 g_state.simple[m >> 2] = v;
                 if (m == 0x1E70) g_state.rs[gpu::kRsPsTextureModes] = v;  // NV097_SET_SHADER_STAGE_PROGRAM
+                if (m == 0x3B8) {  // NV097_SET_SPECULAR_ENABLE
+                    g_spec_raw = true;
+                    g_spec_value = v;
+                    g_state.rs[gpu::kRsSpecularEnable] = v;
+                }
                 // NV097_SET_FOG_ENABLE / _MODE / _PARAMS: the title runs the fog unit itself
                 if (m == 0x2A4 || m == 0x29C || m == 0x9C0 || m == 0x9C4) {
                     g_state.chip_fog = 1;

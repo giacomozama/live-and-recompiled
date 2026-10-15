@@ -1237,7 +1237,10 @@ void Draw(const State& s, uint32_t prim, uint32_t start, uint32_t count, const u
     // land (frames are not reproducible, a pixel trace misses a moving object)
     static const uint64_t trace_prog = std::getenv("TRACE_PROG") ? std::strtoull(std::getenv("TRACE_PROG"), nullptr, 16) : 0;
     static const bool trace_blended = std::getenv("TRACE_BLENDED") != nullptr;
-    int prog_traces = trace_prog && s.vs && s.vs->hash == trace_prog && (!trace_blended || simple(kMBlendEnable)) ? 3 : 0;
+    // TRACE_VS=<hex vertex shader handle>: the same for draws by the D3D shader they bind
+    static const uint32_t trace_vs = std::getenv("TRACE_VS") ? uint32_t(std::strtoul(std::getenv("TRACE_VS"), nullptr, 16)) : 0;
+    bool traced = (trace_prog && s.vs && s.vs->hash == trace_prog) || (trace_vs && s.vs_handle == trace_vs);
+    int prog_traces = traced && (!trace_blended || simple(kMBlendEnable)) ? 3 : 0;
     if (prog_traces)
         LOGI("traceprog draw %u prim %u n %u blend %u %X %X at %u ref %X tex0 %08X tex1 %08X tex2 %08X", draw, prim, count,
              simple(kMBlendEnable), simple(kMSrcBlend), simple(kMDestBlend), simple(kMAlphaTestEnable), simple(kMAlphaRef),

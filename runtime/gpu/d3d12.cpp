@@ -148,6 +148,44 @@ O vs(uint id : SV_VertexID) {
 float psmain(O i) : SV_Depth { return img.SampleLevel(ps, i.uv, 0); }
 )";
 
+// a D24S8 depth buffer as the console's memory holds it, read through a 32 bit colour format: bytes 0 to 3 of each
+// dword are the stencil and depth bits 7:0, 15:8 and 23:16; order picks the byte each of R G B A takes, as that
+// format's decode would (DepthByteOrder). Conker's depth of field reads depth through LIN_A8B8G8R8 (A the top byte)
+// and masks by stencil through LIN_R8G8B8A8.
+const char* kDepthBytesHlsl = R"(
+cbuffer B : register(b1) { float4 order; };
+Texture2D<float> img : register(t0);
+Texture2D<uint2> sten : register(t1);
+struct O { float4 p : SV_Position; float2 uv : TEXCOORD0; };
+O vs(uint id : SV_VertexID) {
+    O o;
+    o.uv = float2((id << 1) & 2, id & 2);
+    o.p = float4(o.uv * float2(2, -2) + float2(-1, 1), 0, 1);
+    return o;
+}
+float depthbyte(O i, uint k) {
+    uint z = (uint)round(saturate(img.Load(int3(i.p.xy, 0))) * 16777215.0);
+    uint d = z << 8 | (sten.Load(int3(i.p.xy, 0)).g & 255);
+    return ((d >> (k * 8)) & 255) / 255.0;
+}
+float4 psmain(O i) : SV_Target {
+    return float4(depthbyte(i, (uint)order.x), depthbyte(i, (uint)order.y), depthbyte(i, (uint)order.z), depthbyte(i, (uint)order.w));
+}
+)";
+
+// the memory byte R G B A take in a 32 bit colour format, as texture.cpp decodes it
+void DepthByteOrder(uint32_t format, float order[4]) {
+    static const float argb[4] = {2, 1, 0, 3}, abgr[4] = {0, 1, 2, 3}, bgra[4] = {1, 2, 3, 0}, rgba[4] = {3, 2, 1, 0};
+    const float* o = argb;
+    switch (format) {
+        case 0x3A: case 0x3F: o = abgr; break;
+        case 0x3B: case 0x40: o = bgra; break;
+        case 0x3C: case 0x41: o = rgba; break;
+        default: break;
+    }
+    std::copy(o, o + 4, order);
+}
+
 float Bits(uint32_t v) {
     float f;
     std::memcpy(&f, &v, 4);
@@ -479,6 +517,7 @@ private:
     void DrawFullScreen(ID3D12PipelineState* pso, D3D12_GPU_VIRTUAL_ADDRESS cb, uint32_t srv_slot,
                         std::optional<uint32_t> sampler_slot = {});
     ID3D12Resource* Feedback(Target& t) override;
+    ID3D12Resource* DepthBytes(Target& z, uint32_t format);
     void Resolve(Target& t) {
         if (t.range != 1 && ext_) ext_->Resolve(*this, t);
     }
@@ -990,6 +1029,10 @@ void D3D12Backend::ReleaseTarget(std::unordered_map<uint64_t, Target>::iterator 
     (it->second.depth ? free_dsv_ : free_rtv_).push_back(it->second.view);
     CurrentFrame().garbage.push_back(it->second.res);
     if (it->second.fb) CurrentFrame().garbage.push_back(it->second.fb);
+    if (it->second.zb) {
+        CurrentFrame().garbage.push_back(it->second.zb);
+        free_rtv_.push_back(it->second.zb_view);
+    }
     targets_.erase(it);
 }
 
@@ -1425,6 +1468,7 @@ void D3D12Backend::Pass(const char* hlsl, const char* entry, DXGI_FORMAT rtv, D3
         sv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
         sv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
         sv.Texture2D.MipLevels = 1;
+        if (sv.Format == DXGI_FORMAT_X24_TYPELESS_G8_UINT) sv.Texture2D.PlaneSlice = 1;  // a depth buffer's stencil
         dev_->CreateShaderResourceView(i < 3 ? src[i] : nullptr, &sv, Cpu(srv_heap_.Get(), slot + i, srv_inc_));
     }
     Alloc cb = Upload(256, 256);
@@ -1437,6 +1481,34 @@ void D3D12Backend::Pass(const char* hlsl, const char* entry, DXGI_FORMAT rtv, D3
     }
     DrawFullScreen(pso, cb.gpu, slot);
     bound_rt_ = bound_ds_ = nullptr;
+}
+
+// the depth target's bytes as colour, drawn again each time a draw reads them; null without a free view
+ID3D12Resource* D3D12Backend::DepthBytes(Target& z, uint32_t format) {
+    if (!z.zb) {
+        if (free_rtv_.empty()) return nullptr;
+        D3D12_HEAP_PROPERTIES hp{D3D12_HEAP_TYPE_DEFAULT};
+        D3D12_RESOURCE_DESC td = Texture2DDesc(kBgra, z.w, z.h);
+        td.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+        D3D12_CLEAR_VALUE cv{};
+        cv.Format = kBgra;
+        z.zb_state = D3D12_RESOURCE_STATE_RENDER_TARGET;
+        if (FAILED(dev_->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &td, z.zb_state, &cv, IID_PPV_ARGS(&z.zb))))
+            return nullptr;
+        z.zb_view = free_rtv_.back();
+        free_rtv_.pop_back();
+        dev_->CreateRenderTargetView(z.zb.Get(), nullptr, Cpu(rtv_heap_.Get(), z.zb_view, rtv_inc_));
+    }
+    if (cap_) fprintf(cap_, "%04u depth bytes %08X format %X\n", cap_i_++, z.data, format);
+    Transition(z.res.Get(), z.state, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+    Transition(z.zb.Get(), z.zb_state, D3D12_RESOURCE_STATE_RENDER_TARGET);
+    ID3D12Resource* const src[3] = {z.res.Get(), z.res.Get(), nullptr};
+    const DXGI_FORMAT fmt[3] = {DXGI_FORMAT_R24_UNORM_X8_TYPELESS, DXGI_FORMAT_X24_TYPELESS_G8_UINT, kBgra};
+    float p[8] = {};
+    DepthByteOrder(format, p);
+    Pass(kDepthBytesHlsl, "psmain", kBgra, Cpu(rtv_heap_.Get(), z.zb_view, rtv_inc_), z.w, z.h, src, fmt, p, -1);
+    Transition(z.zb.Get(), z.zb_state, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+    return z.zb.Get();
 }
 
 // a copy of the target to read while drawing to it
@@ -1779,6 +1851,18 @@ ID3D12Resource* D3D12Backend::BindTexture(const State& s, int stage, DrawTexture
     auto tit = targets_.find(SizedTargetKey(d.data, fi.depth, d.width, d.height) | alt);
     if (tit != targets_.end() && !d.cube && d.depth == 1 && !fi.compressed) {
         return BindTargetTexture(s, stage, d, tit->second, box, stages);
+    }
+    // a depth buffer read through a 32 bit colour format: the GPU holds it, guest memory does not
+    if (tit == targets_.end() && !fi.depth && !fi.compressed && fi.bits == 32 && !d.cube && d.depth == 1) {
+        auto zit = targets_.find(SizedTargetKey(d.data, true, d.width, d.height));
+        if (zit != targets_.end() && zit->second.res) {
+            if (ID3D12Resource* r = DepthBytes(zit->second, d.format)) {
+                stages.rt[stage] = true;
+                info.kind = kTex2D;
+                sv.Format = kBgra;
+                return r;
+            }
+        }
     }
     return BindGuestTexture(s, stage, d, fi, stages);
 }
