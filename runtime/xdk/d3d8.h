@@ -12,4 +12,8 @@ std::recursive_mutex& Lock();
 // the flush would have pushed for these dirty bits take the chip back from the title's own raw writes.
 void DeferredFlush(uint32_t dirty);
 
+// Reads every command the title has pushed so far. A title that patches a push buffer it already queued (the
+// library's RunPushBuffer fixups) calls this first: the chip ran the earlier runs before the patch landed.
+void FlushPending();
+
 }  // namespace d3d

@@ -371,6 +371,11 @@ void DeferredFlush(uint32_t dirty) {
     ApplyFlush(dirty);
 }
 
+void FlushPending() {
+    std::lock_guard<std::recursive_mutex> lock(g_lock);
+    Walk(Dev(kDevPush));
+}
+
 }  // namespace d3d
 
 using namespace d3d;
