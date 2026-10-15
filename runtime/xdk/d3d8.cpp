@@ -1466,24 +1466,17 @@ void EndPrimitive() {
 // header per distinct pair keeps the renderers' caches steady (FindImage keys on the decoded values).
 uint32_t InlineTexture(uint32_t offset, uint32_t format) {
     if (!offset || !format) return 0;
-    struct Entry {
-        uint32_t off, fmt, header;
-    };
-    static Entry entries[64];
-    static uint32_t count = 0;
-    for (uint32_t i = 0; i < count; i++)
-        if (entries[i].off == offset && entries[i].fmt == format) return entries[i].header;
-    if (count == 64) count = 0;  // recycle the table, never the headers: a live header must stay stable
-    uint32_t h = mem::AllocSystem(20);
+    // every header is kept: a live header must stay stable, and a bounded table that forgot entries made a scene
+    // with more distinct pairs than it held allocate a header on every rebind until system memory ran out
+    static std::unordered_map<uint64_t, uint32_t> headers;
+    uint32_t& h = headers[uint64_t(offset) << 32 | format];
+    if (h) return h;
+    h = mem::AllocSystem(20);
     W32(h + 0, 0x01040001);            // D3DPixelContainer
     W32(h + 4, offset | 0x80000000u);  // Describe() maps the physical view back to the virtual address
     W32(h + 8, 0);
     W32(h + 12, format);
     W32(h + 16, 0);  // no linear size: the log2 dimensions in the format word are what describe the surface
-    entries[count].off = offset;
-    entries[count].fmt = format;
-    entries[count].header = h;
-    count++;
     if (std::getenv("XBE_TRACE_WALK"))
         std::fprintf(stderr, "INLINETEX header=%08X offset=%08X format=%08X\n", h, offset, format);
     return h;
