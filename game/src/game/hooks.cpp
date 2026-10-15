@@ -56,6 +56,20 @@ X86_FUNC(sub_0004FF00) {
     __imp__sub_0004FF00(ctx, base);
 }
 
+// 0x4C950: the controller layer's init. It first opens the pads XGetDevices reports (0x3D19C0, which marks each
+// one inserted at byte 0x13C of its 0x140-byte record in the table at [0x806FD8]), then replaces that table with a
+// zeroed one. The stick filter (0x4CF80) zeroes both sticks of a pad not marked inserted, while buttons pass. On
+// the console the pads enumerate later and arrive through XGetDeviceChanges into the new table; the runtime has
+// them present from XInitDevices on, so mark the pads that were opened (handles at 0x806A48, record slot per port
+// at 0x80692C) in the new table.
+X86_EXTERN_FUNC(__imp__sub_0004C950);
+X86_FUNC(sub_0004C950) {
+    __imp__sub_0004C950(ctx, base);
+    using kernel::R32;
+    for (uint32_t port = 0; port < 4; port++)
+        if (R32(0x806A48 + port * 4)) base[R32(0x806FD8) + base[0x80692C + port] * 0x140 + 0x13C] = 1;
+}
+
 // 0x538D50: begin a frame's render target and clear it. It called the library's pushbuffer submit/kickoff
 // (0x53F0E0, 0x53F2F0) which read the miniport; do the same work through the host's D3D8 implementation.
 // The library used SetRenderTarget(backbuffer, autoDepth) then Clear(target|depth, black, z=1).

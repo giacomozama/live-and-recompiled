@@ -249,6 +249,13 @@ Note: release builds only write `LOGR`/`LOGE` lines; opt-in traces must use `LOG
   `DUMP_PS=<handle>` prints the translated combiner, `TRACE_VS=<handle>` traces by D3D shader handle. D3D12 F3
   capture: run with `XBE_CAPTURE_DIR=cap`.
 
+### Analog sticks (2026-10-15)
+
+Sticks were dead in game and menus while buttons worked. The controller init (0x4C950) marks the pads XGetDevices
+reports as inserted (byte 0x13C of each 0x140-byte record at [0x806FD8]) and then swaps in a zeroed table; the stick
+filter 0x4CF80 zeroes a pad not marked inserted. On the console pads enumerate later and arrive through
+XGetDeviceChanges. A hook on 0x4C950 re-marks the opened pads in the new table. Harness pad script: `LS/LSD/LSL/LSR`.
+
 ### Curtains, cutscene skipping, profiler (2026-10-15)
 - **Curtains** (Berri's room) drew flat fog colour. The library's fog flush (`0x5421D0`, dirty `0x2000`) pushes
   `FOG_ENABLE` and, when on, `FOG_MODE`/`FOG_PARAMS` worked out from the D3D fog states *at that moment*, plus the
