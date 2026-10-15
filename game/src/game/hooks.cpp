@@ -4,13 +4,16 @@
 // are the ones that drive the hardware directly (the per-frame buffer clear, which reads the miniport).
 //
 // A strong X86_FUNC replaces the recompiled function at that address.
+#include <cstdio>
 #include <cstdlib>
+#include <algorithm>
 #include <cstring>
 
 #include "xdk/hle.h"
 #include "cpu/x86_ops.h"
 #include "core/diag.h"
 #include "xdk/d3d8.h"
+#include "xdk/dsound.h"
 
 namespace {
 
@@ -92,35 +95,68 @@ X86_FUNC(sub_004C3F2F) {
     kernel::Return(ctx, 0, 2);
 }
 
-// 0x4C3DFE: the shared body of the library's two voice-descriptor setters (buffer 0x4C51B8 and stream
-// 0x4C5235 both reach it, neither is an ordinal import, so the signature scan never named them). It stores a
-// descriptor through the console voice's [voice+0xb8] field, which the runtime's host objects do not build.
-// The host mixer recomputes voice state from the API calls it HLEs, so the console write is skipped.
+// The library's two voice-descriptor setters, stream 0x4C5235 (stream, descriptor; it jumps to 0x4C4EF5) and buffer
+// 0x4C51B8 (buffer, descriptor; it calls 0x4C4BCB). Their shared body 0x4C3DFE stores the descriptor through the
+// console voice's [voice+0xb8], which the runtime's host objects do not build. XACT fills the descriptor from the
+// 3D calculator below (0x4C4613 writes it): +4 distance and +8 cone volume, +0x1C the I3DL2 direct path (occlusion),
+// in hundredths of a dB, +0x28 the azimuth in degrees. The fields keep their last values, the flags only say which
+// changed. Hand the voice its 3D attenuation and pan; without it every 3D sound played at full volume everywhere.
+static void Voice3d(uint32_t obj, uint32_t d) {
+    using kernel::R32;
+    auto i = [&](uint32_t o) { return int32_t(R32(d + o)); };
+    auto f = [&](uint32_t o) {
+        float v;
+        uint32_t u = R32(d + o);
+        std::memcpy(&v, &u, 4);
+        return v;
+    };
+    static const bool trace = std::getenv("XBE_TRACE_DSOUND") != nullptr;
+    if (trace)
+        LOGR("dsound3d: %08X flags %02X dist %d cone %d pairA %d %d pairB %d %d i3dl2 %d %d pitch %d ang %.1f %.2f", obj,
+             R32(d), i(4), i(8), i(0xC), i(0x10), i(0x14), i(0x18), i(0x1C), i(0x20), i(0x24), f(0x28), f(0x2C));
+    int32_t att = std::max(i(4) + i(8) + i(0x1C), -10000);
+    dsound::SetVoice3d(obj, att, f(0x28));
+}
+// hooked at the entries the title calls (the recompiler folds 0x4C4EF5 into 0x4C5235's jump), both (object, descriptor)
+X86_FUNC(sub_004C5235) {
+    (void)base;
+    Voice3d(kernel::R32(ctx.esp + 4), kernel::R32(ctx.esp + 8));
+    kernel::Return(ctx, 0, 2);
+}
+X86_FUNC(sub_004C51B8) {
+    (void)base;
+    Voice3d(kernel::R32(ctx.esp + 4), kernel::R32(ctx.esp + 8));
+    kernel::Return(ctx, 0, 2);
+}
+// any other way into the shared body would write the missing console voice: skip it
 X86_FUNC(sub_004C3DFE) {
     (void)base;
     kernel::Return(ctx, 0, 2);
 }
 
-// 0x4C5D4C (reached directly, and through the 0x4C606D export thunk): the library's 3D-parameter apply. It
-// pushes a voice's position/velocity/orientation into the console DSP through function pointers the library's
-// device init installs at 0x4E1D1C / 0x4E1D28. The runtime HLEs DirectSoundCreate and never runs that init, so
-// those pointers stay null and the call traps. The host mixer derives 3D attenuation from the voice's own
-// SetPosition/3D state, so the console write is skipped, like the other voice-register paths above.
-X86_FUNC(sub_004C5D4C) {
-    (void)base;
-    kernel::Return(ctx, 0, 2);
+// The library's 3D calculator: 0x4C5D4C (reached directly, and through the 0x4C606D export thunk) works out a
+// voice's 3D parameters against the listener, and the listener helpers (0x4C37C1.., reached from 0x4C4613 and
+// 0x4C9C86) turn them into mix-bin volumes, filter and pitch. XACT runs them for every 3D sound and hands the result
+// to 0x4C3DFE. They are math on the title's own structures, but go through the table of HRTF functions that
+// DirectSoundUseFullHRTF (0x4C3976) installs at 0x4E1D1C..0x4E1D44 by calling 0x4C753A, and the runtime's HLE of
+// it installs nothing. Install the table before they run.
+static void EnsureHrtf(X86Context& ctx) {
+    if (!kernel::R32(0x4E1D1C)) kernel::CallGuest(ctx, 0x4C753A, {});
 }
-
-// The listener's 3D parameter helpers (0x4C4613 and 0x4C9C86 reach them): each tail forwards to a DSP
-// function pointer the library's skipped device init installs in the 0x4E1D20..0x4E1D40 table, so calling it
-// traps on null. They are console voice writes the host mixer does not need; skip them.
-X86_FUNC(sub_004C37C1) { (void)base; kernel::Return(ctx, 0, 8); }
-X86_FUNC(sub_004C37EA) { (void)base; kernel::Return(ctx, 0, 8); }
-X86_FUNC(sub_004C3821) { (void)base; kernel::Return(ctx, 0, 5); }
-X86_FUNC(sub_004C3841) { (void)base; kernel::Return(ctx, 0, 7); }
-X86_FUNC(sub_004C3875) { (void)base; kernel::Return(ctx, 0, 4); }
-X86_FUNC(sub_004C3897) { (void)base; kernel::Return(ctx, 0, 4); }
-X86_FUNC(sub_004C9C86) { (void)base; kernel::Return(ctx, 0, 4); }
+#define HRTF_USER(addr)                 \
+    X86_EXTERN_FUNC(__imp__sub_##addr); \
+    X86_FUNC(sub_##addr) {              \
+        EnsureHrtf(ctx);                \
+        __imp__sub_##addr(ctx, base);   \
+    }
+HRTF_USER(004C5D4C)
+HRTF_USER(004C37C1)
+HRTF_USER(004C37EA)
+HRTF_USER(004C3821)
+HRTF_USER(004C3841)
+HRTF_USER(004C3875)
+HRTF_USER(004C3897)
+HRTF_USER(004C9C86)
 
 // 0x543170: the library's deferred state flush, which re-pushes hardware state for the dirty flags it finds.
 // The runtime translates the D3D8 API directly and decodes the engine's own pushbuffer writes (d3d::Walk), so

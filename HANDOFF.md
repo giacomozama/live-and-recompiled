@@ -1146,3 +1146,25 @@ and the `0x4E1D20..0x4E1D40` table of DSP function pointers the library's device
   the Steam `compatibilitytools.d` directory.
 - `.gitignore` files: `iso/`, `game/{out,assets,prefix,winrun,generated,third_party/mingw/lib}` are ignored;
   the SDK changes live only in `patches/`, so **apply the patch after any fresh SDK checkout**.
+
+### Audio: XACT clock, stream stops, 3D sound (2026-10-15)
+- **XACT's clock** reads the APU's free-running 48 kHz sample counter `0xFE80200C` (`0x55485B`). The scratch-backed
+  register stayed 0, so every timed XACT event (fades, timed stops, transitions) never ended. `dsound.cpp` now runs it
+  from the host clock.
+- **Stream stops**: XACT stops a stream voice with `FlushEx` async (flags 1, or 5 with the release envelope) and then
+  waits for `GetStatus` to report `ENVELOPECOMPLETE` (`0x80000`, the library's `0x4C8943` reads voice flag `0x2000`)
+  before it stops reading the wave; without it the rest of the wave was streamed after every stop. Async flushes now
+  stop the voice at once and flush at the next `DirectSoundDoWork`; `GetStatus` reports READY/PLAYING/PAUSED/STARVED
+  and ENVELOPECOMPLETE; `Pause(3)` holds a stream that has not started.
+- **3D sound**: XACT runs the library's software 3D calculator (`0x4C5D4C`, `0x4C4613` and the listener helpers
+  `0x4C37C1..`) through the HRTF function table at `0x4E1D1C..0x4E1D44`, which `DirectSoundUseFullHRTF` fills by calling
+  `0x4C753A`. The runtime HLEs that call as a no-op, the table stayed null, and the calculator had been hooked out,
+  so every 3D sound played at full volume everywhere (the pub sign's creak). The hooks now install the table and let
+  the calculator run; the voice setters `0x4C5235` (stream) / `0x4C51B8` (buffer) hand the descriptor (`+4` distance,
+  `+8` cone, `+0x1C` I3DL2 direct volume, `+0x28` azimuth) to `dsound::SetVoice3d`. Azimuth sign assumed positive =
+  right.
+- `InlineTexture` (`d3d8.cpp`) kept a 64-entry table that reset when full, so a scene with more distinct inline
+  textures allocated a header per rebind until system memory ran out; it is a map now.
+- Traces: `XBE_TRACE_DSOUND=1` (voice calls, packets with the `.xwb` they came from, per-voice RMS every second,
+  3D descriptors), `=all` adds volume/mix calls, `XBE_TRACE_VOICE=<obj>` logs one stream's status polls. Harness runs
+  keep the title's saves in their folder: use a fresh one for a reproducible run.

@@ -1414,6 +1414,20 @@ index 6bd6d0b..16d5c8c 100644
 +std::string DescribeInputs(const State& s, uint32_t start, const uint8_t* indices, uint32_t vertices);
 +
  }  // namespace gpu
+diff --git a/runtime/kernel/files.cpp b/runtime/kernel/files.cpp
+index e34ffbb..f8feda0 100644
+--- a/runtime/kernel/files.cpp
++++ b/runtime/kernel/files.cpp
+@@ -488,6 +488,9 @@ static uint32_t Transfer(const Args& a, bool write, uint32_t pages) {
+         if (done < chunk) break;
+     }
+     f->pos = pos + n;
++    static const bool trace = std::getenv("XBE_TRACE_DSOUND") != nullptr;
++    if (trace && !write && !pages && f->xbox.size() > 4 && f->xbox.compare(f->xbox.size() - 4, 4, ".xwb") == 0)
++        LOGR("xwb read %s %llX %X -> %08X", f->xbox.c_str(), (unsigned long long)pos, n, buf);
+     if (write && n < len) return Finish(*f, 0xC000007F, n, event, apc, apc_ctx, iosb);  // disk full
+     if (!write && len && !n) return Finish(*f, kEndOfFile, 0, event, apc, apc_ctx, iosb);
+     return Finish(*f, kSuccess, n, event, apc, apc_ctx, iosb);
 diff --git a/runtime/kernel/memory.cpp b/runtime/kernel/memory.cpp
 index be024fa..4352d55 100644
 --- a/runtime/kernel/memory.cpp
@@ -1502,7 +1516,7 @@ index 86cf14a..dbef3f8 100644
  KERNEL_FASTCALL(251, ObfReferenceObject) { return 0; }
  
 diff --git a/runtime/xdk/d3d8.cpp b/runtime/xdk/d3d8.cpp
-index cb38363..034171c 100644
+index cb38363..5b79631 100644
 --- a/runtime/xdk/d3d8.cpp
 +++ b/runtime/xdk/d3d8.cpp
 @@ -7,6 +7,7 @@
@@ -2209,7 +2223,7 @@ index cb38363..034171c 100644
  
  // visibility tests: depth passing pixels are counted while enabled, a report gets the count since the clear,
  // at a physical address in the first 16 MB
-@@ -1049,36 +1457,368 @@ void EndPrimitive() {
+@@ -1049,36 +1457,361 @@ void EndPrimitive() {
      g_state.vs_handle = handle;
  }
  
@@ -2222,24 +2236,17 @@ index cb38363..034171c 100644
 +// header per distinct pair keeps the renderers' caches steady (FindImage keys on the decoded values).
 +uint32_t InlineTexture(uint32_t offset, uint32_t format) {
 +    if (!offset || !format) return 0;
-+    struct Entry {
-+        uint32_t off, fmt, header;
-+    };
-+    static Entry entries[64];
-+    static uint32_t count = 0;
-+    for (uint32_t i = 0; i < count; i++)
-+        if (entries[i].off == offset && entries[i].fmt == format) return entries[i].header;
-+    if (count == 64) count = 0;  // recycle the table, never the headers: a live header must stay stable
-+    uint32_t h = mem::AllocSystem(20);
++    // every header is kept: a live header must stay stable, and a bounded table that forgot entries made a scene
++    // with more distinct pairs than it held allocate a header on every rebind until system memory ran out
++    static std::unordered_map<uint64_t, uint32_t> headers;
++    uint32_t& h = headers[uint64_t(offset) << 32 | format];
++    if (h) return h;
++    h = mem::AllocSystem(20);
 +    W32(h + 0, 0x01040001);            // D3DPixelContainer
 +    W32(h + 4, offset | 0x80000000u);  // Describe() maps the physical view back to the virtual address
 +    W32(h + 8, 0);
 +    W32(h + 12, format);
 +    W32(h + 16, 0);  // no linear size: the log2 dimensions in the format word are what describe the surface
-+    entries[count].off = offset;
-+    entries[count].fmt = format;
-+    entries[count].header = h;
-+    count++;
 +    if (std::getenv("XBE_TRACE_WALK"))
 +        std::fprintf(stderr, "INLINETEX header=%08X offset=%08X format=%08X\n", h, offset, format);
 +    return h;
@@ -2581,7 +2588,7 @@ index cb38363..034171c 100644
              } else if (m >= 0x1940 && m < 0x1980) {  // 4 bytes
                  a += (m - 0x1940) / 4 * 4;
                  for (int c = 0; c < 4; c++) a[c] = (v >> c * 8 & 0xFF) / 255.0f;
-@@ -1093,7 +1833,84 @@ void Walk(uint32_t end) {
+@@ -1093,7 +1826,84 @@ void Walk(uint32_t end) {
              } else if (m >= 0x1518 && m < 0x1528) {  // position, 4 floats
                  last = m == 0x1524;
                  a[(m - 0x1518) / 4] = f;
@@ -2666,7 +2673,7 @@ index cb38363..034171c 100644
                  continue;
              }
              if (!g_im_prim) continue;
-@@ -1101,6 +1918,20 @@ void Walk(uint32_t end) {
+@@ -1101,6 +1911,20 @@ void Walk(uint32_t end) {
              if (a == g_im_attr && last) g_im_vertices.insert(g_im_vertices.end(), g_im_attr, g_im_attr + 64);
          }
      }
@@ -2687,7 +2694,7 @@ index cb38363..034171c 100644
      g_walk = end;
  }
  }  // namespace
-@@ -1109,6 +1940,10 @@ void Walk(uint32_t end) {
+@@ -1109,6 +1933,10 @@ void Walk(uint32_t end) {
  HLE_STDCALL(D3DDevice_DrawVerticesUP, 4) {
      std::lock_guard<std::recursive_mutex> lock(g_lock);
      Walk(Dev(kDevPush));
@@ -2698,7 +2705,7 @@ index cb38363..034171c 100644
      DrawUp(a[0], a[1], HostPtr(a[2]), a[3]);
      return 0;
  }
-@@ -1123,8 +1958,10 @@ HLE_STDCALL(D3DDevice_BeginPush, 1) {
+@@ -1123,8 +1951,10 @@ HLE_STDCALL(D3DDevice_BeginPush, 1) {
  
  HLE_STDCALL(D3DDevice_EndPush, 1) {
      std::lock_guard<std::recursive_mutex> lock(g_lock);
@@ -2710,7 +2717,7 @@ index cb38363..034171c 100644
      uint32_t prim = 0;
      for (uint32_t p = g_push_begin, end = a[0]; g_push_begin && p + 4 <= end;) {
          // count in bits 18 to 28, bit 30 keeps the method for every value
-@@ -1136,19 +1973,42 @@ HLE_STDCALL(D3DDevice_EndPush, 1) {
+@@ -1136,19 +1966,42 @@ HLE_STDCALL(D3DDevice_EndPush, 1) {
          }
          for (uint32_t i = 0; i < n; i++, p += 4) {
              uint32_t m = head & 0x40000000 ? method : method + i * 4, v = R32(p);
@@ -2774,10 +2781,23 @@ index 977d028..1fb1b00 100644
 +
  }  // namespace d3d
 diff --git a/runtime/xdk/dsound.cpp b/runtime/xdk/dsound.cpp
-index 05977b5..62d6bf9 100644
+index 05977b5..5d43233 100644
 --- a/runtime/xdk/dsound.cpp
 +++ b/runtime/xdk/dsound.cpp
-@@ -75,6 +75,42 @@ X86Func* Find(uint32_t guest);
+@@ -6,10 +6,12 @@
+ #include <condition_variable>
+ #include <deque>
+ #include <map>
++#include <thread>
+ #include <vector>
+ 
+ #include "audio/audio.h"
+ #include "xbe/xbe.h"
++#include "xdk/dsound.h"
+ #include "xdk/hle.h"
+ #include "xdk/layout.h"
+ 
+@@ -75,6 +77,42 @@ X86Func* Find(uint32_t guest);
  #define SYM_IDirectSoundStream_SetEG FFFFFF0C
  #define HAS_IDirectSoundStream_SetEG 0
  #endif
@@ -2820,7 +2840,145 @@ index 05977b5..62d6bf9 100644
  
  namespace {
  
-@@ -397,6 +433,9 @@ uint32_t NewBuffer(uint32_t desc, uint32_t out) {
+@@ -101,6 +139,11 @@ struct Voice {
+     bool playing = false, looping = false, paused = false;
+     bool sync = false;  // held until IDirectSound_SynchPlayback
+     bool active = false, ending = false;  // stream: took a packet since it went quiet, quiet again once they run out
++    bool hold = false;      // stream: paused with no activate, plays nothing until resumed
++    bool flushing = false;  // stream: stopped by an async FlushEx, its packets are flushed at the next DoWork
++    // stream: that FlushEx asked for the release envelope, and the flush that ends it is done. XACT waits for the
++    // ENVELOPECOMPLETE status before it stops reading the wave; without it, it streamed the rest after every stop.
++    bool releasing = false, released = false;
+     double pos = 0;  // frames
+     uint32_t freq = 0;
+     // stream
+@@ -114,6 +157,9 @@ struct Voice {
+     bool is3d = false;
+     uint32_t mode = 0;  // DS3DMODE: 1 head relative, 2 disabled
+     float p[3] = {}, min_dist = 1, max_dist = 1e9f;
++    bool calc3d = false;  // the title's own 3D calculator drives the voice (dsound::SetVoice3d)
++    float att3d = 1, pan3d = 0;
++    double energy = 0;  // XBE_TRACE_DSOUND: sum of squares mixed since the last report
+     // ADPCM block cache
+     int64_t block = -1;
+     int16_t decoded[65 * 8];
+@@ -135,6 +181,12 @@ std::atomic<int64_t> g_pumped{0};          // the last DirectSoundDoWork, steady
+ bool g_started = false;
+ uint32_t g_ds = 0;
+ 
++const bool g_trace = std::getenv("XBE_TRACE_DSOUND") != nullptr;
++#define DSTRACE(...) \
++    do {                \
++        if (g_trace) LOGR(__VA_ARGS__); \
++    } while (0)
++
+ float Db(int32_t hundredths) { return hundredths <= -10000 ? 0.0f : std::pow(10.0f, hundredths / 2000.0f); }
+ 
+ uint32_t FramesOf(const Voice& v, uint32_t bytes) {
+@@ -223,6 +275,13 @@ void Levels(Voice& v, float g[2][2]) {
+             if (!speakers || b == 2 || (b & 1)) g[c][1] = std::max(g[c][1], x);
+         }
+     }
++    if (v.calc3d) {
++        for (int c = 0; c < 2; c++) {
++            g[c][0] *= v.att3d * std::min(1.0f, 1.0f - v.pan3d);
++            g[c][1] *= v.att3d * std::min(1.0f, 1.0f + v.pan3d);
++        }
++        return;
++    }
+     if (!v.is3d || v.mode == 2) return;
+     bool rel = v.mode == 1;  // the position is already in listener space
+     float d[3] = {v.p[0], v.p[1], v.p[2]};
+@@ -258,7 +317,7 @@ void Render(float* out, uint32_t frames) {
+     std::memset(out, 0, frames * 2 * sizeof(float));
+     std::lock_guard<std::recursive_mutex> lock(g_lock);
+     for (auto& [obj, v] : g_voices) {
+-        if (v.paused || v.sync || (!v.stream && !v.playing)) continue;
++        if (v.paused || v.sync || v.hold || v.flushing || (!v.stream && !v.playing)) continue;
+         float g[2][2];
+         Levels(v, g);
+         uint32_t base = v.data + v.play_start;
+@@ -315,12 +374,28 @@ void Render(float* out, uint32_t frames) {
+             float t = float(v.pos - f);
+             a += (a1 - a) * t;
+             b += (b1 - b) * t;
+-            out[i * 2] += a * g[0][0] + b * g[1][0];
+-            out[i * 2 + 1] += a * g[0][1] + b * g[1][1];
++            float l = a * g[0][0] + b * g[1][0], r = a * g[0][1] + b * g[1][1];
++            out[i * 2] += l;
++            out[i * 2 + 1] += r;
++            v.energy += l * l + r * r;
+             v.pos += step;
+         }
+     }
+     for (uint32_t i = 0; i < frames * 2; i++) out[i] = std::clamp(out[i], -1.0f, 1.0f);
++    static uint64_t rendered = 0;
++    if (g_trace && (rendered += frames) >= audio::kRate) {
++        rendered = 0;
++        std::string list;
++        for (auto& [obj, v] : g_voices) {
++            double rms = std::sqrt(v.energy / (2.0 * audio::kRate));
++            v.energy = 0;
++            if (rms < 1e-4) continue;
++            char b[96];
++            std::snprintf(b, sizeof b, " %08X%s%s(%.3f)", obj, v.stream ? "s" : "", v.looping ? "L" : "", rms);
++            list += b;
++        }
++        LOGR("dsound: audible%s", list.c_str());
++    }
+ }
+ 
+ int64_t NowMs() {
+@@ -328,6 +403,22 @@ int64_t NowMs() {
+     return duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count();
+ }
+ 
++// an async FlushEx stops the voice at once and flushes later, so the packets the title still submits in between go
++// with it. Their callbacks join the queue the next DirectSoundDoWork runs.
++void FinishFlushes() {
++    for (auto& [obj, v] : g_voices) {
++        if (!v.flushing) continue;
++        DSTRACE("dsound: %08X flush done, %zu packets", obj, v.packets.size());
++        for (auto& pk : v.packets) Complete(v, pk, kFlushed);
++        v.packets.clear();
++        v.pos = 0;
++        v.flushing = false;
++        v.released = v.releasing;
++        v.releasing = false;
++        Deactivate(v);
++    }
++}
++
+ void Run(X86Context& ctx, const std::vector<Done>& done) {
+     for (const Done& d : done) CallGuest(ctx, d.callback, {d.context, d.packet_context, d.status});
+ }
+@@ -336,6 +427,17 @@ void Start() {
+     if (g_started) return;
+     g_started = true;
+     audio::StartOutput(Render);
++    // the APU's free running 48 kHz sample counter (0xFE80200C): XACT times fades, stops and transitions with it, so
++    // with the scratch register left at 0 its clock never moved and timed events never ended
++    std::thread([] {
++        auto* counter = static_cast<volatile uint32_t*>(HostPtr(0xFE80200C));
++        auto start = std::chrono::steady_clock::now();
++        for (;;) {
++            auto us = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - start).count();
++            *counter = uint32_t(uint64_t(us) * audio::kRate / 1000000);
++            std::this_thread::sleep_for(std::chrono::milliseconds(1));
++        }
++    }).detach();
+     // for a title that never calls DirectSoundDoWork: its callbacks come from here instead
+     StartHostThread("dsound", [](X86Context& ctx) {
+         constexpr int64_t kPumpMs = 250;
+@@ -345,6 +447,7 @@ void Start() {
+                 std::unique_lock<std::recursive_mutex> lock(g_lock);
+                 g_done_cv.wait_for(lock, std::chrono::milliseconds(50));
+                 if (NowMs() - g_pumped < kPumpMs) continue;
++                FinishFlushes();
+                 done.assign(g_done.begin(), g_done.end());
+                 g_done.clear();
+             }
+@@ -397,6 +500,9 @@ uint32_t NewBuffer(uint32_t desc, uint32_t out) {
      Voice& v = g_voices[obj];
      v.obj = obj;
      uint32_t flags = R32(desc + 4), bytes = R32(desc + 8);  // DSBUFFERDESC: size, flags, bytes, format, mix bins
@@ -2830,7 +2988,7 @@ index 05977b5..62d6bf9 100644
      ReadFormat(v, R32(desc + 12));
      SetBins(v, R32(desc + 16));
      v.is3d = flags & 0x10;  // DSBCAPS_CTRL3D
-@@ -409,6 +448,32 @@ uint32_t NewBuffer(uint32_t desc, uint32_t out) {
+@@ -409,6 +515,34 @@ uint32_t NewBuffer(uint32_t desc, uint32_t out) {
      return 0;
  }
  
@@ -2854,6 +3012,8 @@ index 05977b5..62d6bf9 100644
 +    v.callback = R32(desc + 12);
 +    v.context = R32(desc + 16);
 +    SetBins(v, R32(desc + 20));
++    DSTRACE("dsound: %08X new stream flags %X packets %u callback %08X context %08X", obj, flags, v.max_packets, v.callback,
++            v.context);
 +    v.is3d = flags & 0x10;  // DSSTREAMCAPS_CTRL3D
 +    v.headroom = DefaultHeadroom(flags);
 +    W32(out, obj);
@@ -2863,7 +3023,23 @@ index 05977b5..62d6bf9 100644
  float F32(uint32_t v) {
      float f;
      std::memcpy(&f, &v, 4);
-@@ -447,7 +512,10 @@ static void AuditExports() {
+@@ -417,6 +551,15 @@ float F32(uint32_t v) {
+ 
+ }  // namespace
+ 
++void dsound::SetVoice3d(uint32_t obj, int32_t attenuation_mb, float azimuth) {
++    std::lock_guard<std::recursive_mutex> lock(g_lock);
++    Voice* v = Find(obj);
++    if (!v) return;
++    v->calc3d = true;
++    v->att3d = Db(attenuation_mb);
++    v->pan3d = std::sin(azimuth * 3.14159265f / 180.0f);
++}
++
+ // device
+ 
+ // DSOUND objects are the host's; .XTLID names linked exports that would still run console code on them
+@@ -447,7 +590,10 @@ static void AuditExports() {
          SYM(CDirectSoundStream_SetFrequency), SYM(CDirectSoundStream_SetFilter), SYM(CDirectSoundStream_SetHeadroom),
          SYM(CDirectSoundStream_SetMixBinVolumes), SYM(CDirectSoundStream_SetMixBins), SYM(CDirectSoundStream_SetMaxDistance),
          SYM(CDirectSoundStream_SetMinDistance), SYM(CDirectSoundStream_SetPosition), SYM(CDirectSoundStream_SetVelocity),
@@ -2875,7 +3051,40 @@ index 05977b5..62d6bf9 100644
      std::string left;
      // the library's own section: the WMA decoder shares the export ids and touches no DSOUND object
      uint32_t lo = 0, hi = 0;
-@@ -739,30 +807,11 @@ BUFFER(SetFormat, 2) {
+@@ -513,6 +659,7 @@ HLE_STDCALL(DirectSoundDoWork, 0) {
+     std::vector<Done> done;
+     {
+         std::lock_guard<std::recursive_mutex> lock(g_lock);
++        FinishFlushes();
+         done.assign(g_done.begin(), g_done.end());
+         g_done.clear();
+     }
+@@ -589,11 +736,24 @@ HLE_STDCALL(IDirectSound_GetOutputLevels, 3) {
+ HLE_STDCALL(DirectSoundCreateBuffer, 2) { return NewBuffer(a[0], a[1]); }
+ HLE_STDCALL(IDirectSound_CreateSoundBuffer, 4) { return NewBuffer(a[1], a[2]); }
+ 
++// XBE_TRACE_DSOUND: the calls that start, stop or reroute a voice
++template <class A>
++static void Trace(const char* kind, const char* name, int nargs, const A& a) {
++    static const char* const kQuiet[] = {"GetStatus", "Process", "GetCurrentPosition", "GetInfo", "SetPosition",
++                                         "SetMixBinVolumes", "SetVolume", "SetFrequency", "SetFilter", "SetHeadroom"};
++    static const bool all = g_trace && !std::strcmp(std::getenv("XBE_TRACE_DSOUND"), "all");
++    if (!g_trace) return;
++    for (const char* q : kQuiet)
++        if (!std::strcmp(q, name) && (!all || !std::strcmp(q, "GetStatus") || !std::strcmp(q, "Process"))) return;
++    LOGR("dsound: %08X %s %s %X %X %X", a[0], kind, name, nargs > 1 ? a[1] : 0, nargs > 2 ? a[2] : 0, nargs > 3 ? a[3] : 0);
++}
++
+ #define BUFFER(name, nargs)                                 \
+     static uint32_t buf_##name(Voice& v, const Args& a);    \
+     HLE_STDCALL(IDirectSoundBuffer_##name, nargs) {         \
+         std::lock_guard<std::recursive_mutex> lock(g_lock); \
+         Voice* v = Find(a[0]);                              \
++        Trace("buf", #name, nargs, a);                      \
+         return v ? buf_##name(*v, a) : 0x80004005u;         \
+     }                                                       \
+     static uint32_t buf_##name([[maybe_unused]] Voice& v, [[maybe_unused]] const Args& a)
+@@ -739,30 +899,11 @@ BUFFER(SetFormat, 2) {
  
  // streams, the object carries the XDK's own vtable
  
@@ -2911,7 +3120,81 @@ index 05977b5..62d6bf9 100644
  
  #define STREAM(name, nargs)                                     \
      static uint32_t str_##name(Voice& v, const Args& a);        \
-@@ -891,3 +940,25 @@ STREAM(SetPosition, 5) {
+@@ -772,6 +913,7 @@ HLE_STDCALL(DirectSoundCreateStream, 2) {
+         {                                                       \
+             std::lock_guard<std::recursive_mutex> lock(g_lock); \
+             Voice* v = Find(a[0]);                              \
++            Trace("str", #name, nargs, a);                      \
+             r = v ? str_##name(*v, a) : 0x80004005u;            \
+             flushed.swap(t_flushed);                            \
+         }                                                       \
+@@ -785,6 +927,7 @@ static void FlushStream(Voice& v) {
+     for (auto& pk : v.packets) Complete(v, pk, kFlushed);
+     v.packets.clear();
+     v.pos = 0;
++    v.flushing = v.releasing = v.released = false;
+     for (auto it = g_done.begin(); it != g_done.end();) {
+         if (it->voice != v.obj) {
+             ++it;
+@@ -820,8 +963,18 @@ STREAM(GetInfo, 2) {
+     W32(info + 12, 0);
+     return 0;
+ }
++// DSSTREAMSTATUS: READY (room for a packet), then for a started stream PLAYING, or PAUSED, with STARVED when it ran
++// out of packets. A stream releasing after an async flush still plays until the flush, and reports
++// ENVELOPECOMPLETE once it is done (the library's 0x4C8943 reads its voice flag 0x2000).
+ STREAM(GetStatus, 2) {
+-    W32(a[1], v.packets.size() < v.max_packets ? 1u : 0u);  // XMEDIASTATUS_ACCEPT_INPUT
++    uint32_t st = v.packets.size() < v.max_packets ? 1u : 0u;
++    if (v.active && v.packets.empty() && !v.flushing) st |= 0x60000;
++    else if (v.active) st |= v.paused || v.sync ? 0x20000u : 0x10000u;
++    if (v.released) st |= 0x80000;
++    W32(a[1], st);
++    static const char* watch_env = std::getenv("XBE_TRACE_VOICE");
++    static const uint32_t watch = watch_env ? uint32_t(std::strtoul(watch_env, nullptr, 16)) : 0;
++    if (watch == v.obj) LOGR("dsound: %08X GetStatus -> %X (%zu packets)", v.obj, st, v.packets.size());
+     return 0;
+ }
+ STREAM(Process, 3) {
+@@ -830,9 +983,10 @@ STREAM(Process, 3) {
+     Packet pk{R32(in), R32(in + 4), R32(in + 8), R32(in + 12), R32(in + 16)};
+     if (pk.completed_ptr) W32(pk.completed_ptr, 0);
+     if (pk.status_ptr) W32(pk.status_ptr, kPacketPending);
++    if (g_trace) LOGR("dsound: %08X packet %08X %X%s", v.obj, pk.data, pk.size, v.active ? "" : " (starts)");
+     v.packets.push_back(pk);
+     v.active = true;
+-    v.ending = false;
++    v.ending = v.released = false;
+     return 0;
+ }
+ STREAM(Discontinuity, 1) {
+@@ -844,12 +998,23 @@ STREAM(Flush, 1) {
+     FlushStream(v);
+     return 0;
+ }
++// (this, time low, time high, flags): no flags flushes now, otherwise a started stream stops and flushes later
+ STREAM(FlushEx, 4) {
+-    if (a[3] && !v.active) return 0;
+-    FlushStream(v);
++    if (!a[3]) {
++        FlushStream(v);
++    } else if (v.active) {
++        v.flushing = true;
++        v.releasing = a[3] & 4;  // DSSTREAMFLUSHEX_ENVELOPE
++    }
+     return 0;
+ }
++// DSSTREAMPAUSE: 0 resume, 1 pause, 2 synch playback, 3 resume a started stream and hold one that has not started
+ STREAM(Pause, 2) {
++    if (a[1] == 3 && !v.active) {
++        v.hold = true;
++        return 0;
++    }
++    v.hold = false;
+     v.paused = a[1] == 1;
+     v.sync = a[1] == 2;
+     return 0;
+@@ -891,3 +1056,25 @@ STREAM(SetPosition, 5) {
  }
  STREAM(SetVelocity, 5) { return 0; }
  STREAM(SetI3DL2Source, 3) { return 0; }
@@ -2937,6 +3220,24 @@ index 05977b5..62d6bf9 100644
 +    if (a[1]) std::memset(HostPtr(a[1]), 0, 92);
 +    return 0;
 +}
+diff --git a/runtime/xdk/dsound.h b/runtime/xdk/dsound.h
+new file mode 100644
+index 0000000..cd9ca5d
+--- /dev/null
++++ b/runtime/xdk/dsound.h
+@@ -0,0 +1,12 @@
++#pragma once
++#include <cstdint>
++
++namespace dsound {
++
++// A title that runs the XDK's own 3D calculator (XACT does) hands each voice the result through the library's
++// voice-descriptor setter, which writes console voice registers the host objects do not have. The title's hook
++// passes it on here: obj is the buffer or stream the runtime returned, the attenuation is the sum of the distance,
++// cone and occlusion volumes in hundredths of a dB, and azimuth is in degrees, positive to the listener's right.
++void SetVoice3d(uint32_t obj, int32_t attenuation_mb, float azimuth);
++
++}  // namespace dsound
 diff --git a/runtime/xdk/xapi.cpp b/runtime/xdk/xapi.cpp
 index 0fc7b2e..8c837bc 100644
 --- a/runtime/xdk/xapi.cpp
