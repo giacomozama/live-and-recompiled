@@ -75,6 +75,42 @@ X86Func* Find(uint32_t guest);
 #define SYM_IDirectSoundStream_SetEG FFFFFF0C
 #define HAS_IDirectSoundStream_SetEG 0
 #endif
+#ifndef SYM_IDirectSoundStream_SetOutputBuffer
+#define SYM_IDirectSoundStream_SetOutputBuffer FFFFFF0D
+#define HAS_IDirectSoundStream_SetOutputBuffer 0
+#endif
+#ifndef SYM_IDirectSoundStream_SetPitch
+#define SYM_IDirectSoundStream_SetPitch FFFFFF0E
+#define HAS_IDirectSoundStream_SetPitch 0
+#endif
+#ifndef SYM_IDirectSoundStream_SetLFO
+#define SYM_IDirectSoundStream_SetLFO FFFFFF0F
+#define HAS_IDirectSoundStream_SetLFO 0
+#endif
+#ifndef SYM_IDirectSoundBuffer_SetPitch
+#define SYM_IDirectSoundBuffer_SetPitch FFFFFF10
+#define HAS_IDirectSoundBuffer_SetPitch 0
+#endif
+#ifndef SYM_IDirectSoundBuffer_SetLFO
+#define SYM_IDirectSoundBuffer_SetLFO FFFFFF11
+#define HAS_IDirectSoundBuffer_SetLFO 0
+#endif
+#ifndef SYM_IDirectSoundBuffer_SetEG
+#define SYM_IDirectSoundBuffer_SetEG FFFFFF12
+#define HAS_IDirectSoundBuffer_SetEG 0
+#endif
+#ifndef SYM_IDirectSoundBuffer_GetVoiceProperties
+#define SYM_IDirectSoundBuffer_GetVoiceProperties FFFFFF13
+#define HAS_IDirectSoundBuffer_GetVoiceProperties 0
+#endif
+#ifndef SYM_IDirectSoundStream_GetVoiceProperties
+#define SYM_IDirectSoundStream_GetVoiceProperties FFFFFF14
+#define HAS_IDirectSoundStream_GetVoiceProperties 0
+#endif
+#ifndef SYM_IDirectSound_CreateSoundStream
+#define SYM_IDirectSound_CreateSoundStream FFFFFF15
+#define HAS_IDirectSound_CreateSoundStream 0
+#endif
 
 namespace {
 
@@ -397,6 +433,9 @@ uint32_t NewBuffer(uint32_t desc, uint32_t out) {
     Voice& v = g_voices[obj];
     v.obj = obj;
     uint32_t flags = R32(desc + 4), bytes = R32(desc + 8);  // DSBUFFERDESC: size, flags, bytes, format, mix bins
+    // a descriptor whose dwSize is not a DSBUFFERDESC, or a bogus byte count, would ask mem::AllocContiguous
+    // for a multi-GB block; only trust a byte count from a well-formed descriptor
+    if (R32(desc) != 0x18 || bytes > (16u << 20)) bytes = 0;
     ReadFormat(v, R32(desc + 12));
     SetBins(v, R32(desc + 16));
     v.is3d = flags & 0x10;  // DSBCAPS_CTRL3D
@@ -405,6 +444,32 @@ uint32_t NewBuffer(uint32_t desc, uint32_t out) {
         v.data = v.owned = mem::AllocContiguous(bytes, 0, 0xFFFFFFFF, 4);
         v.bytes = v.play_len = v.loop_len = bytes;
     }
+    W32(out, obj);
+    return 0;
+}
+
+// DSSTREAMDESC: flags, max packets, format, callback, context, mix bins. The object carries the XDK's own
+// vtables: the title dispatches IDirectSoundStream and XMediaObject methods through them.
+uint32_t NewStream(uint32_t desc, uint32_t out) {
+    XDK_REQUIRE("dsound", XDK_KEY(CDirectSoundStream_Vtable), XDK_KEY(CDirectSoundStream_Vtable2),
+                XDK_DATA(DSound_StreamVtable), XDK_DATA(DSound_StreamVtable2));
+    std::lock_guard<std::recursive_mutex> lock(g_lock);
+    Start();
+    uint32_t obj = mem::AllocSystem(0x80);
+    std::memset(HostPtr(obj), 0, 0x80);
+    W32(obj + XDK_CDirectSoundStream_Vtable, kStreamVtable);
+    W32(obj + XDK_CDirectSoundStream_Vtable2, kStreamVtable2);
+    Voice& v = g_voices[obj];
+    v.obj = obj;
+    v.stream = true;
+    uint32_t flags = R32(desc);
+    v.max_packets = std::max<uint32_t>(R32(desc + 4), 1);
+    ReadFormat(v, R32(desc + 8));
+    v.callback = R32(desc + 12);
+    v.context = R32(desc + 16);
+    SetBins(v, R32(desc + 20));
+    v.is3d = flags & 0x10;  // DSSTREAMCAPS_CTRL3D
+    v.headroom = DefaultHeadroom(flags);
     W32(out, obj);
     return 0;
 }
@@ -447,7 +512,10 @@ static void AuditExports() {
         SYM(CDirectSoundStream_SetFrequency), SYM(CDirectSoundStream_SetFilter), SYM(CDirectSoundStream_SetHeadroom),
         SYM(CDirectSoundStream_SetMixBinVolumes), SYM(CDirectSoundStream_SetMixBins), SYM(CDirectSoundStream_SetMaxDistance),
         SYM(CDirectSoundStream_SetMinDistance), SYM(CDirectSoundStream_SetPosition), SYM(CDirectSoundStream_SetVelocity),
-        SYM(CDirectSoundStream_SetI3DL2Source), SYM(IDirectSoundStream_SetEG)};
+        SYM(CDirectSoundStream_SetI3DL2Source), SYM(IDirectSoundStream_SetEG), SYM(IDirectSoundStream_SetOutputBuffer),
+        SYM(IDirectSoundStream_SetPitch), SYM(IDirectSoundStream_SetLFO), SYM(IDirectSoundBuffer_SetPitch),
+        SYM(IDirectSoundBuffer_SetLFO), SYM(IDirectSoundBuffer_SetEG), SYM(IDirectSoundBuffer_GetVoiceProperties),
+        SYM(IDirectSoundStream_GetVoiceProperties), SYM(IDirectSound_CreateSoundStream)};
     std::string left;
     // the library's own section: the WMA decoder shares the export ids and touches no DSOUND object
     uint32_t lo = 0, hi = 0;
@@ -739,30 +807,11 @@ BUFFER(SetFormat, 2) {
 
 // streams, the object carries the XDK's own vtable
 
-HLE_STDCALL(DirectSoundCreateStream, 2) {
-    XDK_REQUIRE("dsound", XDK_KEY(CDirectSoundStream_Vtable), XDK_KEY(CDirectSoundStream_Vtable2),
-                XDK_DATA(DSound_StreamVtable), XDK_DATA(DSound_StreamVtable2));
-    std::lock_guard<std::recursive_mutex> lock(g_lock);
-    Start();
-    uint32_t desc = a[0];
-    uint32_t obj = mem::AllocSystem(0x80);
-    std::memset(HostPtr(obj), 0, 0x80);
-    W32(obj + XDK_CDirectSoundStream_Vtable, kStreamVtable);
-    W32(obj + XDK_CDirectSoundStream_Vtable2, kStreamVtable2);
-    Voice& v = g_voices[obj];
-    v.obj = obj;
-    v.stream = true;
-    uint32_t flags = R32(desc);
-    v.max_packets = std::max<uint32_t>(R32(desc + 4), 1);
-    ReadFormat(v, R32(desc + 8));
-    v.callback = R32(desc + 12);
-    v.context = R32(desc + 16);
-    SetBins(v, R32(desc + 20));
-    v.is3d = flags & 0x10;  // DSBCAPS_CTRL3D
-    v.headroom = DefaultHeadroom(flags);
-    W32(a[1], obj);
-    return 0;
-}
+HLE_STDCALL(DirectSoundCreateStream, 2) { return NewStream(a[0], a[1]); }
+// (this, pdsd, ppStream, pUnkOuter): the title's own stream factory. Ordinal 0x3B of the DSOUND library;
+// the signature scan named the sibling (this, pdsb, ppBuffer, pUnkOuter) thunk CreateSoundBuffer, so this one
+// is CreateSoundStream. Leaving it to the library built a console object; the runtime builds a host one.
+HLE_STDCALL(IDirectSound_CreateSoundStream, 4) { return NewStream(a[1], a[2]); }
 
 #define STREAM(name, nargs)                                     \
     static uint32_t str_##name(Voice& v, const Args& a);        \
@@ -891,3 +940,25 @@ STREAM(SetPosition, 5) {
 }
 STREAM(SetVelocity, 5) { return 0; }
 STREAM(SetI3DL2Source, 3) { return 0; }
+// (this, pOutputBuffer): the stream's mix destination. The library body reads a console voice sub-object the
+// host's stream object does not hold (it faulted at stream + 0x14 -> +0xb0), and the host mixer sums every voice
+// to the front pair anyway, so the routing hint is dropped.
+HLE_STDCALL(IDirectSoundStream_SetOutputBuffer, 2) { return 0; }
+// (this, lPitch / pLfoDesc / pEnvelopeDesc): pitch, LFO and envelope writes all reach a console voice
+// sub-object the host's objects never build. The host mixer plays at the format rate (or the SetFrequency
+// override) and has no envelope or LFO, so these are dropped the way the XDK's own SetEG already is.
+HLE_STDCALL(IDirectSoundStream_SetPitch, 2) { return 0; }
+HLE_STDCALL(IDirectSoundStream_SetLFO, 2) { return 0; }
+HLE_STDCALL(IDirectSoundBuffer_SetPitch, 2) { return 0; }
+HLE_STDCALL(IDirectSoundBuffer_SetLFO, 2) { return 0; }
+HLE_STDCALL(IDirectSoundBuffer_SetEG, 2) { return 0; }
+// (this, DSVOICEPROPS): no voice is allocated on the host, so every field reads as zero (the struct is
+// dwMixBinCount, 8 volume pairs, then 6 LONGs = 92 bytes)
+HLE_STDCALL(IDirectSoundBuffer_GetVoiceProperties, 2) {
+    if (a[1]) std::memset(HostPtr(a[1]), 0, 92);
+    return 0;
+}
+HLE_STDCALL(IDirectSoundStream_GetVoiceProperties, 2) {
+    if (a[1]) std::memset(HostPtr(a[1]), 0, 92);
+    return 0;
+}

@@ -52,7 +52,9 @@ void Init(const std::string& dir, const std::string& prefix, bool append) {
 const std::string& Path() { return g_path; }
 
 void Write(Level lv, const char* fmt, ...) {
-    if (!kVerbose && lv < Level::Error) return;
+    // a release build still needs to be able to say what it is doing, so XBE_VERBOSE turns Info and Debug back on
+    static const bool verbose = kVerbose || std::getenv("XBE_VERBOSE") != nullptr;
+    if (!verbose && lv < Level::Error) return;
     char msg[4096];
     va_list ap;
     va_start(ap, fmt);
@@ -63,8 +65,8 @@ void Write(Level lv, const char* fmt, ...) {
     auto tid = std::hash<std::thread::id>()(std::this_thread::get_id()) & 0xFFFF;
     std::lock_guard<std::mutex> lock(g_mutex);
     char line[4300];
-    int n = kVerbose ? std::snprintf(line, sizeof(line), "[%9.3f] [%s] [t%04zx] %s\n", t, names[int(lv)], size_t(tid), msg)
-                     : std::snprintf(line, sizeof(line), "[%9.3f] %s%s\n", t, lv == Level::Error ? "error: " : "", msg);
+    int n = verbose ? std::snprintf(line, sizeof(line), "[%9.3f] [%s] [t%04zx] %s\n", t, names[int(lv)], size_t(tid), msg)
+                    : std::snprintf(line, sizeof(line), "[%9.3f] %s%s\n", t, lv == Level::Error ? "error: " : "", msg);
     n = std::min(n, int(sizeof(line)) - 1);
     if (g_file) {
         std::fwrite(line, 1, size_t(n), g_file);

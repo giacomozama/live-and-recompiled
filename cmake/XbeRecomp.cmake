@@ -23,6 +23,9 @@ set(SDL_CAMERA OFF CACHE BOOL "" FORCE)
 FetchContent_Declare(SDL3 GIT_REPOSITORY https://github.com/libsdl-org/SDL.git GIT_TAG release-3.4.16 GIT_SHALLOW TRUE)
 FetchContent_MakeAvailable(zydis tomlplusplus imgui SDL3)
 
+# When cross compiling, codegen runs on the host: set XBE_CODEGEN_TOOL to a native xbe_recomp path.
+set(XBE_CODEGEN_TOOL "xbe_recomp" CACHE FILEPATH "xbe_recomp used for codegen (a host path when cross compiling)")
+
 # x86 to C++ recompiler
 file(GLOB XBE_RECOMP_SOURCES CONFIGURE_DEPENDS ${XBE_SDK_DIR}/tools/recomp/*.cpp)
 add_executable(xbe_recomp ${XBE_RECOMP_SOURCES})
@@ -62,9 +65,9 @@ function(add_xbe_image target xbe config partitions game_dir)
     add_custom_command(
         OUTPUT ${GEN}/codegen.stamp
         BYPRODUCTS ${GEN_SOURCES} ${GEN}/x86_recomp_shared.h ${GEN}/image_symbols.h
-        COMMAND xbe_recomp config/${config} --xdk ${XBE_SDK_DIR}/xdk
+        COMMAND ${XBE_CODEGEN_TOOL} config/${config} --xdk ${XBE_SDK_DIR}/xdk
         COMMAND ${CMAKE_COMMAND} -E touch ${GEN}/codegen.stamp
-        DEPENDS xbe_recomp ${configs} ${CMAKE_CURRENT_SOURCE_DIR}/assets/${xbe}
+        DEPENDS ${XBE_CODEGEN_TOOL} ${configs} ${CMAKE_CURRENT_SOURCE_DIR}/assets/${xbe}
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
         COMMENT "Recompiling ${xbe}"
         VERBATIM)

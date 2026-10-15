@@ -166,8 +166,10 @@ struct State {
     struct Stream {
         uint32_t vb = 0;  // guest D3DVertexBuffer
         uint32_t stride = 0;
-    };
-    std::array<Stream, 16> streams{};
+        // low byte of the NV097_SET_VERTEX_DATA_ARRAY_FORMAT word the title bound inline: (count << 4) | type,
+        // the same encoding a declaration's type byte uses. 0 when the stream came from SetStreamSource.
+        uint32_t fmt = 0;
+    };    std::array<Stream, 16> streams{};
     uint32_t index_buffer = 0, index_data = 0, base_vertex = 0;
     uint32_t vs_handle = 0;  // programmable when bit 0 set, otherwise an FVF
     std::shared_ptr<VertexShader> vs;

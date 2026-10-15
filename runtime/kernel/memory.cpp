@@ -13,6 +13,7 @@
 #include <windows.h>
 #else
 #include <sys/mman.h>
+#include <unistd.h>
 #endif
 
 namespace mem {
@@ -54,6 +55,11 @@ bool Init() {
         UnmapViewOfFile(b + kContiguousBase);
         UnmapViewOfFile(b + kWriteCombineBase);
     }
+    // guest library code that pokes the NV2A register window directly (Conker's device init does) reads
+    // and writes back registers; commit the window as scratch rather than faulting
+    if (g_base) VirtualAlloc(g_base + kGpuRegisterBase, kGpuRegisterSize, MEM_COMMIT, PAGE_READWRITE);
+    // the XACT audio engine polls MCPX APU registers the same way
+    if (g_base) VirtualAlloc(g_base + kApuRegisterBase, kApuRegisterSize, MEM_COMMIT, PAGE_READWRITE);
 #else
     void* p = mmap(reinterpret_cast<void*>(0x100000000ull), size, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
     g_base = p == MAP_FAILED ? nullptr : static_cast<uint8_t*>(p);
@@ -62,6 +68,13 @@ bool Init() {
         mmap(g_base + kContiguousBase, kPhysicalSize, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED, fd, 0) == MAP_FAILED ||
         mmap(g_base + kWriteCombineBase, kPhysicalSize, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED, fd, 0) == MAP_FAILED)
         g_base = nullptr;
+    // guest library code that pokes the NV2A register window directly (Conker's device init does) reads
+    // and writes back registers; back the window with scratch rather than faulting
+    if (g_base) mmap(g_base + kGpuRegisterBase, kGpuRegisterSize, PROT_READ | PROT_WRITE,
+                     MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
+    // the XACT audio engine polls MCPX APU registers the same way
+    if (g_base) mmap(g_base + kApuRegisterBase, kApuRegisterSize, PROT_READ | PROT_WRITE,
+                     MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
 #endif
     if (!g_base) {
         LOGE("memory: could not reserve the 4 GB guest space");

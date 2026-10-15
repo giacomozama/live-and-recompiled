@@ -2,6 +2,9 @@
 
 #include <algorithm>
 #include <cstring>
+#include <map>
+#include <memory>
+#include <utility>
 
 #include <dxgiformat.h>
 
@@ -212,13 +215,55 @@ struct IndexBounds {
     uint32_t last = 0;
 };
 
-// the declaration's register layout, or the one an FVF handle stands for, built into fvf_layout
+// A title that sets its vertex program inline also binds each input's format through
+// NV097_SET_VERTEX_DATA_ARRAY_FORMAT: slot N is input register N, its offset is 0, and its own binding carries
+// the type (bits 3:0), the component count (bits 7:4) and the byte stride (31:8) - the same (count << 4) | type
+// byte a declaration carries. That is the whole layout, from the stream rather than the shader.
+bool InlineBound(const State& s) {
+    for (uint32_t i = 0; i < 16; i++)
+        if (s.streams[i].vb && (s.streams[i].fmt & 0xF)) return true;
+    return false;
+}
+
+void InlineInputs(const State& s, VertexShader& out) {
+    out.inputs.fill(VertexShader::Input{});
+    out.stream_stride.fill(0);
+    for (uint32_t slot = 0; slot < 16; slot++) {
+        const auto& st = s.streams[slot];
+        if (!st.vb || !(st.fmt & 0xF)) continue;
+        out.inputs[slot] = {int(slot), 0, st.fmt & 0xFF};
+        out.stream_stride[slot] = st.stride;
+    }
+}
+
 const VertexShader* PickLayout(const State& s, VertexShader& fvf_layout) {
     if (!(s.vs_handle & 1)) {
         FvfInputs(s.vs_handle, fvf_layout);
         return &fvf_layout;
     }
-    return s.vs.get();
+    if (!InlineBound(s)) return s.vs.get();
+    // one stable object per program and attribute set: the backend tells shaders apart by pointer, and the
+    // program still comes from the bound shader, only the layout is rebuilt from the binds
+    std::array<uint32_t, 32> key{};
+    for (uint32_t i = 0; i < 16; i++) {
+        key[i * 2] = s.streams[i].fmt;
+        key[i * 2 + 1] = s.streams[i].stride;
+    }
+    static std::map<std::pair<const void*, std::array<uint32_t, 32>>, std::shared_ptr<VertexShader>> made;
+    auto& vs = made[{s.vs.get(), key}];
+    if (!vs) {
+        vs = std::make_shared<VertexShader>();
+        InlineInputs(s, *vs);
+        if (s.vs) {
+            vs->program = s.vs->program;
+            vs->program_type = s.vs->program_type;
+            vs->handle = s.vs->handle;
+        }
+        uint64_t h = 1469598103934665603ull;
+        for (uint32_t w : key) h = (h ^ w) * 1099511628211ull;
+        vs->hash = h;
+    }
+    return vs.get();
 }
 
 // D3DFVF: an FVF handle with position XYZRHW

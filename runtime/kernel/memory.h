@@ -15,6 +15,10 @@ constexpr uint32_t kSystemBase = 0xB0000000;       // pool, system memory, threa
 constexpr uint32_t kSystemSize = 0x10000000;
 constexpr uint32_t kStackBase = 0xD0000000;
 constexpr uint32_t kStackSize = 0x10000000;
+constexpr uint32_t kGpuRegisterBase = 0xFD000000;  // NV2A register window, backed by scratch
+constexpr uint32_t kGpuRegisterSize = 0x01000000;
+constexpr uint32_t kApuRegisterBase = 0xFE800000;  // MCPX APU register window, backed by scratch
+constexpr uint32_t kApuRegisterSize = 0x01000000;
 
 // NT allocation flags
 constexpr uint32_t kMemCommit = 0x1000, kMemReserve = 0x2000, kMemDecommit = 0x4000, kMemRelease = 0x8000,

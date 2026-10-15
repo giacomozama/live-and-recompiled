@@ -162,8 +162,16 @@ uint32_t NewSurface(uint32_t w, uint32_t h, uint32_t fmt, uint32_t bpp) {
 void SyncDeferred() {
     // deferred states live in the title's memory, the inline SetRenderState and SetTextureStageState write them
     for (uint32_t i = gpu::kRsDeferredFirst; i < gpu::kRsComplexFirst; i++) g_state.rs[i] = R32(kRenderState + i * 4);
+    // the whole [4][32] table is authoritative for a title that inlines the D3D8 library (its state never
+    // reaches an API HLE), so read all of it. A title that does call the API has its dedicated SetTextureState_*
+    // HLEs write g_state directly, and those do not write the table, so leave their fields alone.
     for (int s = 0; s < 4; s++)
-        for (uint32_t i = 0; i < gpu::kTssBumpEnvMat00; i++) g_state.tss[s][i] = R32(kTextureState + (s * kStageStates + i) * 4);
+        for (uint32_t i = 0; i < gpu::kTssCount; i++) {
+            if (HAS_D3DDevice_SetTextureState_BumpEnv && i >= gpu::kTssBumpEnvMat00 && i <= gpu::kTssBumpEnvLOffset) continue;
+            if (HAS_D3DDevice_SetTextureState_BorderColor && i == gpu::kTssBorderColor) continue;
+            if (HAS_D3DDevice_SetTextureState_ColorKeyColor && i == gpu::kTssColorKeyColor) continue;
+            g_state.tss[s][i] = R32(kTextureState + (s * kStageStates + i) * 4);
+        }
 }
 
 float ZScale(const gpu::Surface& zs) {
@@ -238,6 +246,20 @@ void VerticalBlank(X86Context& ctx) {
     }
 }
 
+// The library's own device init (0x53E5D0), which this runtime skips because it brings the NV2A hardware up,
+// allocates a 0x60-byte block and points three device fields at it: the base at +0x30, base + 0x20 at +0x2490
+// and base + 0x40 at +0x248c. Inlined library code the engine calls directly still reads [device+0x30] and
+// dereferences it (the UI primitive builder at 0x53AE30 does), so a skipped init leaves a null pointer and
+// traps the first time that path runs. Back the block with zeroed guest memory, like the init's allocator.
+uint32_t DeviceRecords() {
+    static uint32_t records = 0;
+    if (!records) {
+        records = mem::AllocSystem(0x60);
+        std::memset(HostPtr(records), 0, 0x60);
+    }
+    return records;
+}
+
 }  // namespace
 
 gpu::State& State() { return g_state; }
@@ -246,6 +268,10 @@ std::recursive_mutex& Lock() { return g_lock; }
 }  // namespace d3d
 
 using namespace d3d;
+
+namespace {
+std::atomic<uint32_t> g_presents{0};
+}  // namespace
 
 // device
 
@@ -271,6 +297,14 @@ HLE_STDCALL(Direct3D_CreateDevice, 6) {
     std::memset(HostPtr(kDevice), 0, XDK_CDevice_Size);
     W32(kDevicePtr, kDevice);
     ScratchPush();
+    // the fields the skipped device init would point at its NV2A record block (see DeviceRecords)
+    {
+        uint32_t records = DeviceRecords();
+        SetDev(0x30, records);
+        SetDev(0x2488, records);
+        SetDev(0x2490, records + 0x20);
+        SetDev(0x248c, records + 0x40);
+    }
 
     uint32_t color_fmt = gpu::LinearColorFormat(fmt);
     g_buffer_count = std::min<uint32_t>(count + 1, 3);
@@ -318,6 +352,19 @@ HLE_STDCALL(Direct3D_CreateDevice, 6) {
     g_state.zs = SurfaceOf(g_depth);
     UpdateViewportConstants();
     ApplyDefaultStates(ctx);
+#if HAS_D3D_DeviceInit
+    // some titles link the library's internals into the game and call them directly; those read the device
+    // state this build's own init sets up (the miniport at +0x1C28 among it), so run it if the config names it
+    if (SYM(D3D_DeviceInit)) {
+#if HAS_D3D_InitSize0
+        if (!R32(SYM(D3D_InitSize0))) W32(SYM(D3D_InitSize0), 0x8000);
+#endif
+#if HAS_D3D_InitSize1
+        if (!R32(SYM(D3D_InitSize1))) W32(SYM(D3D_InitSize1), 0x80000);
+#endif
+        kernel::CallGuest(ctx, SYM(D3D_DeviceInit), {kDevice, pp});
+    }
+#endif
     if (a[5]) W32(a[5], kDevice);
     return 0;
 }
@@ -445,6 +492,15 @@ HLE_STDCALL(D3DDevice_SetGammaRamp, 2) {
 
 HLE_STDCALL(D3DDevice_SetRenderTarget, 2) {
     std::lock_guard<std::recursive_mutex> lock(g_lock);
+    Walk(Dev(kDevPush));  // state set around a raw push must not reach the pending commands first
+    if (diag::DumpMethods() && (a[0] || a[1])) {
+        static std::unordered_set<uint64_t> seen;
+        uint64_t key = uint64_t(a[0]) << 32 | a[1];
+        if (seen.insert(key).second)
+            std::fprintf(stderr, "SETRT rt=%08X [%08X %08X %08X %08X] zs=%08X [%08X %08X %08X %08X]\n", a[0],
+                         a[0] ? R32(a[0]) : 0, a[0] ? R32(a[0] + 4) : 0, a[0] ? R32(a[0] + 12) : 0, a[0] ? R32(a[0] + 16) : 0,
+                         a[1], a[1] ? R32(a[1]) : 0, a[1] ? R32(a[1] + 4) : 0, a[1] ? R32(a[1] + 12) : 0, a[1] ? R32(a[1] + 16) : 0);
+    }
     uint32_t rt = a[0] ? a[0] : Dev(kDevRenderTarget), zs = a[1];
     AddRef(ctx, rt);
     uint32_t old_rt = Dev(kDevRenderTarget), old_zs = Dev(kDevDepth);
@@ -481,10 +537,6 @@ HLE_STDCALL(D3DDevice_GetDepthStencilSurface2, 0) {
     if (s) W32(s, R32(s) + 1);
     return s;
 }
-
-namespace {
-std::atomic<uint32_t> g_presents{0};
-}  // namespace
 
 HLE_STDCALL(D3DDevice_Swap, 1) {
     app::SplashFirstFrame();
@@ -529,18 +581,26 @@ HLE_STDCALL(D3DDevice_Swap, 1) {
 HLE_STDCALL(D3DDevice_Clear, 6) {
     std::lock_guard<std::recursive_mutex> lock(g_lock);
     const uint8_t* rects = a[0] && a[1] ? static_cast<const uint8_t*>(HostPtr(a[1])) : nullptr;
+    if (diag::DumpMethods()) {
+        static std::unordered_set<uint64_t> seen;
+        uint64_t key = uint64_t(g_state.rt.data) << 32 | ((uint64_t(a[2]) << 8) | (a[3] & 0xFF));
+        if (seen.insert(key).second)
+            std::fprintf(stderr, "CLEARTARGET rt=%08X flags=%X color=%08X\n", g_state.rt.data, a[2], a[3]);
+    }
     if (g_backend) g_backend->Clear(g_state, a[0], rects, a[2], a[3], ArgF(a, 4), a[5]);
     return 0;
 }
 
 HLE_STDCALL(D3DDevice_CopyRects, 5) {
     std::lock_guard<std::recursive_mutex> lock(g_lock);
+    LOG_FIRST(8, "d3d: CopyRects src %08X dst %08X n %u", a[0], a[3], a[2]);
     if (g_backend) g_backend->Copy(SurfaceOf(a[0]), SurfaceOf(a[3]), a[2], a[1], a[4]);
     return 0;
 }
 
 HLE_STDCALL(D3DDevice_SetViewport, 1) {
     std::lock_guard<std::recursive_mutex> lock(g_lock);
+    Walk(Dev(kDevPush));  // state set around a raw push must not reach the pending commands first
     uint32_t v = a[0];
     g_state.viewport = {R32(v), R32(v + 4), R32(v + 8), R32(v + 12), GF(v + 16), GF(v + 20)};
     g_state.scissor_count = 0;
@@ -550,6 +610,7 @@ HLE_STDCALL(D3DDevice_SetViewport, 1) {
 
 HLE_STDCALL(D3DDevice_SetScissors, 3) {
     std::lock_guard<std::recursive_mutex> lock(g_lock);
+    Walk(Dev(kDevPush));  // state set around a raw push must not reach the pending commands first
     g_state.scissor_count = std::min<uint32_t>(a[0], 8);
     for (uint32_t i = 0; i < g_state.scissor_count * 4; i++) g_state.scissors[i] = R32(a[2] + i * 4);
     return 0;
@@ -679,6 +740,7 @@ HLE_WRAP(D3DDevice_LightEnable, 2) {
 
 HLE_STDCALL(D3DDevice_SetTexture, 2) {
     std::lock_guard<std::recursive_mutex> lock(g_lock);
+    Walk(Dev(kDevPush));  // state set around a raw push must not reach the pending commands first
     uint32_t stage = a[0] & 3, tex = a[1];
     uint32_t old = Dev(kDevTextures + stage * 4);
     AddRef(ctx, tex);
@@ -706,6 +768,7 @@ HLE_STDCALL(D3DDevice_SetPalette, 2) {
 // bound through a header of the stage's own holding the bound texture's fields with the new data and format.
 HLE_FASTCALL(D3DDevice_SwitchTexture, 1) {
     std::lock_guard<std::recursive_mutex> lock(g_lock);
+    Walk(Dev(kDevPush));  // state set around a raw push must not reach the pending commands first
     static uint32_t headers[4];
     // texture methods from 0x1B00, 0x40 per stage
     uint32_t stage = (((a[0] & 0x1FFC) - 0x1B00) >> 6) & 3, cur = g_state.textures[stage];
@@ -720,6 +783,7 @@ HLE_FASTCALL(D3DDevice_SwitchTexture, 1) {
 
 HLE_STDCALL(D3DDevice_SetStreamSource, 3) {
     std::lock_guard<std::recursive_mutex> lock(g_lock);
+    Walk(Dev(kDevPush));  // state set around a raw push must not reach the pending commands first
     uint32_t n = a[0] & 15, vb = a[1], stride = a[2];
     uint32_t old = R32(kStreams + n * kStreamSize + XDK_Stream_Buffer);
     AddRef(ctx, vb);
@@ -733,6 +797,7 @@ HLE_STDCALL(D3DDevice_SetStreamSource, 3) {
 HLE_STDCALL(D3DDevice_SetIndices, 2) {
     XDK_REQUIRE("d3d", XDK_DATA(D3D_IndexData));
     std::lock_guard<std::recursive_mutex> lock(g_lock);
+    Walk(Dev(kDevPush));  // state set around a raw push must not reach the pending commands first
     uint32_t ib = a[0];
     uint32_t old = Dev(kDevIndexBuffer);
     AddRef(ctx, ib);
@@ -770,8 +835,8 @@ HLE_STDCALL(D3DDevice_CreateVertexShader, 4) {
     vs->handle = rec | 1;
     g_vs[vs->handle] = vs;
     W32(out, vs->handle);
-    LOG_FIRST(64, "d3d: vertex shader %08X, %zu decl tokens, %zu instructions, type %X", vs->handle, vs->decl.size(),
-              vs->program.size() / 4, vs->program_type);
+    LOG_FIRST(64, "d3d: vertex shader %08X, %zu decl tokens, %zu instructions, type %X (from %08X)", vs->handle, vs->decl.size(),
+              vs->program.size() / 4, vs->program_type, R32(ctx.esp));
     return 0;
 }
 
@@ -801,6 +866,7 @@ HLE_STDCALL(D3DDevice_GetVertexShaderFunction, 3) {
 
 HLE_STDCALL(D3DDevice_SetVertexShader, 1) {
     std::lock_guard<std::recursive_mutex> lock(g_lock);
+    Walk(Dev(kDevPush));  // state set around a raw push must not reach the pending commands first
     uint32_t h = a[0];
     g_state.vs_handle = h;
     g_state.vs = nullptr;
@@ -876,6 +942,8 @@ HLE_STDCALL(D3DDevice_DeletePixelShader, 1) {
 
 HLE_STDCALL(D3DDevice_SetPixelShader, 1) {
     std::lock_guard<std::recursive_mutex> lock(g_lock);
+    Walk(Dev(kDevPush));  // state set around a raw push must not reach the pending commands first
+    if (diag::DumpMethods()) std::fprintf(stderr, "SETPS %08X\n", a[0]);
     g_state.ps = nullptr;
     if (!a[0]) return 0;
     auto it = g_ps.find(a[0]);
@@ -916,6 +984,9 @@ HLE_STDCALL(D3DDevice_SetPixelShader, 1) {
     put(gpu::kMPsDotMapping, d[55]);
     put(gpu::kMPsInputTexture, d[56]);
     SetComplex(gpu::kRsPsTextureModes, d[54]);
+    if (diag::DumpMethods())
+        std::fprintf(stderr, "PSDEF %08X: %08X %08X %08X %08X | %08X %08X %08X %08X | count %u texmode %08X\n", g_state.ps->handle,
+                     d[0], d[1], d[2], d[3], d[34], d[35], d[36], d[37], d[53], d[54]);
     return 0;
 }
 
@@ -929,10 +1000,22 @@ HLE_STDCALL(D3DDevice_SetPixelShaderConstant, 3) {
 
 // drawing
 
+// XBE_DUMP_METHODS: where in the title each draw comes from, to map the frame's passes
+void LogDrawCaller(const char* kind, uint32_t prim, uint32_t count, uint32_t caller) {
+    if (!diag::DumpMethods()) return;
+    static std::unordered_map<uint64_t, uint32_t> seen;
+    uint64_t key = uint64_t(caller) << 32 | prim;
+    if (seen[key]++ == 0)
+        std::fprintf(stderr, "DRAWCALL %s prim=%u firstcount=%u vs=%08X blend=%u %X %X rt=%08X from %08X\n", kind, prim,
+                     count, g_state.vs_handle, g_state.simple[gpu::kMBlendEnable >> 2], g_state.simple[gpu::kMSrcBlend >> 2],
+                     g_state.simple[gpu::kMDestBlend >> 2], g_state.rt.data, caller);
+}
+
 HLE_STDCALL(D3DDevice_DrawVertices, 3) {
     std::lock_guard<std::recursive_mutex> lock(g_lock);
     Walk(Dev(kDevPush));  // a visibility test begun since the last draw counts this one
     SyncDeferred();
+    LogDrawCaller("verts", a[0], a[2], R32(ctx.esp));
     if (g_backend) g_backend->Draw(g_state, a[0], a[1], a[2], nullptr);
     return 0;
 }
@@ -941,6 +1024,7 @@ HLE_STDCALL(D3DDevice_DrawIndexedVertices, 3) {
     std::lock_guard<std::recursive_mutex> lock(g_lock);
     Walk(Dev(kDevPush));
     SyncDeferred();
+    LogDrawCaller("indexed", a[0], a[1], R32(ctx.esp));
     const uint8_t* indices = a[2] ? static_cast<const uint8_t*>(HostPtr(a[2])) : nullptr;
     if (g_backend) g_backend->Draw(g_state, a[0], 0, a[1], indices);
     return 0;
@@ -974,9 +1058,54 @@ uint32_t UpVertices(const void* src, uint32_t bytes) {
     return g_up_header;
 }
 
+// XBE_DUMP_METHODS: the raw NV2A state methods seen since the last draw, from the title's inlined library, to
+// compare what it writes with what the runtime decodes into the draw
+constexpr uint32_t kRawRing = 96;
+uint32_t g_raw_ring[kRawRing][2];
+uint32_t g_raw_ring_count = 0;
+
+void NoteRawMethod(uint32_t m, uint32_t v) {
+    if (!diag::DumpMethods()) return;
+    g_raw_ring[g_raw_ring_count % kRawRing][0] = m;
+    g_raw_ring[g_raw_ring_count % kRawRing][1] = v;
+    g_raw_ring_count++;
+}
+
+// XBE_DUMP_METHODS: the first value seen for each NV2A method the title pushes, so the whole vocabulary is visible
+void NoteMethodSeen(uint32_t m, uint32_t v) {
+    if (!diag::DumpMethods()) return;
+    static std::unordered_map<uint32_t, uint32_t> first;
+    if (first.emplace(m, v).second) std::fprintf(stderr, "METHOD %04X = %08X\n", m, v);
+    // the vertex stream registers, to tell an init-only block from a per-draw rebind
+    if (m == 0x1720 || m == 0x1760 || m == 0x1724) {
+        static uint32_t n = 0;
+        if (n++ < 120) std::fprintf(stderr, "STREAM %04X = %08X\n", m, v);
+    }
+    // are the other unhandled ranges live too, or written once at init?
+    if (m == 0x0A20 || m == 0x1B00 || m == 0x1B04 || m == 0x384 || m == 0x290) {
+        static uint32_t n = 0;
+        if (n++ < 60) std::fprintf(stderr, "LIVE %04X = %08X\n", m, v);
+    }
+}
+
+void DumpRawMethods(const char* what, uint32_t handle, uint32_t prim, uint32_t count) {
+    if (!diag::DumpMethods()) return;
+    uint32_t n = g_raw_ring_count < kRawRing ? g_raw_ring_count : kRawRing;
+    std::fprintf(stderr, "RAWDRAW %s vs=%08X prim=%u n=%u methods=%u blend=%u %X %X tss0 %u %X %X %X\n", what, handle,
+                 prim, count, g_raw_ring_count, g_state.simple[gpu::kMBlendEnable >> 2], g_state.simple[gpu::kMSrcBlend >> 2],
+                 g_state.simple[gpu::kMDestBlend >> 2], g_state.tss[0][gpu::kTssColorOp], g_state.tss[0][gpu::kTssColorArg1],
+                 g_state.tss[0][gpu::kTssColorArg2], g_state.tss[0][gpu::kTssColorArg0]);
+    for (uint32_t i = 0; i < n; i++) {
+        uint32_t idx = (g_raw_ring_count - n + i) % kRawRing;
+        std::fprintf(stderr, "   %04X = %08X\n", g_raw_ring[idx][0], g_raw_ring[idx][1]);
+    }
+    g_raw_ring_count = 0;
+}
+
 void DrawUp(uint32_t prim, uint32_t count, const void* vertices, uint32_t stride) {
     if (!g_backend || !count || !stride) return;
     SyncDeferred();
+    DumpRawMethods("up", g_state.vs_handle, prim, count);
     auto stream = g_state.streams[0];
     g_state.streams[0] = {UpVertices(vertices, count * stride), stride};
     g_backend->Draw(g_state, prim, 0, count, nullptr);
@@ -1000,6 +1129,10 @@ namespace {
 uint32_t g_im_prim = 0, g_im_mask = 0;  // open primitive, slots it wrote
 float g_im_attr[64];                    // 16 slots of x y z w
 std::vector<float> g_im_vertices;       // every slot per vertex
+std::vector<uint32_t> g_im_raw;         // a whole vertex array pushed through NV2A inline array
+std::vector<uint16_t> g_im_indices;     // indices pushed through NV097_ARRAY_ELEMENT16/32
+std::array<uint32_t, 16> g_vb_header{};  // synthetic vertex buffer headers for the inline stream binds
+uint32_t g_vs_const_reg = 0;            // register a transform-constant load selected
 
 // visibility tests: depth passing pixels are counted while enabled, a report gets the count since the clear,
 // at a physical address in the first 16 MB
@@ -1049,29 +1182,237 @@ void EndPrimitive() {
     g_state.vs_handle = handle;
 }
 
+// The engine rebinds textures inline: NV097_SET_TEXTURE_OFFSET and _FORMAT, in the stage's own 0x40-byte block
+// of methods. D3DDevice_SwitchTexture is unwired, so its library body runs and pushes exactly that, which is how
+// a stage gets pointed at a freshly rendered surface. Nothing consumed the values, they only reached simple[].
+// Build the D3DPixelContainer the renderers already read from them: the offset arrives as a raw physical address
+// (surface headers carry the 0x80000000 view), and the format word has the same layout as the D3D one Describe
+// decodes - colour bits 15:8, dimensionality 7:4, cube bit 2, mip levels 19:16, log2 sizes from bit 20. One
+// header per distinct pair keeps the renderers' caches steady (FindImage keys on the decoded values).
+uint32_t InlineTexture(uint32_t offset, uint32_t format) {
+    if (!offset || !format) return 0;
+    struct Entry {
+        uint32_t off, fmt, header;
+    };
+    static Entry entries[64];
+    static uint32_t count = 0;
+    for (uint32_t i = 0; i < count; i++)
+        if (entries[i].off == offset && entries[i].fmt == format) return entries[i].header;
+    if (count == 64) count = 0;  // recycle the table, never the headers: a live header must stay stable
+    uint32_t h = mem::AllocSystem(20);
+    W32(h + 0, 0x01040001);            // D3DPixelContainer
+    W32(h + 4, offset | 0x80000000u);  // Describe() maps the physical view back to the virtual address
+    W32(h + 8, 0);
+    W32(h + 12, format);
+    W32(h + 16, 0);  // no linear size: the log2 dimensions in the format word are what describe the surface
+    entries[count].off = offset;
+    entries[count].fmt = format;
+    entries[count].header = h;
+    count++;
+    if (std::getenv("XBE_TRACE_WALK"))
+        std::fprintf(stderr, "INLINETEX header=%08X offset=%08X format=%08X\n", h, offset, format);
+    return h;
+}
+
 // reads the commands pushed since the last call: vertex data between a begin and an end is drawn, visibility tests
 // are run, the rest is skipped
 void Walk(uint32_t end) {
-    if (!g_walk || end < g_walk || end > g_scratch_push + g_scratch_size) return;
-    for (uint32_t p = g_walk; p + 4 <= end;) {
+    // the two silent exits below drop every command that follows, so make them observable
+    static const bool trace = std::getenv("XBE_TRACE_WALK") != nullptr;
+    if (!g_walk || end < g_walk || end > g_scratch_push + g_scratch_size) {
+        if (trace) {
+            static uint32_t seen = 0;
+            if (seen++ < 40)
+                std::fprintf(stderr, "WALKBAIL end=%08X walk=%08X base=%08X top=%08X reason=%s\n", end, g_walk,
+                             g_scratch_push, g_scratch_push + g_scratch_size,
+                             !g_walk ? "no-base" : end < g_walk ? "backwards" : "past-end");
+        }
+        return;
+    }
+    // Command streams chain: the title's inline push buffers link blocks with jumps, and xemu follows them
+    // (pfifo.c: bit 1 of the header is a jump, bits 1:0 == 2 a call, the word 0x00020000 a return, and
+    // (word & 0xe0000003) == 0x20000000 an old jump). Jump targets are physical addresses in the console's RAM,
+    // so they carry the 0x80000000 view the rest of this file uses for guest data. Without this, the first jump
+    // ended the walk and every command after it in that buffer was silently dropped.
+    uint32_t p = g_walk, limit = end, ret[16], sp = 0, guard = 0, jumps = 0, home = 0, resyncs = 0;
+    // jump targets land on real blocks (vertex-program words, prebuilt stream bindings), so following them is the
+    // xemu behaviour; XBE_NO_WALK_JUMPS restores the old "stop at the first jump" for comparison
+    static const bool follow = std::getenv("XBE_NO_WALK_JUMPS") == nullptr;
+    auto aim = [&](uint32_t t) {
+        // a target inside the buffer we were handed stays bounded by it, anything else is read as physical RAM
+        if (t >= g_scratch_push && t < end) limit = end;
+        else if (t >= 0x80000000u && t < 0x84000000u) limit = 0x84000000u;
+        else return false;
+        p = t;
+        jumps++;
+        return true;
+    };
+    // the last few jumps, so a stop can show how the walk got there
+    static uint32_t jring[8][2];
+    static uint32_t jn = 0;
+    while (p + 4 <= limit && guard++ < (1u << 22)) {
         // count in bits 18 to 28, bit 30 keeps the method for every value
         uint32_t head = R32(p), method = head & 0x1FFC, n = (head >> 18) & 0x7FF;
         p += 4;
-        if ((head & 0xA0030003) || n * 4 > end - p) break;  // anything but a method header
+        if (follow && (head & 0xE0000003) == 0x20000000) {  // old jump
+            uint32_t t = (head & 0x1FFFFFFF) | 0x80000000u, s = jn++ & 7;
+            jring[s][0] = p - 4;
+            jring[s][1] = t;
+            if (p - 4 >= g_scratch_push && p - 4 < end) home = p;  // where this buffer resumes
+            if (!aim(t)) break;
+            continue;
+        }
+        if (follow && (head & 3) == 1) {  // jump
+            uint32_t t = (head & 0xFFFFFFFC) | 0x80000000u, s = jn++ & 7;
+            jring[s][0] = p - 4;
+            jring[s][1] = t;
+            if (p - 4 >= g_scratch_push && p - 4 < end) home = p;  // where this buffer resumes
+            if (!aim(t)) break;
+            continue;
+        }
+        if (follow && head == 0x00020000) {  // return
+            if (trace) {
+                static uint32_t rn = 0;
+                if (rn++ < 20) std::fprintf(stderr, "RET       %08X -> %08X\n", p - 4, sp >= 2 ? ret[sp - 1] : 0);
+            }
+            if (sp < 2) break;
+            limit = ret[--sp];
+            p = ret[--sp];
+            continue;
+        }
+        if (follow && (head & 3) == 2) {  // call
+            if (sp + 2 > 16) break;
+            uint32_t rp = p, rl = limit;
+            if (!aim((head & 0xFFFFFFFC) | 0x80000000u)) break;
+            ret[sp++] = rp;
+            ret[sp++] = rl;
+            continue;
+        }
+        if ((head & 0xA0030003) || n * 4 > limit - p) {
+            // A jump chain that ran off its block lands in memory that is not a command stream at all — very
+            // often stale bytes of this same scratch buffer past the push pointer. Rather than throw away the
+            // rest of the buffer that jumped out, resume at the word after the jump site, which is where the
+            // block would have returned to.
+            bool inmain = (p - 4) >= g_scratch_push && (p - 4) < end;
+            if (!inmain && home && resyncs < 64) {
+                resyncs++;
+                if (trace) {
+                    static uint32_t rt = 0;
+                    if (rt++ < 4 || rt % 2000 == 0)
+                        std::fprintf(stderr, "RESYNC %u at %08X head=%08X -> %08X\n", rt, p - 4, head, home);
+                }
+                p = home;
+                limit = end;
+                home = 0;
+                continue;
+            }
+            if (trace) {
+                static uint32_t total = 0, last = 0;
+                total++;
+                last = head;
+                if (total <= 8) {
+                    std::fprintf(stderr,
+                                 "WALKSTOP head=%08X at %08X n=%u reason=%s end=%08X walk=%08X inmain=%u\n", head, p - 4,
+                                 n, (head & 0xA0030003) ? "header" : "count", end, g_walk,
+                                 p - 4 >= g_scratch_push && p - 4 < end);
+                    uint32_t have = jn < 8 ? jn : 8;
+                    std::fprintf(stderr, "  last jumps:");
+                    for (uint32_t k = 0; k < have; k++) {
+                        uint32_t idx = (jn - have + k) & 7;
+                        std::fprintf(stderr, " %08X->%08X", jring[idx][0], jring[idx][1]);
+                    }
+                    std::fprintf(stderr, "\n");
+                    uint32_t back = std::min<uint32_t>(128, (p - 4) - g_walk);
+                    for (uint32_t q = (p - 4) - back; q < p - 4 + 32; q += 4) {
+                        if ((q - ((p - 4) - back)) % 32 == 0) std::fprintf(stderr, "\n  %08X:", q);
+                        std::fprintf(stderr, " %08X", R32(q));
+                    }
+                    std::fprintf(stderr, "\n");
+                } else if (total % 100 == 0) {
+                    std::fprintf(stderr, "WALKTOT stops=%u jumps=%u lasthead=%08X\n", total, jumps, last);
+                }
+            }
+            break;  // anything but a command header
+        }
         for (uint32_t i = 0; i < n; i++, p += 4) {
             uint32_t m = head & 0x40000000 ? method : method + i * 4, v = R32(p);
             float f, *a = g_im_attr;
             bool last = true;  // the slot's last component
             std::memcpy(&f, &v, 4);
+            NoteMethodSeen(m, v);
             ApplyVisibilityMethod(m, v);
+            if (m == 0x1800 || m == 0x1808 || method == 0x1800 || method == 0x1808) {
+                // NV097_ARRAY_ELEMENT16/32. The title indexes its geometry, and xemu marks both methods
+                // non-incrementing (pgraph.c DEF_METHOD_NON_INC), so every value in the packet is an index.
+                // 16 packs two, low half first; 32 carries one, and anything above 16 bits is not an index.
+                // Without this an indexed pass pushes no vertices and the draw at END had nothing to emit.
+                if (g_im_prim) {
+                    if ((m | method) == 0x1808) {
+                        if (v <= 0xFFFF) g_im_indices.push_back(uint16_t(v));
+                    } else {
+                        g_im_indices.push_back(uint16_t(v & 0xFFFF));
+                        g_im_indices.push_back(uint16_t(v >> 16));
+                    }
+                } else if (trace) {
+                    static uint32_t n = 0;
+                    if (n++ < 20) std::fprintf(stderr, "INDEXOUT m=%04X v=%08X prim=%u raw=%zu verts=%zu\n", m, v,
+                                               g_im_prim, g_im_raw.size(), g_im_vertices.size());
+                }
+                continue;
+            }
             if (m == 0x17FC) {  // begin/end, 0 ends
                 if (v) {
                     g_im_prim = v;
                     g_im_mask = 0;
                     g_im_vertices.clear();
+                    g_im_raw.clear();
+                    g_im_indices.clear();
+                } else if (!g_im_raw.empty()) {
+                    uint32_t bytes = uint32_t(g_im_raw.size()) * 4, stride = VertexBytes();
+                    if (stride && bytes % stride == 0) {
+                        DrawUp(g_im_prim, bytes / stride, g_im_raw.data(), stride);
+                    } else if (g_state.vs && bytes % 28 == 0) {
+                        // the title pushes whole vertex arrays through the inline array method in a fixed 7 dword
+                        // layout (position xyzw, D3DCOLOR, texcoord xy). Its program's declaration reads the same
+                        // stride with an XYZ position, so give the draw the layout the array really has.
+                        static std::shared_ptr<gpu::VertexShader> raw;
+                        if (!raw) {
+                            raw = std::make_shared<gpu::VertexShader>();
+                            raw->inputs[0] = {0, 0, 0x42};
+                            raw->inputs[1] = {0, 16, 0x40};
+                            raw->inputs[2] = {0, 20, 0x22};
+                            raw->stream_stride[0] = 28;
+                        }
+                        raw->program = g_state.vs->program;
+                        raw->program_type = g_state.vs->program_type;
+                        auto bound = g_state.vs;
+                        g_state.vs = raw;
+                        g_state.vs_handle |= 1;
+                        DrawUp(g_im_prim, bytes / 28, g_im_raw.data(), 28);
+                        g_state.vs = bound;
+                    } else {
+                        LOG_FIRST(4, "d3d: inline array primitive %u dropped, %u bytes of vertices of %u", g_im_prim, bytes, stride);
+                    }
+                    g_im_prim = 0;
+                    g_im_raw.clear();
+                } else if (!g_im_indices.empty()) {
+                    // an indexed pass: the vertices come from the streams bound by 0x1720/0x1760, the indices
+                    // were pushed inline. The backend takes 16 bit indices, start is the first vertex.
+                    uint32_t open = g_im_prim;
+                    g_im_prim = 0;
+                    if (g_backend && open) {
+                        SyncDeferred();
+                        LOG_FIRST(4, "d3d: inline indexed draw, prim %u, %zu indices", open, g_im_indices.size());
+                        g_backend->Draw(g_state, open, 0, uint32_t(g_im_indices.size()),
+                                        reinterpret_cast<const uint8_t*>(g_im_indices.data()));
+                    }
+                    g_im_indices.clear();
                 } else {
                     EndPrimitive();
                 }
+                continue;
+            } else if (m == 0x1818) {  // the inline array method: raw vertex data, not a state
+                if (g_im_prim) g_im_raw.push_back(v);
                 continue;
             } else if (m >= 0x1880 && m < 0x1900) {  // 2 floats, z = 0 and w = 1
                 a += (m - 0x1880) / 8 * 4;
@@ -1079,6 +1420,23 @@ void Walk(uint32_t end) {
                 a[last] = f;
                 a[2] = 0;
                 a[3] = 1;
+            } else if (m >= 0x1900 && m < 0x1940) {
+                // NV097_SET_VERTEX_DATA2S: two signed shorts (xemu pgraph.c), z = 0 and w = 1, 4 bytes a slot.
+                // Slot 0 completes the vertex. The title uses this for the pass that fills the scene's textures.
+                uint32_t slot = (m - 0x1900) / 4;
+                a += slot * 4;
+                a[0] = float(int16_t(v & 0xFFFF));
+                a[1] = float(int16_t(v >> 16));
+                a[2] = 0;
+                a[3] = 1;
+                last = slot == 0;
+            } else if (m >= 0x1980 && m < 0x1A00) {
+                // NV097_SET_VERTEX_DATA4S_M: four signed shorts, two methods a slot, completes on slot 0 part 1
+                uint32_t i = (m - 0x1980) / 4, slot = i / 2, part = i & 1;
+                a += slot * 4;
+                a[part * 2 + 0] = float(int16_t(v & 0xFFFF));
+                a[part * 2 + 1] = float(int16_t(v >> 16));
+                last = slot == 0 && part == 1;
             } else if (m >= 0x1940 && m < 0x1980) {  // 4 bytes
                 a += (m - 0x1940) / 4 * 4;
                 for (int c = 0; c < 4; c++) a[c] = (v >> c * 8 & 0xFF) / 255.0f;
@@ -1093,7 +1451,46 @@ void Walk(uint32_t end) {
             } else if (m >= 0x1518 && m < 0x1528) {  // position, 4 floats
                 last = m == 0x1524;
                 a[(m - 0x1518) / 4] = f;
+            } else if (m == 0x1EA4) {  // transform constant: the register the data block that follows loads
+                g_vs_const_reg = v;
+                continue;
+            } else if (m >= 0xB80 && m < 0x1500) {  // transform constant data: one float per method, four a register
+                uint32_t idx = (m - 0xB80) / 4, reg = g_vs_const_reg + idx / 4;
+                if (reg < 192) g_state.vsc[reg][idx & 3] = f;
+                continue;
+            } else if (m >= 0x1720 && m < 0x1760) {
+                // NV097_SET_VERTEX_DATA_ARRAY_OFFSET: the title binds vertex buffers inline, 16 slots 0x40 apart.
+                // bits 30:0 are the data address (xemu: offset = parameter & 0x7fffffff, bit 31 selects DMA ctx).
+                uint32_t slot = (m - 0x1720) / 4, &h = g_vb_header[slot];
+                if (!h) h = mem::AllocSystem(16, 16);
+                W32(h + 4, v & 0x7FFFFFFF);
+                g_state.streams[slot].vb = h;
+                continue;
+            } else if (m >= 0x1760 && m < 0x17A0) {
+                // NV097_SET_VERTEX_DATA_ARRAY_FORMAT: type bits 3:0, component count bits 7:4, byte stride 31:8.
+                // Keep the type and count too: the title sets its vertex program inline, so for these draws the
+                // stream bind is the only description of the layout there is.
+                uint32_t slot = (m - 0x1760) / 4;
+                g_state.streams[slot].stride = v >> 8;
+                g_state.streams[slot].fmt = v & 0xFF;
+                continue;
+            } else if (m >= 0x1B00 && m < 0x1C00) {
+                // NV097_SET_TEXTURE_*: 0x40 bytes a stage. Offset (sub 0) and format (sub 4) are rebinds the
+                // renderers have to see, so route them through a D3DPixelContainer; the rest stays plain state.
+                NoteRawMethod(m, v);
+                g_state.simple[m >> 2] = v;
+                uint32_t stage = (m - 0x1B00) / 0x40, sub = (m - 0x1B00) % 0x40;
+                if (sub == 0 || sub == 4) {
+                    static uint32_t off[4] = {}, fmt[4] = {};
+                    (sub == 0 ? off : fmt)[stage] = v;
+                    if (uint32_t h = InlineTexture(off[stage], fmt[stage])) g_state.textures[stage] = h;
+                }
+                continue;
             } else {
+                // the engine pushes most state as raw NV2A methods (the d3d api is inlined away); the backend
+                // reads them by method number out of simple[]
+                NoteRawMethod(m, v);
+                g_state.simple[m >> 2] = v;
                 continue;
             }
             if (!g_im_prim) continue;
@@ -1109,6 +1506,9 @@ void Walk(uint32_t end) {
 HLE_STDCALL(D3DDevice_DrawVerticesUP, 4) {
     std::lock_guard<std::recursive_mutex> lock(g_lock);
     Walk(Dev(kDevPush));
+    LogDrawCaller("vertsup", a[0], a[1], R32(ctx.esp));
+    // args 2/3 are a real pointer and byte stride (checked: they look like D005xxxx scratch and 0x18-0x30), so
+    // HostPtr(a[2]) is right even though the library body also adds a base from CDevice+0xbcc (zero for these)
     DrawUp(a[0], a[1], HostPtr(a[2]), a[3]);
     return 0;
 }
@@ -1123,8 +1523,10 @@ HLE_STDCALL(D3DDevice_BeginPush, 1) {
 
 HLE_STDCALL(D3DDevice_EndPush, 1) {
     std::lock_guard<std::recursive_mutex> lock(g_lock);
-    constexpr uint32_t kBeginEnd = 0x17FC, kInlineArray = 0x1818;
+    LogDrawCaller("endpush", 0, a[0], R32(ctx.esp));
+    constexpr uint32_t kBeginEnd = 0x17FC, kInlineArray = 0x1818, kElement16 = 0x1800, kElement32 = 0x1808;
     static std::vector<uint32_t> vertices;
+    static std::vector<uint16_t> indices;
     uint32_t prim = 0;
     for (uint32_t p = g_push_begin, end = a[0]; g_push_begin && p + 4 <= end;) {
         // count in bits 18 to 28, bit 30 keeps the method for every value
@@ -1136,19 +1538,43 @@ HLE_STDCALL(D3DDevice_EndPush, 1) {
         }
         for (uint32_t i = 0; i < n; i++, p += 4) {
             uint32_t m = head & 0x40000000 ? method : method + i * 4, v = R32(p);
+            NoteMethodSeen(m, v);
             ApplyVisibilityMethod(m, v);
             if (m == kInlineArray) {
                 if (prim) vertices.push_back(v);
+            } else if (method == kElement16 || method == kElement32 || m == kElement16 || m == kElement32) {
+                // NV097_ARRAY_ELEMENT16/32: the title's geometry is indexed and arrives here, not through
+                // Walk. xemu marks both methods non-incrementing (pgraph.c DEF_METHOD_NON_INC), 16 packs two
+                // indices low half first, 32 carries one and anything above 16 bits is not an index.
+                if (prim) {
+                    if (method == kElement32 || m == kElement32) {
+                        if (v <= 0xFFFF) indices.push_back(uint16_t(v));
+                    } else {
+                        indices.push_back(uint16_t(v & 0xFFFF));
+                        indices.push_back(uint16_t(v >> 16));
+                    }
+                }
             } else if (m != kBeginEnd) {
                 if (m >> 2 < g_state.simple.size()) g_state.simple[m >> 2] = v;
             } else if (v) {
                 prim = v;
                 vertices.clear();
+                indices.clear();
             } else if (prim) {
-                uint32_t stride = VertexBytes(), bytes = uint32_t(vertices.size()) * 4;
-                if (stride && bytes % stride == 0) DrawUp(prim, bytes / stride, vertices.data(), stride);
-                else LOG_FIRST(8, "d3d: EndPush primitive %u dropped, %u bytes of vertices of %u", prim, bytes, stride);
+                if (!indices.empty()) {
+                    // the vertices come from the streams bound by 0x1720/0x1760; start is the first vertex
+                    if (g_backend) {
+                        LOG_FIRST(4, "d3d: EndPush indexed draw, prim %u, %zu indices", prim, indices.size());
+                        g_backend->Draw(g_state, prim, 0, uint32_t(indices.size()),
+                                        reinterpret_cast<const uint8_t*>(indices.data()));
+                    }
+                } else {
+                    uint32_t stride = VertexBytes(), bytes = uint32_t(vertices.size()) * 4;
+                    if (stride && bytes % stride == 0) DrawUp(prim, bytes / stride, vertices.data(), stride);
+                    else LOG_FIRST(8, "d3d: EndPush primitive %u dropped, %u bytes of vertices of %u", prim, bytes, stride);
+                }
                 prim = 0;
+                indices.clear();
             }
         }
     }

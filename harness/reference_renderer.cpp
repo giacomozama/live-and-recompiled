@@ -965,6 +965,7 @@ const Probes& Watch() {
 }
 
 uint32_t g_draws = 0;  // this frame's
+uint64_t g_frame = 0;  // frames drawn since BeginFrame started counting
 
 // triangles
 
@@ -990,6 +991,7 @@ struct Screen {
 void BeginFrame() {
     g_images.clear();
     g_draws = 0;
+    g_frame++;
 }
 
 void Clear(const State& s, uint32_t count, const uint8_t* rects, uint32_t flags, uint32_t color, float z, uint32_t stencil) {
@@ -1155,8 +1157,23 @@ void Draw(const State& s, uint32_t prim, uint32_t start, uint32_t count, const u
         if (!s.rs[kRsSpecularEnable]) o.attr[kD1] = o.attr[kB1] = V(0, 0, 0, 1);
     }
 
+    if (const char* dv = std::getenv("DUMP_VS")) {
+        uint32_t want = uint32_t(std::strtoul(dv, nullptr, 16));
+        if (s.vs_handle == want) {
+            const Viewport& v = s.viewport;
+            std::fprintf(stderr, "VSDRAW %08X n=%u program=%d viewport %u %u %u %u z %.3f %.3f zscale %.1f rt %08X ok=%d %ux%u scissor=%u\n",
+                         s.vs_handle, as.vertex_count, int(program), v.x, v.y, v.w, v.h, v.min_z, v.max_z, s.zscale,
+                         s.rt.data, int(rt.ok), rt.w, rt.h, s.scissor_count);
+            for (uint32_t q = 0; q < as.vertex_count && q < 4; q++)
+                std::fprintf(stderr, "  v%u pos %.3f %.3f %.3f %.4f attr0 %.3f %.3f %.3f %.3f\n", q,
+                             verts[q].pos[0], verts[q].pos[1], verts[q].pos[2], verts[q].pos[3],
+                             verts[q].attr[kD0][0], verts[q].attr[kD0][1], verts[q].attr[kD0][2], verts[q].attr[kD0][3]);
+        }
+    }
+
     // raster and output state
     bool blend = simple(kMBlendEnable) != 0;
+    if (std::getenv("TEST_OPAQUE") && simple(kMSrcBlend) == 0x306 && simple(kMDestBlend) == 0) blend = false;
     uint32_t src_factor = simple(kMSrcBlend), dst_factor = simple(kMDestBlend), blend_op = simple(kMBlendOp);
     uint32_t cw = simple(kMColorWriteEnable);
     uint32_t cmask = (cw >> 16 & 1 ? 4u : 0u) | (cw >> 8 & 1 ? 2u : 0u) | (cw & 1 ? 1u : 0u) | (cw >> 24 & 1 ? 8u : 0u);
@@ -1301,7 +1318,7 @@ void Draw(const State& s, uint32_t prim, uint32_t start, uint32_t count, const u
                                 LOGI("  v%u pos %.2f %.2f %.1f w %.3f in %.3f %.3f %.3f %.3f", vi, pos[0], pos[1], pos[2], pos[3], v0 ? v0[0] : 0,
                                      v0 ? v0[1] : 0, v0 ? v0[2] : 0, v0 ? v0[3] : 0);
                             }
-                            LOGI("probe %d,%d draw %u src %.3f %.3f %.3f %.3f -> %.3f %.3f %.3f %.3f blend %u %X %X mask %X", x, y, draw, shaded[0],
+                            LOGI("probe f%llu %d,%d draw %u src %.3f %.3f %.3f %.3f -> %.3f %.3f %.3f %.3f blend %u %X %X mask %X", g_frame, x, y, draw, shaded[0],
                                  shaded[1], shaded[2], shaded[3], col[0], col[1], col[2], col[3], unsigned(blend), src_factor, dst_factor, cmask);
                         }
                     rt.Store(uint32_t(x), uint32_t(y), col, cmask);
@@ -1326,6 +1343,28 @@ bool WriteTga(const Surface& s, const char* path) {
     for (uint32_t y = 0; y < p.h; y++) {
         for (uint32_t x = 0; x < p.w; x++) {
             Vec c = p.Load(x, y);
+            for (int i = 0; i < 3; i++) row[x * 3 + i] = uint8_t(Sat(c[2 - i]) * 255);
+        }
+        std::fwrite(row.data(), 1, row.size(), f);
+    }
+    std::fclose(f);
+    return true;
+}
+
+bool DumpTexture(uint32_t header, const char* path) {
+    auto img = FindImage(header);
+    if (!img) return false;
+    FILE* f = std::fopen(path, "wb");
+    if (!f) return false;
+    uint8_t head[18] = {0, 0, 2};
+    head[12] = uint8_t(img->w), head[13] = uint8_t(img->w >> 8), head[14] = uint8_t(img->h), head[15] = uint8_t(img->h >> 8);
+    head[16] = 24;
+    head[17] = 0x20;
+    std::fwrite(head, 1, 18, f);
+    std::vector<uint8_t> row(size_t(img->w) * 3);
+    for (uint32_t y = 0; y < img->h; y++) {
+        for (uint32_t x = 0; x < img->w; x++) {
+            const Vec& c = img->texels[0][size_t(y) * img->w + x];
             for (int i = 0; i < 3; i++) row[x * 3 + i] = uint8_t(Sat(c[2 - i]) * 255);
         }
         std::fwrite(row.data(), 1, row.size(), f);

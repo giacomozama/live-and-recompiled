@@ -725,6 +725,7 @@ private:
     uint32_t query_next_ = 0;
     std::vector<Query> counted_;  // since the last ClearReport
     std::deque<Report> reports_;
+    uint32_t frame_draws_ = 0, frame_opaque_ = 0, frame_counted_ = 0;  // for the optional per-frame summary
     bool tearing_ = false;
     uint64_t presents_ = 0;
     double fps_ = 0;
@@ -2421,6 +2422,7 @@ bool D3D12Backend::EnsureQueries() {
 uint32_t D3D12Backend::BeginCountedDraw(const State& s) {
     if (!s.simple[kMCountEnable >> 2] || !EnsureQueries()) return kNoQuery;
     uint32_t query = query_next_++ % kQueries;
+    frame_counted_++;
     cl_->BeginQuery(query_heap_.Get(), D3D12_QUERY_TYPE_OCCLUSION, query);
     return query;
 }
@@ -2464,6 +2466,8 @@ void D3D12Backend::DeliverReports() {
 void D3D12Backend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t count, const uint8_t* indices) {
     PerfScope perf_draw{g_perf.draw};
     g_perf.draws++;
+    frame_draws_++;
+    if (!s.simple[kMBlendEnable >> 2]) frame_opaque_++;
     if (cap_) CapStep(s.rt);
     if (DepthCopy(s)) return;
     DrawEnd draw_end{ext_};
@@ -2979,6 +2983,10 @@ void D3D12Backend::Present(const Surface& front) {
     presents_++;
     presents_seen_.store(presents_);
     frame_++;
+    if (std::getenv("XBE_FRAME_LOG"))
+        LOGI("frame %llu: %u draws, %u opaque, %u counted, %zu reports left", presents_, frame_draws_, frame_opaque_,
+             frame_counted_, reports_.size());
+    frame_draws_ = frame_opaque_ = frame_counted_ = 0;
     ReleaseOldTextures();
     ResetFrame();
     CountFps();

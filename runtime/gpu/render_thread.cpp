@@ -224,7 +224,10 @@ public:
     void WaitFence(uint32_t fence) override { Wait(fence, WaitFor::Fence, "fence"); }
     bool Busy(uint32_t resource) override {
         auto it = last_use_.find(resource);
-        return it != last_use_.end() && it->second > done_.load();
+        // a use recorded in the batch still being built is not on the GPU yet, so it is not busy; a submitted
+        // batch that has not completed is. (The title polls this to know when it can touch a resource again, so
+        // counting the unsubmitted batch would spin forever — it never reaches Swap to submit it.)
+        return it != last_use_.end() && it->second > done_.load() && it->second != cur_->id;
     }
     void WaitResource(uint32_t resource) override {
         auto it = last_use_.find(resource);

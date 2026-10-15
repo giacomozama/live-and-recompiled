@@ -11,6 +11,20 @@ inline bool Perf() {
     return on;
 }
 
+// XBE_SKIP_FMV set: the file layer reports every .xmv as missing, so the title skips its cutscenes instead of
+// playing them out in real time while porting
+inline bool SkipFmv() {
+    static const bool on = std::getenv("XBE_SKIP_FMV") != nullptr;
+    return on;
+}
+
+// XBE_DUMP_METHODS set: the raw NV2A methods seen just before each draw are logged, to compare a title's inlined
+// state with what the runtime decodes
+inline bool DumpMethods() {
+    static const bool on = std::getenv("XBE_DUMP_METHODS") != nullptr;
+    return on;
+}
+
 // XBE_CAPTURE_DIR: where F3 saves a frame, empty: F3 does not capture
 inline const std::filesystem::path& CaptureDir() {
     static const std::filesystem::path dir = [] {

@@ -1211,6 +1211,29 @@ KERNEL_EXPORT(366, HalWriteSMCScratchRegister, 1) { return 0; }
 KERNEL_EXPORT(365, HalEnableSecureTrayEject, 0) { return 0; }
 KERNEL_EXPORT(90, IoDismountVolume, 1) { return kSuccess; }
 KERNEL_EXPORT(91, IoDismountVolumeByName, 1) { return kSuccess; }
+
+// the title asks its mounted volumes for size and device class before saving
+// (DeviceObject, FsInformationClass, Length, FsInformation, IoStatusBlock): five args, as the CRT's
+// _findfirst pushes; popping only four left a word on the guest stack and corrupted the caller's frame
+KERNEL_EXPORT(76, IoQueryVolumeInformation, 5) {
+    uint32_t cls = a[1], len = a[2], out = a[3];
+    LOG_FIRST(16, "IoQueryVolumeInformation device %08X class %u len %u", a[0], cls, len);
+    if (out && len) std::memset(HostPtr(out), 0, len);
+    if (out) {
+        if (cls == 3 && len >= 24) {        // FileFsSizeInformation
+            W32(out + 0x00, 0x00080000);    // total allocation units
+            W32(out + 0x04, 0);
+            W32(out + 0x08, 0x00040000);    // free allocation units
+            W32(out + 0x0C, 0);
+            W32(out + 0x10, 8);             // sectors per allocation unit
+            W32(out + 0x14, 512);           // bytes per sector
+        } else if (cls == 4 && len >= 8) {  // FileFsDeviceInformation
+            W32(out + 0x00, 7);             // FILE_DEVICE_DISK
+            W32(out + 0x04, 0);
+        }
+    }
+    return kSuccess;
+}
 KERNEL_EXPORT(248, ObReferenceObjectByPointer, 2) { return kSuccess; }
 KERNEL_FASTCALL(251, ObfReferenceObject) { return 0; }
 

@@ -13,5 +13,7 @@ void Copy(const gpu::Surface& src, const gpu::Surface& dst, uint32_t count, uint
 void Draw(const gpu::State& s, uint32_t prim, uint32_t start, uint32_t count, const uint8_t* indices);
 // 24 bit TGA of a surface's colour
 bool WriteTga(const gpu::Surface& s, const char* path);
+// 24 bit TGA of a stage texture's decoded image, false if it cannot be described
+bool DumpTexture(uint32_t header, const char* path);
 
 }  // namespace reference
