@@ -40,10 +40,10 @@ diff --git a/harness/build.sh b/harness/build.sh
 old mode 100644
 new mode 100755
 diff --git a/harness/null_backend.cpp b/harness/null_backend.cpp
-index 64234bf..470fc05 100644
+index 64234bf..83e4b2d 100644
 --- a/harness/null_backend.cpp
 +++ b/harness/null_backend.cpp
-@@ -1,11 +1,18 @@
+@@ -1,15 +1,23 @@
 +#include <vector>
 +#include <csignal>
 +#include <thread>
@@ -62,7 +62,12 @@ index 64234bf..470fc05 100644
  
  #include "app/app.h"
  #include "core/log.h"
-@@ -28,18 +35,62 @@ public:
+ #include "gpu/backend.h"
++#include "gpu/shaders.h"
+ #include "gpu/texture.h"
+ #include "harness.h"
+ #include "kernel/kernel.h"
+@@ -28,18 +36,62 @@ public:
          return true;
      }
      void Clear(const State& s, uint32_t n, const uint8_t* rects, uint32_t flags, uint32_t color, float z, uint32_t stencil) override {
@@ -126,7 +131,7 @@ index 64234bf..470fc05 100644
          if (list_) {
              std::fclose(list_);
              list_ = nullptr;
-@@ -47,6 +98,21 @@ public:
+@@ -47,6 +99,21 @@ public:
          if (draws_ == last_draws_) empty_++;
          last_draws_ = draws_;
          if (drawing_ && !snap_) reference::WriteTga(front, File("cap/ref_%05llu.tga", frames_).c_str());
@@ -148,7 +153,7 @@ index 64234bf..470fc05 100644
          // snap asks for the next two frames drawn
          std::string snap = (app::ExeDir() / "snap").string();
          if (snap_ == 2) {
-@@ -64,9 +130,44 @@ public:
+@@ -64,9 +131,44 @@ public:
          drawing_ = snap_ || (every && (frames_ + 1) % every == 0);
          if (drawing_) reference::BeginFrame();
          harness::g_frames = frames_ + 1;
@@ -194,7 +199,7 @@ index 64234bf..470fc05 100644
      void Sync(uint32_t, uint32_t) override {}
      void SyncLate(uint32_t) override {}
      void Flush() override {}
-@@ -80,17 +181,23 @@ private:
+@@ -80,18 +182,51 @@ private:
      }
  
      // one draw's state, textures, transforms, declaration and first vertex
@@ -208,6 +213,16 @@ index 64234bf..470fc05 100644
                       s.simple[kMSrcBlend >> 2], s.simple[kMDestBlend >> 2], s.simple[kMColorWriteEnable >> 2],
 -                     s.simple[kMAlphaTestEnable >> 2], s.rs[kRsZEnable]);
 +                     s.simple[kMAlphaTestEnable >> 2], s.rs[kRsZEnable], s.simple[0x1B00 >> 2], s.simple[0x1B04 >> 2], s.simple[0x1B0C >> 2]);
++        // DUMP_PS=<hex pixel shader handle>: the HLSL its combiner translates to, once
++        if (const char* dp = std::getenv("DUMP_PS"); dp && s.ps && s.ps->handle == uint32_t(std::strtoul(dp, nullptr, 16))) {
++            static bool done = false;
++            if (!done) {
++                done = true;
++                TexInfo ti[4] = {};
++                std::fprintf(f, "PIXELHLSL\n%s\nENDPIXELHLSL\n", PixelHlsl(MakePixelKey(s, ti)).c_str());
++            }
++        }
++        std::fprintf(f, "  spec rs %u chip %u\n", s.rs[kRsSpecularEnable], s.simple[0x3B8 >> 2]);
          const auto& t0 = s.tss[0];
          TextureDesc d;
 -        if (s.textures[0] && Describe(s.textures[0], d))
@@ -215,16 +230,35 @@ index 64234bf..470fc05 100644
 +        if (s.textures[0] && Describe(s.textures[0], d)) {
 +            std::fprintf(f, "  tex %ux%u fmt %X data %08X cop %u %X %X aop %u %X %X\n", d.width, d.height, d.format, d.data, t0[kTssColorOp],
                           t0[kTssColorArg1], t0[kTssColorArg2], t0[kTssAlphaOp], t0[kTssAlphaArg1], t0[kTssAlphaArg2]);
+-        std::fprintf(f, "  ttf %X tci %X addr %u %u t16", t0[kTssTextureTransformFlags], t0[kTssTexCoordIndex], t0[kTssAddressU],
 +            if (std::getenv("DUMP_TEX")) {
 +                static std::unordered_set<uint32_t> done;
 +                if (done.insert(s.textures[0]).second)
 +                    reference::DumpTexture(s.textures[0], File("cap/tex_%08X.tga", s.textures[0]).c_str());
 +            }
 +        }
-         std::fprintf(f, "  ttf %X tci %X addr %u %u t16", t0[kTssTextureTransformFlags], t0[kTssTexCoordIndex], t0[kTssAddressU],
++        for (int i = 1; i < 4; i++) {
++            TextureDesc di;
++            const auto& ti = s.tss[size_t(i)];
++            if (s.textures[size_t(i)] && Describe(s.textures[size_t(i)], di))
++            {
++                std::fprintf(f, "  tex%d %ux%u fmt %X data %08X addr %u %u filt %u %u ttf %X tci %X\n", i, di.width, di.height,
++                             di.format, di.data, ti[kTssAddressU], ti[kTssAddressV], ti[kTssMagFilter], ti[kTssMinFilter],
++                             ti[kTssTextureTransformFlags], ti[kTssTexCoordIndex]);
++                // DUMP_TEX=2: every stage's textures, once per data address and frame (render targets change)
++                static const bool all = harness::Env("DUMP_TEX") == 2;
++                static std::unordered_set<uint64_t> seen;
++                if (all && drawing_ && seen.insert(uint64_t(frames_) << 32 | di.data).second)
++                    reference::DumpTexture(s.textures[size_t(i)],
++                                           File("cap/tex_%llu", frames_).append(std::to_string(i)).append("_").append(
++                                               [&] { char b[16]; std::snprintf(b, sizeof b, "%08X.tga", di.data); return std::string(b); }()).c_str());
++            }
++        }
++        std::fprintf(f, "  ttf %X tci %X addr %u %u t16",t0[kTssTextureTransformFlags], t0[kTssTexCoordIndex], t0[kTssAddressU],
                       t0[kTssAddressV]);
          auto matrix = [&](const char* name, uint32_t which) {
-@@ -103,18 +210,36 @@ private:
+             std::fprintf(f, "%s", name);
+@@ -103,18 +238,38 @@ private:
          matrix("\n  proj", 3);
          std::fprintf(f, "\n");
          if (s.vs) {
@@ -234,6 +268,8 @@ index 64234bf..470fc05 100644
 +                std::fprintf(f, " c%d", r - 96);
 +                for (int c = 0; c < 4; c++) std::fprintf(f, " %g", s.vsc[r][c]);
 +            }
++            std::fprintf(f, "\n  viewport c-38 %g %g %g %g c-37 %g %g %g %g", s.vsc[58][0], s.vsc[58][1], s.vsc[58][2], s.vsc[58][3],
++                         s.vsc[59][0], s.vsc[59][1], s.vsc[59][2], s.vsc[59][3]);
 +            std::fprintf(f, "\n  decl");
              for (int r = 0; r < 16; r++) {
                  const auto& in = s.vs->inputs[size_t(r)];
@@ -267,7 +303,7 @@ index 64234bf..470fc05 100644
                  uint32_t v = kernel::R32(data + i * 4);
                  float x;
                  std::memcpy(&x, &v, 4);
-@@ -124,7 +249,9 @@ private:
+@@ -124,7 +279,9 @@ private:
          }
      }
  
@@ -279,7 +315,7 @@ index 64234bf..470fc05 100644
      int snap_ = 0;
      FILE* list_ = nullptr;
 diff --git a/harness/reference_renderer.cpp b/harness/reference_renderer.cpp
-index 6ba2932..5ccc50d 100644
+index 6ba2932..73f5ece 100644
 --- a/harness/reference_renderer.cpp
 +++ b/harness/reference_renderer.cpp
 @@ -460,6 +460,14 @@ struct VertexProgram {
@@ -379,7 +415,7 @@ index 6ba2932..5ccc50d 100644
      uint32_t zfunc = simple(kMZFunc);
      bool stencil = zs.ok && s.rs[kRsStencilEnable];
      uint32_t sfunc = simple(kMStencilFunc), sref = simple(kMStencilRef) & 0xFF, smask = simple(kMStencilMask) & 0xFF,
-@@ -1184,6 +1233,15 @@ void Draw(const State& s, uint32_t prim, uint32_t start, uint32_t count, const u
+@@ -1184,6 +1233,18 @@ void Draw(const State& s, uint32_t prim, uint32_t start, uint32_t count, const u
      bottom = std::min(bottom, int(gh));
      const Probes& probes = Watch();
      bool watched = probes.Watched(rt);
@@ -387,7 +423,10 @@ index 6ba2932..5ccc50d 100644
 +    // land (frames are not reproducible, a pixel trace misses a moving object)
 +    static const uint64_t trace_prog = std::getenv("TRACE_PROG") ? std::strtoull(std::getenv("TRACE_PROG"), nullptr, 16) : 0;
 +    static const bool trace_blended = std::getenv("TRACE_BLENDED") != nullptr;
-+    int prog_traces = trace_prog && s.vs && s.vs->hash == trace_prog && (!trace_blended || simple(kMBlendEnable)) ? 3 : 0;
++    // TRACE_VS=<hex vertex shader handle>: the same for draws by the D3D shader they bind
++    static const uint32_t trace_vs = std::getenv("TRACE_VS") ? uint32_t(std::strtoul(std::getenv("TRACE_VS"), nullptr, 16)) : 0;
++    bool traced = (trace_prog && s.vs && s.vs->hash == trace_prog) || (trace_vs && s.vs_handle == trace_vs);
++    int prog_traces = traced && (!trace_blended || simple(kMBlendEnable)) ? 3 : 0;
 +    if (prog_traces)
 +        LOGI("traceprog draw %u prim %u n %u blend %u %X %X at %u ref %X tex0 %08X tex1 %08X tex2 %08X", draw, prim, count,
 +             simple(kMBlendEnable), simple(kMSrcBlend), simple(kMDestBlend), simple(kMAlphaTestEnable), simple(kMAlphaRef),
@@ -395,7 +434,7 @@ index 6ba2932..5ccc50d 100644
  
      const float near_w = 1e-6f;
      for (size_t ti = 0; ti + 2 < as.indices.size(); ti += 3) {
-@@ -1256,7 +1314,7 @@ void Draw(const State& s, uint32_t prim, uint32_t start, uint32_t count, const u
+@@ -1256,7 +1317,7 @@ void Draw(const State& s, uint32_t prim, uint32_t start, uint32_t count, const u
                      frag.fog = Unpack(s.rs[kRsFogColor]);
                      frag.fog[3] = Sat(attr[kFog][0]);
                      for (int t = 0; t < 4; t++) frag.tc[t] = attr[kT0 + t];
@@ -404,7 +443,7 @@ index 6ba2932..5ccc50d 100644
                      Vec col;
                      bool keep = mat.key.programmable ? Combiners{mat, frag}.Shade(col) : ShadeStages(mat, frag, col);
                      if (!keep) continue;
-@@ -1272,6 +1330,7 @@ void Draw(const State& s, uint32_t prim, uint32_t start, uint32_t count, const u
+@@ -1272,6 +1333,7 @@ void Draw(const State& s, uint32_t prim, uint32_t start, uint32_t count, const u
                          if (stencil) zs.StoreDepth(uint32_t(x), uint32_t(y), oz, stencil_op(op_zfail));
                          continue;
                      }
@@ -412,7 +451,7 @@ index 6ba2932..5ccc50d 100644
                      if (zs.ok && (zwrite || stencil)) zs.StoreDepth(uint32_t(x), uint32_t(y), zwrite ? zi : oz, stencil ? stencil_op(op_pass) : os);
                      if (!rt.ok || !cmask) continue;
                      for (int j = 0; j < 4; j++) col[j] = Sat(col[j]);
-@@ -1301,7 +1360,7 @@ void Draw(const State& s, uint32_t prim, uint32_t start, uint32_t count, const u
+@@ -1301,7 +1363,7 @@ void Draw(const State& s, uint32_t prim, uint32_t start, uint32_t count, const u
                                  LOGI("  v%u pos %.2f %.2f %.1f w %.3f in %.3f %.3f %.3f %.3f", vi, pos[0], pos[1], pos[2], pos[3], v0 ? v0[0] : 0,
                                       v0 ? v0[1] : 0, v0 ? v0[2] : 0, v0 ? v0[3] : 0);
                              }
@@ -421,7 +460,7 @@ index 6ba2932..5ccc50d 100644
                                   shaded[1], shaded[2], shaded[3], col[0], col[1], col[2], col[3], unsigned(blend), src_factor, dst_factor, cmask);
                          }
                      rt.Store(uint32_t(x), uint32_t(y), col, cmask);
-@@ -1334,4 +1393,26 @@ bool WriteTga(const Surface& s, const char* path) {
+@@ -1334,4 +1396,26 @@ bool WriteTga(const Surface& s, const char* path) {
      return true;
  }
  
@@ -590,10 +629,63 @@ index 7e6507d..96e646d 100644
      if (g_file) {
          std::fwrite(line, 1, size_t(n), g_file);
 diff --git a/runtime/gpu/d3d12.cpp b/runtime/gpu/d3d12.cpp
-index 16395fa..fdaceb6 100644
+index 16395fa..710f13f 100644
 --- a/runtime/gpu/d3d12.cpp
 +++ b/runtime/gpu/d3d12.cpp
-@@ -725,6 +725,7 @@ private:
+@@ -148,6 +148,44 @@ O vs(uint id : SV_VertexID) {
+ float psmain(O i) : SV_Depth { return img.SampleLevel(ps, i.uv, 0); }
+ )";
+ 
++// a D24S8 depth buffer as the console's memory holds it, read through a 32 bit colour format: bytes 0 to 3 of each
++// dword are the stencil and depth bits 7:0, 15:8 and 23:16; order picks the byte each of R G B A takes, as that
++// format's decode would (DepthByteOrder). Conker's depth of field reads depth through LIN_A8B8G8R8 (A the top byte)
++// and masks by stencil through LIN_R8G8B8A8.
++const char* kDepthBytesHlsl = R"(
++cbuffer B : register(b1) { float4 order; };
++Texture2D<float> img : register(t0);
++Texture2D<uint2> sten : register(t1);
++struct O { float4 p : SV_Position; float2 uv : TEXCOORD0; };
++O vs(uint id : SV_VertexID) {
++    O o;
++    o.uv = float2((id << 1) & 2, id & 2);
++    o.p = float4(o.uv * float2(2, -2) + float2(-1, 1), 0, 1);
++    return o;
++}
++float depthbyte(O i, uint k) {
++    uint z = (uint)round(saturate(img.Load(int3(i.p.xy, 0))) * 16777215.0);
++    uint d = z << 8 | (sten.Load(int3(i.p.xy, 0)).g & 255);
++    return ((d >> (k * 8)) & 255) / 255.0;
++}
++float4 psmain(O i) : SV_Target {
++    return float4(depthbyte(i, (uint)order.x), depthbyte(i, (uint)order.y), depthbyte(i, (uint)order.z), depthbyte(i, (uint)order.w));
++}
++)";
++
++// the memory byte R G B A take in a 32 bit colour format, as texture.cpp decodes it
++void DepthByteOrder(uint32_t format, float order[4]) {
++    static const float argb[4] = {2, 1, 0, 3}, abgr[4] = {0, 1, 2, 3}, bgra[4] = {1, 2, 3, 0}, rgba[4] = {3, 2, 1, 0};
++    const float* o = argb;
++    switch (format) {
++        case 0x3A: case 0x3F: o = abgr; break;
++        case 0x3B: case 0x40: o = bgra; break;
++        case 0x3C: case 0x41: o = rgba; break;
++        default: break;
++    }
++    std::copy(o, o + 4, order);
++}
++
+ float Bits(uint32_t v) {
+     float f;
+     std::memcpy(&f, &v, 4);
+@@ -479,6 +517,7 @@ private:
+     void DrawFullScreen(ID3D12PipelineState* pso, D3D12_GPU_VIRTUAL_ADDRESS cb, uint32_t srv_slot,
+                         std::optional<uint32_t> sampler_slot = {});
+     ID3D12Resource* Feedback(Target& t) override;
++    ID3D12Resource* DepthBytes(Target& z, uint32_t format);
+     void Resolve(Target& t) {
+         if (t.range != 1 && ext_) ext_->Resolve(*this, t);
+     }
+@@ -725,6 +764,7 @@ private:
      uint32_t query_next_ = 0;
      std::vector<Query> counted_;  // since the last ClearReport
      std::deque<Report> reports_;
@@ -601,7 +693,18 @@ index 16395fa..fdaceb6 100644
      bool tearing_ = false;
      uint64_t presents_ = 0;
      double fps_ = 0;
-@@ -1334,8 +1335,11 @@ ID3DBlob* D3D12Backend::Compile(const std::string& src, const char* entry, const
+@@ -989,6 +1029,10 @@ void D3D12Backend::ReleaseTarget(std::unordered_map<uint64_t, Target>::iterator
+     (it->second.depth ? free_dsv_ : free_rtv_).push_back(it->second.view);
+     CurrentFrame().garbage.push_back(it->second.res);
+     if (it->second.fb) CurrentFrame().garbage.push_back(it->second.fb);
++    if (it->second.zb) {
++        CurrentFrame().garbage.push_back(it->second.zb);
++        free_rtv_.push_back(it->second.zb_view);
++    }
+     targets_.erase(it);
+ }
+ 
+@@ -1334,8 +1378,11 @@ ID3DBlob* D3D12Backend::Compile(const std::string& src, const char* entry, const
      ComPtr<ID3DBlob> err;
      PerfScope perf_compile{g_perf.compile};
      g_perf.shaders++;
@@ -613,7 +716,50 @@ index 16395fa..fdaceb6 100644
      if (FAILED(hr)) {
          LOGE("d3d12: %s compile failed: %s", profile, err ? static_cast<const char*>(err->GetBufferPointer()) : "?");
          LOGE("%s", src.c_str());
-@@ -1547,7 +1551,9 @@ ID3D12PipelineState* D3D12Backend::EnsurePipeline(const PsoKey& k, ID3DBlob* vs,
+@@ -1421,6 +1468,7 @@ void D3D12Backend::Pass(const char* hlsl, const char* entry, DXGI_FORMAT rtv, D3
+         sv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+         sv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+         sv.Texture2D.MipLevels = 1;
++        if (sv.Format == DXGI_FORMAT_X24_TYPELESS_G8_UINT) sv.Texture2D.PlaneSlice = 1;  // a depth buffer's stencil
+         dev_->CreateShaderResourceView(i < 3 ? src[i] : nullptr, &sv, Cpu(srv_heap_.Get(), slot + i, srv_inc_));
+     }
+     Alloc cb = Upload(256, 256);
+@@ -1435,6 +1483,34 @@ void D3D12Backend::Pass(const char* hlsl, const char* entry, DXGI_FORMAT rtv, D3
+     bound_rt_ = bound_ds_ = nullptr;
+ }
+ 
++// the depth target's bytes as colour, drawn again each time a draw reads them; null without a free view
++ID3D12Resource* D3D12Backend::DepthBytes(Target& z, uint32_t format) {
++    if (!z.zb) {
++        if (free_rtv_.empty()) return nullptr;
++        D3D12_HEAP_PROPERTIES hp{D3D12_HEAP_TYPE_DEFAULT};
++        D3D12_RESOURCE_DESC td = Texture2DDesc(kBgra, z.w, z.h);
++        td.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
++        D3D12_CLEAR_VALUE cv{};
++        cv.Format = kBgra;
++        z.zb_state = D3D12_RESOURCE_STATE_RENDER_TARGET;
++        if (FAILED(dev_->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &td, z.zb_state, &cv, IID_PPV_ARGS(&z.zb))))
++            return nullptr;
++        z.zb_view = free_rtv_.back();
++        free_rtv_.pop_back();
++        dev_->CreateRenderTargetView(z.zb.Get(), nullptr, Cpu(rtv_heap_.Get(), z.zb_view, rtv_inc_));
++    }
++    if (cap_) fprintf(cap_, "%04u depth bytes %08X format %X\n", cap_i_++, z.data, format);
++    Transition(z.res.Get(), z.state, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
++    Transition(z.zb.Get(), z.zb_state, D3D12_RESOURCE_STATE_RENDER_TARGET);
++    ID3D12Resource* const src[3] = {z.res.Get(), z.res.Get(), nullptr};
++    const DXGI_FORMAT fmt[3] = {DXGI_FORMAT_R24_UNORM_X8_TYPELESS, DXGI_FORMAT_X24_TYPELESS_G8_UINT, kBgra};
++    float p[8] = {};
++    DepthByteOrder(format, p);
++    Pass(kDepthBytesHlsl, "psmain", kBgra, Cpu(rtv_heap_.Get(), z.zb_view, rtv_inc_), z.w, z.h, src, fmt, p, -1);
++    Transition(z.zb.Get(), z.zb_state, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
++    return z.zb.Get();
++}
++
+ // a copy of the target to read while drawing to it
+ ID3D12Resource* D3D12Backend::Feedback(Target& t) {
+     if (!t.fb) {
+@@ -1547,7 +1623,9 @@ ID3D12PipelineState* D3D12Backend::EnsurePipeline(const PsoKey& k, ID3DBlob* vs,
      if (k.topo == uint32_t(Topology::Points)) ExpandPoints(d);
      ComPtr<ID3D12PipelineState> pso;
      g_perf.psos++;
@@ -623,7 +769,26 @@ index 16395fa..fdaceb6 100644
      psos_[h] = pso;
      return pso.Get();
  }
-@@ -1993,6 +1999,7 @@ constexpr float kFogTableLinear = 3.0f;
+@@ -1774,6 +1852,18 @@ ID3D12Resource* D3D12Backend::BindTexture(const State& s, int stage, DrawTexture
+     if (tit != targets_.end() && !d.cube && d.depth == 1 && !fi.compressed) {
+         return BindTargetTexture(s, stage, d, tit->second, box, stages);
+     }
++    // a depth buffer read through a 32 bit colour format: the GPU holds it, guest memory does not
++    if (tit == targets_.end() && !fi.depth && !fi.compressed && fi.bits == 32 && !d.cube && d.depth == 1) {
++        auto zit = targets_.find(SizedTargetKey(d.data, true, d.width, d.height));
++        if (zit != targets_.end() && zit->second.res) {
++            if (ID3D12Resource* r = DepthBytes(zit->second, d.format)) {
++                stages.rt[stage] = true;
++                info.kind = kTex2D;
++                sv.Format = kBgra;
++                return r;
++            }
++        }
++    }
+     return BindGuestTexture(s, stage, d, fi, stages);
+ }
+ 
+@@ -1993,6 +2083,7 @@ constexpr float kFogTableLinear = 3.0f;
  
  // table mode none under a vertex program: oFog is the blend factor, passed on as linear fog from 1 to 0
  void FillFogConstants(const State& s, bool vertex_program, DrawConstants& c) {
@@ -631,7 +796,7 @@ index 16395fa..fdaceb6 100644
      if (!s.rs[kRsFogEnable]) return;
      if (vertex_program && s.rs[kRsFogTableMode] == kFogTableNone) {
          c.fog[0] = 1.0f;
-@@ -2421,6 +2428,7 @@ bool D3D12Backend::EnsureQueries() {
+@@ -2421,6 +2512,7 @@ bool D3D12Backend::EnsureQueries() {
  uint32_t D3D12Backend::BeginCountedDraw(const State& s) {
      if (!s.simple[kMCountEnable >> 2] || !EnsureQueries()) return kNoQuery;
      uint32_t query = query_next_++ % kQueries;
@@ -639,7 +804,7 @@ index 16395fa..fdaceb6 100644
      cl_->BeginQuery(query_heap_.Get(), D3D12_QUERY_TYPE_OCCLUSION, query);
      return query;
  }
-@@ -2452,28 +2460,62 @@ void D3D12Backend::DeliverReports() {
+@@ -2452,28 +2544,62 @@ void D3D12Backend::DeliverReports() {
          const Report& r = reports_.front();
          double pixels = 0;
          for (const Query& q : r.queries) pixels += double(query_counts_[q.index]) / q.samples_per_pixel;
@@ -706,7 +871,7 @@ index 16395fa..fdaceb6 100644
  
      // vertex shader
      DrawShaders sh = ClassifyShaders(s, a, count);
-@@ -2483,18 +2525,18 @@ void D3D12Backend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t
+@@ -2483,18 +2609,18 @@ void D3D12Backend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t
  
      // stage textures, then the pixel shader made for them
      DrawTextures stages;
@@ -728,7 +893,7 @@ index 16395fa..fdaceb6 100644
      cl_->SetPipelineState(pso);
  
      // constants
-@@ -2979,6 +3021,10 @@ void D3D12Backend::Present(const Surface& front) {
+@@ -2979,6 +3105,10 @@ void D3D12Backend::Present(const Surface& front) {
      presents_++;
      presents_seen_.store(presents_);
      frame_++;
@@ -739,6 +904,21 @@ index 16395fa..fdaceb6 100644
      ReleaseOldTextures();
      ResetFrame();
      CountFps();
+diff --git a/runtime/gpu/ext.h b/runtime/gpu/ext.h
+index ce6acda..220a0e9 100644
+--- a/runtime/gpu/ext.h
++++ b/runtime/gpu/ext.h
+@@ -33,6 +33,10 @@ struct Target {
+     std::vector<uint8_t> read;    // what Sync left in guest memory
+     Microsoft::WRL::ComPtr<ID3D12Resource> fb;  // copy read by draws that sample the target they render to
+     D3D12_RESOURCE_STATES fb_state = D3D12_RESOURCE_STATE_COPY_DEST;
++    // a depth target read as a 32 bit colour texture: its bytes as colour, R the top depth byte (DepthBytes)
++    Microsoft::WRL::ComPtr<ID3D12Resource> zb;
++    D3D12_RESOURCE_STATES zb_state = D3D12_RESOURCE_STATE_RENDER_TARGET;
++    uint32_t zb_view = ~0u;
+     DXGI_FORMAT fmt = DXGI_FORMAT_B8G8R8A8_UNORM;
+     float range = 1;         // colour held divided by it until the extension resolves the target
+     uint64_t tag = ~0ull;    // the extension's
 diff --git a/runtime/gpu/render_thread.cpp b/runtime/gpu/render_thread.cpp
 index def8fc5..8c863bf 100644
 --- a/runtime/gpu/render_thread.cpp
@@ -1046,7 +1226,7 @@ index 86cf14a..dbef3f8 100644
  KERNEL_FASTCALL(251, ObfReferenceObject) { return 0; }
  
 diff --git a/runtime/xdk/d3d8.cpp b/runtime/xdk/d3d8.cpp
-index cb38363..5dd7e07 100644
+index cb38363..608a776 100644
 --- a/runtime/xdk/d3d8.cpp
 +++ b/runtime/xdk/d3d8.cpp
 @@ -7,6 +7,7 @@
@@ -1078,14 +1258,20 @@ index cb38363..5dd7e07 100644
  
  uint32_t Dev(uint32_t off) { return R32(kDevice + off); }
  void SetDev(uint32_t off, uint32_t v) { W32(kDevice + off, v); }
-@@ -161,9 +176,20 @@ uint32_t NewSurface(uint32_t w, uint32_t h, uint32_t fmt, uint32_t bpp) {
+@@ -159,11 +174,26 @@ uint32_t NewSurface(uint32_t w, uint32_t h, uint32_t fmt, uint32_t bpp) {
+     return hdr;
+ }
  
++// NV097_SET_SPECULAR_ENABLE as the title wrote it raw, which holds until the library's lighting flush pushes the D3D
++// state again (dirty 0x1000). xemu, as the chip, zeroes a vertex program's oD1 while it is off.
++bool g_spec_raw = false;
++uint32_t g_spec_value = 0;
++
  void SyncDeferred() {
      // deferred states live in the title's memory, the inline SetRenderState and SetTextureStageState write them
-+    // a fog state the title changed through D3D since its last raw fog write takes the fog unit back
-+    for (uint32_t i = gpu::kRsFogEnable; i <= gpu::kRsRangeFogEnable; i++)
-+        if (g_state.rs[i] != R32(kRenderState + i * 4)) g_state.chip_fog = 0;
++    // a D3D fog state only marks the fog dirty: the fog unit changes when the library's flush pushes it (ApplyFlush)
      for (uint32_t i = gpu::kRsDeferredFirst; i < gpu::kRsComplexFirst; i++) g_state.rs[i] = R32(kRenderState + i * 4);
++    if (g_spec_raw) g_state.rs[gpu::kRsSpecularEnable] = g_spec_value;
 +    // the whole [4][32] table is authoritative for a title that inlines the D3D8 library (its state never
 +    // reaches an API HLE), so read all of it. A title that does call the API has its dedicated SetTextureState_*
 +    // HLEs write g_state directly, and those do not write the table, so leave their fields alone.
@@ -1100,7 +1286,7 @@ index cb38363..5dd7e07 100644
  }
  
  float ZScale(const gpu::Surface& zs) {
-@@ -238,15 +264,58 @@ void VerticalBlank(X86Context& ctx) {
+@@ -238,15 +268,60 @@ void VerticalBlank(X86Context& ctx) {
      }
  }
  
@@ -1124,10 +1310,12 @@ index cb38363..5dd7e07 100644
  std::recursive_mutex& Lock() { return g_lock; }
  
 +namespace {
-+constexpr uint32_t kDirtyFog = 0x2000, kDirtyCombiners = 0x800;  // D3D_DirtyFlags bits of this library
++constexpr uint32_t kDirtyFog = 0x2000, kDirtyCombiners = 0x800, kDirtyLights = 0x1000;  // D3D_DirtyFlags bits of this library
++constexpr uint32_t kDirtyVertexFormat = 0x10, kDirtyStreams = 0x40, kDirtyNoVertexState = 0x40000000;
 +
 +void ApplyFlush(uint32_t dirty) {
 +    if (dirty & kDirtyFog) g_state.chip_fog = 0;  // the library pushes FOG_* from the D3D fog states
++    if (dirty & kDirtyLights) g_spec_raw = false;  // and SPECULAR_ENABLE from D3DRS_SPECULARENABLE
 +    // with no pixel shader set the library compiles its fixed function combiner from the stage states and pushes it
 +    if ((dirty & kDirtyCombiners) && !g_ps_handle && g_state.ps && g_state.ps->handle == kRawCombiner) g_state.ps = nullptr;
 +}
@@ -1135,7 +1323,7 @@ index cb38363..5dd7e07 100644
 +// A D3D draw's library body flushes the deferred state before it pushes the primitive; the HLE'd draws do the part
 +// of that flush which decides between the D3D states and the title's raw writes, and clear those bits as it would
 +void FlushForDraw() {
-+    uint32_t d = R32(kDirtyFlags), mine = d & (kDirtyFog | kDirtyCombiners);
++    uint32_t d = R32(kDirtyFlags), mine = d & (kDirtyFog | kDirtyCombiners | kDirtyLights);
 +    if (!mine) return;
 +    ApplyFlush(mine);
 +    W32(kDirtyFlags, d & ~mine);
@@ -1159,7 +1347,7 @@ index cb38363..5dd7e07 100644
  // device
  
  HLE_STDCALL(Direct3D_CreateDevice, 6) {
-@@ -268,9 +337,18 @@ HLE_STDCALL(Direct3D_CreateDevice, 6) {
+@@ -268,9 +343,18 @@ HLE_STDCALL(Direct3D_CreateDevice, 6) {
      if (!h) h = 480;
      LOGI("d3d: CreateDevice %ux%u format %X buffers %u depth %u format %X interval %X flags %X", w, h, fmt, count,
           auto_depth, depth_fmt, interval, R32(pp + 0x28));
@@ -1178,7 +1366,7 @@ index cb38363..5dd7e07 100644
  
      uint32_t color_fmt = gpu::LinearColorFormat(fmt);
      g_buffer_count = std::min<uint32_t>(count + 1, 3);
-@@ -318,6 +396,19 @@ HLE_STDCALL(Direct3D_CreateDevice, 6) {
+@@ -318,6 +402,19 @@ HLE_STDCALL(Direct3D_CreateDevice, 6) {
      g_state.zs = SurfaceOf(g_depth);
      UpdateViewportConstants();
      ApplyDefaultStates(ctx);
@@ -1198,7 +1386,7 @@ index cb38363..5dd7e07 100644
      if (a[5]) W32(a[5], kDevice);
      return 0;
  }
-@@ -445,6 +536,15 @@ HLE_STDCALL(D3DDevice_SetGammaRamp, 2) {
+@@ -445,6 +542,15 @@ HLE_STDCALL(D3DDevice_SetGammaRamp, 2) {
  
  HLE_STDCALL(D3DDevice_SetRenderTarget, 2) {
      std::lock_guard<std::recursive_mutex> lock(g_lock);
@@ -1214,7 +1402,7 @@ index cb38363..5dd7e07 100644
      uint32_t rt = a[0] ? a[0] : Dev(kDevRenderTarget), zs = a[1];
      AddRef(ctx, rt);
      uint32_t old_rt = Dev(kDevRenderTarget), old_zs = Dev(kDevDepth);
-@@ -482,10 +582,6 @@ HLE_STDCALL(D3DDevice_GetDepthStencilSurface2, 0) {
+@@ -482,10 +588,6 @@ HLE_STDCALL(D3DDevice_GetDepthStencilSurface2, 0) {
      return s;
  }
  
@@ -1225,7 +1413,7 @@ index cb38363..5dd7e07 100644
  HLE_STDCALL(D3DDevice_Swap, 1) {
      app::SplashFirstFrame();
      // handed over from the previous instance: the window opens on the second frame, the first picture with
-@@ -499,6 +595,15 @@ HLE_STDCALL(D3DDevice_Swap, 1) {
+@@ -499,6 +601,15 @@ HLE_STDCALL(D3DDevice_Swap, 1) {
      }
      std::lock_guard<std::recursive_mutex> lock(g_lock);
      g_presents++;
@@ -1241,7 +1429,7 @@ index cb38363..5dd7e07 100644
      // the kept display is shown until the title presents its own
      kernel::SetSavedDataAddress(0);
      // the ramp an inlined SetGammaRamp left for the vertical blank that shows this swap
-@@ -511,7 +616,12 @@ HLE_STDCALL(D3DDevice_Swap, 1) {
+@@ -511,7 +622,12 @@ HLE_STDCALL(D3DDevice_Swap, 1) {
      }
      Walk(Dev(kDevPush));  // reports asked for at the end of the frame
      if (g_backend) g_backend->Present(SurfaceOf(g_buffers[1]));
@@ -1255,7 +1443,7 @@ index cb38363..5dd7e07 100644
      // like the XDK, the surfaces stay put and their memory rotates: titles keep back buffer pointers and copy its data
      uint32_t last = g_buffers[g_buffer_count - 1], data = R32(last + 4), lk = R32(last + 8);
      for (uint32_t i = g_buffer_count - 1; i > 0; i--) {
-@@ -529,18 +639,26 @@ HLE_STDCALL(D3DDevice_Swap, 1) {
+@@ -529,18 +645,26 @@ HLE_STDCALL(D3DDevice_Swap, 1) {
  HLE_STDCALL(D3DDevice_Clear, 6) {
      std::lock_guard<std::recursive_mutex> lock(g_lock);
      const uint8_t* rects = a[0] && a[1] ? static_cast<const uint8_t*>(HostPtr(a[1])) : nullptr;
@@ -1282,7 +1470,7 @@ index cb38363..5dd7e07 100644
      uint32_t v = a[0];
      g_state.viewport = {R32(v), R32(v + 4), R32(v + 8), R32(v + 12), GF(v + 16), GF(v + 20)};
      g_state.scissor_count = 0;
-@@ -550,6 +668,7 @@ HLE_STDCALL(D3DDevice_SetViewport, 1) {
+@@ -550,6 +674,7 @@ HLE_STDCALL(D3DDevice_SetViewport, 1) {
  
  HLE_STDCALL(D3DDevice_SetScissors, 3) {
      std::lock_guard<std::recursive_mutex> lock(g_lock);
@@ -1290,7 +1478,7 @@ index cb38363..5dd7e07 100644
      g_state.scissor_count = std::min<uint32_t>(a[0], 8);
      for (uint32_t i = 0; i < g_state.scissor_count * 4; i++) g_state.scissors[i] = R32(a[2] + i * 4);
      return 0;
-@@ -679,6 +798,7 @@ HLE_WRAP(D3DDevice_LightEnable, 2) {
+@@ -679,6 +804,7 @@ HLE_WRAP(D3DDevice_LightEnable, 2) {
  
  HLE_STDCALL(D3DDevice_SetTexture, 2) {
      std::lock_guard<std::recursive_mutex> lock(g_lock);
@@ -1298,7 +1486,7 @@ index cb38363..5dd7e07 100644
      uint32_t stage = a[0] & 3, tex = a[1];
      uint32_t old = Dev(kDevTextures + stage * 4);
      AddRef(ctx, tex);
-@@ -706,6 +826,7 @@ HLE_STDCALL(D3DDevice_SetPalette, 2) {
+@@ -706,6 +832,7 @@ HLE_STDCALL(D3DDevice_SetPalette, 2) {
  // bound through a header of the stage's own holding the bound texture's fields with the new data and format.
  HLE_FASTCALL(D3DDevice_SwitchTexture, 1) {
      std::lock_guard<std::recursive_mutex> lock(g_lock);
@@ -1306,15 +1494,25 @@ index cb38363..5dd7e07 100644
      static uint32_t headers[4];
      // texture methods from 0x1B00, 0x40 per stage
      uint32_t stage = (((a[0] & 0x1FFC) - 0x1B00) >> 6) & 3, cur = g_state.textures[stage];
-@@ -720,6 +841,7 @@ HLE_FASTCALL(D3DDevice_SwitchTexture, 1) {
+@@ -720,19 +847,24 @@ HLE_FASTCALL(D3DDevice_SwitchTexture, 1) {
  
  HLE_STDCALL(D3DDevice_SetStreamSource, 3) {
      std::lock_guard<std::recursive_mutex> lock(g_lock);
 +    Walk(Dev(kDevPush));  // state set around a raw push must not reach the pending commands first
      uint32_t n = a[0] & 15, vb = a[1], stride = a[2];
      uint32_t old = R32(kStreams + n * kStreamSize + XDK_Stream_Buffer);
++    bool new_stride = stride != R32(kStreams + n * kStreamSize + XDK_Stream_Stride);
      AddRef(ctx, vb);
-@@ -733,6 +855,7 @@ HLE_STDCALL(D3DDevice_SetStreamSource, 3) {
+     W32(kStreams + n * kStreamSize + XDK_Stream_Stride, stride);
+     W32(kStreams + n * kStreamSize + XDK_Stream_Buffer, vb);
+     Release(ctx, old);
+-    g_state.streams[n] = {vb, stride};
++    // as the library: the draw re-points the arrays, and pushes the formats again for a new stride
++    W32(kDirtyFlags, R32(kDirtyFlags) | (new_stride ? kDirtyVertexFormat | kDirtyStreams | 0x20 : kDirtyStreams));
++    if (!g_state.streams[n].fmt) g_state.streams[n] = {vb, stride};
+     return 0;
+ }
+ 
  HLE_STDCALL(D3DDevice_SetIndices, 2) {
      XDK_REQUIRE("d3d", XDK_DATA(D3D_IndexData));
      std::lock_guard<std::recursive_mutex> lock(g_lock);
@@ -1322,7 +1520,7 @@ index cb38363..5dd7e07 100644
      uint32_t ib = a[0];
      uint32_t old = Dev(kDevIndexBuffer);
      AddRef(ctx, ib);
-@@ -770,8 +893,8 @@ HLE_STDCALL(D3DDevice_CreateVertexShader, 4) {
+@@ -770,8 +902,8 @@ HLE_STDCALL(D3DDevice_CreateVertexShader, 4) {
      vs->handle = rec | 1;
      g_vs[vs->handle] = vs;
      W32(out, vs->handle);
@@ -1333,7 +1531,7 @@ index cb38363..5dd7e07 100644
      return 0;
  }
  
-@@ -801,9 +924,11 @@ HLE_STDCALL(D3DDevice_GetVertexShaderFunction, 3) {
+@@ -801,9 +933,12 @@ HLE_STDCALL(D3DDevice_GetVertexShaderFunction, 3) {
  
  HLE_STDCALL(D3DDevice_SetVertexShader, 1) {
      std::lock_guard<std::recursive_mutex> lock(g_lock);
@@ -1342,10 +1540,11 @@ index cb38363..5dd7e07 100644
      g_state.vs_handle = h;
      g_state.vs = nullptr;
 +    g_chip_program = false;  // the library body would have uploaded this shader's program over the chip's
++    W32(kDirtyFlags, R32(kDirtyFlags) | kDirtyVertexFormat | kDirtyStreams | 0x20);
      if (h & 1) {
          auto it = g_vs.find(h);
          if (it != g_vs.end()) {
-@@ -842,12 +967,37 @@ HLE_FASTCALL(D3DDevice_SetVertexShaderConstantNotInlineFast, 1) {
+@@ -842,12 +977,37 @@ HLE_FASTCALL(D3DDevice_SetVertexShaderConstantNotInlineFast, 1) {
      return 0;
  }
  
@@ -1385,7 +1584,7 @@ index cb38363..5dd7e07 100644
      return 0;
  }
  HLE_STDCALL(D3DDevice_SetShaderConstantMode, 1) {
-@@ -876,7 +1026,10 @@ HLE_STDCALL(D3DDevice_DeletePixelShader, 1) {
+@@ -876,7 +1036,10 @@ HLE_STDCALL(D3DDevice_DeletePixelShader, 1) {
  
  HLE_STDCALL(D3DDevice_SetPixelShader, 1) {
      std::lock_guard<std::recursive_mutex> lock(g_lock);
@@ -1396,7 +1595,7 @@ index cb38363..5dd7e07 100644
      if (!a[0]) return 0;
      auto it = g_ps.find(a[0]);
      if (it != g_ps.end()) {
-@@ -916,6 +1069,9 @@ HLE_STDCALL(D3DDevice_SetPixelShader, 1) {
+@@ -916,6 +1079,9 @@ HLE_STDCALL(D3DDevice_SetPixelShader, 1) {
      put(gpu::kMPsDotMapping, d[55]);
      put(gpu::kMPsInputTexture, d[56]);
      SetComplex(gpu::kRsPsTextureModes, d[54]);
@@ -1406,7 +1605,7 @@ index cb38363..5dd7e07 100644
      return 0;
  }
  
-@@ -929,20 +1085,117 @@ HLE_STDCALL(D3DDevice_SetPixelShaderConstant, 3) {
+@@ -929,20 +1095,130 @@ HLE_STDCALL(D3DDevice_SetPixelShaderConstant, 3) {
  
  // drawing
  
@@ -1497,8 +1696,21 @@ index cb38363..5dd7e07 100644
 +// body, so drop the inline formats the same way: the declaration is the layout again. Without this a D3D draw made
 +// right after one of the title's raw draws read its vertices through that draw's attribute layout - Conker's
 +// visibility test boxes then collapsed to a point, counted 0 pixels, and the animated meshes they cull flashed out.
++// The library's draw (SetStateVB, 0x543200 in Conker) pushes the vertex attribute formats of the shader's
++// declaration only while the vertex format is dirty (SetVertexShader, a SetStreamSource with a new stride), and
++// re-points the arrays at the D3D streams when those changed; otherwise the chip keeps the formats and arrays the
++// title last bound inline. The bits are cleared as the library does.
 +void DeclarationBinds() {
-+    for (auto& st : g_state.streams) st.fmt = 0;
++    uint32_t d = R32(kDirtyFlags);
++    W32(kDirtyFlags, d & ~(kDirtyVertexFormat | kDirtyStreams));
++    if (d & kDirtyNoVertexState) return;
++    bool format = d & kDirtyVertexFormat;
++    if (!format && !(d & kDirtyStreams)) return;
++    for (uint32_t n = 0; n < 16; n++) {
++        auto& st = g_state.streams[n];
++        if (!format && st.fmt) continue;
++        st = {R32(kStreams + n * kStreamSize + XDK_Stream_Buffer), R32(kStreams + n * kStreamSize + XDK_Stream_Stride)};
++    }
 +}
 +
  HLE_STDCALL(D3DDevice_DrawVertices, 3) {
@@ -1526,7 +1738,7 @@ index cb38363..5dd7e07 100644
      return 0;
  }
  
-@@ -974,13 +1227,61 @@ uint32_t UpVertices(const void* src, uint32_t bytes) {
+@@ -974,13 +1250,61 @@ uint32_t UpVertices(const void* src, uint32_t bytes) {
      return g_up_header;
  }
  
@@ -1591,7 +1803,7 @@ index cb38363..5dd7e07 100644
  }
  
  // bytes per vertex of the bound format: stream 0 of the FVF or of the shader's declaration
-@@ -1000,6 +1301,11 @@ namespace {
+@@ -1000,6 +1324,11 @@ namespace {
  uint32_t g_im_prim = 0, g_im_mask = 0;  // open primitive, slots it wrote
  float g_im_attr[64];                    // 16 slots of x y z w
  std::vector<float> g_im_vertices;       // every slot per vertex
@@ -1603,7 +1815,7 @@ index cb38363..5dd7e07 100644
  
  // visibility tests: depth passing pixels are counted while enabled, a report gets the count since the clear,
  // at a physical address in the first 16 MB
-@@ -1049,36 +1355,368 @@ void EndPrimitive() {
+@@ -1049,36 +1378,368 @@ void EndPrimitive() {
      g_state.vs_handle = handle;
  }
  
@@ -1975,7 +2187,7 @@ index cb38363..5dd7e07 100644
              } else if (m >= 0x1940 && m < 0x1980) {  // 4 bytes
                  a += (m - 0x1940) / 4 * 4;
                  for (int c = 0; c < 4; c++) a[c] = (v >> c * 8 & 0xFF) / 255.0f;
-@@ -1093,7 +1731,79 @@ void Walk(uint32_t end) {
+@@ -1093,7 +1754,84 @@ void Walk(uint32_t end) {
              } else if (m >= 0x1518 && m < 0x1528) {  // position, 4 floats
                  last = m == 0x1524;
                  a[(m - 0x1518) / 4] = f;
@@ -2039,6 +2251,11 @@ index cb38363..5dd7e07 100644
 +                NoteRawMethod(m, v);
 +                g_state.simple[m >> 2] = v;
 +                if (m == 0x1E70) g_state.rs[gpu::kRsPsTextureModes] = v;  // NV097_SET_SHADER_STAGE_PROGRAM
++                if (m == 0x3B8) {  // NV097_SET_SPECULAR_ENABLE
++                    g_spec_raw = true;
++                    g_spec_value = v;
++                    g_state.rs[gpu::kRsSpecularEnable] = v;
++                }
 +                // NV097_SET_FOG_ENABLE / _MODE / _PARAMS: the title runs the fog unit itself
 +                if (m == 0x2A4 || m == 0x29C || m == 0x9C0 || m == 0x9C4) {
 +                    g_state.chip_fog = 1;
@@ -2055,7 +2272,7 @@ index cb38363..5dd7e07 100644
                  continue;
              }
              if (!g_im_prim) continue;
-@@ -1101,6 +1811,20 @@ void Walk(uint32_t end) {
+@@ -1101,6 +1839,20 @@ void Walk(uint32_t end) {
              if (a == g_im_attr && last) g_im_vertices.insert(g_im_vertices.end(), g_im_attr, g_im_attr + 64);
          }
      }
@@ -2076,7 +2293,7 @@ index cb38363..5dd7e07 100644
      g_walk = end;
  }
  }  // namespace
-@@ -1109,6 +1833,10 @@ void Walk(uint32_t end) {
+@@ -1109,6 +1861,10 @@ void Walk(uint32_t end) {
  HLE_STDCALL(D3DDevice_DrawVerticesUP, 4) {
      std::lock_guard<std::recursive_mutex> lock(g_lock);
      Walk(Dev(kDevPush));
@@ -2087,7 +2304,7 @@ index cb38363..5dd7e07 100644
      DrawUp(a[0], a[1], HostPtr(a[2]), a[3]);
      return 0;
  }
-@@ -1123,8 +1851,10 @@ HLE_STDCALL(D3DDevice_BeginPush, 1) {
+@@ -1123,8 +1879,10 @@ HLE_STDCALL(D3DDevice_BeginPush, 1) {
  
  HLE_STDCALL(D3DDevice_EndPush, 1) {
      std::lock_guard<std::recursive_mutex> lock(g_lock);
@@ -2099,7 +2316,7 @@ index cb38363..5dd7e07 100644
      uint32_t prim = 0;
      for (uint32_t p = g_push_begin, end = a[0]; g_push_begin && p + 4 <= end;) {
          // count in bits 18 to 28, bit 30 keeps the method for every value
-@@ -1136,19 +1866,42 @@ HLE_STDCALL(D3DDevice_EndPush, 1) {
+@@ -1136,19 +1894,42 @@ HLE_STDCALL(D3DDevice_EndPush, 1) {
          }
          for (uint32_t i = 0; i < n; i++, p += 4) {
              uint32_t m = head & 0x40000000 ? method : method + i * 4, v = R32(p);

@@ -230,13 +230,33 @@ occluder edges). Tools: `XBE_TRACE_REPORTS=1` (zero reports, flash signatures, s
 `XBE_REPORTS_VISIBLE=1` (every test passes), harness `REPORT_LAG=N`, `REPORT_ZERO=1`, real counts on `REF` frames.
 Note: release builds only write `LOGR`/`LOGE` lines; opt-in traces must use `LOGR`.
 
+### Menu visual glitches (fixed, 2026-10-15)
+- **Flat meshes** (bottles, counter flap, faces, eyes) were drawn entirely in fog colour: Conker's final combiner is
+  `fog.a*fog.rgb + (1-fog.a)*R0`, and `SyncDeferred` handed the fog unit back to the (disabled) D3D fog, factor 1,
+  whenever a D3D fog state changed. A D3D state only marks fog dirty; the flush (`DeferredFlush`/`FlushForDraw`) decides.
+- **Character lighting**: characters run `00A46AF68A6652C9`: `oD0` = SH ambient (`c70..c81`), `oD1` = key light
+  (`c83`/`c84`) times 1/d² blob shadows (`c50..c61`), `oT2` = normal lookup into a per-character 32x32 lighting map.
+  (a) Conker writes `NV097_SET_SPECULAR_ENABLE` (`0x3B8`) raw; the renderer followed `D3DRS_SPECULARENABLE` and zeroed
+  `oD1`. Raw now holds until the lighting flush (dirty `0x1000`, library `0x542BF0`). (b) The 32x32 maps (program
+  `21751DC84070A8C5`, four `lit` lobes on a -1..1 grid) were black: the D3D draws cleared the inline vertex formats
+  every time. The library (`SetStateVB` `0x543200`) pushes the declaration's formats only with dirty `0x10`
+  (`SetVertexShader` sets `0x70`, `SetStreamSource` `0x40`, `0x70` on a stride change); the HLEs now do the same.
+- **Depth of field**: the chain reads the depth buffer as colour, `LIN_R8G8B8A8` (`0x41`, A = stencil) for the focus
+  mask and `LIN_A8B8G8R8` (`0x3F`, A = depth bits 23:16) for the sharp/blurred composite. D3D12 keeps depth on the
+  GPU, so `DepthBytes` converts the depth target (depth + stencil plane) into the format's byte order when a 32 bit
+  colour texture aliases it. Verified on Proton against xemu.
+- harness: draw list shows stages 1-3, `c-38/c-37`, `spec rs/chip`; `DUMP_TEX=2` dumps every stage per REF frame,
+  `DUMP_PS=<handle>` prints the translated combiner, `TRACE_VS=<handle>` traces by D3D shader handle. D3D12 F3
+  capture: run with `XBE_CAPTURE_DIR=cap`.
+
 ### Open
 - **Conker's tail** (skinned 79-instruction program `1B4CFC40E338AEDB`, alpha-blended draw, 4×4 DXT1 stage 0):
   final alpha is `R0.a = 1` and its fog factor saturates at `c7.z = 0.734` while the body at the same depth gets
   ~0.36, so it comes out near-black and opaque. Look at the shell offset / `a0` skinning inputs (`v2` = SHORT4
   indices) and where the fur's alpha should come from.
-- some faces/skin show flat pink patches; puddles show Conker's reflection but not the environment (re-check after
-  the visibility-report change, and on D3D12, which answers real counts).
+- curtains/drapes render flat saturated magenta (xemu: soft shaded pink), seen in the Berri answering-machine cutscene.
+- puddles show Conker's reflection but not the environment (re-check on D3D12).
+- fur (Conker's and the squirrels' tails draw as flat opaque shells).
 - `notes/nv2a_methods.txt` predates jump-following; the live vocabulary is 238 methods (re-dump with
   `XBE_DUMP_METHODS=1`, grep `^METHOD`).
 - the restored original `default.xbe` differs from the old copy (`iso/default.xbe_`) in 44 bytes (header plus a few
