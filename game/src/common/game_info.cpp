@@ -1,4 +1,5 @@
 #include "app/app.h"
+#include "common/keyboard.h"
 
 // what the runtime asks of the game; strings must be set, hooks may stay null
 const app::GameInfo app::kGame = {
@@ -18,6 +19,6 @@ const app::GameInfo app::kGame = {
     .window = nullptr,                    // the game window is up
     .message = nullptr,                   // window messages first; true takes one
     .ui = nullptr,                        // ImGui drawing each frame
-    .pad = nullptr,                       // changes a polled pad
+    .pad = keyboard::Pad,                 // keyboard as a pad on port 0 (src/game/keyboard.cpp)
     .rumble = nullptr,                    // changes a rumble before it is set
 };

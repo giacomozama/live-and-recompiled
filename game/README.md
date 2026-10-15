@@ -23,6 +23,20 @@ This port was created using the [Xbox XBE Recomp](https://github.com/TGP482/Xbox
 ### Controller
 Supports Xbox, PlayStation and Switch controllers, with hot plugging and rumble.
 
+A gamepad is not required: the keyboard drives player 1 as well, and the two can be used at
+the same time.
+
+| Action | Key |
+|---|---|
+| Move (left stick) | `W` `A` `S` `D` |
+| D-pad | arrow keys |
+| Camera (right stick) | `I` `J` `K` `L` |
+| A / B / X / Y | `Space` / `Left Shift` / `E` / `Q` |
+| LB (white) / RB (black) | `1` / `2` |
+| LT / RT | `3` / `4` |
+| Start / Back | `Enter` / `Backspace` |
+| Left / right stick click | `C` / `V` |
+
 ### General
 
 ### Miscellaneous
