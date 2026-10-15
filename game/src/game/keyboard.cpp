@@ -14,10 +14,12 @@
 //   start        enter            back                   backspace
 //   stick clicks C (left)         V (right)
 #include <cstdint>
+#include <cstring>
 
 #include <windows.h>
 
 #include "common/keyboard.h"
+#include "common/ui.h"
 #include "core/input.h"
 #include "core/log.h"
 
@@ -58,6 +60,14 @@ void Pad(int port, input::Pad& pad) {
     if (port != 0) return;
     // the keyboard is always present: without this the game sees no controller and ignores input
     pad.connected = true;
+
+    // the settings menu is up: hand the game a neutral pad so it stands still while the player is in the UI
+    if (ui::Open()) {
+        pad.buttons = 0;
+        pad.lx = pad.ly = pad.rx = pad.ry = 0;
+        std::memset(pad.analog, 0, sizeof pad.analog);
+        return;
+    }
 
     if (Down(kW) || Down(kA) || Down(kS) || Down(kD)) {
         pad.lx = Axis(Down(kA), Down(kD));

@@ -6,3 +6,4 @@ xemu/
 # the user's disc image and its extraction
 iso/
 *.iso
+60fps/

@@ -20,6 +20,8 @@ PROTON="${PROTONPATH:-$HOME/.local/share/Steam/compatibilitytools.d/GE-Proton11-
 UMU="$ROOT/umu-run"
 JOBS="${JOBS:-$(nproc)}"
 
+export PROTON_ENABLE_WAYLAND=1
+
 DO_BUILD=1
 DO_RUN=1
 SKIP_FMV=0
