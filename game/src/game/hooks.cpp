@@ -134,3 +134,14 @@ X86_FUNC(sub_00543170) {
     kernel::W32(0x5499F0, kernel::R32(0x5499F0) & 0xC0000070u);
     kernel::Return(ctx, 0, 0);
 }
+
+// 0x53AD90: the library applies the fixups queued for push buffers (RunPushBuffer with a D3DFixup): each copies
+// bytes into a static push buffer, here jumps that pick one of a model's material blocks per pass. On the console
+// the chip has run the earlier jumps into that buffer by then, but the runtime reads the command stream later
+// (d3d::Walk), so every run of a model drawn twice in a frame read the last pass's patches and the other pass was
+// lost. Read what is queued before the patches land.
+X86_EXTERN_FUNC(__imp__sub_0053AD90);
+X86_FUNC(sub_0053AD90) {
+    d3d::FlushPending();
+    __imp__sub_0053AD90(ctx, base);
+}

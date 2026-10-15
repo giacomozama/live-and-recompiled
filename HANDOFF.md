@@ -26,8 +26,8 @@ under Proton**:
   intro cutscenes so iteration is not gated on 67 s of FMV — see
   [post-FMV crash](#progress-since-the-previous-blocker-the-post-fmv-crash)
 - **the frontend 3D scene renders** (Cock & Plucker exterior and tavern, Conker, the Tediz, rain, candles), textured,
-  lit and fogged — see [the frontend 3D scene renders](#the-frontend-3d-scene-renders-2026-10-15). Open: Conker's fur
-  tail draws near-black, some skin patches look flat, puddle reflections are partial (harness-only, probably).
+  lit and fogged — see [the frontend 3D scene renders](#the-frontend-3d-scene-renders-2026-10-15). Open: some skin patches
+  look flat, puddle reflections are partial (harness-only, probably).
 
 Pipeline: 21,956 functions / 1.47 M instructions recompiled → 227 MB of C++ → `Game.exe`.
 
@@ -278,15 +278,20 @@ XGetDeviceChanges. A hook on 0x4C950 re-marks the opened pads in the new table. 
 - harness pad script to a new game: FMVs on, `12500 A` (skips the intro FMV), `13500 LEFT`, `14000 A`, `15000 A`; the
   throne cutscene starts around frame 37000-42000.
 
+### Fur (2026-10-15)
+Characters are static push buffers loaded from the `.rbm` (the 576-byte reserved NOP first), entered from the scratch
+ring with a jump and leaving with one. Each section has several material blocks; the engine picks one per pass by
+running the buffer through the library's `RunPushBuffer` (`0x53AE30`, from the node renderers in the vtables at
+`0x753DC0..`, e.g. `0x3F3510`) with a D3DFixup that patches the blocks' jump words (`0x53AD90` copies the queued
+fixups). The runtime reads the stream lazily, so every run of a buffer in a frame read the last run's patches and the
+fur passes were drawn as the base pass. A hook on `0x53AD90` walks what is queued before the patches land
+(`d3d::FlushPending`). The fur program (`1B4CFC40E338AEDB`) offsets each vertex along its normal by `c85.x` times
+`v5` (a per-vertex length byte); stage 1 is the 256x256 fur mask.
+
 ### Open
 - **missing loading screen**: the game freezes where a loading screen should show (after the boot splash, when starting
   a new game, between cutscenes); it continues once the level has loaded.
-- **Conker's tail** (skinned 79-instruction program `1B4CFC40E338AEDB`, alpha-blended draw, 4×4 DXT1 stage 0):
-  final alpha is `R0.a = 1` and its fog factor saturates at `c7.z = 0.734` while the body at the same depth gets
-  ~0.36, so it comes out near-black and opaque. Look at the shell offset / `a0` skinning inputs (`v2` = SHORT4
-  indices) and where the fur's alpha should come from.
 - puddles show Conker's reflection but not the environment (re-check on D3D12).
-- fur (Conker's and the squirrels' tails draw as flat opaque shells).
 - `notes/nv2a_methods.txt` predates jump-following; the live vocabulary is 238 methods (re-dump with
   `XBE_DUMP_METHODS=1`, grep `^METHOD`).
 - the restored original `default.xbe` differs from the old copy (`iso/default.xbe_`) in 44 bytes (header plus a few
