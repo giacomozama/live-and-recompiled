@@ -1335,8 +1335,11 @@ ID3DBlob* D3D12Backend::Compile(const std::string& src, const char* entry, const
     ComPtr<ID3DBlob> err;
     PerfScope perf_compile{g_perf.compile};
     g_perf.shaders++;
+    auto t = PerfClock::now();
     HRESULT hr = D3DCompile(src.data(), src.size(), nullptr, nullptr, nullptr, entry, profile,
                             D3DCOMPILE_OPTIMIZATION_LEVEL1, 0, &code, &err);
+    // a compile runs on the frame that first needs the shader: log the ones long enough to be seen as a hitch
+    if (double ms = PerfMs(t); ms > 20) LOGR("d3d12: %s compile took %.0f ms (%zu bytes of source)", profile, ms, src.size());
     if (FAILED(hr)) {
         LOGE("d3d12: %s compile failed: %s", profile, err ? static_cast<const char*>(err->GetBufferPointer()) : "?");
         LOGE("%s", src.c_str());
@@ -1548,7 +1551,9 @@ ID3D12PipelineState* D3D12Backend::EnsurePipeline(const PsoKey& k, ID3DBlob* vs,
     if (k.topo == uint32_t(Topology::Points)) ExpandPoints(d);
     ComPtr<ID3D12PipelineState> pso;
     g_perf.psos++;
+    auto t = PerfClock::now();
     if (FAILED(dev_->CreateGraphicsPipelineState(&d, IID_PPV_ARGS(&pso)))) LOGE("d3d12: pipeline creation failed");
+    if (double ms = PerfMs(t); ms > 20) LOGR("d3d12: pipeline creation took %.0f ms", ms);
     psos_[h] = pso;
     return pso.Get();
 }
@@ -1994,6 +1999,7 @@ constexpr float kFogTableLinear = 3.0f;
 
 // table mode none under a vertex program: oFog is the blend factor, passed on as linear fog from 1 to 0
 void FillFogConstants(const State& s, bool vertex_program, DrawConstants& c) {
+    if (ChipFogConstants(s, c.fog)) return;
     if (!s.rs[kRsFogEnable]) return;
     if (vertex_program && s.rs[kRsFogTableMode] == kFogTableNone) {
         c.fog[0] = 1.0f;
@@ -2454,13 +2460,45 @@ void D3D12Backend::DeliverReports() {
         const Report& r = reports_.front();
         double pixels = 0;
         for (const Query& q : r.queries) pixels += double(query_counts_[q.index]) / q.samples_per_pixel;
+        // XBE_REPORTS_VISIBLE: every test passes, an A/B switch for culling problems
+        static const bool all_visible = std::getenv("XBE_REPORTS_VISIBLE") != nullptr;
+        if (all_visible) pixels = 640.0 * 480.0;
         kernel::W32(r.va + kTime, uint32_t(presents_));
         kernel::W32(r.va + kTimeHigh, 0);
         kernel::W32(r.va + kCount, uint32_t(std::lround(pixels)));
+        static const bool trace = std::getenv("XBE_TRACE_REPORTS") != nullptr;
+        if (trace) {
+            static uint32_t total = 0, zero = 0, empty = 0;
+            total++;
+            if (pixels < 0.5) zero++;
+            if (r.queries.empty()) empty++;
+            // a flash: a slot that saw pixels, then none, then pixels again on its next test
+            struct Hist {
+                double prev = -1, cur = -1;
+                uint64_t cur_frame = 0;
+            };
+            static std::unordered_map<uint32_t, Hist> hist;
+            static uint32_t flashes = 0;
+            Hist& h = hist[r.va];
+            if (h.prev > 0.5 && h.cur >= 0 && h.cur < 0.5 && pixels > 0.5 && flashes++ < 300)
+                LOGR("d3d12: flash at report %08X: %.0f, 0 (frame %llu), %.0f pixels; %zu draws", r.va, h.prev,
+                     (unsigned long long)h.cur_frame, pixels, r.queries.size());
+            h.prev = h.cur;
+            h.cur = pixels;
+            h.cur_frame = presents_;
+            if (total % 2000 == 0) LOGR("d3d12: reports %u, %u zero, %u with no counted draw", total, zero, empty);
+        }
         std::atomic_thread_fence(std::memory_order_release);
         kernel::W32(r.va + kStatus, 0);
         reports_.pop_front();
     }
+}
+
+// XBE_TRACE_REPORTS: a draw inside a visibility test that never reaches the GPU leaves the test short of its pixels
+void CountedSkip(const State& s, const char* why) {
+    static const bool trace = std::getenv("XBE_TRACE_REPORTS") != nullptr;
+    static std::atomic<int> n{0};
+    if (trace && s.simple[kMCountEnable >> 2] && n++ < 64) LOGR("d3d12: counted draw skipped (%s)", why);
 }
 
 void D3D12Backend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t count, const uint8_t* indices) {
@@ -2469,15 +2507,15 @@ void D3D12Backend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t 
     frame_draws_++;
     if (!s.simple[kMBlendEnable >> 2]) frame_opaque_++;
     if (cap_) CapStep(s.rt);
-    if (DepthCopy(s)) return;
+    if (DepthCopy(s)) return CountedSkip(s, "depth copy");
     DrawEnd draw_end{ext_};
     if (ext_) ext_->BeginDraw(s);
     Assembled& a = asm_;
-    if (!AssembleDraw(s, prim, start, count, indices, a)) return;
+    if (!AssembleDraw(s, prim, start, count, indices, a)) return CountedSkip(s, "assemble");
     // past the ring every upload is a buffer of its own: seconds lost on a frame that draws a whole level once
     if (CurrentFrame().used > kUploadSize - kUploadReserve) Submit(true);
-    if (!BindTargets(s)) return;
-    if (ext_ && ext_->Bound(*this, s, bound_rt_, bound_ds_, a.pretransformed) && !BindTargets(s)) return;
+    if (!BindTargets(s)) return CountedSkip(s, "targets");
+    if (ext_ && ext_->Bound(*this, s, bound_rt_, bound_ds_, a.pretransformed) && !BindTargets(s)) return CountedSkip(s, "extension targets");
 
     // vertex shader
     DrawShaders sh = ClassifyShaders(s, a, count);
@@ -2487,18 +2525,18 @@ void D3D12Backend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t 
 
     // stage textures, then the pixel shader made for them
     DrawTextures stages;
-    if (!BindStageTexturesAndTargets(s, stages)) return;
+    if (!BindStageTexturesAndTargets(s, stages)) return CountedSkip(s, "textures");
     PixelKey pk = MakePixelKey(s, stages.info);
     pk.quad = sh.quad;
     sh.pkey = Hash(&pk, sizeof(pk));
     EnsurePixelShader(pk, sh);
-    if (!sh.vs_code || !sh.ps_code) return;
+    if (!sh.vs_code || !sh.ps_code) return CountedSkip(s, "shaders");
 
     // pipeline
     PsoKey k;
     BuildPipelineKey(s, a, sh.vh, sh.ph, k);
     ID3D12PipelineState* pso = EnsurePipeline(k, sh.vs_code, sh.ps_code);
-    if (!pso) return;
+    if (!pso) return CountedSkip(s, "pipeline");
     cl_->SetPipelineState(pso);
 
     // constants

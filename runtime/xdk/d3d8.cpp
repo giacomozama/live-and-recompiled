@@ -7,6 +7,7 @@
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 
 #include "app/app.h"
 #include "core/diag.h"
@@ -82,6 +83,20 @@ uint32_t g_buffer_count = 2;
 uint32_t g_depth = 0;
 uint32_t g_scratch_push = 0, g_scratch_size = 0;
 uint32_t g_walk = 0;  // first scratch command not read yet
+uint32_t g_interval = 1;   // D3DPRESENT_INTERVAL of the device's present parameters
+uint32_t g_ps_handle = 0;  // the pixel shader SetPixelShader last bound, 0 for the fixed function combiner
+constexpr uint32_t kRawCombiner = 0xFFFFFFFF;  // handle of the object standing for a combiner written as raw methods
+
+// The transform engine's program memory (xemu: pg->program_data, 136 instructions of 4 dwords). A title that
+// inlines the library uploads its vertex programs straight to the chip with NV097_SET_TRANSFORM_PROGRAM at the
+// slot SET_TRANSFORM_PROGRAM_LOAD selects, and starts one with SET_TRANSFORM_PROGRAM_START; it runs from there to
+// the instruction marked final. SetVertexShader's library body does that same upload for a D3D shader, so
+// whichever wrote last is what the chip runs: SetVertexShader clears g_chip_program, a raw upload or start sets it.
+constexpr uint32_t kProgramSlots = 136;
+uint32_t g_prog[kProgramSlots][4] = {};
+uint32_t g_prog_load = 0, g_prog_start = 0;
+bool g_chip_program = false;
+bool g_chip_dirty = true;  // g_prog or g_prog_start changed since the program was last gathered
 
 uint32_t Dev(uint32_t off) { return R32(kDevice + off); }
 void SetDev(uint32_t off, uint32_t v) { W32(kDevice + off, v); }
@@ -161,6 +176,9 @@ uint32_t NewSurface(uint32_t w, uint32_t h, uint32_t fmt, uint32_t bpp) {
 
 void SyncDeferred() {
     // deferred states live in the title's memory, the inline SetRenderState and SetTextureStageState write them
+    // a fog state the title changed through D3D since its last raw fog write takes the fog unit back
+    for (uint32_t i = gpu::kRsFogEnable; i <= gpu::kRsRangeFogEnable; i++)
+        if (g_state.rs[i] != R32(kRenderState + i * 4)) g_state.chip_fog = 0;
     for (uint32_t i = gpu::kRsDeferredFirst; i < gpu::kRsComplexFirst; i++) g_state.rs[i] = R32(kRenderState + i * 4);
     // the whole [4][32] table is authoritative for a title that inlines the D3D8 library (its state never
     // reaches an API HLE), so read all of it. A title that does call the API has its dedicated SetTextureState_*
@@ -265,6 +283,31 @@ uint32_t DeviceRecords() {
 gpu::State& State() { return g_state; }
 std::recursive_mutex& Lock() { return g_lock; }
 
+namespace {
+constexpr uint32_t kDirtyFog = 0x2000, kDirtyCombiners = 0x800;  // D3D_DirtyFlags bits of this library
+
+void ApplyFlush(uint32_t dirty) {
+    if (dirty & kDirtyFog) g_state.chip_fog = 0;  // the library pushes FOG_* from the D3D fog states
+    // with no pixel shader set the library compiles its fixed function combiner from the stage states and pushes it
+    if ((dirty & kDirtyCombiners) && !g_ps_handle && g_state.ps && g_state.ps->handle == kRawCombiner) g_state.ps = nullptr;
+}
+
+// A D3D draw's library body flushes the deferred state before it pushes the primitive; the HLE'd draws do the part
+// of that flush which decides between the D3D states and the title's raw writes, and clear those bits as it would
+void FlushForDraw() {
+    uint32_t d = R32(kDirtyFlags), mine = d & (kDirtyFog | kDirtyCombiners);
+    if (!mine) return;
+    ApplyFlush(mine);
+    W32(kDirtyFlags, d & ~mine);
+}
+}  // namespace
+
+void DeferredFlush(uint32_t dirty) {
+    std::lock_guard<std::recursive_mutex> lock(g_lock);
+    Walk(Dev(kDevPush));  // raw commands pushed before the flush came first
+    ApplyFlush(dirty);
+}
+
 }  // namespace d3d
 
 using namespace d3d;
@@ -294,6 +337,7 @@ HLE_STDCALL(Direct3D_CreateDevice, 6) {
     if (!h) h = 480;
     LOGI("d3d: CreateDevice %ux%u format %X buffers %u depth %u format %X interval %X flags %X", w, h, fmt, count,
          auto_depth, depth_fmt, interval, R32(pp + 0x28));
+    g_interval = interval;
     std::memset(HostPtr(kDevice), 0, XDK_CDevice_Size);
     W32(kDevicePtr, kDevice);
     ScratchPush();
@@ -551,6 +595,15 @@ HLE_STDCALL(D3DDevice_Swap, 1) {
     }
     std::lock_guard<std::recursive_mutex> lock(g_lock);
     g_presents++;
+    {
+        // a frame far over its period: say so, the compile/pipeline lines before it say whether the renderer was why
+        using clock = std::chrono::steady_clock;
+        static clock::time_point last = clock::now();
+        auto now = clock::now();
+        double ms = std::chrono::duration<double, std::milli>(now - last).count();
+        last = now;
+        if (ms > 250 && g_presents > 2) LOGR("d3d: frame %u took %.0f ms", g_presents.load(), ms);
+    }
     // the kept display is shown until the title presents its own
     kernel::SetSavedDataAddress(0);
     // the ramp an inlined SetGammaRamp left for the vertical blank that shows this swap
@@ -563,7 +616,12 @@ HLE_STDCALL(D3DDevice_Swap, 1) {
     }
     Walk(Dev(kDevPush));  // reports asked for at the end of the frame
     if (g_backend) g_backend->Present(SurfaceOf(g_buffers[1]));
-    app::Pace();
+    // D3DPRESENT_INTERVAL_ONE 1, TWO 2, THREE 4, FOUR 8, IMMEDIATE bit 31; DEFAULT 0 is ONE. The render state, when
+    // the title sets one, replaces the device's.
+    uint32_t interval = R32(kRenderState + gpu::kRsPresentationInterval * 4);
+    if (!interval) interval = g_interval;
+    uint32_t vblanks = interval & 0x80000000u ? 1 : interval & 8 ? 4 : interval & 4 ? 3 : interval & 2 ? 2 : 1;
+    app::Pace(vblanks);
     // like the XDK, the surfaces stay put and their memory rotates: titles keep back buffer pointers and copy its data
     uint32_t last = g_buffers[g_buffer_count - 1], data = R32(last + 4), lk = R32(last + 8);
     for (uint32_t i = g_buffer_count - 1; i > 0; i--) {
@@ -870,6 +928,7 @@ HLE_STDCALL(D3DDevice_SetVertexShader, 1) {
     uint32_t h = a[0];
     g_state.vs_handle = h;
     g_state.vs = nullptr;
+    g_chip_program = false;  // the library body would have uploaded this shader's program over the chip's
     if (h & 1) {
         auto it = g_vs.find(h);
         if (it != g_vs.end()) {
@@ -908,12 +967,37 @@ HLE_FASTCALL(D3DDevice_SetVertexShaderConstantNotInlineFast, 1) {
     return 0;
 }
 
+// LoadVertexShader(handle, address) puts a shader's program into the chip's program memory at an instruction
+// slot; SelectVertexShader(handle, address) starts the program at that slot with the handle's declaration (a null
+// or unknown handle keeps the bound one). Together they are how a title runs a program it uploaded itself.
 HLE_STDCALL(D3DDevice_LoadVertexShader, 2) {
-    LOG_FIRST(4, "d3d: LoadVertexShader %08X at %u is not supported", a[0], a[1]);
+    std::lock_guard<std::recursive_mutex> lock(g_lock);
+    Walk(Dev(kDevPush));
+    auto it = g_vs.find(a[0]);
+    if (it == g_vs.end()) {
+        LOG_FIRST(4, "d3d: LoadVertexShader with unknown handle %08X", a[0]);
+        return 0;
+    }
+    const auto& prog = it->second->program;
+    for (size_t i = 0; i + 4 <= prog.size() && a[1] + i / 4 < kProgramSlots; i += 4)
+        std::memcpy(g_prog[a[1] + i / 4], &prog[i], 16);
+    g_chip_dirty = true;
     return 0;
 }
 HLE_STDCALL(D3DDevice_SelectVertexShader, 2) {
-    LOG_FIRST(4, "d3d: SelectVertexShader %08X at %u is not supported", a[0], a[1]);
+    std::lock_guard<std::recursive_mutex> lock(g_lock);
+    Walk(Dev(kDevPush));
+    auto it = g_vs.find(a[0]);
+    if (it != g_vs.end()) {
+        g_state.vs_handle = a[0];
+        g_state.vs = it->second;
+        for (auto& [reg, v] : it->second->constants)
+            if (reg < 192) g_state.vsc[reg] = v;
+    } else if (a[0] & 1) {
+        LOG_FIRST(4, "d3d: SelectVertexShader with unknown handle %08X at %u", a[0], a[1]);
+    }
+    if (a[1] < kProgramSlots) g_prog_start = a[1];
+    g_chip_program = g_chip_dirty = true;
     return 0;
 }
 HLE_STDCALL(D3DDevice_SetShaderConstantMode, 1) {
@@ -945,6 +1029,7 @@ HLE_STDCALL(D3DDevice_SetPixelShader, 1) {
     Walk(Dev(kDevPush));  // state set around a raw push must not reach the pending commands first
     if (diag::DumpMethods()) std::fprintf(stderr, "SETPS %08X\n", a[0]);
     g_state.ps = nullptr;
+    g_ps_handle = a[0];
     if (!a[0]) return 0;
     auto it = g_ps.find(a[0]);
     if (it != g_ps.end()) {
@@ -1000,6 +1085,77 @@ HLE_STDCALL(D3DDevice_SetPixelShaderConstant, 3) {
 
 // drawing
 
+namespace {
+// the chip's current program, start to final instruction, and a hash that tells programs apart
+const std::vector<uint32_t>& ChipProgram(uint64_t& hash) {
+    static std::vector<uint32_t> prog;
+    static uint64_t h = 0;
+    if (g_chip_dirty) {
+        g_chip_dirty = false;
+        prog.clear();
+        h = 1469598103934665603ull;
+        for (uint32_t i = g_prog_start; i < kProgramSlots; i++) {
+            prog.insert(prog.end(), g_prog[i], g_prog[i] + 4);
+            for (uint32_t w : g_prog[i]) h = (h ^ w) * 1099511628211ull;
+            if (g_prog[i][3] & 1) break;  // FLD_FINAL
+        }
+        h |= 1;
+        // XBE_DUMP_PROGRAM: each distinct chip program once, start slot and words
+        static const bool dump = std::getenv("XBE_DUMP_PROGRAM") != nullptr;
+        static std::unordered_set<uint64_t> seen;
+        if (dump && seen.insert(h).second) {
+            std::fprintf(stderr, "CHIPPROG %016llX start %u n %zu\n", (unsigned long long)h, g_prog_start, prog.size() / 4);
+            for (size_t i = 0; i < prog.size(); i += 4)
+                std::fprintf(stderr, "  %08X %08X %08X %08X\n", prog[i], prog[i + 1], prog[i + 2], prog[i + 3]);
+        }
+    }
+    hash = h;
+    return prog;
+}
+
+// Draws with the program the chip would run. When the title's own upload is current, the bound shader keeps its
+// declaration (the vertex layout is the D3D side's business, the chip program says nothing about it) and the program
+// is swapped for the chip's. One object per (bound shader, program): the renderers tell shaders apart by pointer.
+void BackendDraw(uint32_t prim, uint32_t start, uint32_t count, const uint8_t* indices) {
+    if (!g_backend) return;
+    if (!g_chip_program) {
+        g_backend->Draw(g_state, prim, start, count, indices);
+        return;
+    }
+    uint64_t hash;
+    const auto& prog = ChipProgram(hash);
+    if (prog.empty()) {
+        g_backend->Draw(g_state, prim, start, count, indices);
+        return;
+    }
+    auto bound = g_state.vs;
+    uint32_t handle = g_state.vs_handle;
+    static std::map<std::tuple<const void*, uint32_t, uint64_t>, std::shared_ptr<gpu::VertexShader>> made;
+    auto& vs = made[{bound.get(), (handle & 1) ? 1u : handle, hash}];
+    if (!vs) {
+        vs = std::make_shared<gpu::VertexShader>();
+        if (handle & 1) {
+            if (bound) {
+                vs->decl = bound->decl;
+                vs->inputs = bound->inputs;
+                vs->stream_stride = bound->stream_stride;
+                vs->handle = bound->handle;
+            }
+        } else {
+            gpu::FvfInputs(handle, *vs);  // an FVF's layout under the title's program
+        }
+        vs->program = prog;
+        vs->program_type = 0x2078;
+        vs->hash = hash;
+    }
+    g_state.vs = vs;
+    g_state.vs_handle = handle | 1;
+    g_backend->Draw(g_state, prim, start, count, indices);
+    g_state.vs = bound;
+    g_state.vs_handle = handle;
+}
+}  // namespace
+
 // XBE_DUMP_METHODS: where in the title each draw comes from, to map the frame's passes
 void LogDrawCaller(const char* kind, uint32_t prim, uint32_t count, uint32_t caller) {
     if (!diag::DumpMethods()) return;
@@ -1011,22 +1167,35 @@ void LogDrawCaller(const char* kind, uint32_t prim, uint32_t count, uint32_t cal
                      g_state.simple[gpu::kMDestBlend >> 2], g_state.rt.data, caller);
 }
 
+// A D3D draw's library body pushes NV097_SET_VERTEX_DATA_ARRAY_FORMAT for all sixteen slots from the bound
+// declaration before the primitive, replacing whatever raw binds the title left there. The HLE'd draws skip that
+// body, so drop the inline formats the same way: the declaration is the layout again. Without this a D3D draw made
+// right after one of the title's raw draws read its vertices through that draw's attribute layout - Conker's
+// visibility test boxes then collapsed to a point, counted 0 pixels, and the animated meshes they cull flashed out.
+void DeclarationBinds() {
+    for (auto& st : g_state.streams) st.fmt = 0;
+}
+
 HLE_STDCALL(D3DDevice_DrawVertices, 3) {
     std::lock_guard<std::recursive_mutex> lock(g_lock);
     Walk(Dev(kDevPush));  // a visibility test begun since the last draw counts this one
+    FlushForDraw();
+    DeclarationBinds();
     SyncDeferred();
     LogDrawCaller("verts", a[0], a[2], R32(ctx.esp));
-    if (g_backend) g_backend->Draw(g_state, a[0], a[1], a[2], nullptr);
+    BackendDraw(a[0], a[1], a[2], nullptr);
     return 0;
 }
 
 HLE_STDCALL(D3DDevice_DrawIndexedVertices, 3) {
     std::lock_guard<std::recursive_mutex> lock(g_lock);
     Walk(Dev(kDevPush));
+    FlushForDraw();
+    DeclarationBinds();
     SyncDeferred();
     LogDrawCaller("indexed", a[0], a[1], R32(ctx.esp));
     const uint8_t* indices = a[2] ? static_cast<const uint8_t*>(HostPtr(a[2])) : nullptr;
-    if (g_backend) g_backend->Draw(g_state, a[0], 0, a[1], indices);
+    BackendDraw(a[0], 0, a[1], indices);
     return 0;
 }
 
@@ -1106,10 +1275,13 @@ void DrawUp(uint32_t prim, uint32_t count, const void* vertices, uint32_t stride
     if (!g_backend || !count || !stride) return;
     SyncDeferred();
     DumpRawMethods("up", g_state.vs_handle, prim, count);
-    auto stream = g_state.streams[0];
+    // the caller supplies the whole array in its own layout: the inline format binds belong to some other draw,
+    // so hide them for this one and let the declaration read the array against the stride given
+    auto streams = g_state.streams;
+    for (auto& st : g_state.streams) st.fmt = 0;
     g_state.streams[0] = {UpVertices(vertices, count * stride), stride};
-    g_backend->Draw(g_state, prim, 0, count, nullptr);
-    g_state.streams[0] = stream;
+    BackendDraw(prim, 0, count, nullptr);
+    g_state.streams = streams;
 }
 
 // bytes per vertex of the bound format: stream 0 of the FVF or of the shader's declaration
@@ -1131,6 +1303,7 @@ float g_im_attr[64];                    // 16 slots of x y z w
 std::vector<float> g_im_vertices;       // every slot per vertex
 std::vector<uint32_t> g_im_raw;         // a whole vertex array pushed through NV2A inline array
 std::vector<uint16_t> g_im_indices;     // indices pushed through NV097_ARRAY_ELEMENT16/32
+std::vector<std::pair<uint32_t, uint32_t>> g_im_ranges;  // NV097_DRAW_ARRAYS (start, count), contiguous ones joined
 std::array<uint32_t, 16> g_vb_header{};  // synthetic vertex buffer headers for the inline stream binds
 uint32_t g_vs_const_reg = 0;            // register a transform-constant load selected
 
@@ -1214,6 +1387,64 @@ uint32_t InlineTexture(uint32_t offset, uint32_t format) {
     return h;
 }
 
+// A stage's sampler registers the title wrote raw (NV097_SET_TEXTURE_ADDRESS, _CONTROL0, _FILTER, _BORDER_COLOR,
+// _SET_BUMP_ENV_*), as the D3D texture stage states the renderers read. They go into the title's own deferred stage
+// table as well, which SyncDeferred re-reads every draw, so a raw push and an inlined SetTextureStageState simply
+// overwrite each other in the order the title issued them - the same last-writer rule the chip has.
+void RawTextureState(uint32_t stage, uint32_t sub, uint32_t v) {
+    auto put = [&](uint32_t field, uint32_t value) {
+        g_state.tss[stage][field] = value;
+        W32(kTextureState + (stage * kStageStates + field) * 4, value);
+    };
+    auto putf = [&](uint32_t field, float f) {
+        uint32_t bits;
+        std::memcpy(&bits, &f, 4);
+        put(field, bits);
+    };
+    switch (sub) {
+        case 0x08:  // ADDRESS: U 3:0, V 11:8, P 19:16; the NV2A codes are D3DTADDRESS's
+            put(gpu::kTssAddressU, v & 0xF);
+            put(gpu::kTssAddressV, (v >> 8) & 0xF);
+            put(gpu::kTssAddressW, (v >> 16) & 0xF);
+            break;
+        case 0x0C:  // CONTROL0: colour key 1:0 (D3DTCOLORKEYOP), alpha kill bit 2, anisotropy log2 5:4
+            put(gpu::kTssColorKeyOp, v & 3);
+            put(gpu::kTssAlphaKill, v & 4 ? 4 : 0);  // D3DTALPHAKILL_ENABLE
+            put(gpu::kTssMaxAnisotropy, 1u << ((v >> 4) & 3));
+            break;
+        case 0x14: {  // FILTER: lod bias 12:0 (signed 5.8), min 23:16, mag 27:24, channel signs 31:28
+            static const uint8_t kMin[8][2] = {{2, 0}, {1, 0}, {2, 0}, {1, 1}, {2, 1}, {1, 2}, {2, 2}, {2, 2}};  // D3DTEXF min, mip
+            uint32_t mn = (v >> 16) & 7, mag = (v >> 24) & 0xF;
+            put(gpu::kTssMinFilter, kMin[mn][0]);
+            put(gpu::kTssMipFilter, kMin[mn][1]);
+            put(gpu::kTssMagFilter, mag == 1 ? 1 : 2);
+            put(gpu::kTssColorSign, v & 0xF0000000);
+            putf(gpu::kTssMipLodBias, float(int32_t(v << 19) >> 19) / 256.0f);
+            break;
+        }
+        case 0x24: put(gpu::kTssBorderColor, v); break;
+        case 0x28: put(gpu::kTssBumpEnvMat00, v); break;  // xemu: the matrix is 00 01 10 11
+        case 0x2C: put(gpu::kTssBumpEnvMat01, v); break;
+        case 0x30: put(gpu::kTssBumpEnvMat10, v); break;
+        case 0x34: put(gpu::kTssBumpEnvMat11, v); break;
+        case 0x38: put(gpu::kTssBumpEnvLScale, v); break;
+        case 0x3C: put(gpu::kTssBumpEnvLOffset, v); break;
+        default: break;
+    }
+}
+
+// the pixel shader object standing for a combiner the title wrote as raw methods: no D3D definition, constants left
+// as the title wrote them (every PSC mapping 0xF)
+std::shared_ptr<gpu::PixelShader> RawCombiner() {
+    static std::shared_ptr<gpu::PixelShader> raw;
+    if (!raw) {
+        raw = std::make_shared<gpu::PixelShader>();
+        raw->handle = kRawCombiner;
+        raw->def[57] = raw->def[58] = raw->def[59] = 0xFFFFFFFF;
+    }
+    return raw;
+}
+
 // reads the commands pushed since the last call: vertex data between a begin and an end is drawn, visibility tests
 // are run, the rest is skipped
 void Walk(uint32_t end) {
@@ -1239,12 +1470,31 @@ void Walk(uint32_t end) {
     // xemu behaviour; XBE_NO_WALK_JUMPS restores the old "stop at the first jump" for comparison
     static const bool follow = std::getenv("XBE_NO_WALK_JUMPS") == nullptr;
     auto aim = [&](uint32_t t) {
-        // a target inside the buffer we were handed stays bounded by it, anything else is read as physical RAM
+        // a target inside the buffer we were handed stays bounded by it, anything else is read as physical RAM.
+        // The scratch buffer is a ring: a jump to the put pointer is the end of the stream (the chip stops there),
+        // and one past it lands in what an earlier frame left, which a block jumping "back" with a stale return
+        // address does. Following either used to run on through stale memory into the zeroed low RAM and its ring
+        // wrap, spinning until the packet guard - a ~300 ms stall a few times a minute.
+        if (t == end) {
+            p = limit = end;
+            return true;
+        }
+        if (t >= g_scratch_push && t < g_scratch_push + g_scratch_size && t > end) return false;
         if (t >= g_scratch_push && t < end) limit = end;
         else if (t >= 0x80000000u && t < 0x84000000u) limit = 0x84000000u;
         else return false;
         p = t;
         jumps++;
+        return true;
+    };
+    // a jump the walk cannot follow: carry on after the last jump site in this buffer, where the block would have
+    // returned, else stop
+    auto resume = [&]() {
+        if (!home || resyncs >= 64) return false;
+        resyncs++;
+        p = home;
+        limit = end;
+        home = 0;
         return true;
     };
     // the last few jumps, so a stop can show how the walk got there
@@ -1259,7 +1509,7 @@ void Walk(uint32_t end) {
             jring[s][0] = p - 4;
             jring[s][1] = t;
             if (p - 4 >= g_scratch_push && p - 4 < end) home = p;  // where this buffer resumes
-            if (!aim(t)) break;
+            if (!aim(t) && !resume()) break;
             continue;
         }
         if (follow && (head & 3) == 1) {  // jump
@@ -1267,7 +1517,7 @@ void Walk(uint32_t end) {
             jring[s][0] = p - 4;
             jring[s][1] = t;
             if (p - 4 >= g_scratch_push && p - 4 < end) home = p;  // where this buffer resumes
-            if (!aim(t)) break;
+            if (!aim(t) && !resume()) break;
             continue;
         }
         if (follow && head == 0x00020000) {  // return
@@ -1283,7 +1533,10 @@ void Walk(uint32_t end) {
         if (follow && (head & 3) == 2) {  // call
             if (sp + 2 > 16) break;
             uint32_t rp = p, rl = limit;
-            if (!aim((head & 0xFFFFFFFC) | 0x80000000u)) break;
+            if (!aim((head & 0xFFFFFFFC) | 0x80000000u)) {
+                if (!resume()) break;
+                continue;
+            }
             ret[sp++] = rp;
             ret[sp++] = rl;
             continue;
@@ -1367,6 +1620,19 @@ void Walk(uint32_t end) {
                     g_im_vertices.clear();
                     g_im_raw.clear();
                     g_im_indices.clear();
+                    g_im_ranges.clear();
+                } else if (!g_im_ranges.empty()) {
+                    // runs of the bound vertex arrays, each its own primitive
+                    uint32_t open = g_im_prim;
+                    g_im_prim = 0;
+                    if (open) {
+                        SyncDeferred();
+                        LOG_FIRST(4, "d3d: inline draw arrays, prim %u, %zu runs", open, g_im_ranges.size());
+                        uint32_t base = std::exchange(g_state.base_vertex, 0);  // the chip has no base vertex
+                        for (auto [first, n] : g_im_ranges) BackendDraw(open, first, n, nullptr);
+                        g_state.base_vertex = base;
+                    }
+                    g_im_ranges.clear();
                 } else if (!g_im_raw.empty()) {
                     uint32_t bytes = uint32_t(g_im_raw.size()) * 4, stride = VertexBytes();
                     if (stride && bytes % stride == 0) {
@@ -1403,12 +1669,26 @@ void Walk(uint32_t end) {
                     if (g_backend && open) {
                         SyncDeferred();
                         LOG_FIRST(4, "d3d: inline indexed draw, prim %u, %zu indices", open, g_im_indices.size());
-                        g_backend->Draw(g_state, open, 0, uint32_t(g_im_indices.size()),
-                                        reinterpret_cast<const uint8_t*>(g_im_indices.data()));
+                        DumpRawMethods("walkidx", g_state.vs_handle, open, uint32_t(g_im_indices.size()));
+                        uint32_t base = std::exchange(g_state.base_vertex, 0);  // the chip has no base vertex
+                        BackendDraw(open, 0, uint32_t(g_im_indices.size()),
+                                    reinterpret_cast<const uint8_t*>(g_im_indices.data()));
+                        g_state.base_vertex = base;
                     }
                     g_im_indices.clear();
                 } else {
                     EndPrimitive();
+                }
+                continue;
+            } else if (m == 0x1810) {
+                // NV097_DRAW_ARRAYS: start in bits 23:0, count less one in 31:24. xemu joins a run that continues
+                // the previous one (a long strip arrives split into 256 vertex pieces)
+                uint32_t first = v & 0xFFFFFF, n = (v >> 24) + 1;
+                if (g_im_prim) {
+                    if (!g_im_ranges.empty() && g_im_ranges.back().first + g_im_ranges.back().second == first)
+                        g_im_ranges.back().second += n;
+                    else
+                        g_im_ranges.push_back({first, n});
                 }
                 continue;
             } else if (m == 0x1818) {  // the inline array method: raw vertex data, not a state
@@ -1451,12 +1731,29 @@ void Walk(uint32_t end) {
             } else if (m >= 0x1518 && m < 0x1528) {  // position, 4 floats
                 last = m == 0x1524;
                 a[(m - 0x1518) / 4] = f;
-            } else if (m == 0x1EA4) {  // transform constant: the register the data block that follows loads
+            } else if (m == 0x1EA4) {  // SET_TRANSFORM_CONSTANT_LOAD: the register the data that follows loads
                 g_vs_const_reg = v;
                 continue;
-            } else if (m >= 0xB80 && m < 0x1500) {  // transform constant data: one float per method, four a register
-                uint32_t idx = (m - 0xB80) / 4, reg = g_vs_const_reg + idx / 4;
-                if (reg < 192) g_state.vsc[reg][idx & 3] = f;
+            } else if (m >= 0xB80 && m < 0xC00) {
+                // SET_TRANSFORM_CONSTANT: one float per method, the load pointer advances after a register's fourth
+                // (xemu pgraph.c), so a long upload continues across packets
+                uint32_t slot = (m - 0xB80) / 4;
+                if (g_vs_const_reg < 192) g_state.vsc[g_vs_const_reg][slot & 3] = f;
+                if ((slot & 3) == 3) g_vs_const_reg++;
+                continue;
+            } else if (m >= 0xB00 && m < 0xB80) {
+                // SET_TRANSFORM_PROGRAM: program words at the load pointer, which advances every fourth word
+                uint32_t slot = (m - 0xB00) / 4;
+                if (g_prog_load < kProgramSlots) g_prog[g_prog_load][slot & 3] = v;
+                if ((slot & 3) == 3) g_prog_load++;
+                g_chip_program = g_chip_dirty = true;
+                continue;
+            } else if (m == 0x1E9C) {  // SET_TRANSFORM_PROGRAM_LOAD
+                g_prog_load = v;
+                continue;
+            } else if (m == 0x1EA0) {  // SET_TRANSFORM_PROGRAM_START
+                if (v < kProgramSlots) g_prog_start = v;
+                g_chip_program = g_chip_dirty = true;
                 continue;
             } else if (m >= 0x1720 && m < 0x1760) {
                 // NV097_SET_VERTEX_DATA_ARRAY_OFFSET: the title binds vertex buffers inline, 16 slots 0x40 apart.
@@ -1484,6 +1781,8 @@ void Walk(uint32_t end) {
                     static uint32_t off[4] = {}, fmt[4] = {};
                     (sub == 0 ? off : fmt)[stage] = v;
                     if (uint32_t h = InlineTexture(off[stage], fmt[stage])) g_state.textures[stage] = h;
+                } else {
+                    RawTextureState(stage, sub, v);
                 }
                 continue;
             } else {
@@ -1491,11 +1790,39 @@ void Walk(uint32_t end) {
                 // reads them by method number out of simple[]
                 NoteRawMethod(m, v);
                 g_state.simple[m >> 2] = v;
+                if (m == 0x1E70) g_state.rs[gpu::kRsPsTextureModes] = v;  // NV097_SET_SHADER_STAGE_PROGRAM
+                // NV097_SET_FOG_ENABLE / _MODE / _PARAMS: the title runs the fog unit itself
+                if (m == 0x2A4 || m == 0x29C || m == 0x9C0 || m == 0x9C4) {
+                    g_state.chip_fog = 1;
+                    if (m == 0x2A4) g_state.fog_enable = v;
+                    else if (m == 0x29C) g_state.fog_mode = v;
+                    else std::memcpy(&g_state.fog_param[(m - 0x9C0) / 4], &v, 4);
+                }
+                // the combiner's inputs, outputs, final stage and stage count written by the title itself: it now
+                // runs that combiner, whatever pixel shader the D3D side last bound (the renderers read the
+                // combiner out of simple[], the object only says "programmable")
+                if ((m >= 0x260 && m < 0x280) || m == 0x288 || m == 0x28C || (m >= 0xAA0 && m < 0xAE0) ||
+                    (m >= 0x1E40 && m <= 0x1E60))
+                    g_state.ps = RawCombiner();
                 continue;
             }
             if (!g_im_prim) continue;
             g_im_mask |= 1u << (a - g_im_attr) / 4;
             if (a == g_im_attr && last) g_im_vertices.insert(g_im_vertices.end(), g_im_attr, g_im_attr + 64);
+        }
+    }
+    if (guard >= (1u << 22)) {
+        static uint32_t n = 0;
+        if (n++ < 8) {
+            std::fprintf(stderr, "WALKGUARD at %08X end=%08X walk=%08X jumps=%u sp=%u last jumps:", p, end, g_walk, jumps, sp);
+            uint32_t have = jn < 8 ? jn : 8;
+            for (uint32_t k = 0; k < have; k++) {
+                uint32_t idx = (jn - have + k) & 7;
+                std::fprintf(stderr, " %08X->%08X", jring[idx][0], jring[idx][1]);
+            }
+            std::fprintf(stderr, "\n  at:");
+            for (uint32_t q = p - 32; q < p + 32; q += 4) std::fprintf(stderr, " %08X", R32(q));
+            std::fprintf(stderr, "\n");
         }
     }
     g_walk = end;
@@ -1506,6 +1833,7 @@ void Walk(uint32_t end) {
 HLE_STDCALL(D3DDevice_DrawVerticesUP, 4) {
     std::lock_guard<std::recursive_mutex> lock(g_lock);
     Walk(Dev(kDevPush));
+    FlushForDraw();
     LogDrawCaller("vertsup", a[0], a[1], R32(ctx.esp));
     // args 2/3 are a real pointer and byte stride (checked: they look like D005xxxx scratch and 0x18-0x30), so
     // HostPtr(a[2]) is right even though the library body also adds a base from CDevice+0xbcc (zero for these)
@@ -1565,8 +1893,7 @@ HLE_STDCALL(D3DDevice_EndPush, 1) {
                     // the vertices come from the streams bound by 0x1720/0x1760; start is the first vertex
                     if (g_backend) {
                         LOG_FIRST(4, "d3d: EndPush indexed draw, prim %u, %zu indices", prim, indices.size());
-                        g_backend->Draw(g_state, prim, 0, uint32_t(indices.size()),
-                                        reinterpret_cast<const uint8_t*>(indices.data()));
+                        BackendDraw(prim, 0, uint32_t(indices.size()), reinterpret_cast<const uint8_t*>(indices.data()));
                     }
                 } else {
                     uint32_t stride = VertexBytes(), bytes = uint32_t(vertices.size()) * 4;

@@ -219,9 +219,13 @@ struct IndexBounds {
 // NV097_SET_VERTEX_DATA_ARRAY_FORMAT: slot N is input register N, its offset is 0, and its own binding carries
 // the type (bits 3:0), the component count (bits 7:4) and the byte stride (31:8) - the same (count << 4) | type
 // byte a declaration carries. That is the whole layout, from the stream rather than the shader.
+// A slot whose component count is 0 is no array at all (xemu tests attr->count, not the type): the driver binds
+// all sixteen and writes e.g. 0x02, type float with no components, for the unused ones.
+bool InlineArray(const State::Stream& st) { return st.vb && ((st.fmt >> 4) & 0xF); }
+
 bool InlineBound(const State& s) {
     for (uint32_t i = 0; i < 16; i++)
-        if (s.streams[i].vb && (s.streams[i].fmt & 0xF)) return true;
+        if (InlineArray(s.streams[i])) return true;
     return false;
 }
 
@@ -230,7 +234,7 @@ void InlineInputs(const State& s, VertexShader& out) {
     out.stream_stride.fill(0);
     for (uint32_t slot = 0; slot < 16; slot++) {
         const auto& st = s.streams[slot];
-        if (!st.vb || !(st.fmt & 0xF)) continue;
+        if (!InlineArray(st)) continue;
         out.inputs[slot] = {int(slot), 0, st.fmt & 0xFF};
         out.stream_stride[slot] = st.stride;
     }

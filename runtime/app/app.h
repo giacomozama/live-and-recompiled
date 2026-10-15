@@ -22,6 +22,7 @@ struct Settings {
     uint32_t fps_cap = 60;           // 0 unlimited
     bool vsync = true;
     uint32_t aniso = 0;              // 0 as the game asks
+    std::string aspect = "auto";     // "4:3", "16:9", or "auto": 16:9 when the output is 3:2 or wider
     std::string join_ip;                   // co-op: a host past the LAN the system link search also asks
 };
 
@@ -93,7 +94,8 @@ struct GameInfo {
 };
 extern const GameInfo kGame;
 
-// sleeps out the rest of the frame for the fps cap
-void Pace();
+// sleeps out the rest of the frame for the fps cap, and for the console's presentation interval: a title that
+// presents every vblanks-th 60 Hz blank (D3DPRESENT_INTERVAL_TWO is 2) never runs faster than 60 / vblanks
+void Pace(uint32_t vblanks = 1);
 
 }  // namespace app

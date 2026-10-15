@@ -197,10 +197,11 @@ std::recursive_mutex& UiLock() {
 void ApplyDisplay() { PostMessageW(g_hwnd, kApplyDisplay, 0, 0); }
 void OpenGameWindow(bool apply) { SendMessageW(g_hwnd, kOpenWindow, apply, 0); }
 
-void Pace() {
+void Pace(uint32_t vblanks) {
     using clock = std::chrono::steady_clock;
     static clock::time_point next = clock::now();
     uint32_t cap = Get().fps_cap;
+    if (vblanks > 1) cap = cap ? std::min(cap, 60 / vblanks) : 60 / vblanks;
     auto now = clock::now();
     if (!cap) {
         next = now;

@@ -91,6 +91,12 @@ float4 ilu_lit(float4 s) {
     return float4(1, diffuse, diffuse > 0 ? spec : 0, 1);
 }
 float fogfactor(float d) {
+    if (fogp.w >= 4) {  // the chip's own fog unit, see ChipFogConstants
+        float f = fogp.w == 4 ? fogp.x + d * fogp.y
+                : fogp.w == 5 ? fogp.x + exp2(d * fogp.y * 16.0)
+                              : fogp.x + exp2(-d * d * fogp.y * fogp.y * 32.0);
+        return fogp.z != 0 ? abs(f) : f;
+    }
     if (fogp.w == 3) return (fogp.y - d) / (fogp.y - fogp.x);
     if (fogp.w == 1) return exp(-d * fogp.z);
     if (fogp.w == 2) return exp(-(d * fogp.z) * (d * fogp.z));
@@ -580,18 +586,20 @@ PixelKey MakePixelKey(const State& s, const TexInfo tex[4]) {
     k.flat = s.simple[kMShadeMode >> 2] == 0x1D00;  // D3DSHADE_FLAT
     k.two_sided = s.rs[kRsTwoSidedLighting] != 0;
     if (s.ps) {
-        const uint32_t* d = s.ps->def;
+        // The combiner registers as the chip holds them: SetPixelShader loads its definition there the way the XDK
+        // pushes it, and a title that inlines the library writes the same methods itself, so whichever wrote last
+        // is what runs.
+        auto m = [&](uint32_t method) { return s.simple[method >> 2]; };
         k.programmable = 1;
-        // D3DPIXELSHADERDEF dwords: alpha inputs 0, final 8 and 9, alpha outputs 26, rgb inputs 34, compare mode 42, rgb outputs 45, count 53, dot mapping 55, input texture 56
-        k.count = d[53];
-        for (int i = 0; i < 8; i++) {
-            k.a_in[i] = d[i];
-            k.a_out[i] = d[26 + i];
-            k.rgb_in[i] = d[34 + i];
-            k.rgb_out[i] = d[45 + i];
+        k.count = m(kMPsCombinerCount);
+        for (uint32_t i = 0; i < 8; i++) {
+            k.a_in[i] = m(kMPsAlphaInputs + i * 4);
+            k.a_out[i] = m(kMPsAlphaOutputs + i * 4);
+            k.rgb_in[i] = m(kMPsRgbInputs + i * 4);
+            k.rgb_out[i] = m(kMPsRgbOutputs + i * 4);
         }
-        k.final_abcd = d[8];
-        k.final_efg = d[9];
+        k.final_abcd = m(kMPsFinalAbcd);
+        k.final_efg = m(kMPsFinalEfgh);
         // the stage modes follow the bound textures, as D3D's lazy shader stage setup does
         uint32_t modes = s.rs[kRsPsTextureModes];
         for (int i = 0; i < 4; i++) {
@@ -602,9 +610,9 @@ PixelKey MakePixelKey(const State& s, const TexInfo tex[4]) {
             else if (m == 0xD || m == 0xE) m = t.kind == kTexCube ? 0xE : 0xD;
             k.tex_modes |= m << (i * 5);
         }
-        k.dot_mapping = d[55];
-        k.input_texture = d[56];
-        k.compare_mode = d[42];
+        k.dot_mapping = m(kMPsDotMapping);
+        k.input_texture = m(kMPsInputTexture);
+        k.compare_mode = m(kMPsCompareMode);
         return k;
     }
     // the console's stages divide by q; a vertex program's q is its own

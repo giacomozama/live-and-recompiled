@@ -187,6 +187,30 @@ struct State {
     uint32_t light_enable = 0;                         // bit per light
     float ss_offset_x = 0, ss_offset_y = 0;
     float zscale = 16777215.0f;  // depth buffer units per 1.0
+    // The fog unit as a title that inlines the library programs it, with raw NV097_SET_FOG_ENABLE / _MODE / _PARAMS.
+    // While chip_fog is set those are what runs, over the D3D fog render states (whichever was written last).
+    uint32_t chip_fog = 0, fog_enable = 0, fog_mode = 0;
+    float fog_param[2] = {};
 };
+
+// The chip's fog factor in the form the shaders' fogfactor() evaluates (xemu glsl/vsh.c): x the first parameter
+// less the mode's bias, y the second, z 1 for the ABS modes, w 4 linear, 5 exp, 6 exp2. False when the D3D fog
+// states are the ones in effect; a disabled chip fog leaves fogp zero, which evaluates to no fog.
+inline bool ChipFogConstants(const State& s, float fogp[4]) {
+    if (!s.chip_fog) return false;
+    fogp[0] = fogp[1] = fogp[2] = fogp[3] = 0;
+    if (!s.fog_enable) return true;
+    switch (s.fog_mode) {
+        case 0x804: fogp[2] = 1; [[fallthrough]];  // LINEAR_ABS
+        case 0x2601: fogp[3] = 4; fogp[0] = s.fog_param[0] - 1.0f; break;
+        case 0x802: fogp[2] = 1; [[fallthrough]];  // EXP_ABS
+        case 0x800: fogp[3] = 5; fogp[0] = s.fog_param[0] - 1.5f; break;
+        case 0x803: fogp[2] = 1; [[fallthrough]];  // EXP2_ABS
+        case 0x801: fogp[3] = 6; fogp[0] = s.fog_param[0] - 1.5f; break;
+        default: return true;
+    }
+    fogp[1] = s.fog_param[1];
+    return true;
+}
 
 }  // namespace gpu

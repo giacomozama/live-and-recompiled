@@ -47,6 +47,6 @@ std::recursive_mutex& UiLock() {
     return m;
 }
 
-void Pace() {}
+void Pace(uint32_t) {}
 
 }  // namespace app

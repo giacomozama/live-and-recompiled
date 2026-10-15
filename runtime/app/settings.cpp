@@ -49,6 +49,7 @@ void Load() {
     s.fps_cap = t["fps_cap"].value_or(s.fps_cap);
     s.vsync = t["vsync"].value_or(s.vsync);
     s.aniso = t["anisotropic_filtering"].value_or(s.aniso);
+    s.aspect = t["aspect"].value_or(s.aspect);
     s.join_ip = t["join_ip"].value_or(s.join_ip);
     for (const Option& o : kGame.options) {
         if (o.flag) *o.flag = t[o.key].value_or(*o.flag);
@@ -68,6 +69,7 @@ toml::table Table() {
                   {"fps_cap", int64_t(s.fps_cap)},
                   {"vsync", s.vsync},
                   {"anisotropic_filtering", int64_t(s.aniso)},
+                  {"aspect", s.aspect},
                   {"join_ip", s.join_ip}};
     for (const Option& o : kGame.options) {
         if (o.flag) t.insert(o.key, *o.flag);
@@ -115,6 +117,9 @@ bool Widescreen() {
     static std::atomic<uint64_t> key{~0ull};
     static std::atomic<bool> wide{true};
     const Settings& s = Get();
+    // the aspect setting picks the TV the console reports; the title reads it once at boot
+    if (s.aspect == "4:3") return false;
+    if (s.aspect == "16:9") return true;
     uint64_t k = uint64_t(s.width) << 32 | s.height;
     if (key.exchange(k) != k) {
         Mode m = Output();

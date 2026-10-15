@@ -11,6 +11,9 @@ void BeginFrame();  // drops decoded textures and restarts the draw count
 void Clear(const gpu::State& s, uint32_t count, const uint8_t* rects, uint32_t flags, uint32_t color, float z, uint32_t stencil);
 void Copy(const gpu::Surface& src, const gpu::Surface& dst, uint32_t count, uint32_t rects_va, uint32_t points_va);
 void Draw(const gpu::State& s, uint32_t prim, uint32_t start, uint32_t count, const uint8_t* indices);
+// visibility tests: pixels drawn while the title counts, since the last clear
+void ClearCount();
+uint64_t Counted();
 // 24 bit TGA of a surface's colour
 bool WriteTga(const gpu::Surface& s, const char* path);
 // 24 bit TGA of a stage texture's decoded image, false if it cannot be described

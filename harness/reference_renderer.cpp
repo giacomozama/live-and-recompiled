@@ -460,6 +460,14 @@ struct VertexProgram {
 };
 
 float FogAmount(const State& s, float d) {
+    float fogp[4];
+    if (ChipFogConstants(s, fogp)) {
+        if (fogp[3] == 0) return 1;
+        float f = fogp[3] == 4 ? fogp[0] + d * fogp[1]
+                : fogp[3] == 5 ? fogp[0] + std::exp2(d * fogp[1] * 16)
+                               : fogp[0] + std::exp2(-d * d * fogp[1] * fogp[1] * 32);
+        return fogp[2] != 0 ? std::fabs(f) : f;
+    }
     if (!s.rs[kRsFogEnable]) return 1;
     float start = AsFloat(s.rs[kRsFogStart]), end = AsFloat(s.rs[kRsFogEnd]), density = AsFloat(s.rs[kRsFogDensity]);
     switch (s.rs[kRsFogTableMode]) {
@@ -794,6 +802,10 @@ struct Combiners {
         Input((k.final_efg >> 8) & 0xFF, true, G);
         for (int i = 0; i < 3; i++) out[i] = D[i] + C[i] * (1 - A[i]) + B[i] * A[i];
         out[3] = G[0];
+        if (g_trace.on)
+            LOGI("  dbg final %08X %08X A %.3f B %.3f %.3f %.3f C %.3f %.3f %.3f D %.3f G %.3f fog %.3f %.3f %.3f %.3f -> %.3f %.3f %.3f %.3f",
+                 k.final_abcd, k.final_efg, A[0], B[0], B[1], B[2], C[0], C[1], C[2], D[0], G[0], f.fog[0], f.fog[1], f.fog[2],
+                 f.fog[3], out[0], out[1], out[2], out[3]);
         return true;
     }
 };
@@ -1060,6 +1072,10 @@ void Copy(const Surface& src, const Surface& dst, uint32_t count, uint32_t rects
     Written(b.data, b.End());
 }
 
+uint64_t g_counted = 0;
+void ClearCount() { g_counted = 0; }
+uint64_t Counted() { return g_counted; }
+
 void Draw(const State& s, uint32_t prim, uint32_t start, uint32_t count, const uint8_t* indices) {
     uint32_t draw = g_draws++;
     Assembled as;
@@ -1164,10 +1180,25 @@ void Draw(const State& s, uint32_t prim, uint32_t start, uint32_t count, const u
             std::fprintf(stderr, "VSDRAW %08X n=%u program=%d viewport %u %u %u %u z %.3f %.3f zscale %.1f rt %08X ok=%d %ux%u scissor=%u\n",
                          s.vs_handle, as.vertex_count, int(program), v.x, v.y, v.w, v.h, v.min_z, v.max_z, s.zscale,
                          s.rt.data, int(rt.ok), rt.w, rt.h, s.scissor_count);
-            for (uint32_t q = 0; q < as.vertex_count && q < 4; q++)
-                std::fprintf(stderr, "  v%u pos %.3f %.3f %.3f %.4f attr0 %.3f %.3f %.3f %.3f\n", q,
+            std::fprintf(stderr, "  consts");
+            for (int r : {-38, -37, 7, 12, 13, 88, 89, 90, 91, 92, 93, 94, 95})
+                std::fprintf(stderr, " c%d(%g %g %g %g)", r, s.vsc[size_t(r + 96)][0], s.vsc[size_t(r + 96)][1],
+                             s.vsc[size_t(r + 96)][2], s.vsc[size_t(r + 96)][3]);
+            std::fprintf(stderr, "\n");
+            for (uint32_t q = 0; q < as.vertex_count && q < 4; q++) {
+                std::fprintf(stderr, "  v%u pos %.3f %.3f %.3f %.4f attr0 %.3f %.3f %.3f %.3f t0 %.4f %.4f %.4f %.4f fog %.3f\n", q,
                              verts[q].pos[0], verts[q].pos[1], verts[q].pos[2], verts[q].pos[3],
-                             verts[q].attr[kD0][0], verts[q].attr[kD0][1], verts[q].attr[kD0][2], verts[q].attr[kD0][3]);
+                             verts[q].attr[kD0][0], verts[q].attr[kD0][1], verts[q].attr[kD0][2], verts[q].attr[kD0][3],
+                             verts[q].attr[kT0][0], verts[q].attr[kT0][1], verts[q].attr[kT0][2], verts[q].attr[kT0][3],
+                             verts[q].attr[kFog][0]);
+                std::fprintf(stderr, "     in");
+                for (int r = 0; r < 16; r++)
+                    if (slot[r] >= 0) {
+                        const float* p = input(q, r);
+                        std::fprintf(stderr, " v%d(%g %g %g %g)", r, p[0], p[1], p[2], p[3]);
+                    }
+                std::fprintf(stderr, "\n");
+            }
         }
     }
 
@@ -1178,6 +1209,7 @@ void Draw(const State& s, uint32_t prim, uint32_t start, uint32_t count, const u
     uint32_t cw = simple(kMColorWriteEnable);
     uint32_t cmask = (cw >> 16 & 1 ? 4u : 0u) | (cw >> 8 & 1 ? 2u : 0u) | (cw & 1 ? 1u : 0u) | (cw >> 24 & 1 ? 8u : 0u);
     bool ztest = zs.ok && s.rs[kRsZEnable], zwrite = ztest && simple(kMZWriteEnable);
+    bool counting = simple(kMCountEnable) != 0;  // a visibility test counts the pixels passing depth and stencil
     uint32_t zfunc = simple(kMZFunc);
     bool stencil = zs.ok && s.rs[kRsStencilEnable];
     uint32_t sfunc = simple(kMStencilFunc), sref = simple(kMStencilRef) & 0xFF, smask = simple(kMStencilMask) & 0xFF,
@@ -1201,6 +1233,15 @@ void Draw(const State& s, uint32_t prim, uint32_t start, uint32_t count, const u
     bottom = std::min(bottom, int(gh));
     const Probes& probes = Watch();
     bool watched = probes.Watched(rt);
+    // TRACE_PROG=<hex vertex program hash>: trace a few fragments of every draw running that program, wherever they
+    // land (frames are not reproducible, a pixel trace misses a moving object)
+    static const uint64_t trace_prog = std::getenv("TRACE_PROG") ? std::strtoull(std::getenv("TRACE_PROG"), nullptr, 16) : 0;
+    static const bool trace_blended = std::getenv("TRACE_BLENDED") != nullptr;
+    int prog_traces = trace_prog && s.vs && s.vs->hash == trace_prog && (!trace_blended || simple(kMBlendEnable)) ? 3 : 0;
+    if (prog_traces)
+        LOGI("traceprog draw %u prim %u n %u blend %u %X %X at %u ref %X tex0 %08X tex1 %08X tex2 %08X", draw, prim, count,
+             simple(kMBlendEnable), simple(kMSrcBlend), simple(kMDestBlend), simple(kMAlphaTestEnable), simple(kMAlphaRef),
+             s.textures[0], s.textures[1], s.textures[2]);
 
     const float near_w = 1e-6f;
     for (size_t ti = 0; ti + 2 < as.indices.size(); ti += 3) {
@@ -1273,7 +1314,7 @@ void Draw(const State& s, uint32_t prim, uint32_t start, uint32_t count, const u
                     frag.fog = Unpack(s.rs[kRsFogColor]);
                     frag.fog[3] = Sat(attr[kFog][0]);
                     for (int t = 0; t < 4; t++) frag.tc[t] = attr[kT0 + t];
-                    g_trace.on = watched && x == probes.trace.x && y == probes.trace.y;
+                    g_trace.on = (watched && x == probes.trace.x && y == probes.trace.y) || (prog_traces > 0 && ((x + y) & 7) == 0 && prog_traces--);
                     Vec col;
                     bool keep = mat.key.programmable ? Combiners{mat, frag}.Shade(col) : ShadeStages(mat, frag, col);
                     if (!keep) continue;
@@ -1289,6 +1330,7 @@ void Draw(const State& s, uint32_t prim, uint32_t start, uint32_t count, const u
                         if (stencil) zs.StoreDepth(uint32_t(x), uint32_t(y), oz, stencil_op(op_zfail));
                         continue;
                     }
+                    if (counting) g_counted++;
                     if (zs.ok && (zwrite || stencil)) zs.StoreDepth(uint32_t(x), uint32_t(y), zwrite ? zi : oz, stencil ? stencil_op(op_pass) : os);
                     if (!rt.ok || !cmask) continue;
                     for (int j = 0; j < 4; j++) col[j] = Sat(col[j]);
