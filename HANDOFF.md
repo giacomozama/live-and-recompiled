@@ -288,6 +288,17 @@ fur passes were drawn as the base pass. A hook on `0x53AD90` walks what is queue
 (`d3d::FlushPending`). The fur program (`1B4CFC40E338AEDB`) offsets each vertex along its normal by `c85.x` times
 `v5` (a per-vertex length byte); stage 1 is the 256x256 fur mask.
 
+### Shadow flicker (2026-10-15)
+Character shadows (e.g. under Conker's leg in the throne cutscene) alternated every frame on D3D12. The engine runs its
+visibility tests only once the previous results are in; D3D12 answers them a frame late, so tests ran every other frame.
+On test frames the sceptre's shadow caster (a rigid program, matrices `c13..c38`) drew with matrices from other draws and
+smeared a bar across the 128x128 shadow map. Cause: the HLE of `SetVertexShaderConstantNotInlineFast` (`0x536C00`) wrote
+constants immediately without walking the pending raw push, so raw constant uploads queued before the call landed after
+it. The library pushes `LOAD` + data in order and leaves the load pointer past its last register; `LoadConstants` now does
+the same. Harness: `REPORT_LAG=1` reproduces the test/no-test alternation, `LIST_CONSTS=1` lists every constant.
+D3D12 captures: `XBE_CAPTURE_FRAMES=N` (N frames per F3), `XBE_CAPTURE_VS=<handle>` / `XBE_CAPTURE_RT=<surface>` (targets
+around each matching draw).
+
 ### Open
 - **missing loading screen**: the game freezes where a loading screen should show (after the boot splash, when starting
   a new game, between cutscenes); it continues once the level has loaded.
