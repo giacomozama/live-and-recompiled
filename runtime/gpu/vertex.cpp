@@ -4,6 +4,7 @@
 #include <cstring>
 #include <map>
 #include <memory>
+#include <string>
 #include <utility>
 
 #include <dxgiformat.h>
@@ -519,6 +520,40 @@ bool Assemble(const State& s, uint32_t prim, uint32_t start, uint32_t count, con
     bool raw = kRawVertices && RawReadable(s, inputs);
     if (raw) return AssembleRaw(s, inputs, d, out);
     return AssembleConverted(s, inputs, d, out);
+}
+
+std::string DescribeInputs(const State& s, uint32_t start, const uint8_t* ip, uint32_t vertices) {
+    using namespace kernel;
+    VertexShader fvf_layout;
+    const VertexShader* layout = PickLayout(s, fvf_layout);
+    if (!layout) return {};
+    std::string o;
+    char b[96];
+    for (int r = 0; r < 16; r++) {
+        const auto& in = layout->inputs[size_t(r)];
+        if (in.stream < 0 || !in.type || in.type == kTypeNone) continue;
+        const auto& st = s.streams[size_t(in.stream)];
+        uint32_t stride = StrideOf(s, *layout, in);
+        snprintf(b, sizeof(b), "\n     v%d s%d type %02X stride %u off %u%s", r, in.stream, in.type, stride, in.offset,
+                 st.vb ? "" : " unbound");
+        o += b;
+        if (!st.vb) continue;
+        const uint8_t* src = static_cast<const uint8_t*>(
+            HostPtr(mem::VirtualFromPhysical(R32(st.vb + kResData)) + in.offset));
+        for (uint32_t i = 0; i < vertices; i++) {
+            uint32_t id = start + i;
+            if (ip) {
+                uint16_t v;
+                std::memcpy(&v, ip + i * 2, 2);
+                id = v + s.base_vertex;
+            }
+            float f[4];
+            Convert(in.type, src + size_t(id) * stride, f);
+            snprintf(b, sizeof(b), " [%g %g %g %g]", f[0], f[1], f[2], f[3]);
+            o += b;
+        }
+    }
+    return o;
 }
 
 }  // namespace gpu

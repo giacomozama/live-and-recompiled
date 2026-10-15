@@ -25,6 +25,8 @@
 #include "image_symbols.h"
 #include "kernel/kernel.h"
 
+void x86_profile_dump();  // cpu/dispatch.cpp
+
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND, UINT, WPARAM, LPARAM);
 
 namespace app {
@@ -128,6 +130,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
         case WM_KEYDOWN:
             if (wp == VK_F3) DumpThreads();
+            if (wp == VK_F5 && !(lp & (1 << 30))) x86_profile_dump();  // not on auto repeat
             return 0;
         case WM_ACTIVATE:
             if (LOWORD(wp) == WA_INACTIVE) {

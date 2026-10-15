@@ -85,6 +85,9 @@ uint32_t g_scratch_push = 0, g_scratch_size = 0;
 uint32_t g_walk = 0;  // first scratch command not read yet
 uint32_t g_interval = 1;   // D3DPRESENT_INTERVAL of the device's present parameters
 uint32_t g_ps_handle = 0;  // the pixel shader SetPixelShader last bound, 0 for the fixed function combiner
+// the library's device word at +0x788: the last pixel shader SetPixelShader bound brought its own final combiner
+// (its definition's final inputs are not zero), so the fog flush leaves the final combiner alone
+bool g_ps_final = false;
 constexpr uint32_t kRawCombiner = 0xFFFFFFFF;  // handle of the object standing for a combiner written as raw methods
 
 // The transform engine's program memory (xemu: pg->program_data, 136 instructions of 4 dwords). A title that
@@ -291,8 +294,62 @@ namespace {
 constexpr uint32_t kDirtyFog = 0x2000, kDirtyCombiners = 0x800, kDirtyLights = 0x1000;  // D3D_DirtyFlags bits of this library
 constexpr uint32_t kDirtyVertexFormat = 0x10, kDirtyStreams = 0x40, kDirtyNoVertexState = 0x40000000;
 
+// NV097_SET_COMBINER_SPECULAR_FOG_CW0 / _CW1 the library's fog flush (0x5421D0) pushes when no pixel shader with
+// its own final combiner is bound: fog on, A fog alpha, B R0 (+ specular), C fog colour; fog off, D R0 (+ specular)
+constexpr uint32_t kFinalFogged = 0x130C0300, kFinalPlain = 0x0C, kFinalSpecular = 0x20000, kFinalEfgh = 0x1C80;
+
+// The library's fog flush (0x5421D0): NV097_SET_FOG_ENABLE, and when on _MODE and _PARAMS, worked out from the D3D
+// fog states as they are now. The chip keeps them until the next push, so a title that changes the states and then
+// draws with its own pushbuffer, with no flush between, still draws with these.
+void PushFog() {
+    auto rs = [](uint32_t i) { return R32(kRenderState + i * 4); };
+    auto rsf = [&](uint32_t i) {
+        uint32_t v = rs(i);
+        float f;
+        std::memcpy(&f, &v, 4);
+        return f;
+    };
+    g_state.chip_fog = 1;
+    g_state.fog_enable = rs(gpu::kRsFogEnable) != 0;
+    if (!g_state.fog_enable) return;
+    constexpr float kLinearEqual = 8192.0f, kExpScale = -0.0901680737733841f, kExp2Scale = -0.21233002841472626f;
+    switch (rs(gpu::kRsFogTableMode)) {
+        case 0:  // D3DFOG_NONE: the vertex's own fog, linear 1:1
+            g_state.fog_mode = 0x2601;
+            g_state.fog_param[0] = 1.0f;
+            g_state.fog_param[1] = 1.0f;
+            break;
+        case 3: {  // D3DFOG_LINEAR: (end - d) / (end - start)
+            float start = rsf(gpu::kRsFogStart), end = rsf(gpu::kRsFogEnd);
+            float k = start == end ? kLinearEqual : 1.0f / (end - start);
+            g_state.fog_mode = 0x2601;
+            g_state.fog_param[0] = end * k + 1.0f;
+            g_state.fog_param[1] = -k;
+            break;
+        }
+        default: {  // D3DFOG_EXP 1, D3DFOG_EXP2 2
+            bool exp = rs(gpu::kRsFogTableMode) == 1;
+            g_state.fog_mode = exp ? 0x800 : 0x801;
+            g_state.fog_param[0] = 1.5f;
+            g_state.fog_param[1] = rsf(gpu::kRsFogDensity) * (exp ? kExpScale : kExp2Scale);
+            break;
+        }
+    }
+}
+
 void ApplyFlush(uint32_t dirty) {
-    if (dirty & kDirtyFog) g_state.chip_fog = 0;  // the library pushes FOG_* from the D3D fog states
+    if (dirty & kDirtyFog) {
+        PushFog();
+        if (!(g_ps_handle && g_ps_final)) {
+            // and the final combiner over the one the title wrote raw: a title whose own final combiner reads the
+            // fog factor the other way round (Conker: fog.a * fog + (1 - fog.a) * R0) gets the plain one back
+            bool fog = R32(kRenderState + gpu::kRsFogEnable * 4) != 0;
+            bool spec = R32(kRenderState + gpu::kRsSpecularEnable * 4) != 0;
+            g_state.simple[gpu::kMPsFinalAbcd >> 2] =
+                fog ? kFinalFogged | (spec ? kFinalSpecular : 0) : kFinalPlain | (spec ? 2 : 0);
+            g_state.simple[gpu::kMPsFinalEfgh >> 2] = kFinalEfgh;
+        }
+    }
     if (dirty & kDirtyLights) g_spec_raw = false;  // and SPECULAR_ENABLE from D3DRS_SPECULARENABLE
     // with no pixel shader set the library compiles its fixed function combiner from the stage states and pushes it
     if ((dirty & kDirtyCombiners) && !g_ps_handle && g_state.ps && g_state.ps->handle == kRawCombiner) g_state.ps = nullptr;
@@ -589,6 +646,7 @@ HLE_STDCALL(D3DDevice_GetDepthStencilSurface2, 0) {
 }
 
 HLE_STDCALL(D3DDevice_Swap, 1) {
+    x86_profile_frame();
     app::SplashFirstFrame();
     // handed over from the previous instance: the window opens on the second frame, the first picture with
     // anything drawn over it right after
@@ -1040,6 +1098,14 @@ HLE_STDCALL(D3DDevice_SetPixelShader, 1) {
     if (diag::DumpMethods()) std::fprintf(stderr, "SETPS %08X\n", a[0]);
     g_state.ps = nullptr;
     g_ps_handle = a[0];
+    // the library marks the fog dirty when the final combiner the fog flush skipped is no longer the shader's own
+    bool final = false;
+    if (a[0] && XDK_PixelShader_Definition != xdk::kUnknown) {
+        uint32_t def = R32(a[0] + XDK_PixelShader_Definition);
+        final = (R32(def + 0x20) | R32(def + 0x24)) != 0;
+    }
+    if (g_ps_final && !final) W32(kDirtyFlags, R32(kDirtyFlags) | kDirtyFog);
+    if (a[0]) g_ps_final = final;
     if (!a[0]) return 0;
     auto it = g_ps.find(a[0]);
     if (it != g_ps.end()) {

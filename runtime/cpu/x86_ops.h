@@ -41,7 +41,20 @@ typedef double __attribute__((aligned(1), may_alias)) x86_f64u;
     } while (0)
 
 #define X86_SAVE_FLAGS() (ctx.cf = cf, ctx.zf = zf, ctx.sf = sf, ctx.of = of, ctx.pf = pf)
-#define X86_LOAD_FLAGS() uint32_t cf = ctx.cf, zf = ctx.zf, sf = ctx.sf, of = ctx.of, pf = ctx.pf
+// XBE_FN_PROFILE: every function counts its calls (X86_LOAD_FLAGS opens each one); x86_profile_dump writes the counts
+// since the last dump, for telling apart the code a game runs in two situations
+#ifdef XBE_FN_PROFILE
+uint32_t* x86_profile_counter(const char* name);
+#define X86_FN_HIT()                                                  \
+    static uint32_t* const x86_hit = x86_profile_counter(__func__); \
+    ++*x86_hit;
+#else
+#define X86_FN_HIT()
+#endif
+void x86_profile_dump();
+void x86_profile_frame();                 // at each present
+void x86_profile_trigger(uint32_t value);  // pad 0's left trigger as polled
+#define X86_LOAD_FLAGS() X86_FN_HIT() uint32_t cf = ctx.cf, zf = ctx.zf, sf = ctx.sf, of = ctx.of, pf = ctx.pf
 #define X86_BARRIER() __asm__ volatile("" ::: "memory")
 #define X86_PARITY(r) ((uint32_t)(__builtin_parity((uint32_t)(r)&0xFF) ^ 1))
 

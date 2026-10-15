@@ -92,6 +92,7 @@ HLE_STDCALL(XInputGetState, 2) {
     }
     input::Pad p = input::Poll(int(port));
     if (!p.connected) return 1167;  // ERROR_DEVICE_NOT_CONNECTED
+    if (port == 0) x86_profile_trigger(p.analog[6]);
     std::lock_guard<std::mutex> lock(g_ports_lock);
     Handle& h = g_handles[a[0]];
     if (std::memcmp(&p, &h.last, sizeof(p))) h.packet++;

@@ -2631,6 +2631,19 @@ void D3D12Backend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t 
 
     if (cap_) {
         CaptureDraw(s, prim, count, k, c, stages);
+        fprintf(cap_, " pkey %016llX%s", (unsigned long long)sh.pkey, DescribeInputs(s, start, indices, 2).c_str());
+        fprintf(cap_, "\n     fog chip %u en %u mode %X params %g %g rs en %u table %u | fogp %g %g %g %g color %08X | final %08X %08X",
+                s.chip_fog, s.fog_enable, s.fog_mode, s.fog_param[0], s.fog_param[1], s.rs[kRsFogEnable],
+                s.rs[kRsFogTableMode], c.fog[0], c.fog[1], c.fog[2], c.fog[3], s.rs[kRsFogColor],
+                s.simple[0x288 >> 2], s.simple[0x28C >> 2]);
+        for (int i = 0; i < 2; i++) {
+            D3D12_SAMPLER_DESC sd = StageSampler(s, i, stages, UnitTexcoords(a), app::Get().aniso);
+            fprintf(cap_, "\n     s%d filter %X addr %u %u lod %g..%g bias %g aniso %u mips %u+%u", i, sd.Filter,
+                    sd.AddressU, sd.AddressV, sd.MinLOD, sd.MaxLOD, sd.MipLODBias, sd.MaxAnisotropy,
+                    stages.sv[i].Texture2D.MostDetailedMip, stages.sv[i].Texture2D.MipLevels);
+        }
+        // a program's first draw also lists its constants
+        if (count > kQuadVertices && !cap_sh_.count(sh.vkey)) CaptureInputs(s, a, c);
         EndDrawCapture(s, a, count, c);
         CaptureShaders(s, a, sh, pk);
     }

@@ -238,3 +238,58 @@ void x86_cpuid(X86Context& ctx) {
             break;
     }
 }
+
+namespace {
+// per function: calls this frame, then summed over frames with the left trigger held and without
+struct ProfileEntry {
+    const char* name;
+    uint32_t* count;
+    uint64_t held = 0, idle = 0;
+};
+std::mutex g_profile_lock;
+std::vector<ProfileEntry>& ProfileEntries() {
+    static std::vector<ProfileEntry> v;
+    return v;
+}
+std::atomic<uint32_t> g_profile_trigger{0};
+uint32_t g_frames_held = 0, g_frames_idle = 0;
+}  // namespace
+
+uint32_t* x86_profile_counter(const char* name) {
+    std::lock_guard<std::mutex> lock(g_profile_lock);
+    uint32_t* c = new uint32_t(0);
+    ProfileEntries().push_back({name, c});
+    return c;
+}
+
+void x86_profile_trigger(uint32_t value) { g_profile_trigger = value; }
+
+void x86_profile_frame() {
+    std::lock_guard<std::mutex> lock(g_profile_lock);
+    if (ProfileEntries().empty()) return;
+    bool held = g_profile_trigger > 0x40;
+    (held ? g_frames_held : g_frames_idle)++;
+    for (auto& e : ProfileEntries()) {
+        (held ? e.held : e.idle) += *e.count;
+        *e.count = 0;
+    }
+}
+
+// "calls with the trigger held, calls without, name", after a line with the frame counts
+void x86_profile_dump() {
+    static int n = 0;
+    std::lock_guard<std::mutex> lock(g_profile_lock);
+    if (ProfileEntries().empty()) return;
+    char path[32];
+    std::snprintf(path, sizeof(path), "fnprof_%02d.txt", n++);
+    FILE* f = std::fopen(path, "w");
+    if (f) std::fprintf(f, "frames %u %u\n", g_frames_held, g_frames_idle);
+    for (auto& e : ProfileEntries()) {
+        if (f && (e.held || e.idle)) std::fprintf(f, "%llu %llu %s\n", (unsigned long long)e.held,
+                                               (unsigned long long)e.idle, e.name);
+        e.held = e.idle = 0;
+    }
+    g_frames_held = g_frames_idle = 0;
+    if (f) std::fclose(f);
+    LOGI("profile: wrote %s", path);
+}

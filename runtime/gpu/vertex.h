@@ -1,6 +1,7 @@
 #pragma once
 #include <array>
 #include <cstdint>
+#include <string>
 #include <vector>
 
 #include "gpu/state.h"
@@ -58,5 +59,8 @@ void FvfInputs(uint32_t fvf, VertexShader& out);
 // false when there is nothing to draw
 // indices: the title's 16 bit indices, null for an unindexed draw
 bool Assemble(const State& s, uint32_t prim, uint32_t start, uint32_t count, const uint8_t* indices, Assembled& out);
+
+// the draw's input registers (stream, type, stride, offset) and their first vertices decoded, for frame captures
+std::string DescribeInputs(const State& s, uint32_t start, const uint8_t* indices, uint32_t vertices);
 
 }  // namespace gpu
