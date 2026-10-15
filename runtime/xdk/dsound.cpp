@@ -140,6 +140,7 @@ struct Voice {
     bool sync = false;  // held until IDirectSound_SynchPlayback
     bool active = false, ending = false;  // stream: took a packet since it went quiet, quiet again once they run out
     bool hold = false;      // stream: paused with no activate, plays nothing until resumed
+    bool starved = false;   // stream: played out the last packet it was given
     bool flushing = false;  // stream: stopped by an async FlushEx, its packets are flushed at the next DoWork
     // stream: that FlushEx asked for the release envelope, and the flush that ends it is done. XACT waits for the
     // ENVELOPECOMPLETE status before it stops reading the wave; without it, it streamed the rest after every stop.
@@ -309,7 +310,7 @@ void Levels(Voice& v, float g[2][2]) {
 
 // a stream goes quiet: the synch hold ends, a started one loses its pause as well
 void Deactivate(Voice& v) {
-    v.sync = false;
+    v.sync = v.starved = false;
     if (v.active) v.active = v.paused = v.ending = false;
 }
 
@@ -333,6 +334,7 @@ void Render(float* out, uint32_t frames) {
                     Complete(v, pk, 0);
                     v.pos -= FramesOf(v, pk.size);
                     f = uint32_t(v.pos);
+                    if (v.packets.empty() && !v.ending) v.starved = true;
                 }
                 if (v.packets.empty()) {
                     v.pos = 0;
@@ -464,6 +466,7 @@ void ReadFormat(Voice& v, uint32_t wfx) {
     v.rate = R32(wfx + 4);
     v.align = std::max<uint16_t>(R16(wfx + 12), 1);
     v.bits = R16(wfx + 14);
+    DSTRACE("dsound: %08X format tag %X %u ch %u Hz align %u bits %u", v.obj, v.tag, v.channels, v.rate, v.align, v.bits);
     if (v.tag != 1 && v.tag != 0x69) LOG_FIRST(8, "dsound: format tag %X not supported", v.tag);
 }
 
@@ -963,12 +966,13 @@ STREAM(GetInfo, 2) {
     W32(info + 12, 0);
     return 0;
 }
-// DSSTREAMSTATUS: READY (room for a packet), then for a started stream PLAYING, or PAUSED, with STARVED when it ran
-// out of packets. A stream releasing after an async flush still plays until the flush, and reports
+// DSSTREAMSTATUS: READY (room for a packet), then for a started stream PLAYING, or PAUSED, with STARVED when it played
+// out its packets. A stream started before its first packet plays (XACT starts a prepared sound, then feeds it, and
+// takes "not playing" as finished). A stream releasing after an async flush still plays until the flush, and reports
 // ENVELOPECOMPLETE once it is done (the library's 0x4C8943 reads its voice flag 0x2000).
 STREAM(GetStatus, 2) {
     uint32_t st = v.packets.size() < v.max_packets ? 1u : 0u;
-    if (v.active && v.packets.empty() && !v.flushing) st |= 0x60000;
+    if (v.active && v.starved && !v.flushing) st |= 0x60000;
     else if (v.active) st |= v.paused || v.sync ? 0x20000u : 0x10000u;
     if (v.released) st |= 0x80000;
     W32(a[1], st);
@@ -986,7 +990,7 @@ STREAM(Process, 3) {
     if (g_trace) LOGR("dsound: %08X packet %08X %X%s", v.obj, pk.data, pk.size, v.active ? "" : " (starts)");
     v.packets.push_back(pk);
     v.active = true;
-    v.ending = v.released = false;
+    v.ending = v.released = v.starved = false;
     return 0;
 }
 STREAM(Discontinuity, 1) {
@@ -1008,11 +1012,16 @@ STREAM(FlushEx, 4) {
     }
     return 0;
 }
-// DSSTREAMPAUSE: 0 resume, 1 pause, 2 synch playback, 3 resume a started stream and hold one that has not started
+// DSSTREAMPAUSE: 0 resume, 1 pause, 2 synch playback, 3 resume a started stream and hold one that has not started.
+// Resuming a held stream starts it, packets or not (the library's 0x4C9426 activates it through 0x4C90A0).
 STREAM(Pause, 2) {
     if (a[1] == 3 && !v.active) {
         v.hold = true;
         return 0;
+    }
+    if (a[1] == 0 && v.hold) {
+        v.active = true;
+        v.starved = false;
     }
     v.hold = false;
     v.paused = a[1] == 1;
