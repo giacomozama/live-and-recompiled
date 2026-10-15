@@ -259,6 +259,7 @@ KERNEL_EXPORT(99, KeDelayExecutionThread, 3) {
     int64_t interval = int64_t(R64(a[2]));
     bool alertable = a[1] & 0xFF;
     Thread* t = Current();
+    FlushPendingIo();  // a thread polling its own reads sees them done
     if (alertable && t && RunApcs(*t)) return kUserApc;
     int64_t deadline = ToDeadline(interval);
     auto now = [] {
@@ -840,6 +841,7 @@ KERNEL_EXPORT(140, KeResumeThread, 1) {
 KERNEL_EXPORT(92, KeAlertResumeThread, 1) { return kimpl_KeResumeThread(ctx, a); }
 
 KERNEL_EXPORT(238, NtYieldExecution, 0) {
+    FlushPendingIo();
     SuspendPoint();
     std::this_thread::yield();
     return kSuccess;

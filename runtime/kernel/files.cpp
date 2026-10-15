@@ -4,7 +4,10 @@
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <condition_variable>
+#include <deque>
 #include <map>
+#include <thread>
 
 #include "kernel/disc.h"
 #include "kernel/kernel.h"
@@ -78,6 +81,7 @@ struct File : Object {
     size_t next = 0;
     bool listed = false;
     bool delete_on_close = false;
+    bool async = false;  // opened without FILE_SYNCHRONOUS_IO_*: a read completes after the call returns
     std::mutex io;  // threads sharing a handle: seek and transfer stay together
     File() : Object(ObjType::File) {}
     ~File() override {
@@ -296,6 +300,7 @@ uint32_t OpenOnDisc(const Disc::Entry* e, const std::string& name, uint32_t hand
     f->xbox = Normalize(name);
     f->entry = e;
     f->dir = e->dir;
+    f->async = !(options & 0x30);  // FILE_SYNCHRONOUS_IO_ALERT / _NONALERT
     W32(handle_out, NewHandle(f));
     IoStatus(iosb, kSuccess, 1);
     LOG_FIRST(400, "open %s", name.c_str());
@@ -418,6 +423,7 @@ KERNEL_EXPORT(190, NtCreateFile, 9) {
     f->xbox = Normalize(name);
     f->fp = fp;
     f->delete_on_close = options & 0x1000;  // FILE_DELETE_ON_CLOSE
+    f->async = !(options & 0x30);           // FILE_SYNCHRONOUS_IO_ALERT / _NONALERT
     W32(handle_out, NewHandle(f));
     IoStatus(iosb, kSuccess, info);
     LOG_FIRST(400, "open %s", name.c_str());
@@ -447,7 +453,7 @@ KERNEL_EXPORT(202, NtOpenFile, 6) {
         if (!f->fp) f->fp = std::fopen(host.c_str(), "rb");
         if (!f->fp) return kAccessDenied;
     }
-    (void)options;
+    f->async = !(options & 0x30);  // FILE_SYNCHRONOUS_IO_ALERT / _NONALERT
     W32(handle_out, NewHandle(f));
     IoStatus(iosb, kSuccess, 1);
     return kSuccess;
@@ -465,6 +471,79 @@ static uint32_t Finish(File& f, uint32_t status, uint32_t n, uint32_t event, uin
 static uint64_t Offset(File& f, uint32_t off) {
     int64_t o = off ? int64_t(R64(off)) : -1;
     return o >= 0 ? uint64_t(o) : f.pos;
+}
+
+// A read on an asynchronous handle returns STATUS_PENDING and completes a moment later, as the console's does. The
+// data is already in place; only the status block, the events and the APC wait. Titles poll that status: XACT
+// issues a stream's reads and then asks whether any is still in flight, and a read that had already completed made it
+// end a short sound before its only packet was played. Completions land after about a millisecond, or as soon as the
+// thread that issued them waits, sleeps or yields, so a title that reads and then waits or polls loses nothing.
+struct PendingIo {
+    std::shared_ptr<File> f;
+    uint32_t status, n, event, apc, apc_ctx, iosb;
+    ThreadRef issuer;
+    std::chrono::steady_clock::time_point due;
+};
+std::mutex g_io_lock;
+std::condition_variable g_io_cv;
+std::deque<PendingIo> g_io;
+
+void CompleteIo(const PendingIo& p) {
+    IoStatus(p.iosb, p.status, p.n);
+    SetEvent(*p.f);
+    if (p.event)
+        if (ObjectRef e = FromHandle(p.event)) SetEvent(*e);
+    if (p.apc && p.issuer) QueueApc(*p.issuer, p.apc, p.apc_ctx, p.iosb, 0);
+}
+
+uint32_t Defer(const std::shared_ptr<File>& f, uint32_t status, uint32_t n, uint32_t event, uint32_t apc, uint32_t apc_ctx,
+               uint32_t iosb) {
+    static std::once_flag started;
+    std::call_once(started, [] {
+        std::thread([] {
+            std::unique_lock<std::mutex> lock(g_io_lock);
+            for (;;) {
+                if (g_io.empty()) {
+                    g_io_cv.wait(lock);
+                    continue;
+                }
+                auto due = g_io.front().due;
+                if (std::chrono::steady_clock::now() < due) {
+                    g_io_cv.wait_until(lock, due);
+                    continue;
+                }
+                PendingIo p = std::move(g_io.front());
+                g_io.pop_front();
+                lock.unlock();
+                CompleteIo(p);
+                lock.lock();
+            }
+        }).detach();
+    });
+    IoStatus(iosb, kPending, 0);
+    std::lock_guard<std::mutex> lock(g_io_lock);
+    g_io.push_back({f, status, n, event, apc, apc_ctx, iosb, CurrentRef(),
+                    std::chrono::steady_clock::now() + std::chrono::milliseconds(1)});
+    g_io_cv.notify_one();
+    return kPending;
+}
+
+void FlushPendingIo() {
+    std::vector<PendingIo> due;
+    {
+        std::lock_guard<std::mutex> lock(g_io_lock);
+        if (g_io.empty()) return;
+        Thread* me = Current();
+        for (auto it = g_io.begin(); it != g_io.end();) {
+            if (it->issuer.get() != me) {
+                ++it;
+                continue;
+            }
+            due.push_back(std::move(*it));
+            it = g_io.erase(it);
+        }
+    }
+    for (const PendingIo& p : due) CompleteIo(p);
 }
 
 // pages is the FILE_SEGMENT_ELEMENT array for scatter and gather, 0 for one buffer
@@ -493,6 +572,7 @@ static uint32_t Transfer(const Args& a, bool write, uint32_t pages) {
         LOGR("xwb read %s %llX %X -> %08X", f->xbox.c_str(), (unsigned long long)pos, n, buf);
     if (write && n < len) return Finish(*f, 0xC000007F, n, event, apc, apc_ctx, iosb);  // disk full
     if (!write && len && !n) return Finish(*f, kEndOfFile, 0, event, apc, apc_ctx, iosb);
+    if (!write && f->async) return Defer(f, kSuccess, n, event, apc, apc_ctx, iosb);
     return Finish(*f, kSuccess, n, event, apc, apc_ctx, iosb);
 }
 
