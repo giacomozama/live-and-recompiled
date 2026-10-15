@@ -138,6 +138,19 @@ void Release(X86Context& ctx, uint32_t res) {
 
 void Walk(uint32_t end);
 
+// the transform-constant load pointer (NV097_SET_TRANSFORM_CONSTANT_LOAD): the register the next constant data loads,
+// advanced by every register loaded, the title's raw pushes and the library's own constant setters alike
+uint32_t g_vs_const_reg = 0;
+
+// SetVertexShaderConstant: the library pushes LOAD = register then the data, after whatever the title pushed raw
+// before the call, and leaves the load pointer past the last register
+void LoadConstants(uint32_t reg, uint32_t src, uint32_t count) {
+    std::lock_guard<std::recursive_mutex> lock(g_lock);
+    Walk(Dev(kDevPush));
+    for (uint32_t i = 0; i < count && reg + i < 192; i++) std::memcpy(g_state.vsc[reg + i].data(), HostPtr(src + i * 16), 16);
+    g_vs_const_reg = reg + count;
+}
+
 // Hardware commands a caller still pushes go to a scratch buffer, rewound at every request once Walk has read it
 uint32_t ScratchPush(uint32_t bytes = 0) {
     Walk(Dev(kDevPush));
@@ -1017,26 +1030,22 @@ HLE_STDCALL(D3DDevice_SetVertexShader, 1) {
 }
 
 HLE_FASTCALL(D3DDevice_SetVertexShaderConstant1Fast, 0) {
-    uint32_t reg = a[0];
-    if (reg < 192) std::memcpy(g_state.vsc[reg].data(), HostPtr(a[1]), 16);
+    LoadConstants(a[0], a[1], 1);
     return 0;
 }
 
 HLE_FASTCALL(D3DDevice_SetVertexShaderConstant1, 0) {
-    uint32_t reg = a[0];
-    if (reg < 192) std::memcpy(g_state.vsc[reg].data(), HostPtr(a[1]), 16);
+    LoadConstants(a[0], a[1], 1);
     return 0;
 }
 
 HLE_FASTCALL(D3DDevice_SetVertexShaderConstant4, 0) {
-    uint32_t reg = a[0], src = a[1];
-    for (uint32_t i = 0; i < 4 && reg + i < 192; i++) std::memcpy(g_state.vsc[reg + i].data(), HostPtr(src + i * 16), 16);
+    LoadConstants(a[0], a[1], 4);
     return 0;
 }
 
 HLE_FASTCALL(D3DDevice_SetVertexShaderConstantNotInlineFast, 1) {
-    uint32_t reg = a[0], src = a[1], dwords = a[2];
-    for (uint32_t i = 0; i < dwords / 4 && reg + i < 192; i++) std::memcpy(g_state.vsc[reg + i].data(), HostPtr(src + i * 16), 16);
+    LoadConstants(a[0], a[1], a[2] / 4);
     return 0;
 }
 
@@ -1399,7 +1408,6 @@ std::vector<uint32_t> g_im_raw;         // a whole vertex array pushed through N
 std::vector<uint16_t> g_im_indices;     // indices pushed through NV097_ARRAY_ELEMENT16/32
 std::vector<std::pair<uint32_t, uint32_t>> g_im_ranges;  // NV097_DRAW_ARRAYS (start, count), contiguous ones joined
 std::array<uint32_t, 16> g_vb_header{};  // synthetic vertex buffer headers for the inline stream binds
-uint32_t g_vs_const_reg = 0;            // register a transform-constant load selected
 
 // visibility tests: depth passing pixels are counted while enabled, a report gets the count since the clear,
 // at a physical address in the first 16 MB

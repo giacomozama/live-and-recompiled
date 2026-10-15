@@ -132,7 +132,7 @@ public:
         if (drawing_) reference::BeginFrame();
         harness::g_frames = frames_ + 1;
         if (++frames_ % 60 == 0) LOGI("renderer: frame %llu, %llu draws, %llu empty frames, %llu clears", frames_, draws_, empty_, clears_);
-        if (cap && frames_ % cap == 0) list_ = std::fopen(File("cap/draws_%05llu.txt", frames_).c_str(), "w");
+        if ((cap && frames_ % cap == 0) || snap_) list_ = std::fopen(File("cap/draws_%05llu.txt", frames_).c_str(), "w");
     }
     // visibility tests: nothing is rasterised on most frames, so every report answers "visible" (a pixel count well
     // over any culling threshold) at once, the way the D3D12 backend answers them once its queries resolve. Without
@@ -198,6 +198,9 @@ private:
             }
         }
         std::fprintf(f, "  spec rs %u chip %u\n", s.rs[kRsSpecularEnable], s.simple[0x3B8 >> 2]);
+        std::fprintf(f, "  depth func %X write %u offset %u slope %08X bias %08X zscale %g control0 %08X\n", s.simple[kMZFunc >> 2],
+                     s.simple[kMZWriteEnable >> 2], s.simple[kMSolidOffsetEnable >> 2], s.simple[kMSlopeScale >> 2],
+                     s.simple[kMDepthOffset >> 2], s.zscale, s.simple[0x290 >> 2]);
         const auto& t0 = s.tss[0];
         TextureDesc d;
         if (s.textures[0] && Describe(s.textures[0], d)) {
@@ -242,6 +245,15 @@ private:
             for (int r = 96; r < 108; r++) {
                 std::fprintf(f, " c%d", r - 96);
                 for (int c = 0; c < 4; c++) std::fprintf(f, " %g", s.vsc[r][c]);
+            }
+            // LIST_CONSTS=1: every non zero constant, by the program's register numbers
+            if (std::getenv("LIST_CONSTS")) {
+                std::fprintf(f, "\n  allconst");
+                for (int r = 0; r < 192; r++) {
+                    const auto& c = s.vsc[r];
+                    if (c[0] != 0 || c[1] != 0 || c[2] != 0 || c[3] != 0)
+                        std::fprintf(f, " c%d %g %g %g %g", r - 96, c[0], c[1], c[2], c[3]);
+                }
             }
             std::fprintf(f, "\n  viewport c-38 %g %g %g %g c-37 %g %g %g %g", s.vsc[58][0], s.vsc[58][1], s.vsc[58][2], s.vsc[58][3],
                          s.vsc[59][0], s.vsc[59][1], s.vsc[59][2], s.vsc[59][3]);

@@ -605,6 +605,7 @@ private:
                                   uint32_t h, const ShrinkOptions& o = {});
     bool ReadBack(ID3D12Resource* res, uint32_t w, uint32_t h, std::vector<uint8_t>& out);
     void CapStep(const Surface& rt);
+    void CapAround(const State& s);
     // a resource CapSave shrinks to w x h and writes, in state *state, colour times mul
     struct CapImage {
         ID3D12Resource* res;
@@ -706,6 +707,9 @@ private:
     FILE* cap_ = nullptr;
     std::filesystem::path cap_dir_;
     uint32_t cap_i_ = 0;
+    bool cap_after_ = false;  // the last draw matched XBE_CAPTURE_VS
+    uint32_t cap_more_ = 0;  // frames still to capture after this one (XBE_CAPTURE_FRAMES)
+    uint32_t cap_seq_ = 0;   // the frame's number in its run of captures
     uint32_t cap_rt_ = 0;
     std::unordered_set<uint32_t> cap_seen_;
     std::unordered_set<uint64_t> cap_sh_;
@@ -2590,7 +2594,10 @@ void D3D12Backend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t 
     g_perf.draws++;
     frame_draws_++;
     if (!s.simple[kMBlendEnable >> 2]) frame_opaque_++;
-    if (cap_) CapStep(s.rt);
+    if (cap_) {
+        CapStep(s.rt);
+        CapAround(s);
+    }
     if (DepthCopy(s)) return CountedSkip(s, "depth copy");
     DrawEnd draw_end{ext_};
     if (ext_) ext_->BeginDraw(s);
@@ -2935,7 +2942,7 @@ void D3D12Backend::StartCapture() {
     SYSTEMTIME tm;
     GetLocalTime(&tm);
     char stamp[32];
-    snprintf(stamp, sizeof(stamp), "%02u%02u%02u", tm.wHour, tm.wMinute, tm.wSecond);
+    snprintf(stamp, sizeof(stamp), "%02u%02u%02u_%u", tm.wHour, tm.wMinute, tm.wSecond, cap_seq_);
     std::error_code ec;
     cap_dir_ = std::filesystem::weakly_canonical(app::ExeDir() / diag::CaptureDir() / stamp, ec);
     std::filesystem::create_directories(cap_dir_, ec);
@@ -3096,7 +3103,16 @@ void D3D12Backend::Present(const Surface& front) {
     PerfScope perf_present{g_perf.present};
     if (cap_) {
         FinishCapture(front);
+        // XBE_CAPTURE_FRAMES=N: one F3 captures N frames in a row, to compare frames that alternate
+        if (cap_more_) {
+            cap_more_--;
+            cap_seq_++;
+            StartCapture();
+        }
     } else if (g_capture.exchange(false) && CaptureOn()) {
+        const char* n = std::getenv("XBE_CAPTURE_FRAMES");
+        cap_more_ = n ? uint32_t(std::max(1l, std::strtol(n, nullptr, 10)) - 1) : 0;
+        cap_seq_ = 0;
         StartCapture();
     }
     ResizeSwap();
@@ -3398,6 +3414,28 @@ void D3D12Backend::CapSave(Target& t, const char* name) {
     DXGI_FORMAT fmt = t.depth ? DXGI_FORMAT_R24_UNORM_X8_TYPELESS : t.fmt;
     float mul = t.depth ? 1 : t.range;
     CapSave({.res = t.res.Get(), .state = &t.state, .fmt = fmt, .w = t.gw, .h = t.gh, .mul = mul}, name);
+}
+
+// XBE_CAPTURE_VS=<hex shader handle>, XBE_CAPTURE_RT=<hex surface address>: the colour and depth targets before each
+// draw with that vertex shader or into that surface, and before the draw after the last of them
+void D3D12Backend::CapAround(const State& s) {
+    static const char* env = std::getenv("XBE_CAPTURE_VS");
+    static const char* env_rt = std::getenv("XBE_CAPTURE_RT");
+    if (!env && !env_rt) return;
+    static const uint32_t vs = env ? uint32_t(std::strtoul(env, nullptr, 16)) : 0;
+    static const uint32_t rt = env_rt ? mem::VirtualFromPhysical(uint32_t(std::strtoul(env_rt, nullptr, 16))) : 0;
+    bool match = (env && s.vs_handle == vs) || (env_rt && s.rt.header && mem::VirtualFromPhysical(s.rt.data) == rt);
+    if (!match && !cap_after_) return;
+    cap_after_ = match;
+    char name[48];
+    if (Target* t = FindTarget(s.rt, false)) {
+        snprintf(name, sizeof(name), "%04u_pre_%08X", cap_i_, t->data);
+        CapSave(*t, name);
+    }
+    if (Target* z = FindTarget(s.zs, true)) {
+        snprintf(name, sizeof(name), "%04u_pre_%08X_z", cap_i_, z->data);
+        CapSave(*z, name);
+    }
 }
 
 // the frame moves to another target: save the one it leaves
