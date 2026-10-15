@@ -5,6 +5,8 @@
 #   ./run-proton.sh --no-build     just launch the existing winrun/Game.exe
 #   ./run-proton.sh --build-only   build and stop
 #   ./run-proton.sh --skip-fmv     launch with XBE_SKIP_FMV: cutscenes report failed and are skipped
+#   ./run-proton.sh --skippable-cutscenes   launch with XBE_SKIPPABLE_CUTSCENES: LT skips any in-engine cutscene,
+#                                  seen or not
 #
 # env overrides: PROTONPATH, GAMEID, JOBS
 set -euo pipefail
@@ -21,12 +23,14 @@ JOBS="${JOBS:-$(nproc)}"
 DO_BUILD=1
 DO_RUN=1
 SKIP_FMV=0
+SKIPPABLE=0
 for a in "$@"; do
     case "$a" in
         --no-build)  DO_BUILD=0 ;;
         --build-only) DO_RUN=0 ;;
         --skip-fmv)  SKIP_FMV=1 ;;
-        -h|--help)   sed -n '2,10p' "$0"; exit 0 ;;
+        --skippable-cutscenes) SKIPPABLE=1 ;;
+        -h|--help)   sed -n '2,12p' "$0"; exit 0 ;;
         *) echo "unknown option: $a" >&2; exit 2 ;;
     esac
 done
@@ -70,6 +74,10 @@ SKIP_ENV=()
 if [ "$SKIP_FMV" = 1 ]; then
     SKIP_ENV=(XBE_SKIP_FMV=1)
     echo "   XBE_SKIP_FMV=1 (cutscenes skipped)"
+fi
+if [ "$SKIPPABLE" = 1 ]; then
+    SKIP_ENV+=(XBE_SKIPPABLE_CUTSCENES=1)
+    echo "   XBE_SKIPPABLE_CUTSCENES=1 (LT skips any in-engine cutscene)"
 fi
 echo "   logs: $RUN/logs/game.log   (display required)"
 cd "$RUN"

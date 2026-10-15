@@ -249,12 +249,35 @@ Note: release builds only write `LOGR`/`LOGE` lines; opt-in traces must use `LOG
   `DUMP_PS=<handle>` prints the translated combiner, `TRACE_VS=<handle>` traces by D3D shader handle. D3D12 F3
   capture: run with `XBE_CAPTURE_DIR=cap`.
 
+### Curtains, cutscene skipping, profiler (2026-10-15)
+- **Curtains** (Berri's room) drew flat fog colour. The library's fog flush (`0x5421D0`, dirty `0x2000`) pushes
+  `FOG_ENABLE` and, when on, `FOG_MODE`/`FOG_PARAMS` worked out from the D3D fog states *at that moment*, plus the
+  final combiner (`0x288` = `0x130C0300` fogged / `0x0C` plain, `0x28C` = `0x1C80`) unless the bound pixel shader has
+  its own (device `+0x784` the shader, `+0x788` its final inputs). Conker changes `D3DRS_FOGENABLE` and then draws from
+  its own pushbuffer with no flush in between, so the chip keeps the old push. `ApplyFlush` now computes that push
+  (`PushFog`: linear `p0 = end*k+1, p1 = -k`, `k = 1/(end-start)` or 8192; exp `1.5, density*-0.0902`; exp2
+  `density*-0.2123`) into the chip fog state, which the renderers always read after the first flush.
+- **Skippable cutscenes**: `0x4FF00` is the per-frame "may LT end this in-engine cutscene" test. The title allows only
+  cutscenes seen this playthrough (`0x4EBE0`, a 64 bit mask per entry at `0x765608`, bit set when a cutscene ends at
+  `0x50877`), never mode `0x18` cutscene 1 (the throne), only cutscene 5 in mode `0x1D`, and not in the last half
+  second. `XBE_SKIPPABLE_CUTSCENES` (`run-proton.sh --skippable-cutscenes`) lets LT skip any of them. Verified in the
+  harness: a new game skips through the throne, Berri and the next scene into the first level.
+- **Function profiler**: build the generated code with `-DXBE_FN_PROFILE` (a separate build dir, e.g. a copy of
+  `out/build/win`'s cache with that in `CMAKE_CXX_FLAGS`); every recompiled function counts its calls, each frame's
+  counts are summed by whether pad 0's left trigger is held, and F5 writes `fnprof_NN.txt` ("held idle name", after a
+  `frames held idle` line). This found the skip code. Swap it in as `winrun/Game.exe` and launch with `--no-build`.
+- D3D12 F3 capture now lists per draw the vertex inputs (stream, type, stride, first vertices), the pixel shader key,
+  stage 0/1 samplers, fog state and final combiner, and a vertex program's constants on its first draw.
+- harness pad script to a new game: FMVs on, `12500 A` (skips the intro FMV), `13500 LEFT`, `14000 A`, `15000 A`; the
+  throne cutscene starts around frame 37000-42000.
+
 ### Open
+- **missing loading screen**: the game freezes where a loading screen should show (after the boot splash, when starting
+  a new game, between cutscenes); it continues once the level has loaded.
 - **Conker's tail** (skinned 79-instruction program `1B4CFC40E338AEDB`, alpha-blended draw, 4×4 DXT1 stage 0):
   final alpha is `R0.a = 1` and its fog factor saturates at `c7.z = 0.734` while the body at the same depth gets
   ~0.36, so it comes out near-black and opaque. Look at the shell offset / `a0` skinning inputs (`v2` = SHORT4
   indices) and where the fur's alpha should come from.
-- curtains/drapes render flat saturated magenta (xemu: soft shaded pink), seen in the Berri answering-machine cutscene.
 - puddles show Conker's reflection but not the environment (re-check on D3D12).
 - fur (Conker's and the squirrels' tails draw as flat opaque shells).
 - `notes/nv2a_methods.txt` predates jump-following; the live vocabulary is 238 methods (re-dump with

@@ -4,6 +4,9 @@
 // are the ones that drive the hardware directly (the per-frame buffer clear, which reads the miniport).
 //
 // A strong X86_FUNC replaces the recompiled function at that address.
+#include <cstdlib>
+#include <cstring>
+
 #include "xdk/hle.h"
 #include "cpu/x86_ops.h"
 #include "core/diag.h"
@@ -28,6 +31,29 @@ X86_FUNC(sub_004E2801) {
         return;
     }
     __imp__sub_004E2801(ctx, base);
+}
+
+// 0x4FF00: may LT end the playing in-engine cutscene (edi its slot)? The title allows it only for cutscenes the
+// player has seen (0x4EBE0, a bit per cutscene at 0x765608), never for the intro's first one (mode 0x18, cutscene
+// 1), in mode 0x1D (the intro's later scenes) only cutscene 5, and not in the last half second.
+// XBE_SKIPPABLE_CUTSCENES set: any cutscene, seen or not, still not in the last half second. Mode 0x21 skips on a
+// button of its own and keeps its test.
+X86_EXTERN_FUNC(__imp__sub_0004FF00);
+X86_FUNC(sub_0004FF00) {
+    static const bool skippable = std::getenv("XBE_SKIPPABLE_CUTSCENES") != nullptr;
+    using kernel::R32;
+    uint32_t mode = R32(0x7FA1F8);
+    if (skippable && mode != 0x21) {
+        // the player whose skip button counts, its pressed buttons at +0xA0, and the "no skipping" flag
+        uint32_t player = 0x763260 + (int8_t(base[0x6BCFEB]) > 0 ? 0 : 0x14 * 0x1B0);
+        bool pressed = R32(player + 0xA0) != 0 && !base[0x7655F7];
+        float fps;
+        std::memcpy(&fps, base + 0x7F9F5C, 4);
+        int32_t now = int32_t(R32(0x76F0F8 + ctx.edi * 4)), end = int32_t(R32(0x76F0E8 + ctx.edi * 4));
+        kernel::Return(ctx, pressed && now + int32_t(fps) / 2 < end ? 1 : 0, 0);
+        return;
+    }
+    __imp__sub_0004FF00(ctx, base);
 }
 
 // 0x538D50: begin a frame's render target and clear it. It called the library's pushbuffer submit/kickoff
