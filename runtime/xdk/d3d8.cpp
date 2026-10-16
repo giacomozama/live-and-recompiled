@@ -40,6 +40,10 @@ using namespace kernel;
 #define SYM_D3DDevice_GetVertexShaderFunction FFFFFE03
 #define HAS_D3DDevice_GetVertexShaderFunction 0
 #endif
+#ifndef SYM_D3DDevice_DrawIndexedVerticesUP
+#define SYM_D3DDevice_DrawIndexedVerticesUP FFFFFE04
+#define HAS_D3DDevice_DrawIndexedVerticesUP 0
+#endif
 
 namespace d3d {
 
@@ -2016,6 +2020,25 @@ HLE_STDCALL(D3DDevice_DrawVerticesUP, 4) {
     // args 2/3 are a real pointer and byte stride (checked: they look like D005xxxx scratch and 0x18-0x30), so
     // HostPtr(a[2]) is right even though the library body also adds a base from CDevice+0xbcc (zero for these)
     DrawUp(a[0], a[1], HostPtr(a[2]), a[3]);
+    return 0;
+}
+
+// (PrimitiveType, VertexCount, pIndexData, pVertexStreamZeroData, VertexStreamZeroStride). The library body copies
+// each indexed vertex inline, in batches sized from the vertex shader at CDevice+0x794, which SetVertexShader's HLE
+// never points at the shader set: every attribute reads disabled, the stride is zero and the batch size divides by
+// it. The indices are expanded into a plain array here instead.
+HLE_STDCALL(D3DDevice_DrawIndexedVerticesUP, 5) {
+    std::lock_guard<std::recursive_mutex> lock(g_lock);
+    Walk(Dev(kDevPush));
+    FlushForDraw();
+    LogDrawCaller("idxup", a[0], a[1], R32(ctx.esp));
+    uint32_t count = a[1], stride = a[4];
+    if (!count || !stride) return 0;
+    static std::vector<uint8_t> vertices;
+    vertices.resize(size_t(count) * stride);
+    for (uint32_t i = 0; i < count; i++)
+        std::memcpy(&vertices[size_t(i) * stride], HostPtr(a[3] + uint32_t(R16(a[2] + i * 2)) * stride), stride);
+    DrawUp(a[0], count, vertices.data(), stride);
     return 0;
 }
 
