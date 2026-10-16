@@ -90,7 +90,7 @@ was dropped. Measured with temporary probes on the harness:
   collapsed its input. The engine emits them as methods `0x1EA4` (register) + `0xB80` (data).
 - Every draw had **`blend=0 cw=0 at=0`** and texture-stage `COLOROP` reading `0` (unset).
 
-Two fixes landed in `runtime/xdk/d3d8.cpp` (in `patches/xboxxberecomp.patch`):
+Two fixes landed in `runtime/xdk/d3d8.cpp` (in the SDK):
 
 | # | Fix | Effect |
 |---|-----|--------|
@@ -953,13 +953,12 @@ conker-lar/
   Conker Live and Reloaded.iso     the user's disc image (gitignored via iso/)
   iso/                             extracted disc (default.xbe, dvddata/, media/)
   umu-run                          umu-launcher 1.4.1, runs the Windows build under Proton
-  XboxXBERecomp/                   the SDK (pristine upstream + patches/, see below)
+  XboxXBERecomp/                   the SDK, a submodule: giacomozama/XboxXBERecomp, branch conker
   clr_unpack/  xemu/               provided references (unused so far)
   REVERSE_ENGINEERING.md           forum notes for Conker internals
   tools/xbe_disasm.py              disassemble an XBE range by VA (ndisasm)
   tools/xbe_d3d_internals.py       list D3D internals .text calls directly
   notes/d3d_internals_called_from_text.txt
-  patches/xboxxberecomp.patch      changes made to the SDK (apply to a fresh checkout)
   game/                            the game repo (the port)
     sdk -> ../XboxXBERecomp        symlink the template expects
     assets/ -> iso symlinks        default.xbe, dvddata, media
@@ -979,8 +978,9 @@ conker-lar/
 - `extract-xiso`, `clang`/`clang++` 23, `cmake` 4.4, `ninja`, `ndisasm`
 - `mingw-w64` (x86_64, posix threads), `llvm` (`ld.lld`, `llvm-ar`)
 - For testing the Windows exe: **GE-Proton11-7** and **umu-run 1.4.1**
-- A GitHub clone of the SDK is `XboxXBERecomp/`; if you re-clone it, apply `patches/xboxxberecomp.patch`
-  (`git -C XboxXBERecomp apply ../patches/xboxxberecomp.patch`).
+- The SDK is the `XboxXBERecomp/` submodule (fork `giacomozama/XboxXBERecomp`, branch `conker`, upstream
+  `TGP482/XboxXBERecomp` as the `upstream` remote); clone with `--recursive` or run
+  `git submodule update --init`.
 
 ## Reproduce from scratch
 
@@ -1145,7 +1145,7 @@ The internals that need it are host-replaced instead.
 - **Kernel export 76** `IoQueryVolumeInformation` implemented in `runtime/kernel/xboxkrnl.cpp` (size/device
   class for the mounted volumes).
 
-## Changes to the provided tools (`patches/xboxxberecomp.patch`)
+## Changes to the provided tools (the SDK fork's `conker` branch)
 
 - `cmake/XbeRecomp.cmake` — adds `XBE_CODEGEN_TOOL` so codegen can run with a **native** `xbe_recomp` while
   cross-compiling the game for Windows.
@@ -1182,8 +1182,10 @@ The internals that need it are host-replaced instead.
   [Shader recording and warm-up](#shader-recording-and-warm-up-2026-10-16).
 - `runtime/gpu/d3d12.cpp`, `runtime/gpu/ext.h` (`Target::ms`), `runtime/app` — the `msaa` setting multisamples the
   frame-sized targets; see [MSAA](#msaa-2026-10-16).
-- `harness/build.sh`, `harness/run.sh` — executable bit only. Regenerate the whole patch with
-  `git -C XboxXBERecomp diff > ../patches/xboxxberecomp.patch`.
+- `harness/build.sh`, `harness/run.sh` — executable bit only.
+
+SDK changes are commits on the fork's `conker` branch: commit and push them in `XboxXBERecomp/`, then commit
+the new submodule pointer here. `git -C XboxXBERecomp diff upstream/main...conker` shows them all.
 
 ## Current state
 
@@ -1253,7 +1255,7 @@ and the `0x4E1D20..0x4E1D40` table of DSP function pointers the library's device
 - `umu-run` (umu-launcher 1.4.1) is provided at the repository root as `./umu-run`; GE-Proton11-7 lives in
   the Steam `compatibilitytools.d` directory.
 - `.gitignore` files: `iso/`, `game/{out,assets,prefix,winrun,generated,third_party/mingw/lib}` are ignored;
-  the SDK changes live only in `patches/`, so **apply the patch after any fresh SDK checkout**.
+  the SDK is the `XboxXBERecomp/` submodule, so **`git submodule update --init` after a fresh clone**.
 
 ### Audio: XACT clock, stream stops, 3D sound (2026-10-15)
 - **XACT's clock** reads the APU's free-running 48 kHz sample counter `0xFE80200C` (`0x55485B`). The scratch-backed

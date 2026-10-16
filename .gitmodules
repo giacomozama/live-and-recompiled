@@ -1,0 +1,4 @@
+[submodule "XboxXBERecomp"]
+	path = XboxXBERecomp
+	url = https://github.com/giacomozama/XboxXBERecomp.git
+	branch = conker

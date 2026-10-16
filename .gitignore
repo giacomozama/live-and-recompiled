@@ -1,6 +1,5 @@
-# provided tools / references (see HANDOFF.md; SDK changes live in patches/)
+# provided tools / references (see HANDOFF.md; the SDK is the XboxXBERecomp submodule)
 clr_unpack/
-XboxXBERecomp/
 xemu/
 .vscode/
 # the user's disc image and its extraction
