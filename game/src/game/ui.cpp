@@ -115,7 +115,7 @@ void PollRebind() {
 
 void DrawKeys() {
     PollRebind();
-    if (!ImGui::CollapsingHeader("Keyboard")) return;
+    ImGui::SeparatorText("Keyboard");
     ImGui::TextDisabled("click an action, then press its key or mouse button");
     ImGui::TextDisabled("Esc cancels, right click unbinds; a key in use swaps");
     if (ImGui::BeginTable("##keys", 2, ImGuiTableFlags_SizingStretchSame)) {
@@ -189,107 +189,142 @@ void Draw(double fps) {
     if (!open) return;
 
     app::Settings& s = app::Get();
-    ImGui::SetNextWindowSize(ImVec2(420, 500), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(520, 560), ImGuiCond_FirstUseEver);
     if (ImGui::Begin("Settings")) {
-        ImGui::SeparatorText("Display");
-        int mode = int(pending_mode);
-        if (ImGui::Combo("Mode", &mode, "Fullscreen\0Borderless\0Windowed\0"))
-            pending_mode = app::DisplayMode(mode);
+        bool keys_shown = false;
+        if (ImGui::BeginTabBar("##tabs")) {
+            // each tab scrolls on its own above the Save / Close row
+            const float footer = ImGui::GetFrameHeightWithSpacing() + ImGui::GetTextLineHeightWithSpacing() +
+                                 ImGui::GetStyle().ItemSpacing.y * 2.0f;
+            auto tab = [&](const char* name) {
+                if (!ImGui::BeginTabItem(name)) return false;
+                ImGui::BeginChild("##page", ImVec2(0, -footer));
+                return true;
+            };
+            auto end_tab = [] {
+                ImGui::EndChild();
+                ImGui::EndTabItem();
+            };
 
-        const std::vector<app::Mode>& modes = Modes();
-        std::string res = "Desktop";
-        int res_idx = 0;
-        if (pending_w && pending_h)
-            for (size_t i = 0; i < modes.size(); i++) {
+            if (tab("Display")) {
+                ImGui::SeparatorText("Display");
+                int mode = int(pending_mode);
+                if (ImGui::Combo("Mode", &mode, "Fullscreen\0Borderless\0Windowed\0"))
+                    pending_mode = app::DisplayMode(mode);
+
+                const std::vector<app::Mode>& modes = Modes();
+                std::string res = "Desktop";
+                int res_idx = 0;
+                if (pending_w && pending_h)
+                    for (size_t i = 0; i < modes.size(); i++) {
+                        res += '\0';
+                        res += std::to_string(modes[i].width) + "x" + std::to_string(modes[i].height);
+                        if (modes[i].width == pending_w && modes[i].height == pending_h) res_idx = int(i) + 1;
+                    }
                 res += '\0';
-                res += std::to_string(modes[i].width) + "x" + std::to_string(modes[i].height);
-                if (modes[i].width == pending_w && modes[i].height == pending_h) res_idx = int(i) + 1;
+                if (ImGui::Combo("Resolution", &res_idx, res.c_str())) {
+                    if (res_idx == 0) pending_w = pending_h = 0;
+                    else pending_w = modes[res_idx - 1].width, pending_h = modes[res_idx - 1].height;
+                }
+                if (ImGui::Button("Apply display")) {
+                    s.display_mode = pending_mode;
+                    s.width = pending_w;
+                    s.height = pending_h;
+                    app::ApplyDisplay();
+                }
+
+                ImGui::SeparatorText("Aspect");
+                // the camera follows the setting live; only the TV type the console reports waits for a restart
+                const char* aspects[] = {"auto", "4:3", "16:10", "16:9", "21:9", "32:9"};
+                constexpr int kAspects = 6;
+                int aspect = -1;
+                for (int i = 0; i < kAspects; i++)
+                    if (s.aspect == aspects[i]) aspect = i;
+                std::string items;
+                for (int i = 0; i < kAspects; i++) items += std::string(aspects[i]) + '\0';
+                if (aspect < 0) items += s.aspect + '\0', aspect = kAspects;  // a custom W:H from settings.toml
+                items += '\0';
+                if (ImGui::Combo("Aspect", &aspect, items.c_str()) && aspect < kAspects) s.aspect = aspects[aspect];
+                ImGui::SameLine();
+                ImGui::TextDisabled("(%.2f:1)", app::FrameAspect());
+
+                ImGui::SeparatorText("FPS");
+                ImGui::Checkbox("Overlay", &g_fps_overlay);
+                ImGui::SameLine();
+                ImGui::Checkbox("Window title", &g_fps_title);
+                end_tab();
             }
-        res += '\0';
-        if (ImGui::Combo("Resolution", &res_idx, res.c_str())) {
-            if (res_idx == 0) pending_w = pending_h = 0;
-            else pending_w = modes[res_idx - 1].width, pending_h = modes[res_idx - 1].height;
+
+            if (tab("Graphics")) {
+                ImGui::SeparatorText("Rendering");
+                const uint32_t render_min = 25, render_max = 400;
+                ImGui::SliderScalar("Render %", ImGuiDataType_U32, &s.render_percent, &render_min, &render_max,
+                                    "%u");
+                ImGui::Checkbox("V-Sync", &s.vsync);
+
+                constexpr uint32_t kCaps[] = {0, 30, 60, 120, 144, 240};
+                int cap = 0;
+                for (int i = 0; i < 6; i++)
+                    if (kCaps[i] == s.fps_cap) cap = i;
+                if (ImGui::Combo("FPS cap", &cap, "Unlimited\0 30\0 60\0 120\0 144\0 240\0")) s.fps_cap = kCaps[cap];
+
+                constexpr uint32_t kRates[] = {30, 60, 120};
+                int rate = 0;
+                for (int i = 0; i < 3; i++)
+                    if (kRates[i] == display::g_frame_rate) rate = i;
+                if (ImGui::Combo("Frame rate", &rate, "30 (original)\0 60\0 120 (experimental)\0"))
+                    display::g_frame_rate = kRates[rate];
+                if (display::g_frame_rate > 30 && s.fps_cap && s.fps_cap < display::g_frame_rate)
+                    ImGui::TextDisabled("held to %u by the FPS cap", s.fps_cap);
+
+                ImGui::SeparatorText("Quality");
+                constexpr uint32_t kAniso[] = {0, 2, 4, 8, 16};
+                int aniso = 0;
+                for (int i = 0; i < 5; i++)
+                    if (kAniso[i] == s.aniso) aniso = i;
+                if (ImGui::Combo("Anisotropic", &aniso, "Game default\0 2x\0 4x\0 8x\0 16x\0"))
+                    s.aniso = kAniso[aniso];
+
+                constexpr uint32_t kMsaa[] = {1, 2, 4, 8};
+                int msaa = 0;
+                for (int i = 0; i < 4; i++)
+                    if (kMsaa[i] == s.msaa) msaa = i;
+                if (ImGui::Combo("MSAA", &msaa, "Off\0 2x\0 4x\0 8x\0")) s.msaa = kMsaa[msaa];
+
+                ImGui::Checkbox("Wind on distant grass", &grass::g_wind);
+                ImGui::SameLine();
+                ImGui::TextDisabled("the console keeps it still");
+                end_tab();
+            }
+
+            if (tab("Gameplay")) {
+                ImGui::Checkbox("Skippable cutscenes", &cutscenes::g_skippable);
+                ImGui::SameLine();
+                ImGui::TextDisabled("LT skips any cutscene, seen or not");
+                end_tab();
+            }
+
+            if (tab("Controls")) {
+                ImGui::SeparatorText("Mouse");
+                ImGui::Checkbox("Mouse look", &mouse::g_look);
+                ImGui::SameLine();
+                ImGui::TextDisabled("turns the camera; F1 or alt-tab frees the cursor");
+                const uint32_t sens_min = 10, sens_max = 500;
+                ImGui::SliderScalar("Sensitivity %", ImGuiDataType_U32, &mouse::g_sensitivity, &sens_min, &sens_max,
+                                    "%u");
+                ImGui::SliderScalar("Vertical %", ImGuiDataType_U32, &mouse::g_sensitivity_y, &sens_min, &sens_max,
+                                    "%u");
+                ImGui::SameLine();
+                ImGui::TextDisabled("of the above");
+                ImGui::Checkbox("Invert Y", &mouse::g_invert_y);
+
+                DrawKeys();
+                keys_shown = true;
+                end_tab();
+            }
+            ImGui::EndTabBar();
         }
-        if (ImGui::Button("Apply display")) {
-            s.display_mode = pending_mode;
-            s.width = pending_w;
-            s.height = pending_h;
-            app::ApplyDisplay();
-        }
-
-        ImGui::SeparatorText("Rendering");
-        const uint32_t render_min = 25, render_max = 400;
-        ImGui::SliderScalar("Render %", ImGuiDataType_U32, &s.render_percent, &render_min, &render_max, "%u");
-        ImGui::Checkbox("V-Sync", &s.vsync);
-
-        constexpr uint32_t kCaps[] = {0, 30, 60, 120, 144, 240};
-        int cap = 0;
-        for (int i = 0; i < 6; i++)
-            if (kCaps[i] == s.fps_cap) cap = i;
-        if (ImGui::Combo("FPS cap", &cap, "Unlimited\0 30\0 60\0 120\0 144\0 240\0")) s.fps_cap = kCaps[cap];
-
-        constexpr uint32_t kAniso[] = {0, 2, 4, 8, 16};
-        int aniso = 0;
-        for (int i = 0; i < 5; i++)
-            if (kAniso[i] == s.aniso) aniso = i;
-        if (ImGui::Combo("Anisotropic", &aniso, "Game default\0 2x\0 4x\0 8x\0 16x\0")) s.aniso = kAniso[aniso];
-
-        constexpr uint32_t kMsaa[] = {1, 2, 4, 8};
-        int msaa = 0;
-        for (int i = 0; i < 4; i++)
-            if (kMsaa[i] == s.msaa) msaa = i;
-        if (ImGui::Combo("MSAA", &msaa, "Off\0 2x\0 4x\0 8x\0")) s.msaa = kMsaa[msaa];
-
-        ImGui::Checkbox("Wind on distant grass", &grass::g_wind);
-        ImGui::SameLine();
-        ImGui::TextDisabled("the console keeps it still");
-
-        constexpr uint32_t kRates[] = {30, 60, 120};
-        int rate = 0;
-        for (int i = 0; i < 3; i++)
-            if (kRates[i] == display::g_frame_rate) rate = i;
-        if (ImGui::Combo("Frame rate", &rate, "30 (original)\0 60\0 120 (experimental)\0"))
-            display::g_frame_rate = kRates[rate];
-        if (display::g_frame_rate > 30 && s.fps_cap && s.fps_cap < display::g_frame_rate)
-            ImGui::TextDisabled("held to %u by the FPS cap", s.fps_cap);
-
-        ImGui::SeparatorText("Aspect");
-        // the camera follows the setting live; only the TV type the console reports waits for a restart
-        const char* aspects[] = {"auto", "4:3", "16:10", "16:9", "21:9", "32:9"};
-        constexpr int kAspects = 6;
-        int aspect = -1;
-        for (int i = 0; i < kAspects; i++)
-            if (s.aspect == aspects[i]) aspect = i;
-        std::string items;
-        for (int i = 0; i < kAspects; i++) items += std::string(aspects[i]) + '\0';
-        if (aspect < 0) items += s.aspect + '\0', aspect = kAspects;  // a custom W:H from settings.toml
-        items += '\0';
-        if (ImGui::Combo("Aspect", &aspect, items.c_str()) && aspect < kAspects) s.aspect = aspects[aspect];
-        ImGui::SameLine();
-        ImGui::TextDisabled("(%.2f:1)", app::FrameAspect());
-
-        ImGui::SeparatorText("Gameplay");
-        ImGui::Checkbox("Skippable cutscenes", &cutscenes::g_skippable);
-        ImGui::SameLine();
-        ImGui::TextDisabled("LT skips any cutscene, seen or not");
-
-        ImGui::SeparatorText("Mouse");
-        ImGui::Checkbox("Mouse look", &mouse::g_look);
-        ImGui::SameLine();
-        ImGui::TextDisabled("turns the camera; F1 or alt-tab frees the cursor");
-        const uint32_t sens_min = 10, sens_max = 500;
-        ImGui::SliderScalar("Sensitivity %", ImGuiDataType_U32, &mouse::g_sensitivity, &sens_min, &sens_max, "%u");
-        ImGui::SliderScalar("Vertical %", ImGuiDataType_U32, &mouse::g_sensitivity_y, &sens_min, &sens_max, "%u");
-        ImGui::SameLine();
-        ImGui::TextDisabled("of the above");
-        ImGui::Checkbox("Invert Y", &mouse::g_invert_y);
-
-        DrawKeys();
-
-        ImGui::SeparatorText("FPS");
-        ImGui::Checkbox("Overlay", &g_fps_overlay);
-        ImGui::SameLine();
-        ImGui::Checkbox("Window title", &g_fps_title);
+        if (!keys_shown) g_rebind = -1;  // leaving the Controls tab cancels a rebind
 
         ImGui::Separator();
         if (ImGui::Button("Save")) app::Save();
