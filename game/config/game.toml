@@ -81,6 +81,9 @@ D3DDevice_DrawVertices                               = 0x53A930
 # Conker's build was not matched by the signature table; identified by hand: it writes NV2A method 0x17FC
 # (primitive) and 0x1818 (inline array) and copies user vertices, so the runtime's DrawVerticesUP HLE serves it
 D3DDevice_DrawVerticesUP                             = 0x53A600
+# identified by hand too: 5 stdcall args, 16-bit indices from arg 3 pick vertices of arg 5 bytes from arg 4, each
+# copied inline after 0x1818; its batch size divides by a stride the HLE'd SetVertexShader leaves at zero
+D3DDevice_DrawIndexedVerticesUP                      = 0x53A7B0
 D3DDevice_EnableOverlay                              = 0
 D3DDevice_End                                        = 0
 D3DDevice_EndPush                                    = 0
