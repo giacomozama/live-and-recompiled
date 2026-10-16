@@ -185,10 +185,10 @@ void DrawKeys() {
                     g_rebind_slot = s;
                     g_rebind_armed = false;
                 }
-                if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) {
+                // right click unbinds, but not while a rebind waits or has just taken its key: then the click is
+                // Mouse 2 being bound, which PollRebind takes before this button sees it
+                if (ImGui::IsItemClicked(ImGuiMouseButton_Right) && g_rebind < 0 && !g_rebind_settle)
                     g_keys[r.action][s] = 0;
-                    if (waiting) g_rebind = -1;
-                }
                 ImGui::PopID();
             }
             ImGui::SameLine(0, spacing);
