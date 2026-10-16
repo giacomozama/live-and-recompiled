@@ -28,6 +28,7 @@
 #include <imgui.h>
 
 #include "app/app.h"
+#include "common/display.h"
 
 namespace ui {
 
@@ -150,12 +151,29 @@ void Draw(double fps) {
             if (kAniso[i] == s.aniso) aniso = i;
         if (ImGui::Combo("Anisotropic", &aniso, "Game default\0 2x\0 4x\0 8x\0 16x\0")) s.aniso = kAniso[aniso];
 
+        constexpr uint32_t kRates[] = {30, 60, 120};
+        int rate = 0;
+        for (int i = 0; i < 3; i++)
+            if (kRates[i] == display::g_frame_rate) rate = i;
+        if (ImGui::Combo("Frame rate", &rate, "30 (original)\0 60\0 120 (experimental)\0"))
+            display::g_frame_rate = kRates[rate];
+        if (display::g_frame_rate > 30 && s.fps_cap && s.fps_cap < display::g_frame_rate)
+            ImGui::TextDisabled("held to %u by the FPS cap", s.fps_cap);
+
         ImGui::SeparatorText("Aspect");
-        const char* aspects[] = {"auto", "4:3", "16:9"};
-        int aspect = s.aspect == "4:3" ? 1 : s.aspect == "16:9" ? 2 : 0;
-        if (ImGui::Combo("Aspect", &aspect, "auto\0 4:3\0 16:9\0")) s.aspect = aspects[aspect];
+        // the camera follows the setting live; only the TV type the console reports waits for a restart
+        const char* aspects[] = {"auto", "4:3", "16:10", "16:9", "21:9", "32:9"};
+        constexpr int kAspects = 6;
+        int aspect = -1;
+        for (int i = 0; i < kAspects; i++)
+            if (s.aspect == aspects[i]) aspect = i;
+        std::string items;
+        for (int i = 0; i < kAspects; i++) items += std::string(aspects[i]) + '\0';
+        if (aspect < 0) items += s.aspect + '\0', aspect = kAspects;  // a custom W:H from settings.toml
+        items += '\0';
+        if (ImGui::Combo("Aspect", &aspect, items.c_str()) && aspect < kAspects) s.aspect = aspects[aspect];
         ImGui::SameLine();
-        ImGui::TextDisabled("(restart required)");
+        ImGui::TextDisabled("(%.2f:1)", app::FrameAspect());
 
         ImGui::SeparatorText("FPS");
         ImGui::Checkbox("Overlay", &g_fps_overlay);

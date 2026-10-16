@@ -330,3 +330,12 @@ D3D_MakeRequestedSpace = ["eax", "stack"]  # (Size, ...)
 # LTCG drops Adapter/DeviceType/hFocusWindow here: flags in eax, pPresentationParameters on the stack,
 # ppReturnedDeviceInterface in ecx; a[0..2] are unused by the host so they borrow free registers.
 Direct3D_CreateDevice = ["ebx", "edx", "esi", "eax", "stack", "ecx"]
+
+# frame rate and aspect patches (src/game/display.cpp)
+[[hook]]
+at = 0x2A7CBC  # frame timer: the frame's ticks from the time it took, above 30 FPS
+call = "ConkerFrameTicks"
+
+[[hook]]
+at = 0x64468   # camera projection: its aspect widened to the display's (Hor+)
+call = "ConkerCameraAspect"

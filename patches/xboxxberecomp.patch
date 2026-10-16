@@ -25,10 +25,20 @@ index a237161..964c467 100644
          COMMENT "Recompiling ${xbe}"
          VERBATIM)
 diff --git a/harness/app_headless.cpp b/harness/app_headless.cpp
-index f078aff..6bc8653 100644
+index f078aff..7c1133b 100644
 --- a/harness/app_headless.cpp
 +++ b/harness/app_headless.cpp
-@@ -47,6 +47,6 @@ std::recursive_mutex& UiLock() {
+@@ -19,7 +19,9 @@ void ApplyDisplay() {}
+ Mode Desktop() { return {1280, 720}; }
+ Mode Output() { return Desktop(); }
+ float RenderScale(uint32_t) { return 1.0f; }
++float Aspect() { return 16.0f / 9.0f; }
+ bool Widescreen() { return true; }
++float FrameAspect() { return kGame.aspect ? kGame.aspect(Aspect()) : 16.0f / 9.0f; }
+ 
+ std::filesystem::path ExeDir() {
+     static const std::filesystem::path dir = std::filesystem::current_path();
+@@ -47,6 +49,6 @@ std::recursive_mutex& UiLock() {
      return m;
  }
  
@@ -521,18 +531,39 @@ diff --git a/harness/run.sh b/harness/run.sh
 old mode 100644
 new mode 100755
 diff --git a/runtime/app/app.h b/runtime/app/app.h
-index d3519d5..e6fa0f8 100644
+index d3519d5..914aa97 100644
 --- a/runtime/app/app.h
 +++ b/runtime/app/app.h
 @@ -22,6 +22,7 @@ struct Settings {
      uint32_t fps_cap = 60;           // 0 unlimited
      bool vsync = true;
      uint32_t aniso = 0;              // 0 as the game asks
-+    std::string aspect = "auto";     // "4:3", "16:9", or "auto": 16:9 when the output is 3:2 or wider
++    std::string aspect = "auto";     // "W:H" ("4:3", "16:9", "21:9", ...), or "auto": the output's own shape
      std::string join_ip;                   // co-op: a host past the LAN the system link search also asks
  };
  
-@@ -93,7 +94,8 @@ struct GameInfo {
+@@ -37,8 +38,13 @@ struct Mode {
+ Mode Desktop();
+ Mode Output();
+ float RenderScale(uint32_t guest_height);
+-// the output is 3:2 or wider: the console reports a widescreen TV and the frame is shown 16:9, else 4:3 as on a 4:3 TV
++// the display shape the aspect setting asks for, width over height: with "auto" the output's own
++float Aspect();
++// the display is 3:2 or wider: the console reports a widescreen TV and the frame is shown 16:9, else 4:3 as on a 4:3 TV
+ bool Widescreen();
++// the shape of the frame the title draws, which the window letterboxes: GameInfo::aspect's for a title patched to
++// draw any, else 16:9 on a widescreen TV and 4:3 on a 4:3 one
++float FrameAspect();
+ 
+ std::filesystem::path ExeDir();
+ // the game in assets (game_files.cpp): its folder and this executable's xbe, from the extracted files or a disc
+@@ -90,10 +96,14 @@ struct GameInfo {
+     void (*ui)(double fps);        // each frame inside the ImGui frame, UiLock held
+     void (*pad)(int port, input::Pad& pad);  // a polled pad before the game gets it
+     void (*rumble)(int port, uint16_t& left, uint16_t& right);
++    // the shape of the frame the title draws for a display of this shape (width over height), for a title whose
++    // projection the game patches to fit any; null: the console's 16:9 or 4:3 (Widescreen)
++    float (*aspect)(float display);
  };
  extern const GameInfo kGame;
  
@@ -578,10 +609,18 @@ index 201bcaa..605ea2a 100644
      if (!cap) {
          next = now;
 diff --git a/runtime/app/settings.cpp b/runtime/app/settings.cpp
-index 4b494d0..e6b6c70 100644
+index 4b494d0..6291f6e 100644
 --- a/runtime/app/settings.cpp
 +++ b/runtime/app/settings.cpp
-@@ -49,6 +49,7 @@ void Load() {
+@@ -9,6 +9,7 @@
+ 
+ #include <algorithm>
+ #include <atomic>
++#include <cstdio>
+ #include <fstream>
+ #include <sstream>
+ 
+@@ -49,6 +50,7 @@ void Load() {
      s.fps_cap = t["fps_cap"].value_or(s.fps_cap);
      s.vsync = t["vsync"].value_or(s.vsync);
      s.aniso = t["anisotropic_filtering"].value_or(s.aniso);
@@ -589,7 +628,7 @@ index 4b494d0..e6b6c70 100644
      s.join_ip = t["join_ip"].value_or(s.join_ip);
      for (const Option& o : kGame.options) {
          if (o.flag) *o.flag = t[o.key].value_or(*o.flag);
-@@ -68,6 +69,7 @@ toml::table Table() {
+@@ -68,6 +70,7 @@ toml::table Table() {
                    {"fps_cap", int64_t(s.fps_cap)},
                    {"vsync", s.vsync},
                    {"anisotropic_filtering", int64_t(s.aniso)},
@@ -597,16 +636,38 @@ index 4b494d0..e6b6c70 100644
                    {"join_ip", s.join_ip}};
      for (const Option& o : kGame.options) {
          if (o.flag) t.insert(o.key, *o.flag);
-@@ -115,6 +117,9 @@ bool Widescreen() {
+@@ -110,17 +113,27 @@ Mode Output() {
+     return Desktop();
+ }
+ 
+-bool Widescreen() {
++float Aspect() {
+     // asked per frame and per HUD quad: the desktop mode lookup only runs when the resolution setting changes
      static std::atomic<uint64_t> key{~0ull};
-     static std::atomic<bool> wide{true};
+-    static std::atomic<bool> wide{true};
++    static std::atomic<float> output{16.0f / 9.0f};
      const Settings& s = Get();
-+    // the aspect setting picks the TV the console reports; the title reads it once at boot
-+    if (s.aspect == "4:3") return false;
-+    if (s.aspect == "16:9") return true;
++    float w = 0, h = 0;
++    if (std::sscanf(s.aspect.c_str(), "%f:%f", &w, &h) == 2 && w > 0 && h > 0) return std::clamp(w / h, 0.5f, 4.0f);
      uint64_t k = uint64_t(s.width) << 32 | s.height;
      if (key.exchange(k) != k) {
          Mode m = Output();
+-        wide = m.width * 2 >= m.height * 3;  // 3:2 or wider
++        if (m.width && m.height) output = std::clamp(float(m.width) / float(m.height), 0.5f, 4.0f);
+     }
+-    return wide;
++    return output;
++}
++
++// the aspect setting picks the TV the console reports; the title reads it once at boot
++bool Widescreen() { return Aspect() >= 1.5f - 1e-4f; }  // 3:2 or wider
++
++float FrameAspect() {
++    if (kGame.aspect) return std::clamp(kGame.aspect(Aspect()), 0.5f, 4.0f);
++    return Widescreen() ? 16.0f / 9.0f : 4.0f / 3.0f;
+ }
+ 
+ float RenderScale(uint32_t guest_height) {
 diff --git a/runtime/core/diag.h b/runtime/core/diag.h
 index 200d6b4..4886175 100644
 --- a/runtime/core/diag.h
@@ -748,7 +809,7 @@ index 8ff1924..859f223 100644
  #define X86_PARITY(r) ((uint32_t)(__builtin_parity((uint32_t)(r)&0xFF) ^ 1))
  
 diff --git a/runtime/gpu/d3d12.cpp b/runtime/gpu/d3d12.cpp
-index 16395fa..f21af26 100644
+index 16395fa..8fbf31a 100644
 --- a/runtime/gpu/d3d12.cpp
 +++ b/runtime/gpu/d3d12.cpp
 @@ -148,6 +148,44 @@ O vs(uint id : SV_VertexID) {
@@ -1063,7 +1124,19 @@ index 16395fa..f21af26 100644
      std::error_code ec;
      cap_dir_ = std::filesystem::weakly_canonical(app::ExeDir() / diag::CaptureDir() / stamp, ec);
      std::filesystem::create_directories(cap_dir_, ec);
-@@ -2957,7 +3103,16 @@ void D3D12Backend::Present(const Surface& front) {
+@@ -2834,9 +2980,8 @@ void D3D12Backend::UploadGammaRamp() {
+ }
+ 
+ void D3D12Backend::BlitFrame(Target& t) {
+-    // 16:9 when the console reports a widescreen display, else 4:3
+-    bool wide = app::Widescreen();
+-    float aspect = wide ? 16.0f / 9.0f : 4.0f / 3.0f;
++    // 16:9 when the console reports a widescreen display, else 4:3, or the shape a patched title draws
++    float aspect = app::FrameAspect();
+     float w = float(bb_w_);
+     float h = float(bb_h_);
+     float vw = std::min(w, h * aspect);
+@@ -2957,7 +3102,16 @@ void D3D12Backend::Present(const Surface& front) {
      PerfScope perf_present{g_perf.present};
      if (cap_) {
          FinishCapture(front);
@@ -1080,7 +1153,7 @@ index 16395fa..f21af26 100644
          StartCapture();
      }
      ResizeSwap();
-@@ -2979,6 +3134,10 @@ void D3D12Backend::Present(const Surface& front) {
+@@ -2979,6 +3133,10 @@ void D3D12Backend::Present(const Surface& front) {
      presents_++;
      presents_seen_.store(presents_);
      frame_++;
@@ -1091,7 +1164,7 @@ index 16395fa..f21af26 100644
      ReleaseOldTextures();
      ResetFrame();
      CountFps();
-@@ -3257,6 +3416,28 @@ void D3D12Backend::CapSave(Target& t, const char* name) {
+@@ -3257,6 +3415,28 @@ void D3D12Backend::CapSave(Target& t, const char* name) {
      CapSave({.res = t.res.Get(), .state = &t.state, .fmt = fmt, .w = t.gw, .h = t.gh, .mul = mul}, name);
  }
  

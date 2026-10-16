@@ -299,6 +299,34 @@ the same. Harness: `REPORT_LAG=1` reproduces the test/no-test alternation, `LIST
 D3D12 captures: `XBE_CAPTURE_FRAMES=N` (N frames per F3), `XBE_CAPTURE_VS=<handle>` / `XBE_CAPTURE_RT=<surface>` (targets
 around each matching draw).
 
+### Frame rate and aspect (2026-10-15)
+Ported from the community XBE patches (widescreen; theboy181's work-in-progress 60 FPS), which `60fps/` (the Xbox One
+backward-compatibility patcher) carries over to that runtime's translated code. Its `REVERSE_ENGINEERING.md` §6-7 has
+the XBE diff: a `mulss xmm1,[4/3]` inserted at `0x64468`, and `mov edx,2` -> `1` at `0x1F6B22` and `0x2A9DCB`. Here
+they are hooks (`src/game/display.cpp`, two `[[hook]]`s in `game.toml`), applied live from the F1 menu.
+- **Timing.** `0x2A78D0` builds the present parameters from `edx` (`FullScreen_PresentationInterval`: 2, or 3 in a
+  3-4 player split screen) and keeps it in the byte `0x6C0268`; `0x3FB2D0` re-creates the device from a second block at
+  `0x7F9ECC`. The frame timer `0x2A7B60` (once a frame, from `0x2A48C9`, before render and `Swap` at `0x2A499B`) sets
+  `[0x7FA21C]` dt (s) = TSC microseconds (`rdtsc*3/2200`) * 1e-6, or ticks/60 when `[0x7819D5]` (fixed step, set by
+  the multiplayer setup) is set, clamped to 1 s, and `[0x7FA214]` = 1/dt; and `[0x7FA20C]` ticks = interval byte +
+  `[0x7F9F30]` (missed blanks, from the swap callback `0x2A8020` at `device+0x1DB4`), at most 60. `[0x7F9F5C]` is
+  60.0 (ticks per second), `[0x7F9F58]` 1/60. ~400 places step by ticks (`counter -= ticks`, `fade += ticks*k`); none
+  divides by them. Single player runs on measured dt, which is why the XBE patch (interval ONE, one tick a frame) works.
+- **The port**: `frame_rate` (30 / 60 / 120, default 60; `XBE_FRAME_RATE`). Above 30 the hook before `0x2A7CBC` takes
+  ticks from the frame's microseconds, rounded with the remainder carried (one a frame at 60, 1/0 alternating at 120,
+  right after a hitch), so tick-stepped things keep real time at any rate; fixed step mode never gets a tickless frame
+  and is held to 60. A wrapper on `0x2A7B60` limits the rate before the timer reads the clock and writes
+  `D3DRS_PRESENTATIONINTERVAL` (`0x549BF4` in the state shadow; only the skipped library init writes it) as
+  IMMEDIATE, so the runtime's `Swap` pacing only applies `fps_cap`; at 30 it writes 0 back (the device's interval).
+  Not proven: per-frame logic that ignores both clocks (the XBE patch's known risk at 60, more at 120); FMV timing.
+- **Aspect**: before `0x64468`, `xmm1` = `[camera+0x260]` (aspect, 4:3) and `[camera+0x264]` is the field of view; the
+  hook scales `xmm1` by display/(4:3) (the XBE patch's fixed 4/3 is the 16:9 case): Hor+, same vertical view. The frame
+  is still 640x480 and the window shows it at that shape (`GameInfo::aspect`, `app::FrameAspect`), so the HUD and menus
+  stretch as with the XBE patch, and the horizontal resolution is the height's scale (raise Render %); a per-axis
+  render scale in the D3D12 backend would fix that (`w/gw` is assumed uniform in ~10 places). `aspect` takes any
+  `W:H`; the harness keeps 4:3 unless `XBE_ASPECT=W:H`, and 30 FPS unless `XBE_FRAME_RATE`. `XBE_TRACE_TICKS=1`
+  logs each frame's microseconds and ticks; `display:` lines log rate and aspect changes.
+
 ### Open
 - **missing loading screen**: the game freezes where a loading screen should show (after the boot splash, when starting
   a new game, between cutscenes); it continues once the level has loaded.
@@ -306,7 +334,9 @@ around each matching draw).
 - `notes/nv2a_methods.txt` predates jump-following; the live vocabulary is 238 methods (re-dump with
   `XBE_DUMP_METHODS=1`, grep `^METHOD`).
 - the restored original `default.xbe` differs from the old copy (`iso/default.xbe_`) in 44 bytes (header plus a few
-  bytes at `0x5446A`, `0x1E6B23`, `0x299DCC`); it was re-recompiled and runs identically.
+  bytes at `0x5446A`, `0x1E6B23`, `0x299DCC`); it was re-recompiled and runs identically. Those are the file offsets
+  of the community widescreen + 60 FPS patch (guest `0x6446A`, `0x1F6B23`, `0x2A9DCC`): the old copy was the patched
+  XBE. See [Frame rate and aspect](#frame-rate-and-aspect-2026-10-15).
 
 ## Previous blocker (the frontend 3D scene, history)
 
@@ -1074,6 +1104,9 @@ The internals that need it are host-replaced instead.
   `IDirectSoundStream_SetOutputBuffer`, the stream/buffer `SetPitch`/`SetLFO`/`SetEG` and the
   buffer/stream `GetVoiceProperties` are HLE'd so their console bodies never run.
 - `runtime/kernel/xboxkrnl.cpp` — `IoQueryVolumeInformation` (export 76), now popping its 5 stack arguments.
+- `runtime/app` (`app.h`, `settings.cpp`), `runtime/gpu/d3d12.cpp`, `harness/app_headless.cpp` — the `aspect`
+  setting takes any `W:H` (`app::Aspect`; `Widescreen()` is 3:2 or wider as before), and `GameInfo::aspect` lets a
+  title whose projection the game patches draw any shape: `app::FrameAspect()` is what the window letterboxes to.
 - `harness/build.sh`, `harness/run.sh` — executable bit only. Regenerate the whole patch with
   `git -C XboxXBERecomp diff > ../patches/xboxxberecomp.patch`.
 

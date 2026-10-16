@@ -1,4 +1,5 @@
 #include "app/app.h"
+#include "common/display.h"
 #include "common/keyboard.h"
 #include "common/ui.h"
 
@@ -13,7 +14,8 @@ const app::GameInfo app::kGame = {
     .missing = L"Put the game in the assets folder: its disc image (.iso), or default.xbe with its folders beside it.",
     .images = {{"default.xbe", "Game"}},  // each recompiled xbe and its exe, for title launches
     .options = {{"fps_overlay", &ui::g_fps_overlay, nullptr},  // ImGui settings menu options (src/game/ui.cpp)
-                {"fps_in_title", &ui::g_fps_title, nullptr}},
+                {"fps_in_title", &ui::g_fps_title, nullptr},
+                {"frame_rate", nullptr, &display::g_frame_rate}},  // 30, 60 or 120 (src/game/display.cpp)
     .load = nullptr,                      // reads more from the settings file's toml::table
     .save = nullptr,                      // writes more into it
     .init = nullptr,                      // after the settings load, before the window and boot
@@ -23,4 +25,5 @@ const app::GameInfo app::kGame = {
     .ui = ui::Draw,                       // ImGui drawing each frame
     .pad = keyboard::Pad,                 // keyboard as a pad on port 0 (src/game/keyboard.cpp)
     .rumble = nullptr,                    // changes a rumble before it is set
+    .aspect = display::Aspect,            // the camera patch draws the display's shape (src/game/display.cpp)
 };

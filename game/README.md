@@ -16,6 +16,10 @@ This port was created using the [Xbox XBE Recomp](https://github.com/TGP482/Xbox
 ## Features
 
 ### Display
+- **Frame Rate** - 30 (the original), 60 or 120 (experimental) FPS, from the F1 menu or `frame_rate` in
+  `settings.toml`. The game's timers follow real time at any rate. The FPS cap and V-Sync still apply.
+- **Any Aspect Ratio** - The 3D view widens to the display's shape (`aspect = "auto"`), or to any `W:H` such as
+  `"21:9"`; `"4:3"` keeps the original view. The HUD stretches with the frame. Raise Render % to sharpen wide frames.
 
 
 ### Graphics
