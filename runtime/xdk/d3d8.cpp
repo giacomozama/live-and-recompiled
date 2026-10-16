@@ -253,6 +253,16 @@ void ApplyDefaultStates(X86Context& ctx) {
 #else
     (void)ctx;
     LOG_FIRST(1, "d3d: the image has no D3D_InitDefaultState, default states were not applied");
+    // the stencil ones at least: the chip resets them to 0, and 0 is GL_ZERO. Conker never sets the depth fail op, so
+    // its sky, drawn last and failing depth behind the castle, zeroed the stencil that marks the window for the glow.
+    constexpr uint32_t kKeep = 0x1E00, kAlways = 0x207;
+    g_state.simple[gpu::kMStencilFail >> 2] = kKeep;
+    g_state.simple[gpu::kMStencilZFail >> 2] = kKeep;
+    g_state.simple[gpu::kMStencilPass >> 2] = kKeep;
+    g_state.simple[gpu::kMStencilFunc >> 2] = kAlways;
+    g_state.simple[gpu::kMStencilMask >> 2] = 0xFF;
+    g_state.simple[gpu::kMStencilWriteMask >> 2] = 0xFF;
+    g_state.rs[gpu::kRsStencilFail] = kKeep;
 #endif
 }
 
