@@ -1,22 +1,10 @@
-// Mouse look: the mouse turns the camera.
+// Mouse look: the mouse turns the camera as the right stick does.
 //
-// The window thread takes raw mouse motion (WM_INPUT, unaccelerated counts). keyboard::Pad, on the guest's threads,
-// hands it to the game one of two ways:
-//
-// - into the player camera, when the camera is found (Turn). XBE_CAMSCAN found it: the camera is [[0x8470DC] + 4]
-//   (the player array, 0x770 apart, then its camera), yaw at +0x60, in degrees, which the game copies every frame
-//   (to +0x5C and +0x124) and which keeps what is written; stick right lowers it. The view's pitch is at +0x34,
-//   easing to +0x38 at the speed in +0x3C (an F9 sweep of the stick found it, and the eased copy at 0x771B5C and the
-//   view direction at 0x773C7C follow it). The stick moves it at a rate that climbs steeply with the tilt and not at
-//   all under about 0.35, which is why stick emulation felt dead and uneven; written, it answers one to one. The
-//   camera's +0x970 adds up the stick's y (copied to +0x97C, +0x980 and +0x9BC) without moving the view; it only
-//   serves the check that the camera is there.
-// - else as right stick, for any other camera: the motion of the last game frame becomes a deflection, faster
-//   motion pushing it further.
-//
-// The pad is polled from more than one place each frame (the device scan in xapi.cpp polls every port too). Turn
-// applies the motion since the last poll that applied any, so it lands once whichever poll takes it; Stick only reads
-// a timestamped list and never drains it, so each poll sees the same deflection.
+// The camera's own yaw and pitch are not mapped, so the mouse drives the stick the game already reads. The window
+// thread takes raw mouse motion (WM_INPUT, unaccelerated counts) into a timestamped list; keyboard::Pad, on the
+// guest's threads, turns the motion of the last game frame into a stick deflection, faster motion pushing it further.
+// Pad only reads the list and never drains it: the pad is polled from more than one place each frame (the device
+// scan in xapi.cpp polls every port too), and each poll sees the same motion.
 //
 // While mouse look is on, the game window has the focus and the F1 menu is shut, the cursor is hidden and held
 // inside the window. Alt-tab or F1 lets it go.
@@ -38,18 +26,12 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
-#include <cstdlib>
-#include <cstdio>
-#include <cstring>
-#include <string>
 #include <mutex>
 
-#include "app/app.h"
 #include "common/display.h"
 #include "common/ui.h"
 #include "core/input.h"
 #include "core/log.h"
-#include "kernel/memory.h"
 
 namespace mouse {
 
@@ -62,26 +44,8 @@ namespace {
 
 // counts a second that push the stick all the way at 100% sensitivity
 constexpr float kFullSpeed = 2000.0f;
-// the game's stick dead zone (0x4CF80): a stick inside 0.3 of full reads as still, and past it the rest is spread
-// evenly over the game's range, so a stick of 0.3 + 0.7 t reads as t
-constexpr float kMinDeflection = 0.3f;
-// degrees a count turns the camera at 100% sensitivity: 800 counts (an inch at 800 dpi) is about 32 degrees
-constexpr float kDegreesPerCount = 0.04f;
-// a stick past this is tilting the camera (XInput's right stick dead zone); a gamepad at rest sits inside it
-constexpr int kStickDeadZone = 8689;
-// the view's pitch, in degrees: where it is, where it eases to, how fast; stick up lowers it. In third person the
-// stick takes it from kViewLow to kViewHigh in the Cock and Plucker
-constexpr uint32_t kView = 0x34, kViewTarget = 0x38, kViewSpeed = 0x3C;
-constexpr float kViewLow = -23.73f, kViewHigh = -3.31f;
-// the mouse takes the pitch only once the game's camera has settled this close to its target
-constexpr float kViewSettled = 1.0f;
-// the camera's own limits on the view's pitch: -45 and 45 in first person; in third person the largest float, no
-// limit of its own (the view goes as far as the camera fits around the scene)
-constexpr uint32_t kViewMin = 0x50, kViewMax = 0x54;
-
-// the player's object, its camera, and the camera's angles (see the top of the file)
-constexpr uint32_t kPlayer = 0x8470DC, kPlayerCamera = 0x4;
-constexpr uint32_t kYaw = 0x60, kYawCopy = 0x5C, kPitch = 0x970, kPitchCopy = 0x980;
+// the least deflection any motion gives, so slow motion is not lost in the game's stick dead zone
+constexpr float kMinDeflection = 0.25f;
 
 std::atomic<bool> g_held{false};
 bool g_registered = false;
@@ -94,189 +58,6 @@ struct Motion {
 std::mutex g_lock;
 Motion g_motion[512];  // a ring; a 1000 Hz mouse fills ~33 of these a 30 fps frame
 uint32_t g_next = 0;
-int64_t g_total_x = 0, g_total_y = 0;      // every count while held
-int64_t g_applied_x = 0, g_applied_y = 0;  // the counts Turn has handed the camera, or skipped
-
-bool Readable(uint32_t va, uint32_t size) { return va && mem::IsCommitted(va) && mem::IsCommitted(va + size - 1); }
-
-uint32_t R32(uint32_t va) {
-    uint32_t v;
-    std::memcpy(&v, mem::Base() + va, 4);
-    return v;
-}
-
-float RF(uint32_t va) {
-    float f;
-    std::memcpy(&f, mem::Base() + va, 4);
-    return f;
-}
-
-void WF(uint32_t va, float f) { std::memcpy(mem::Base() + va, &f, 4); }
-
-// the player camera, or 0 when it is not there or does not look like one: each angle sane and next to its copy
-uint32_t Camera() {
-    if (!Readable(kPlayer, 4)) return 0;
-    const uint32_t player = R32(kPlayer);
-    if (!Readable(player + kPlayerCamera, 4)) return 0;
-    const uint32_t cam = R32(player + kPlayerCamera);
-    if (!Readable(cam, kPitchCopy + 4)) return 0;
-    const float yaw = RF(cam + kYaw), yaw_copy = RF(cam + kYawCopy);
-    const float pitch = RF(cam + kPitch), pitch_copy = RF(cam + kPitchCopy);
-    if (!std::isfinite(yaw) || !std::isfinite(pitch) || std::fabs(yaw) > 1e5f || std::fabs(pitch) > 90.0f) return 0;
-    const float view = RF(cam + kView), target = RF(cam + kViewTarget);
-    if (!std::isfinite(view) || !std::isfinite(target) || std::fabs(view) > 90.0f || std::fabs(target) > 90.0f) return 0;
-    if (std::fabs(yaw - yaw_copy) > 30.0f || std::fabs(pitch - pitch_copy) > 30.0f) return 0;
-    return cam;
-}
-
-int64_t Now();
-
-// the pitch the mouse holds (see Turn); guest threads, under g_view_lock
-std::mutex g_view_lock;
-float g_view_lo = kViewLow, g_view_hi = kViewHigh;  // the range seen in a camera without limits of its own
-bool g_view_held = false;  // the mouse has taken the pitch
-float g_view_pitch = 0;    // the pitch it holds, in degrees
-uint32_t g_view_cam = 0;
-int64_t g_view_us = 0;
-
-// XBE_MOUSE_TRACE=1 logs the camera as Turn sees it
-bool Trace() {
-    static const bool on = [] {
-        const char* e = std::getenv("XBE_MOUSE_TRACE");
-        return e && *e && *e != '0';
-    }();
-    return on;
-}
-
-// XBE_MOUSE_TRACE and F10: the player camera and the player object to camdump_N.bin beside the exe (camera 0xA00
-// bytes, then player 0x770), to tell the camera's modes apart
-void Dump(uint32_t cam) {
-    static bool was = false;
-    const bool down = (GetAsyncKeyState(VK_F10) & 0x8000) != 0;
-    const bool press = down && !was;
-    was = down;
-    if (!press) return;
-    static int n = 0;
-    const uint32_t player = R32(kPlayer);
-    if (!Readable(cam, 0xA00) || !Readable(player, 0x770)) return;
-    const std::string name = (app::ExeDir() / ("camdump_" + std::to_string(++n) + ".bin")).string();
-    if (FILE* f = std::fopen(name.c_str(), "wb")) {
-        std::fwrite(mem::Base() + cam, 1, 0xA00, f);
-        std::fwrite(mem::Base() + player, 1, 0x770, f);
-        std::fclose(f);
-        LOGR("mouse: dumped camera %08X and player %08X to %s (pitch %.2f, sum %.2f)", cam, player, name.c_str(),
-             RF(cam + kView), RF(cam + kPitch));
-    }
-}
-
-// the motion since the last call straight into the player camera's yaw and the view's pitch; false when there is no
-// camera to turn.
-//
-// The game rebuilds the view's target pitch every frame from a rest (about -20 in the Cock and Plucker, and about
-// -29 once the view is below -25) and eases the view to it within the same frame, so neither a written target nor a
-// tilt on top of the rest holds: the view slid back to the rest, and snapped where the rest jumps. So once the mouse
-// moves, mouse look holds a pitch of its own, taken from the game's target, and writes it over the view and the
-// target every poll with the easing stopped: the view answers at once and stays where the mouse left it, whatever
-// the game's rest does. It takes the pitch only once the game's camera has settled (a level's camera eases in from
-// its floor), and keeps it inside the camera's own limits where it has them (first person, +0x50 and +0x54), else
-// inside the range the keyboard's or a gamepad's stick has been seen to take it, starting from what the stick
-// reaches in the Cock and Plucker (the game limits what the stick asks for, not what is written). A keyboard or gamepad stick held up or down, a new camera, or a pause in the polls
-// (the cursor let go) drops the mouse's pitch and leaves it to the game.
-bool Turn(input::Pad& pad) {
-    int64_t dx, dy;
-    {
-        std::lock_guard lock(g_lock);
-        dx = g_total_x - g_applied_x;
-        dy = g_total_y - g_applied_y;
-        g_applied_x = g_total_x;
-        g_applied_y = g_total_y;
-    }
-    static std::atomic<uint32_t> last{~0u};
-    const uint32_t cam = Camera();
-    if (last.exchange(cam) != cam) {
-        const logx::Level lv = Trace() ? logx::Level::Report : logx::Level::Info;
-        if (cam) logx::Write(lv, "mouse: look turns the camera at %08X (yaw %.1f, pitch %.1f)", cam, RF(cam + kYaw),
-                             RF(cam + kView));
-        else logx::Write(lv, "mouse: no player camera, look drives the right stick");
-    }
-    if (!cam) return false;
-    if (Trace()) Dump(cam);
-    const float k = kDegreesPerCount * float(g_sensitivity) / 100.0f;
-    // mouse right turns as the stick right does: it lowers the yaw
-    if (dx) WF(cam + kYaw, RF(cam + kYaw) - float(dx) * k);
-
-    std::lock_guard lock(g_view_lock);
-    const float view = RF(cam + kView), target = RF(cam + kViewTarget);
-    const int64_t now = Now();
-    const bool stick_y = std::abs(pad.ry) > kStickDeadZone;
-    if (stick_y || cam != g_view_cam || now - g_view_us > 500000) g_view_held = false;
-    g_view_cam = cam;
-    g_view_us = now;
-    // a camera with limits of its own (first person) is held to them; one without (third person), to wherever the
-    // keyboard's or a gamepad's stick has been seen to take the view
-    const float min = RF(cam + kViewMin), max = RF(cam + kViewMax);
-    const bool limited = std::fabs(min) <= 90.0f && std::fabs(max) <= 90.0f && min < max;
-    // learned from the stick only, and not just after the camera changed mode: leaving first person, the limits go
-    // before the view has come back down, and the view the level opens on is no stick's
-    static bool was_limited = false;
-    static int64_t mode_us = 0;
-    if (limited != was_limited) was_limited = limited, mode_us = now;
-    if (!limited && stick_y && now - mode_us > 1000000) {
-        g_view_lo = std::min(g_view_lo, view);
-        g_view_hi = std::max(g_view_hi, view);
-    }
-    float lo = limited ? min : g_view_lo, hi = limited ? max : g_view_hi;
-    static int burst = 0;
-    if (Trace() && burst > 0) {
-        // the polls after a write: what the game made of it, and the camera's floats around the pitch
-        burst--;
-        std::string floats;
-        for (uint32_t o = 0x20; o <= 0x5C; o += 4) {
-            char buf[24];
-            std::snprintf(buf, sizeof buf, " %X:%.2f", o, RF(cam + o));
-            floats += buf;
-        }
-        LOGR("mouse: after  pitch %7.2f target %7.2f speed %7.3f  sum %7.2f |%s", view, target, RF(cam + kViewSpeed),
-             RF(cam + kPitch), floats.c_str());
-    }
-    // the first motion takes the pitch from where the game has it, once its camera has settled
-    if (!stick_y && dy && !g_view_held && std::fabs(view - target) < kViewSettled) {
-        g_view_held = true, g_view_pitch = target;
-        // in third person, where the game rests is in range too, or the first motion would snap the view into it
-        if (!limited) {
-            lo = g_view_lo = std::min(g_view_lo, target);
-            hi = g_view_hi = std::max(g_view_hi, target);
-        }
-    }
-    if (!stick_y && g_view_held) {
-        // mouse up tilts as the stick up does, lowering the pitch; raw y grows downward
-        const float ky = k * float(g_sensitivity_y) / 100.0f;
-        const float was = g_view_pitch;
-        g_view_pitch = std::clamp(g_view_pitch + float(g_invert_y ? -dy : dy) * ky, lo, hi);
-        WF(cam + kViewTarget, g_view_pitch);
-        WF(cam + kView, g_view_pitch);
-        WF(cam + kViewSpeed, 0.0f);
-        if (Trace() && dy) {
-            LOGR("mouse: write  pitch %7.2f -> %7.2f (game's target %7.2f, dy %+lld)", was, g_view_pitch, target,
-                 (long long)dy);
-            burst = 12;
-        }
-    }
-    if (Trace()) {
-        static int64_t next = 0, moved = 0;
-        moved += dy;
-        if (now >= next) {
-            next = now + 250000;
-            LOGR("mouse: pitch %7.2f target %7.2f speed %7.3f  %s %7.2f  range %7.2f %7.2f%s  dy %+lld  sum %7.2f  "
-                 "yaw %7.2f",
-                 RF(cam + kView), RF(cam + kViewTarget), RF(cam + kViewSpeed), g_view_held ? "held" : "free",
-                 g_view_pitch, lo, hi, stick_y ? "  stick" : "", (long long)moved, RF(cam + kPitch),
-                 RF(cam + kYaw));
-            moved = 0;
-        }
-    }
-    return true;
-}
 
 int64_t Now() {
     using namespace std::chrono;
@@ -287,8 +68,6 @@ void Clear() {
     std::lock_guard lock(g_lock);
     for (Motion& m : g_motion) m = {};
     g_next = 0;
-    g_applied_x = g_total_x;
-    g_applied_y = g_total_y;
 }
 
 void Hold(HWND hwnd) {
@@ -340,8 +119,6 @@ void Message(void* hwnd, uint32_t msg, uintptr_t wp, intptr_t lp) {
             std::lock_guard lock(g_lock);
             g_motion[g_next] = {Now(), int32_t(raw.data.mouse.lLastX), int32_t(raw.data.mouse.lLastY)};
             g_next = (g_next + 1) % std::size(g_motion);
-            g_total_x += raw.data.mouse.lLastX;
-            g_total_y += raw.data.mouse.lLastY;
             break;
         }
         case WM_ACTIVATE:
@@ -363,8 +140,6 @@ void Message(void* hwnd, uint32_t msg, uintptr_t wp, intptr_t lp) {
 
 void Pad(input::Pad& pad) {
     if (!g_look || !g_held.load()) return;
-    // the player camera turns with the mouse (the keyboard's or a gamepad's stick is in pad already)
-    if (Turn(pad)) return;
     // the motion of the last game frame
     const float frame = 1.0f / float(std::max<uint32_t>(display::g_frame_rate, 30));
     const int64_t since = Now() - int64_t(frame * 1e6f);
@@ -378,7 +153,7 @@ void Pad(input::Pad& pad) {
 
     // counts a second into deflection, then lifted past the dead zone along its own direction
     const float scale = float(g_sensitivity) / 100.0f / kFullSpeed / frame;
-    float x = float(dx) * scale, y = float(-dy) * scale * float(g_sensitivity_y) / 100.0f;  // raw y grows down
+    float x = float(dx) * scale, y = float(-dy) * scale * float(g_sensitivity_y) / 100.0f;  // raw y grows downward
     if (g_invert_y) y = -y;
     const float len = std::hypot(x, y);
     const float out = kMinDeflection + (1.0f - kMinDeflection) * std::min(len, 1.0f);
