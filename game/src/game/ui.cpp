@@ -31,6 +31,7 @@
 #include "common/cutscenes.h"
 #include "common/display.h"
 #include "common/grass.h"
+#include "common/mouse.h"
 
 namespace ui {
 
@@ -78,6 +79,7 @@ void Draw(double fps) {
     static bool was_open = false;
     static double last_fps = -1.0;
     static bool last_title = !g_fps_title;
+    static bool last_look = mouse::g_look;
     const bool open = g_open.load();
     if (open && !was_open) {
         pending_mode = app::Get().display_mode;
@@ -94,6 +96,12 @@ void Draw(double fps) {
         if (HWND w = static_cast<HWND>(app::Window())) PostMessageW(w, kFpsTitle, 0, 0);
     }
 
+    // the window thread takes or lets go of the cursor
+    if (mouse::g_look != last_look) {
+        last_look = mouse::g_look;
+        if (HWND w = static_cast<HWND>(app::Window())) PostMessageW(w, mouse::kRefresh, 0, 0);
+    }
+
     if (g_fps_overlay) {
         ImGui::SetNextWindowPos(ImVec2(10.0f, 10.0f), ImGuiCond_Always);
         ImGui::SetNextWindowBgAlpha(0.35f);
@@ -108,7 +116,7 @@ void Draw(double fps) {
     if (!open) return;
 
     app::Settings& s = app::Get();
-    ImGui::SetNextWindowSize(ImVec2(420, 420), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(420, 500), ImGuiCond_FirstUseEver);
     if (ImGui::Begin("Settings")) {
         ImGui::SeparatorText("Display");
         int mode = int(pending_mode);
@@ -192,6 +200,14 @@ void Draw(double fps) {
         ImGui::SameLine();
         ImGui::TextDisabled("LT skips any cutscene, seen or not");
 
+        ImGui::SeparatorText("Mouse");
+        ImGui::Checkbox("Mouse look", &mouse::g_look);
+        ImGui::SameLine();
+        ImGui::TextDisabled("turns the camera; F1 or alt-tab frees the cursor");
+        const uint32_t sens_min = 10, sens_max = 500;
+        ImGui::SliderScalar("Sensitivity %", ImGuiDataType_U32, &mouse::g_sensitivity, &sens_min, &sens_max, "%u");
+        ImGui::Checkbox("Invert Y", &mouse::g_invert_y);
+
         ImGui::SeparatorText("FPS");
         ImGui::Checkbox("Overlay", &g_fps_overlay);
         ImGui::SameLine();
@@ -212,6 +228,7 @@ bool Message(void* hwnd, uint32_t msg, uintptr_t wp, intptr_t lp, intptr_t* resu
             // not on auto repeat; the menu window and the game both take the key, the menu only when open
             if ((wp == VK_F1 || wp == VK_INSERT) && !(lp & (1 << 30))) {
                 g_open.store(!g_open.load());
+                mouse::Refresh(hwnd);  // the cursor is free while the menu is up
                 if (result) *result = 0;
                 return true;
             }
@@ -236,6 +253,7 @@ bool Message(void* hwnd, uint32_t msg, uintptr_t wp, intptr_t lp, intptr_t* resu
         default:
             break;
     }
+    mouse::Message(hwnd, msg, wp, lp);
     return false;
 }
 

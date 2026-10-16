@@ -13,12 +13,15 @@
 //   LB / RB      1 / 2            LT / RT                3 / 4
 //   start        enter            back                   backspace
 //   stick clicks C (left)         V (right)
+//
+// With mouse look on (src/game/mouse.cpp) the mouse also turns the camera, over IJKL while it moves.
 #include <cstdint>
 #include <cstring>
 
 #include <windows.h>
 
 #include "common/keyboard.h"
+#include "common/mouse.h"
 #include "common/ui.h"
 #include "core/input.h"
 #include "core/log.h"
@@ -96,6 +99,8 @@ void Pad(int port, input::Pad& pad) {
     if (Down(k1)) pad.analog[5] = 0xFF;  // white / left bumper
     if (Down(k3)) pad.analog[6] = 0xFF;  // left trigger
     if (Down(k4)) pad.analog[7] = 0xFF;  // right trigger
+
+    mouse::Pad(pad);  // the mouse, while it looks, takes the right stick
 
     LOG_FIRST(1, "input: keyboard controls active (WASD move, IJKL camera, space A, shift B, E X, Q Y)");
 }

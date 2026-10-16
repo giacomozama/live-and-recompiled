@@ -3,6 +3,7 @@
 #include "common/display.h"
 #include "common/grass.h"
 #include "common/keyboard.h"
+#include "common/mouse.h"
 #include "common/ui.h"
 
 // what the runtime asks of the game; strings must be set, hooks may stay null
@@ -19,7 +20,10 @@ const app::GameInfo app::kGame = {
                 {"fps_in_title", &ui::g_fps_title, nullptr},
                 {"frame_rate", nullptr, &display::g_frame_rate},  // 30, 60 or 120 (src/game/display.cpp)
                 {"skippable_cutscenes", &cutscenes::g_skippable, nullptr},  // LT skips any cutscene (hooks.cpp)
-                {"grass_wind", &grass::g_wind, nullptr}},  // distant grass sways too (hooks.cpp)
+                {"grass_wind", &grass::g_wind, nullptr},  // distant grass sways too (hooks.cpp)
+                {"mouse_look", &mouse::g_look, nullptr},  // the mouse turns the camera (src/game/mouse.cpp)
+                {"mouse_sensitivity", nullptr, &mouse::g_sensitivity},  // percent
+                {"mouse_invert_y", &mouse::g_invert_y, nullptr}},
     .load = nullptr,                      // reads more from the settings file's toml::table
     .save = nullptr,                      // writes more into it
     .init = nullptr,                      // after the settings load, before the window and boot
