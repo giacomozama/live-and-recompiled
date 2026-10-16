@@ -3,13 +3,13 @@
 // The window thread takes raw mouse motion (WM_INPUT, unaccelerated counts). keyboard::Pad, on the guest's threads,
 // hands it to the game one of two ways:
 //
-// - horizontal motion straight into the player camera's yaw, in degrees, when the camera is found (Turn).
-//   XBE_CAMSCAN found it: the camera is [[0x8470DC] + 4] (the player's object, then its camera), yaw at +0x60, which
-//   the game copies every frame (to +0x5C and +0x124) and which keeps a value written there; stick right lowers it.
-//   The scan's pitch, +0x970 (copied to +0x97C, +0x980 and +0x9BC), also keeps a written value, but writing it does
-//   not tilt the view in play, so it only serves the check that the camera is there.
-// - everything else as right stick (vertical motion always, horizontal when there is no player camera): the motion
-//   of the last game frame becomes a deflection, faster motion pushing it further.
+// - straight into the player camera's angles, in degrees, when the camera is found (Turn). XBE_CAMSCAN found them:
+//   the camera is [[0x8470DC] + 4] (the player array, 0x770 apart, then its camera), yaw at +0x60 and pitch at
+//   +0x970, which the game copies every frame (yaw to +0x5C and +0x124, pitch to +0x97C, +0x980 and +0x9BC). Stick
+//   right and stick up both lower them. Yaw keeps what is written; pitch the game eases back to its rest once the
+//   stick is let go, so mouse look holds its own (see Turn).
+// - else as right stick, for any other camera: the motion of the last game frame becomes a deflection, faster
+//   motion pushing it further.
 //
 // The pad is polled from more than one place each frame (the device scan in xapi.cpp polls every port too). Turn
 // applies the motion since the last poll that applied any, so it lands once whichever poll takes it; Stick only reads
@@ -58,6 +58,10 @@ constexpr float kFullSpeed = 2000.0f;
 constexpr float kMinDeflection = 0.25f;
 // degrees a count turns the camera at 100% sensitivity: 800 counts (an inch at 800 dpi) is about 32 degrees
 constexpr float kDegreesPerCount = 0.04f;
+// a stick past this is tilting the camera (XInput's right stick dead zone); a gamepad at rest sits inside it
+constexpr int kStickDeadZone = 8689;
+// pitch is held inside this until the game shows a tighter limit; the stick reached 55
+constexpr float kPitchLimit = 55.0f;
 
 // the player's object, its camera, and the camera's angles (see the top of the file)
 constexpr uint32_t kPlayer = 0x8470DC, kPlayerCamera = 0x4;
@@ -74,8 +78,8 @@ struct Motion {
 std::mutex g_lock;
 Motion g_motion[512];  // a ring; a 1000 Hz mouse fills ~33 of these a 30 fps frame
 uint32_t g_next = 0;
-int64_t g_total_x = 0;    // every horizontal count while held
-int64_t g_applied_x = 0;  // the counts Turn has handed the camera, or skipped
+int64_t g_total_x = 0, g_total_y = 0;      // every count while held
+int64_t g_applied_x = 0, g_applied_y = 0;  // the counts Turn has handed the camera, or skipped
 
 bool Readable(uint32_t va, uint32_t size) { return va && mem::IsCommitted(va) && mem::IsCommitted(va + size - 1); }
 
@@ -107,13 +111,32 @@ uint32_t Camera() {
     return cam;
 }
 
-// the motion since the last call straight into the camera's yaw; false when there is no camera to turn
-bool Turn() {
-    int64_t dx;
+int64_t Now();
+
+// the pitch mouse look holds (see Turn); guest threads, under g_turn_lock
+std::mutex g_turn_lock;
+struct Pitch {
+    uint32_t cam = 0;  // the camera it was taken from
+    float hold = 0, written = 0, seen = 0;
+    float lo = -kPitchLimit, hi = kPitchLimit;
+    int64_t us = 0;  // when it was last written
+    int pinned = 0;  // polls in a row the game held it short of what was written
+} g_pitch;
+
+// the motion since the last call straight into the camera's angles; false when there is no camera to turn.
+//
+// Yaw takes the motion as it comes. Pitch the game eases back to its rest when the stick is let go, so a pitch the
+// mouse sets would drift away: mouse look keeps its own and writes it every poll. It takes the game's back when the
+// keyboard or a gamepad tilts the camera (stick_y), when the game moves it far (another camera mode), after a pause
+// in the polls, and when the camera changes; and it learns the game's limits from the game holding it short.
+bool Turn(bool stick_y) {
+    int64_t dx, dy;
     {
         std::lock_guard lock(g_lock);
         dx = g_total_x - g_applied_x;
+        dy = g_total_y - g_applied_y;
         g_applied_x = g_total_x;
+        g_applied_y = g_total_y;
     }
     static std::atomic<uint32_t> last{~0u};
     const uint32_t cam = Camera();
@@ -122,9 +145,36 @@ bool Turn() {
         else LOGI("mouse: no player camera, look drives the right stick");
     }
     if (!cam) return false;
-    if (!dx) return true;
-    // mouse right turns as the stick right does
-    WF(cam + kYaw, RF(cam + kYaw) - float(dx) * kDegreesPerCount * float(g_sensitivity) / 100.0f);
+    const float k = kDegreesPerCount * float(g_sensitivity) / 100.0f;
+    // mouse right turns as the stick right does, mouse up tilts as the stick up does: both lower the angle
+    if (dx) WF(cam + kYaw, RF(cam + kYaw) - float(dx) * k);
+
+    std::lock_guard lock(g_turn_lock);
+    Pitch& p = g_pitch;
+    const float game = RF(cam + kPitch);
+    const int64_t now = Now();
+    if (p.cam != cam) p = {}, p.cam = cam;
+    const bool fresh = !p.us || now - p.us > 500000 || stick_y || std::fabs(game - p.written) > 20.0f;
+    if (!fresh && std::fabs(game - p.written) > 2.0f && game == p.seen) {
+        // held short of what was written, the same each poll: the game's limit
+        if (++p.pinned >= 3) {
+            if (p.written > game) p.hi = game;
+            else p.lo = game;
+        }
+    } else {
+        p.pinned = 0;
+    }
+    p.seen = game;
+    if (fresh) p.hold = game;
+    if (stick_y) {
+        p.us = now;
+        p.written = game;
+        return true;
+    }
+    p.hold = std::clamp(p.hold + float(g_invert_y ? -dy : dy) * k, p.lo, p.hi);
+    WF(cam + kPitch, p.hold);
+    p.written = p.hold;
+    p.us = now;
     return true;
 }
 
@@ -138,6 +188,7 @@ void Clear() {
     for (Motion& m : g_motion) m = {};
     g_next = 0;
     g_applied_x = g_total_x;
+    g_applied_y = g_total_y;
 }
 
 void Hold(HWND hwnd) {
@@ -190,6 +241,7 @@ void Message(void* hwnd, uint32_t msg, uintptr_t wp, intptr_t lp) {
             g_motion[g_next] = {Now(), int32_t(raw.data.mouse.lLastX), int32_t(raw.data.mouse.lLastY)};
             g_next = (g_next + 1) % std::size(g_motion);
             g_total_x += raw.data.mouse.lLastX;
+            g_total_y += raw.data.mouse.lLastY;
             break;
         }
         case WM_ACTIVATE:
@@ -211,8 +263,8 @@ void Message(void* hwnd, uint32_t msg, uintptr_t wp, intptr_t lp) {
 
 void Pad(input::Pad& pad) {
     if (!g_look || !g_held.load()) return;
-    // the player camera turns with the mouse; its pitch still goes by the stick (see the top of the file)
-    const bool turned = Turn();
+    // the player camera turns with the mouse (the keyboard's or a gamepad's stick is in pad already)
+    if (Turn(std::abs(pad.ry) > kStickDeadZone)) return;
     // the motion of the last game frame
     const float frame = 1.0f / float(std::max<uint32_t>(display::g_frame_rate, 30));
     const int64_t since = Now() - int64_t(frame * 1e6f);
@@ -222,7 +274,6 @@ void Pad(input::Pad& pad) {
         for (const Motion& m : g_motion)
             if (m.us >= since) dx += m.dx, dy += m.dy;
     }
-    if (turned) dx = 0;
     if (!dx && !dy) return;  // still: the keyboard's or a gamepad's right stick stands
 
     // counts a second into deflection, then lifted past the dead zone along its own direction
@@ -233,8 +284,8 @@ void Pad(input::Pad& pad) {
     const float out = kMinDeflection + (1.0f - kMinDeflection) * std::min(len, 1.0f);
     x *= out / len;
     y *= out / len;
-    if (dx) pad.rx = int16_t(std::clamp(x, -1.0f, 1.0f) * 32767.0f);
-    if (dy) pad.ry = int16_t(std::clamp(y, -1.0f, 1.0f) * 32767.0f);
+    pad.rx = int16_t(std::clamp(x, -1.0f, 1.0f) * 32767.0f);
+    pad.ry = int16_t(std::clamp(y, -1.0f, 1.0f) * 32767.0f);
     LOG_FIRST(1, "mouse: look drives the right stick");
 }
 
