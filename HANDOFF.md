@@ -267,7 +267,8 @@ XGetDeviceChanges. A hook on 0x4C950 re-marks the opened pads in the new table. 
 - **Skippable cutscenes**: `0x4FF00` is the per-frame "may LT end this in-engine cutscene" test. The title allows only
   cutscenes seen this playthrough (`0x4EBE0`, a 64 bit mask per entry at `0x765608`, bit set when a cutscene ends at
   `0x50877`), never mode `0x18` cutscene 1 (the throne), only cutscene 5 in mode `0x1D`, and not in the last half
-  second. `XBE_SKIPPABLE_CUTSCENES` (`run-proton.sh --skippable-cutscenes`) lets LT skip any of them. Verified in the
+  second. The `skippable_cutscenes` setting (F1 menu, applied live; `cutscenes::g_skippable`) or
+  `XBE_SKIPPABLE_CUTSCENES` (`run-proton.sh --skippable-cutscenes`) lets LT skip any of them. Verified in the
   harness: a new game skips through the throne, Berri and the next scene into the first level.
 - **Function profiler**: build the generated code with `-DXBE_FN_PROFILE` (a separate build dir, e.g. a copy of
   `out/build/win`'s cache with that in `CMAKE_CXX_FLAGS`); every recompiled function counts its calls, each frame's

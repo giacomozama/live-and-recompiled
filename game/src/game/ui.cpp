@@ -28,6 +28,7 @@
 #include <imgui.h>
 
 #include "app/app.h"
+#include "common/cutscenes.h"
 #include "common/display.h"
 
 namespace ui {
@@ -106,7 +107,7 @@ void Draw(double fps) {
     if (!open) return;
 
     app::Settings& s = app::Get();
-    ImGui::SetNextWindowSize(ImVec2(420, 360), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(420, 420), ImGuiCond_FirstUseEver);
     if (ImGui::Begin("Settings")) {
         ImGui::SeparatorText("Display");
         int mode = int(pending_mode);
@@ -174,6 +175,11 @@ void Draw(double fps) {
         if (ImGui::Combo("Aspect", &aspect, items.c_str()) && aspect < kAspects) s.aspect = aspects[aspect];
         ImGui::SameLine();
         ImGui::TextDisabled("(%.2f:1)", app::FrameAspect());
+
+        ImGui::SeparatorText("Gameplay");
+        ImGui::Checkbox("Skippable cutscenes", &cutscenes::g_skippable);
+        ImGui::SameLine();
+        ImGui::TextDisabled("LT skips any cutscene, seen or not");
 
         ImGui::SeparatorText("FPS");
         ImGui::Checkbox("Overlay", &g_fps_overlay);

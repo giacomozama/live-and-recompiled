@@ -15,6 +15,8 @@
 #include "xdk/d3d8.h"
 #include "xdk/dsound.h"
 
+#include "common/cutscenes.h"
+
 namespace {
 
 // device globals Conker's D3D8LTCG uses (see config/game.toml [data])
@@ -39,14 +41,16 @@ X86_FUNC(sub_004E2801) {
 // 0x4FF00: may LT end the playing in-engine cutscene (edi its slot)? The title allows it only for cutscenes the
 // player has seen (0x4EBE0, a bit per cutscene at 0x765608), never for the intro's first one (mode 0x18, cutscene
 // 1), in mode 0x1D (the intro's later scenes) only cutscene 5, and not in the last half second.
-// XBE_SKIPPABLE_CUTSCENES set: any cutscene, seen or not, still not in the last half second. Mode 0x21 skips on a
+// cutscenes::g_skippable (or XBE_SKIPPABLE_CUTSCENES): any cutscene, seen or not, still not in the last half second. Mode 0x21 skips on a
 // button of its own and keeps its test.
+bool cutscenes::g_skippable = false;
+
 X86_EXTERN_FUNC(__imp__sub_0004FF00);
 X86_FUNC(sub_0004FF00) {
-    static const bool skippable = std::getenv("XBE_SKIPPABLE_CUTSCENES") != nullptr;
+    static const bool env = std::getenv("XBE_SKIPPABLE_CUTSCENES") != nullptr;
     using kernel::R32;
     uint32_t mode = R32(0x7FA1F8);
-    if (skippable && mode != 0x21) {
+    if ((env || cutscenes::g_skippable) && mode != 0x21) {
         // the player whose skip button counts, its pressed buttons at +0xA0, and the "no skipping" flag
         uint32_t player = 0x763260 + (int8_t(base[0x6BCFEB]) > 0 ? 0 : 0x14 * 0x1B0);
         bool pressed = R32(player + 0xA0) != 0 && !base[0x7655F7];

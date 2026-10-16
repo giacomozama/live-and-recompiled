@@ -47,6 +47,8 @@ the same time.
 | Left / right stick click | `C` / `V` |
 
 ### General
+- **Skippable Cutscenes** - LT skips any in-engine cutscene, not only the ones already seen this playthrough. Turn it on
+  in the F1 menu or with `skippable_cutscenes = true` in `settings.toml`.
 
 ### Miscellaneous
 - **Boot Splash** - Place a `splash.png` (or `.bmp`) beside the exe to display a splash screen at launch.
