@@ -1,4 +1,4 @@
-# provided tools / references (see HANDOFF.md; the SDK is the XboxXBERecomp submodule)
+# provided tools / references (see HANDOFF.md; the SDK is vendored in XboxXBERecomp/)
 clr_unpack/
 xemu/
 .vscode/
