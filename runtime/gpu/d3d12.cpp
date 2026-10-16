@@ -502,6 +502,9 @@ public:
     void Flush() override;
     void SetGamma(const uint8_t* ramp) override;
     void ClearReport() override { counted_.clear(); }
+    void Note(const char* text) override {
+        if (cap_) fprintf(cap_, "     note %s\n", text);
+    }
     // done once the list being recorded, the next fence value, has run
     void GetReport(uint32_t report) override { reports_.push_back({report, counted_, fence_value_ + 1}); }
 

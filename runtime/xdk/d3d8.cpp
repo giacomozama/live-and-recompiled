@@ -797,7 +797,14 @@ COMPLEX_STATE(BackFillMode, gpu::kRsBackFillMode)
 COMPLEX_STATE(TwoSidedLighting, gpu::kRsTwoSidedLighting)
 COMPLEX_STATE(NormalizeNormals, gpu::kRsNormalizeNormals)
 COMPLEX_STATE(ZEnable, gpu::kRsZEnable)
-COMPLEX_STATE(StencilEnable, gpu::kRsStencilEnable)
+namespace {
+void NoteStencil(const char* how, uint32_t v, uint32_t from);
+}  // namespace
+HLE_STDCALL(D3DDevice_SetRenderState_StencilEnable, 1) {
+    NoteStencil("from", a[0], R32(ctx.esp));
+    SetComplex(gpu::kRsStencilEnable, a[0]);
+    return 0;
+}
 COMPLEX_STATE(StencilFail, gpu::kRsStencilFail)
 COMPLEX_STATE(FrontFace, gpu::kRsFrontFace)
 COMPLEX_STATE(CullMode, gpu::kRsCullMode)
@@ -1208,6 +1215,14 @@ const std::vector<uint32_t>& ChipProgram(uint64_t& hash) {
 // Draws with the program the chip would run. When the title's own upload is current, the bound shader keeps its
 // declaration (the vertex layout is the D3D side's business, the chip program says nothing about it) and the program
 // is swapped for the chip's. One object per (bound shader, program): the renderers tell shaders apart by pointer.
+// the capture shows each draw's stencil state; who turned the stencil test on or off it can't, so say it
+void NoteStencil(const char* how, uint32_t v, uint32_t from) {
+    if (!g_backend) return;
+    char text[64];
+    std::snprintf(text, sizeof(text), "stencil enable %u %s %08X", v, how, from);
+    g_backend->Note(text);
+}
+
 void BackendDraw(uint32_t prim, uint32_t start, uint32_t count, const uint8_t* indices) {
     if (!g_backend) return;
     if (!g_chip_program) {
@@ -1896,7 +1911,10 @@ void Walk(uint32_t end) {
                 }
                 // NV097_SET_STENCIL_TEST_ENABLE / _OP_FAIL: the renderers take these two from the render states, and
                 // the title's material blocks set them raw (Conker's glow marks its surfaces in the stencil)
-                if (m == gpu::kMStencilTestEnable) g_state.rs[gpu::kRsStencilEnable] = v;
+                if (m == gpu::kMStencilTestEnable) {
+                    g_state.rs[gpu::kRsStencilEnable] = v;
+                    NoteStencil("raw at", v, p);
+                }
                 if (m == gpu::kMStencilFail) g_state.rs[gpu::kRsStencilFail] = v;
                 // NV097_SET_FOG_ENABLE / _MODE / _PARAMS: the title runs the fog unit itself
                 if (m == 0x2A4 || m == 0x29C || m == 0x9C0 || m == 0x9C4) {
