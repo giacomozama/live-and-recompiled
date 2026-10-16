@@ -57,8 +57,9 @@ namespace {
 
 // counts a second that push the stick all the way at 100% sensitivity
 constexpr float kFullSpeed = 2000.0f;
-// the least deflection any motion gives, so slow motion is not lost in the game's stick dead zone
-constexpr float kMinDeflection = 0.25f;
+// the game's stick dead zone (0x4CF80): a stick inside 0.3 of full reads as still, and past it the rest is spread
+// evenly over the game's range, so a stick of 0.3 + 0.7 t reads as t
+constexpr float kMinDeflection = 0.3f;
 // degrees a count turns the camera at 100% sensitivity: 800 counts (an inch at 800 dpi) is about 32 degrees
 constexpr float kDegreesPerCount = 0.04f;
 // a stick past this is tilting the camera (XInput's right stick dead zone); a gamepad at rest sits inside it
@@ -130,6 +131,39 @@ bool Trace() {
     return on;
 }
 
+// XBE_MOUSE_TRACE and F9: steps the tilt through -1 to 1 in tenths, 0.8 s each, and logs where the camera settles
+// at each, for the curve from tilt to view. Under g_tilt_lock.
+float g_calibrate_tilt = 0;
+bool Calibrating(uint32_t cam, int64_t now) {
+    static bool f9 = false;
+    static int step = -1;
+    static int64_t since = 0;
+    const bool down = Trace() && (GetAsyncKeyState(VK_F9) & 0x8000) != 0;
+    if (down && !f9 && step < 0) {
+        step = 0, since = now;
+        LOGR("mouse: calibrating; leave the mouse and the stick alone");
+    }
+    f9 = down;
+    if (step < 0) return false;
+    constexpr int kSteps = 21;  // 0, 0.1 .. 1, -0.1 .. -1
+    auto level = [](int i) { return i == 0 ? 0.0f : i <= 10 ? i / 10.0f : -(i - 10) / 10.0f; };
+    if (now - since >= 800000) {
+        LOGR("mouse: calibrate tilt %+.1f  cam+2C %8.3f +30 %8.3f +34 %8.3f +38 %8.3f +3C %8.3f  eased %8.3f  "
+             "dir y %7.4f  stick sum %7.2f",
+             level(step), RF(cam + 0x2C), RF(cam + 0x30), RF(cam + 0x34), RF(cam + 0x38), RF(cam + 0x3C),
+             RF(0x771B5C), RF(0x773C80), RF(cam + kPitch));
+        since = now;
+        if (++step == kSteps) {
+            step = -1;
+            g_tilt = 0;
+            LOGR("mouse: calibration done");
+            return false;
+        }
+    }
+    g_calibrate_tilt = level(step);
+    return true;
+}
+
 // the motion since the last call into the player camera; false when there is no camera to turn.
 //
 // Yaw takes the motion straight. The camera's tilt has no angle to write: it follows how far the stick is pushed
@@ -169,10 +203,11 @@ bool Turn(input::Pad& pad) {
         // raw y grows downward: mouse up is the stick up
         const float k = kTiltPerCount * sens * float(g_sensitivity_y) / 100.0f;
         g_tilt = std::clamp(g_tilt + float(g_invert_y ? dy : -dy) * k, -1.0f, 1.0f);
-        if (g_tilt != 0.0f) {
-            // lifted past the game's dead zone, as the stick emulation does
-            const float out = kMinDeflection + (1.0f - kMinDeflection) * std::fabs(g_tilt);
-            pad.ry = int16_t(std::copysign(out, g_tilt) * 32767.0f);
+        const float tilt = Calibrating(cam, now) ? g_calibrate_tilt : g_tilt;
+        if (tilt != 0.0f) {
+            // past the game's dead zone, so the game reads the tilt as it is
+            const float out = kMinDeflection + (1.0f - kMinDeflection) * std::fabs(tilt);
+            pad.ry = int16_t(std::copysign(out, tilt) * 32767.0f);
         }
     }
     if (Trace()) {
