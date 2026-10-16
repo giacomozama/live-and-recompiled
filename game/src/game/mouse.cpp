@@ -148,8 +148,9 @@ bool Trace() {
 //
 // The game rebuilds the view's target pitch every frame from its rest (about -20 in the Cock and Plucker, drifting a
 // little with the scene) and eases the view to it, so a pitch written once is pulled back within frames. The mouse
-// keeps a tilt of its own instead, and every poll writes the game's fresh target plus that tilt over the target and
-// the eased view both, so the view answers at once and stays where the mouse left it. The sum stays inside the range
+// keeps a tilt of its own instead, and every poll writes the game's fresh target plus that tilt; the mouse's motion
+// also moves the eased view by as much, so the view answers at once and stays where the mouse left it, while
+// everything the game does itself (a level's camera settling, its rest shifting) still eases as it would. The sum stays inside the range
 // the game's own targets have been seen to take (the game limits what the stick asks for, not what is written).
 // A keyboard or gamepad stick held up or down, a new camera, or a pause in the polls (the cursor let go) drops the
 // mouse's tilt and leaves the pitch to the game.
@@ -206,12 +207,14 @@ bool Turn(input::Pad& pad) {
     if (!stick_y && (dy || g_view_offset != 0.0f)) {
         // mouse up tilts as the stick up does, lowering the pitch; raw y grows downward
         const float ky = k * float(g_sensitivity_y) / 100.0f;
-        g_view_offset = std::clamp(g_view_offset + float(g_invert_y ? -dy : dy) * ky, g_view_lo - g_view_base,
-                                   g_view_hi - g_view_base);
+        auto inside = [](float offset) { return std::clamp(offset, g_view_lo - g_view_base, g_view_hi - g_view_base); };
+        const float held = inside(g_view_offset);  // where the range lets the tilt sit as the game's rest moves
+        g_view_offset = inside(g_view_offset + float(g_invert_y ? -dy : dy) * ky);
         const float pitch = g_view_base + g_view_offset;
         WF(cam + kViewTarget, pitch);
-        WF(cam + kView, pitch);
-        WF(cam + kViewSpeed, 0.0f);
+        // the mouse's own motion lands on the view at once; whatever else moved the target (the game's rest, the
+        // range) the game eases to as it always does
+        if (g_view_offset != held) WF(cam + kView, RF(cam + kView) + (g_view_offset - held));
         g_view_written = pitch;
         if (Trace() && dy) {
             LOGR("mouse: write  pitch %7.2f + %+6.2f -> %7.2f (dy %+lld)", g_view_base, g_view_offset, pitch,
