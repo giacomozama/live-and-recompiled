@@ -69,10 +69,10 @@ constexpr float kMinDeflection = 0.3f;
 constexpr float kDegreesPerCount = 0.04f;
 // a stick past this is tilting the camera (XInput's right stick dead zone); a gamepad at rest sits inside it
 constexpr int kStickDeadZone = 8689;
-// the view's pitch, in degrees: where it is, where it eases to, how fast; stick up lowers it. The stick takes it no
-// higher than kViewHigh, and the game's camera starts a level at kViewLow, its floor
+// the view's pitch, in degrees: where it is, where it eases to, how fast; stick up lowers it. In third person the
+// stick takes it from kViewLow to kViewHigh in the Cock and Plucker
 constexpr uint32_t kView = 0x34, kViewTarget = 0x38, kViewSpeed = 0x3C;
-constexpr float kViewLow = -45.0f, kViewHigh = -3.69f;
+constexpr float kViewLow = -23.73f, kViewHigh = -3.31f;
 // the mouse takes the pitch only once the game's camera has settled this close to its target
 constexpr float kViewSettled = 1.0f;
 // the camera's own limits on the view's pitch: -45 and 45 in first person; in third person the largest float, no
@@ -179,8 +179,8 @@ void Dump(uint32_t cam) {
 // target every poll with the easing stopped: the view answers at once and stays where the mouse left it, whatever
 // the game's rest does. It takes the pitch only once the game's camera has settled (a level's camera eases in from
 // its floor), and keeps it inside the camera's own limits where it has them (first person, +0x50 and +0x54), else
-// inside the range the game's camera has been seen to reach, starting from what the stick reaches in the Cock and
-// Plucker (the game limits what the stick asks for, not what is written). A keyboard or gamepad stick held up or down, a new camera, or a pause in the polls
+// inside the range the keyboard's or a gamepad's stick has been seen to take it, starting from what the stick
+// reaches in the Cock and Plucker (the game limits what the stick asks for, not what is written). A keyboard or gamepad stick held up or down, a new camera, or a pause in the polls
 // (the cursor let go) drops the mouse's pitch and leaves it to the game.
 bool Turn(input::Pad& pad) {
     int64_t dx, dy;
@@ -213,14 +213,19 @@ bool Turn(input::Pad& pad) {
     g_view_cam = cam;
     g_view_us = now;
     // a camera with limits of its own (first person) is held to them; one without (third person), to wherever the
-    // game has been seen to take the view itself (the keyboard's or a gamepad's stick)
+    // keyboard's or a gamepad's stick has been seen to take the view
     const float min = RF(cam + kViewMin), max = RF(cam + kViewMax);
     const bool limited = std::fabs(min) <= 90.0f && std::fabs(max) <= 90.0f && min < max;
-    if (!limited && !g_view_held) {
+    // learned from the stick only, and not just after the camera changed mode: leaving first person, the limits go
+    // before the view has come back down, and the view the level opens on is no stick's
+    static bool was_limited = false;
+    static int64_t mode_us = 0;
+    if (limited != was_limited) was_limited = limited, mode_us = now;
+    if (!limited && stick_y && now - mode_us > 1000000) {
         g_view_lo = std::min(g_view_lo, view);
         g_view_hi = std::max(g_view_hi, view);
     }
-    const float lo = limited ? min : g_view_lo, hi = limited ? max : g_view_hi;
+    float lo = limited ? min : g_view_lo, hi = limited ? max : g_view_hi;
     static int burst = 0;
     if (Trace() && burst > 0) {
         // the polls after a write: what the game made of it, and the camera's floats around the pitch
@@ -235,8 +240,14 @@ bool Turn(input::Pad& pad) {
              RF(cam + kPitch), floats.c_str());
     }
     // the first motion takes the pitch from where the game has it, once its camera has settled
-    if (!stick_y && dy && !g_view_held && std::fabs(view - target) < kViewSettled)
+    if (!stick_y && dy && !g_view_held && std::fabs(view - target) < kViewSettled) {
         g_view_held = true, g_view_pitch = target;
+        // in third person, where the game rests is in range too, or the first motion would snap the view into it
+        if (!limited) {
+            lo = g_view_lo = std::min(g_view_lo, target);
+            hi = g_view_hi = std::max(g_view_hi, target);
+        }
+    }
     if (!stick_y && g_view_held) {
         // mouse up tilts as the stick up does, lowering the pitch; raw y grows downward
         const float ky = k * float(g_sensitivity_y) / 100.0f;
