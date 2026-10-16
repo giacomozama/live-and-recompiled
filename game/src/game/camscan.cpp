@@ -9,8 +9,9 @@
 //
 // Use: stand still in a level, F6, then hold the right stick (or the mouse with mouse look on) left, right, up and
 // down for a few seconds each, resting between. F7 logs the best candidates, each with the image globals that point
-// a little below it (an object holding it), as "camscan:" lines. F6 again starts over (and takes in pages committed
-// since).
+// a little below it (an object holding it) and, for the best three, the nearest pointers to it anywhere in memory,
+// as "camscan:" lines. F8 then nudges each candidate and logs which ones the camera keeps (see Probe). F6 again
+// starts over (and takes in pages committed since).
 #include "common/camscan.h"
 
 #if defined(_WIN32)
@@ -28,8 +29,10 @@
 #include <chrono>
 #include <cmath>
 #include <cstdlib>
+#include <cstdio>
 #include <cstring>
 #include <mutex>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -47,7 +50,8 @@ constexpr int kHeld = 12000;
 constexpr uint32_t kDataLow = 0x64F980, kDataHigh = 0x883280;
 
 std::atomic<int> g_rx{0}, g_ry{0};
-std::atomic<bool> g_reset{true}, g_dump{false};
+std::atomic<bool> g_reset{true}, g_dump{false}, g_probe{false};
+std::vector<uint32_t> g_candidates;  // the last F7's best, yaw then pitch
 
 struct Slot {
     uint32_t bits;
@@ -59,6 +63,17 @@ std::vector<Slot> g_slots;      // 1024 per page
 uint32_t g_passes_x = 0, g_passes_y = 0, g_passes_still = 0;
 
 uint32_t Load(uint32_t va) { return __atomic_load_n(reinterpret_cast<uint32_t*>(mem::Base() + va), __ATOMIC_RELAXED); }
+float LoadF(uint32_t va) {
+    const uint32_t b = Load(va);
+    float f;
+    std::memcpy(&f, &b, 4);
+    return f;
+}
+void StoreF(uint32_t va, float f) {
+    uint32_t b;
+    std::memcpy(&b, &f, 4);
+    __atomic_store_n(reinterpret_cast<uint32_t*>(mem::Base() + va), b, __ATOMIC_RELAXED);
+}
 
 bool Usable(float f) { return std::isfinite(f) && std::fabs(f) < 1e5f; }
 
@@ -118,7 +133,51 @@ void Owners(uint32_t va) {
     }
 }
 
+// the pointers anywhere in watched memory that point at most 0x1000 below va, nearest first: the object holding it
+void HeapOwners(uint32_t va) {
+    std::vector<std::pair<uint32_t, uint32_t>> below;  // distance, where the pointer is
+    for (uint32_t page : g_pages) {
+        if (!mem::IsCommitted(page)) continue;
+        for (uint32_t k = 0; k < mem::kPage; k += 4) {
+            const uint32_t p = Load(page + k);
+            if (p <= va && va - p < 0x1000 && !(p & 3)) below.push_back({va - p, page + k});
+        }
+    }
+    std::sort(below.begin(), below.end());
+    for (size_t i = 0; i < below.size() && i < 6; i++)
+        LOGR("camscan:     *%08X = %08X, +0x%X", below[i].second, va - below[i].first, below[i].first);
+}
+
+// F8: nudges each candidate by 10 and looks again 300 ms later. The value the camera keeps holds the nudge and its
+// copies follow it; a copy the game derives each frame is written back.
+void Probe() {
+    if (g_candidates.empty()) {
+        LOGR("camscan: F7 first, the probe nudges its candidates");
+        return;
+    }
+    LOGR("camscan: probing %zu candidates; leave the stick at rest", g_candidates.size());
+    for (uint32_t c : g_candidates) {
+        std::vector<float> before;
+        for (uint32_t o : g_candidates) before.push_back(LoadF(o));
+        StoreF(c, LoadF(c) + 10.0f);
+        std::this_thread::sleep_for(std::chrono::milliseconds(300));
+        std::string followers;
+        float kept = 0;
+        for (size_t i = 0; i < g_candidates.size(); i++) {
+            const float d = LoadF(g_candidates[i]) - before[i];
+            if (g_candidates[i] == c) kept = d;
+            else if (std::fabs(d) > 0.5f) {
+                char buf[48];
+                std::snprintf(buf, sizeof buf, " %08X%+.1f", g_candidates[i], d);
+                followers += buf;
+            }
+        }
+        LOGR("camscan:   %08X kept %+.2f of +10; moved with it:%s", c, kept, followers.empty() ? " none" : followers.c_str());
+    }
+}
+
 void Dump() {
+    g_candidates.clear();
     LOGR("camscan: passes with the stick x held %u, y held %u, at rest %u", g_passes_x, g_passes_y, g_passes_still);
     for (int axis = 0; axis < 2; axis++) {
         // most votes, least moved at rest
@@ -137,7 +196,9 @@ void Dump() {
             float f;
             std::memcpy(&f, &s.bits, 4);
             LOGR("camscan:   %08X = %10.4f  x %+d  y %+d  at rest %u", va, f, s.x, s.y, s.still);
+            if (j < 8) g_candidates.push_back(va);
             if (j < 8) Owners(va);
+            if (j < 3) HeapOwners(va);
         }
     }
 }
@@ -146,6 +207,7 @@ void Run() {
     for (;;) {
         if (g_reset.exchange(false)) Reset();
         if (g_dump.exchange(false)) Dump();
+        if (g_probe.exchange(false)) Probe();
         Pass();
         std::this_thread::sleep_for(std::chrono::milliseconds(20));
     }
@@ -168,14 +230,15 @@ void Tick(const input::Pad& pad) {
     if (!enabled) return;
     static std::once_flag started;
     std::call_once(started, [] {
-        LOGR("camscan: on; F6 starts over, F7 logs the candidates");
+        LOGR("camscan: on; F6 starts over, F7 logs the candidates, F8 probes them");
         std::thread(Run).detach();
     });
     g_rx = pad.rx;
     g_ry = pad.ry;
-    static bool f6 = false, f7 = false;
+    static bool f6 = false, f7 = false, f8 = false;
     if (Pressed(VK_F6, f6)) g_reset = true;
     if (Pressed(VK_F7, f7)) g_dump = true;
+    if (Pressed(VK_F8, f8)) g_probe = true;
 }
 
 }  // namespace camscan
