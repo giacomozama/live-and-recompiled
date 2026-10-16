@@ -397,6 +397,27 @@ and the plain one from `[0x6B89DC]` while `[patch+0x5C] < 255`. Both declaration
 (texcoord as `v7` / `v2`) with the same constants, so a wrapper in `src/game/hooks.cpp` points `[0x6B89DC]` at the
 wind handle for the call and puts it back; the fade (stage 1 `alpha * TFACTOR`, scaled alpha reference) is unchanged.
 
+### The castle window glow (2026-10-16)
+The lit window of the Panther King's castle (opening cutscene) drew as flat olive with no halo; the castle also
+lacked its glow in lightning. Conker's glow pass is at the end of the frame: a 256x256 mask (`811FC180`) from the
+scene and the depth buffer read as `LIN_R8G8B8A8` (A = stencil), downsampled, blurred four times additively
+(`8123C200`) and added onto the scene. The **stencil is the glow level**: 0 is discarded (alpha kill on stage 1),
+1..15 weight by scene alpha, 16 and up give `(k - 15) / 255` (window `0x30`, castle `0x20`). The scene pass
+(`0x69F8B`) sets the ref and turns the stencil on (ALWAYS, REPLACE), draws the level through `0x29CEE0` and turns it
+off (`0x6A377`). Three things were wrong:
+- The render state HLEs (`SetRenderState_Simple`, `SetRenderStateNotInline`, the complex setters) changed state at
+  once, while the raw commands pushed before them were only walked at the next draw: the level drew after the
+  stencil was off again. They now walk the pending push first, like the texture, shader and target setters.
+- `D3D_InitDefaultState` isn't found in this image, so the stencil ops kept the chip's reset value 0 (`GL_ZERO`).
+  Conker never sets the depth fail op: the sky, drawn after the castle and failing depth behind it, zeroed the
+  window's stencil. `ApplyDefaultStates` now seeds D3D's stencil defaults (ops KEEP, ALWAYS, masks `0xFF`).
+- A raw `NV097_SET_STENCIL_TEST_ENABLE` / `_OP_FAIL` now reaches `kRsStencilEnable` / `kRsStencilFail` (not needed
+  here, but the renderers took those two from the render states only).
+
+The D3D12 F3 capture now prints each draw's stencil state (`sten func ref mask wmask ops`, then the chip's own enable
+and fail op), a clear's stencil value, and `note stencil enable <v> from <caller>` lines through the new
+`Backend::Note()`, in order with the draws.
+
 ### Open
 - **missing loading screen**: the game freezes where a loading screen should show (after the boot splash, when starting
   a new game, between cutscenes); it continues once the level has loaded.
