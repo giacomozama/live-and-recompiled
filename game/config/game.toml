@@ -13,6 +13,8 @@ code_sections = [".text", "D3DX", "XNET", "XONLINE", "DSOUND", "XMV", "WMADEC", 
 
 # extra entry points
 [functions]
+# reached only through a pointer (the call returns to 0x0DA99D); a switch on its third argument, after int3 padding
+0x1E6590 = ""
 
 # functions the host replaces or calls by name, 0 where the image has none
 [symbols]
