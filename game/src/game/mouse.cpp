@@ -125,9 +125,14 @@ uint32_t Camera() {
 
 int64_t Now();
 
-// the range the view's pitch has been seen in (see Turn); guest threads, under g_view_lock
+// the mouse's tilt on top of the game's (see Turn); guest threads, under g_view_lock
 std::mutex g_view_lock;
-float g_view_lo = kViewLow, g_view_hi = kViewHigh;
+float g_view_lo = kViewLow, g_view_hi = kViewHigh;  // the range the game's own targets have been seen in
+float g_view_offset = 0;   // degrees the mouse has added to the game's target
+float g_view_base = 0;     // the game's target this frame
+float g_view_written = 0;  // what was last written over it, so a second poll in a frame is told apart
+uint32_t g_view_cam = 0;
+int64_t g_view_us = 0;
 
 // XBE_MOUSE_TRACE=1 logs the camera as Turn sees it
 bool Trace() {
@@ -141,9 +146,13 @@ bool Trace() {
 // the motion since the last call straight into the player camera's yaw and the view's pitch; false when there is no
 // camera to turn.
 //
-// The pitch is written where the view keeps it, the target the camera eases to and the eased value both, so the
-// view answers at once. It stays inside the range the game's own camera has been seen to take: the game limits what
-// the stick asks for, not what is written. A keyboard or gamepad stick held up or down leaves the pitch to the game.
+// The game rebuilds the view's target pitch every frame from its rest (about -20 in the Cock and Plucker, drifting a
+// little with the scene) and eases the view to it, so a pitch written once is pulled back within frames. The mouse
+// keeps a tilt of its own instead, and every poll writes the game's fresh target plus that tilt over the target and
+// the eased view both, so the view answers at once and stays where the mouse left it. The sum stays inside the range
+// the game's own targets have been seen to take (the game limits what the stick asks for, not what is written).
+// A keyboard or gamepad stick held up or down, a new camera, or a pause in the polls (the cursor let go) drops the
+// mouse's tilt and leaves the pitch to the game.
 bool Turn(input::Pad& pad) {
     int64_t dx, dy;
     {
@@ -168,10 +177,19 @@ bool Turn(input::Pad& pad) {
 
     std::lock_guard lock(g_view_lock);
     const float view = RF(cam + kView), target = RF(cam + kViewTarget);
-    // where the game's camera went on its own widens the range (the mouse's own writes stay inside it)
-    g_view_lo = std::min({g_view_lo, view, target});
-    g_view_hi = std::max({g_view_hi, view, target});
+    const int64_t now = Now();
     const bool stick_y = std::abs(pad.ry) > kStickDeadZone;
+    // the game rebuilds the target every frame from its rest; one still holding the last write is this frame's
+    // second poll, before the game has run again
+    const bool rebuilt = g_view_offset == 0.0f || target != g_view_written;
+    if (rebuilt) {
+        g_view_base = target;
+        g_view_lo = std::min(g_view_lo, target);
+        g_view_hi = std::max(g_view_hi, target);
+    }
+    if (stick_y || cam != g_view_cam || now - g_view_us > 500000) g_view_offset = 0;
+    g_view_cam = cam;
+    g_view_us = now;
     static int burst = 0;
     if (Trace() && burst > 0) {
         // the polls after a write: what the game made of it, and the camera's floats around the pitch
@@ -185,27 +203,31 @@ bool Turn(input::Pad& pad) {
         LOGR("mouse: after  pitch %7.2f target %7.2f speed %7.3f  sum %7.2f |%s", view, target, RF(cam + kViewSpeed),
              RF(cam + kPitch), floats.c_str());
     }
-    if (dy && !stick_y) {
+    if (!stick_y && (dy || g_view_offset != 0.0f)) {
         // mouse up tilts as the stick up does, lowering the pitch; raw y grows downward
         const float ky = k * float(g_sensitivity_y) / 100.0f;
-        const float pitch = std::clamp(target + float(g_invert_y ? -dy : dy) * ky, g_view_lo, g_view_hi);
+        g_view_offset = std::clamp(g_view_offset + float(g_invert_y ? -dy : dy) * ky, g_view_lo - g_view_base,
+                                   g_view_hi - g_view_base);
+        const float pitch = g_view_base + g_view_offset;
         WF(cam + kViewTarget, pitch);
         WF(cam + kView, pitch);
         WF(cam + kViewSpeed, 0.0f);
-        if (Trace()) {
-            LOGR("mouse: write  pitch %7.2f -> %7.2f (dy %+lld)", target, pitch, (long long)dy);
+        g_view_written = pitch;
+        if (Trace() && dy) {
+            LOGR("mouse: write  pitch %7.2f + %+6.2f -> %7.2f (dy %+lld)", g_view_base, g_view_offset, pitch,
+                 (long long)dy);
             burst = 12;
         }
     }
     if (Trace()) {
         static int64_t next = 0, moved = 0;
-        const int64_t now = Now();
         moved += dy;
         if (now >= next) {
             next = now + 250000;
-            LOGR("mouse: pitch %7.2f target %7.2f speed %7.3f  range %7.2f %7.2f%s  dy %+lld  yaw %7.2f", RF(cam + kView),
-                 RF(cam + kViewTarget), RF(cam + kViewSpeed), g_view_lo, g_view_hi, stick_y ? "  stick" : "",
-                 (long long)moved, RF(cam + kYaw));
+            LOGR("mouse: pitch %7.2f target %7.2f speed %7.3f  base %7.2f offset %+6.2f range %7.2f %7.2f%s  dy %+lld  "
+                 "yaw %7.2f",
+                 RF(cam + kView), RF(cam + kViewTarget), RF(cam + kViewSpeed), g_view_base, g_view_offset, g_view_lo,
+                 g_view_hi, stick_y ? "  stick" : "", (long long)moved, RF(cam + kYaw));
             moved = 0;
         }
     }
