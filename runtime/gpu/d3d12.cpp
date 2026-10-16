@@ -13,6 +13,7 @@
 #include <wrl/client.h>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -21,6 +22,7 @@
 #include <filesystem>
 #include <mutex>
 #include <optional>
+#include <thread>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -33,6 +35,7 @@
 #include "core/log.h"
 #include "gpu/backend.h"
 #include "gpu/ext.h"
+#include "gpu/shader_record.h"
 #include "gpu/shaders.h"
 #include "gpu/texture.h"
 #include "gpu/vertex.h"
@@ -392,6 +395,18 @@ struct PsoKey {
     uint32_t rtfmt;
 };
 
+// a pipeline in shaders.rec: its shaders by record id, the key with vs and ps zero
+struct PipelineEntry {
+    uint64_t vs_id;
+    uint64_t ps_id;
+    PsoKey k;
+};
+// the record layouts shaders.rec was written with; bump kRecordRevision when what a record makes changes meaning
+constexpr uint64_t kRecordRevision = 1;
+constexpr uint64_t kRecordLayout = kRecordRevision << 48 | uint64_t(sizeof(PixelKey)) << 32 |
+                                   uint64_t(sizeof(PipelineEntry)) << 16 | sizeof(shader_record::VertexEntry);
+std::string VertexHlsl(const shader_record::VertexEntry& v, const std::vector<uint32_t>& program);
+
 // Blit's settings past the source and its rectangle
 struct BlitOptions {
     bool gamma = false;       // through the gamma lookup
@@ -431,6 +446,8 @@ struct DrawShaders {
     uint64_t vh = 0;
     uint64_t pkey = 0;
     uint64_t ph = 0;
+    uint64_t vid = 0;  // shader_record ids
+    uint64_t pid = 0;
     ID3DBlob* vs_code = nullptr;
     ID3DBlob* ps_code = nullptr;
 };
@@ -443,6 +460,7 @@ struct GuestExtent {
 
 class D3D12Backend final : public Backend, public Context {
 public:
+    ~D3D12Backend() override;
     bool Init(uint32_t width, uint32_t height) override;
     void Clear(const State& s, uint32_t count, const uint8_t* rects, uint32_t flags, uint32_t color, float z,
                uint32_t stencil) override;
@@ -547,9 +565,11 @@ private:
     void EnsurePixelShader(const PixelKey& pk, DrawShaders& sh);
     void BuildPipelineKey(const State& s, const Assembled& a, uint64_t vh, uint64_t ph, PsoKey& k);
     void KeyDepthStencil(const State& s, const Assembled& a, PsoKey& k);
-    ID3D12PipelineState* EnsurePipeline(const PsoKey& k, ID3DBlob* vs, ID3DBlob* ps);
+    ID3D12PipelineState* EnsurePipeline(const PsoKey& k, const DrawShaders& sh);
     void FillPipelineDesc(const PsoKey& k, ID3DBlob* vs, ID3DBlob* ps, D3D12_GRAPHICS_PIPELINE_STATE_DESC& d) const;
-    void ExpandPoints(D3D12_GRAPHICS_PIPELINE_STATE_DESC& d);
+    // the pipeline's description, input layout into el, a point list's geometry shader gs
+    void FillPipeline(const PsoKey& k, ID3DBlob* vs, ID3DBlob* ps, ID3DBlob* gs, D3D12_INPUT_ELEMENT_DESC (&el)[16],
+                      D3D12_GRAPHICS_PIPELINE_STATE_DESC& d) const;
     float PointScale() const;  // host pixels per console pixel of the bound target
     void UploadConstants(const State& s, const DrawShaders& sh, const PsoKey& k, const DrawTextures& stages,
                          GuestExtent size, DrawConstants& c);
@@ -576,6 +596,17 @@ private:
     void DeliverReports();
     // shaders by source hash: Compile returns the bytecode and sets hash
     ID3DBlob* Compile(const std::string& src, const char* entry, const char* profile, uint64_t& hash);
+    // the shaders and pipelines shaders.rec lists, made on threads of their own while the title runs
+    void StartWarmUp();
+    void WarmUp(std::vector<shader_record::Entry> entries, shader_record::Programs programs);
+    struct WarmShader {
+        uint64_t hash;
+        ComPtr<ID3DBlob> code;
+    };
+    void WarmShaders(const std::vector<const shader_record::Entry*>& list, const shader_record::Programs& programs,
+                     std::unordered_map<uint64_t, WarmShader>& made);
+    size_t WarmPipelines(const std::vector<const shader_record::Entry*>& list,
+                         const std::unordered_map<uint64_t, WarmShader>& made);
     // Blit's pipeline
     ID3D12PipelineState* EnsureBlitPipeline(DXGI_FORMAT rtv, bool over = false);
     D3D12_GRAPHICS_PIPELINE_STATE_DESC FullScreenPipelineDesc(ID3DBlob* vs, ID3DBlob* ps, DXGI_FORMAT rtv) const;
@@ -694,8 +725,21 @@ private:
     std::vector<uint32_t> free_dsv_;
     ComPtr<ID3D12RootSignature> root_;
     std::unordered_map<uint64_t, ComPtr<ID3DBlob>> blobs_;
-    std::unordered_map<uint64_t, uint64_t> shader_src_;  // vertex and pixel program keys to source hash
+    struct ShaderSource {
+        uint64_t hash;  // the source's, blobs_'s key
+        uint64_t id;    // shader_record's
+    };
+    std::unordered_map<uint64_t, ShaderSource> shader_src_;  // vertex and pixel program keys
     std::unordered_map<uint64_t, ComPtr<ID3D12PipelineState>> psos_;
+    shader_record::Recorder record_;
+    // WarmUp's results by source hash and pipeline key, taken by Compile and EnsurePipeline as they first need them
+    struct Warm {
+        std::mutex lock;
+        std::unordered_map<uint64_t, ComPtr<ID3DBlob>> blobs;
+        std::unordered_map<uint64_t, ComPtr<ID3D12PipelineState>> psos;
+        std::atomic<bool> stop{false};
+        std::thread thread;
+    } warm_;
     std::unordered_map<uint64_t, uint32_t> samplers_;
     uint32_t smp_used_ = 0;
     std::unordered_map<uint64_t, Target> targets_;
@@ -792,7 +836,13 @@ bool D3D12Backend::Init(uint32_t width, uint32_t height) {
     LoadSettings();
     Begin();
     LOGI("d3d12: %ux%u guest, %ux%u window, render scale %.3f", width, height, bb_w_, bb_h_, scale_);
+    StartWarmUp();
     return true;
+}
+
+D3D12Backend::~D3D12Backend() {
+    warm_.stop = true;
+    if (warm_.thread.joinable()) warm_.thread.join();
 }
 
 bool D3D12Backend::CreateDevice() {
@@ -1371,20 +1421,39 @@ void D3D12Backend::Blit(ID3D12Resource* src, DXGI_FORMAT fmt, const float uvrect
     DrawFullScreen(EnsureBlitPipeline(o.rtv, o.over), cb.gpu, slot, si);
 }
 
-ID3DBlob* D3D12Backend::Compile(const std::string& src, const char* entry, const char* profile, uint64_t& hash) {
-    // one source can hold several entry points
+// Compile's key for the source, entry point and profile: one source can hold several entry points
+uint64_t SourceHash(const std::string& src, const char* entry, const char* profile) {
     uint64_t profile_seed = Hash(profile, std::strlen(profile));
     uint64_t entry_seed = Hash(entry, std::strlen(entry), profile_seed);
-    hash = Hash(src.data(), src.size(), entry_seed);
+    return Hash(src.data(), src.size(), entry_seed);
+}
+
+// any thread
+HRESULT CompileBlob(const std::string& src, const char* entry, const char* profile, ComPtr<ID3DBlob>& code,
+                    ComPtr<ID3DBlob>& err) {
+    return D3DCompile(src.data(), src.size(), nullptr, nullptr, nullptr, entry, profile,
+                      D3DCOMPILE_OPTIMIZATION_LEVEL1, 0, &code, &err);
+}
+
+ID3DBlob* D3D12Backend::Compile(const std::string& src, const char* entry, const char* profile, uint64_t& hash) {
+    hash = SourceHash(src, entry, profile);
     auto it = blobs_.find(hash);
     if (it != blobs_.end()) return it->second.Get();
+    {
+        std::lock_guard<std::mutex> lock(warm_.lock);
+        auto w = warm_.blobs.find(hash);
+        if (w != warm_.blobs.end()) {
+            ID3DBlob* code = (blobs_[hash] = std::move(w->second)).Get();
+            warm_.blobs.erase(w);
+            return code;
+        }
+    }
     ComPtr<ID3DBlob> code;
     ComPtr<ID3DBlob> err;
     PerfScope perf_compile{g_perf.compile};
     g_perf.shaders++;
     auto t = PerfClock::now();
-    HRESULT hr = D3DCompile(src.data(), src.size(), nullptr, nullptr, nullptr, entry, profile,
-                            D3DCOMPILE_OPTIMIZATION_LEVEL1, 0, &code, &err);
+    HRESULT hr = CompileBlob(src, entry, profile, code, err);
     // a compile runs on the frame that first needs the shader: log the ones long enough to be seen as a hitch
     if (double ms = PerfMs(t); ms > 20) LOGR("d3d12: %s compile took %.0f ms (%zu bytes of source)", profile, ms, src.size());
     if (FAILED(hr)) {
@@ -1599,9 +1668,7 @@ void D3D12Backend::FillPipelineDesc(const PsoKey& k, ID3DBlob* vs, ID3DBlob* ps,
 }
 
 // a point is drawn as its whole console pixel by a geometry shader, solid, front facing and never culled
-void D3D12Backend::ExpandPoints(D3D12_GRAPHICS_PIPELINE_STATE_DESC& d) {
-    uint64_t hash;
-    ID3DBlob* gs = Compile(PointHlsl(), "main", "gs_5_0", hash);
+void ExpandPoints(ID3DBlob* gs, D3D12_GRAPHICS_PIPELINE_STATE_DESC& d) {
     if (!gs) return;
     d.GS = {gs->GetBufferPointer(), gs->GetBufferSize()};
     d.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
@@ -1615,23 +1682,157 @@ float D3D12Backend::PointScale() const {
     return float(t->w) / float(t->gw);
 }
 
-ID3D12PipelineState* D3D12Backend::EnsurePipeline(const PsoKey& k, ID3DBlob* vs, ID3DBlob* ps) {
+void D3D12Backend::FillPipeline(const PsoKey& k, ID3DBlob* vs, ID3DBlob* ps, ID3DBlob* gs,
+                                D3D12_INPUT_ELEMENT_DESC (&el)[16], D3D12_GRAPHICS_PIPELINE_STATE_DESC& d) const {
+    d.InputLayout = {el, FillInputLayout(k, el)};
+    FillPipelineDesc(k, vs, ps, d);
+    if (k.topo == uint32_t(Topology::Points)) ExpandPoints(gs, d);
+}
+
+// the pipeline as shaders.rec keeps it
+PipelineEntry MakePipelineEntry(const PsoKey& k, const DrawShaders& sh) {
+    PipelineEntry e;
+    std::memset(&e, 0, sizeof(e));  // padding included: the bytes are hashed and stored
+    e.vs_id = sh.vid;
+    e.ps_id = sh.pid;
+    std::memcpy(&e.k, &k, sizeof(k));
+    e.k.vs = e.k.ps = 0;
+    return e;
+}
+
+ID3D12PipelineState* D3D12Backend::EnsurePipeline(const PsoKey& k, const DrawShaders& sh) {
     uint64_t h = Hash(&k, sizeof(k));
     auto it = psos_.find(h);
     if (it != psos_.end()) return it->second.Get();
-    D3D12_INPUT_ELEMENT_DESC el[16];
-    uint32_t n = FillInputLayout(k, el);
-    D3D12_GRAPHICS_PIPELINE_STATE_DESC d{};
-    d.InputLayout = {el, n};
-    FillPipelineDesc(k, vs, ps, d);
-    if (k.topo == uint32_t(Topology::Points)) ExpandPoints(d);
+    PipelineEntry e = MakePipelineEntry(k, sh);
+    record_.Add(shader_record::kPipeline, &e, sizeof(e));
     ComPtr<ID3D12PipelineState> pso;
-    g_perf.psos++;
-    auto t = PerfClock::now();
-    if (FAILED(dev_->CreateGraphicsPipelineState(&d, IID_PPV_ARGS(&pso)))) LOGE("d3d12: pipeline creation failed");
-    if (double ms = PerfMs(t); ms > 20) LOGR("d3d12: pipeline creation took %.0f ms", ms);
+    {
+        std::lock_guard<std::mutex> lock(warm_.lock);
+        auto w = warm_.psos.find(h);
+        if (w != warm_.psos.end()) {
+            pso = std::move(w->second);
+            warm_.psos.erase(w);
+        }
+    }
+    if (!pso) {
+        uint64_t gh;
+        ID3DBlob* gs = k.topo == uint32_t(Topology::Points) ? Compile(PointHlsl(), "main", "gs_5_0", gh) : nullptr;
+        D3D12_INPUT_ELEMENT_DESC el[16];
+        D3D12_GRAPHICS_PIPELINE_STATE_DESC d{};
+        FillPipeline(k, sh.vs_code, sh.ps_code, gs, el, d);
+        g_perf.psos++;
+        auto t = PerfClock::now();
+        if (FAILED(dev_->CreateGraphicsPipelineState(&d, IID_PPV_ARGS(&pso)))) LOGE("d3d12: pipeline creation failed");
+        if (double ms = PerfMs(t); ms > 20) LOGR("d3d12: pipeline creation took %.0f ms", ms);
+    }
     psos_[h] = pso;
     return pso.Get();
+}
+
+// fn(i) for each i below n on a few threads under the title's, until stop
+template <typename Fn>
+void ParallelFor(size_t n, const std::atomic<bool>& stop, Fn fn) {
+    unsigned threads = std::clamp(std::thread::hardware_concurrency() / 2, 1u, 6u);
+    std::atomic<size_t> next{0};
+    auto run = [&] {
+        SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
+        for (size_t i; !stop && (i = next++) < n;) fn(i);
+    };
+    std::vector<std::thread> pool;
+    for (unsigned t = 1; t < threads; t++) pool.emplace_back(run);
+    run();
+    for (auto& t : pool) t.join();
+}
+
+void D3D12Backend::StartWarmUp() {
+    // a second instance on this PC shares the files: it reads them only
+    record_.Open(app::ExeDir(), kRecordLayout, app::Instance() <= 1);
+    std::vector<shader_record::Entry> entries = record_.TakeEntries();
+    shader_record::Programs programs = record_.TakePrograms();
+    if (!app::Get().shader_warmup || entries.empty()) return;
+    warm_.thread = std::thread([this, e = std::move(entries), p = std::move(programs)]() mutable {
+        WarmUp(std::move(e), std::move(p));
+    });
+}
+
+void D3D12Backend::WarmUp(std::vector<shader_record::Entry> entries, shader_record::Programs programs) {
+    auto t = PerfClock::now();
+    std::vector<const shader_record::Entry*> shaders, pipelines;
+    for (const auto& e : entries) (e.kind == shader_record::kPipeline ? pipelines : shaders).push_back(&e);
+    std::unordered_map<uint64_t, WarmShader> made;  // by record id
+    WarmShaders(shaders, programs, made);
+    size_t psos = WarmPipelines(pipelines, made);
+    LOGR("shaders: made %zu of %zu recorded shaders and %zu of %zu pipelines ahead in %.0f ms%s", made.size(),
+         shaders.size(), psos, pipelines.size(), PerfMs(t), warm_.stop ? ", stopped" : "");
+}
+
+// vertex shaders of programs this machine has not run yet are left out: shader_programs.bin has no words for them
+void D3D12Backend::WarmShaders(const std::vector<const shader_record::Entry*>& list,
+                               const shader_record::Programs& programs,
+                               std::unordered_map<uint64_t, WarmShader>& made) {
+    std::mutex made_lock;
+    ParallelFor(list.size(), warm_.stop, [&](size_t i) {
+        const shader_record::Entry& e = *list[i];
+        static const std::vector<uint32_t> none;
+        std::string src;
+        const char* profile = "vs_5_0";
+        if (e.kind == shader_record::kVertex && e.bytes.size() == sizeof(shader_record::VertexEntry)) {
+            shader_record::VertexEntry v;
+            std::memcpy(&v, e.bytes.data(), sizeof(v));
+            auto p = programs.find(v.program);
+            if (v.program && p == programs.end()) return;
+            src = VertexHlsl(v, v.program ? p->second : none);
+        } else if (e.kind == shader_record::kPixel && e.bytes.size() == sizeof(PixelKey)) {
+            PixelKey pk;
+            std::memcpy(&pk, e.bytes.data(), sizeof(pk));
+            src = PixelHlsl(pk);
+            profile = "ps_5_0";
+        } else {
+            return;
+        }
+        ComPtr<ID3DBlob> code;
+        ComPtr<ID3DBlob> err;
+        if (FAILED(CompileBlob(src, "main", profile, code, err))) return;
+        uint64_t hash = SourceHash(src, "main", profile);
+        {
+            std::lock_guard<std::mutex> lock(warm_.lock);
+            warm_.blobs.emplace(hash, code);
+        }
+        std::lock_guard<std::mutex> lock(made_lock);
+        made[e.id] = {hash, std::move(code)};
+    });
+}
+
+// the pipelines whose shaders WarmShaders made, how many were made
+size_t D3D12Backend::WarmPipelines(const std::vector<const shader_record::Entry*>& list,
+                                   const std::unordered_map<uint64_t, WarmShader>& made) {
+    ComPtr<ID3DBlob> gs;
+    ComPtr<ID3DBlob> err;
+    CompileBlob(PointHlsl(), "main", "gs_5_0", gs, err);
+    std::atomic<size_t> n{0};
+    ParallelFor(list.size(), warm_.stop, [&](size_t i) {
+        const shader_record::Entry& e = *list[i];
+        if (e.bytes.size() != sizeof(PipelineEntry)) return;
+        PipelineEntry p;
+        std::memcpy(&p, e.bytes.data(), sizeof(p));
+        auto vs = made.find(p.vs_id);
+        auto ps = made.find(p.ps_id);
+        if (vs == made.end() || ps == made.end()) return;
+        PsoKey k;
+        std::memcpy(&k, &p.k, sizeof(k));  // padding included, as EnsurePipeline hashes it
+        k.vs = vs->second.hash;
+        k.ps = ps->second.hash;
+        D3D12_INPUT_ELEMENT_DESC el[16];
+        D3D12_GRAPHICS_PIPELINE_STATE_DESC d{};
+        FillPipeline(k, vs->second.code.Get(), ps->second.code.Get(), gs.Get(), el, d);
+        ComPtr<ID3D12PipelineState> pso;
+        if (FAILED(dev_->CreateGraphicsPipelineState(&d, IID_PPV_ARGS(&pso)))) return;
+        std::lock_guard<std::mutex> lock(warm_.lock);
+        warm_.psos.emplace(Hash(&k, sizeof(k)), std::move(pso));
+        n++;
+    });
+    return n;
 }
 
 TexKind TextureKind(const TextureDesc& d) {
@@ -1971,22 +2172,47 @@ uint64_t VertexKey(const State& s, const Assembled& a, const DrawShaders& sh) {
     return vkey;
 }
 
-std::string VertexHlsl(const State& s, const Assembled& a, const DrawShaders& sh) {
-    if (sh.prog) return VertexProgramHlsl(s.vs->program, a.regs, a.decode);
-    return FixedVertexHlsl(a.regs, a.pretransformed, a.decode, sh.fk);
+// what the draw's vertex shader is made from, as shaders.rec keeps it
+shader_record::VertexEntry MakeVertexEntry(const State& s, const Assembled& a, const DrawShaders& sh) {
+    shader_record::VertexEntry v;
+    v.program = sh.prog ? s.vs->hash : 0;
+    v.decode = a.decode;
+    if (!sh.prog) v.fixed = sh.fk;
+    v.regs = a.regs;
+    v.pretransformed = !sh.prog && a.pretransformed;
+    v.quad = sh.quad;
+    return v;
 }
 
-// sets sh.vh and sh.vs_code, compiling the shader on a cache miss
+// the draw's vertex program, empty for the fixed function pipeline
+const std::vector<uint32_t>& DrawProgram(const State& s, const DrawShaders& sh) {
+    static const std::vector<uint32_t> none;
+    return sh.prog ? s.vs->program : none;
+}
+
+// program: the words v.program names, unused without one
+std::string VertexHlsl(const shader_record::VertexEntry& v, const std::vector<uint32_t>& program) {
+    std::string src = v.program ? VertexProgramHlsl(program, v.regs, v.decode)
+                                : FixedVertexHlsl(v.regs, v.pretransformed, v.decode, v.fixed);
+    return v.quad ? QuadHlsl(std::move(src)) : src;
+}
+
+// sets sh.vh, sh.vid and sh.vs_code, compiling the shader on a cache miss
 void D3D12Backend::EnsureVertexShader(const State& s, const Assembled& a, DrawShaders& sh) {
     auto vit = shader_src_.find(sh.vkey);
     if (vit != shader_src_.end()) {
-        sh.vs_code = blobs_[vit->second].Get();
-        sh.vh = vit->second;
+        sh.vs_code = blobs_[vit->second.hash].Get();
+        sh.vh = vit->second.hash;
+        sh.vid = vit->second.id;
         return;
     }
-    std::string src = VertexHlsl(s, a, sh);
-    sh.vs_code = Compile(sh.quad ? QuadHlsl(std::move(src)) : src, "main", "vs_5_0", sh.vh);
-    shader_src_[sh.vkey] = sh.vh;
+    shader_record::VertexEntry v = MakeVertexEntry(s, a, sh);
+    sh.vs_code = Compile(VertexHlsl(v, DrawProgram(s, sh)), "main", "vs_5_0", sh.vh);
+    sh.vid = shader_record::Id(shader_record::kVertex, &v, sizeof(v));
+    shader_src_[sh.vkey] = {sh.vh, sh.vid};
+    if (!sh.vs_code) return;
+    record_.Add(shader_record::kVertex, &v, sizeof(v));
+    if (sh.prog) record_.AddProgram(s.vs->hash, s.vs->program);
 }
 
 bool D3D12Backend::BindStageTexturesAndTargets(const State& s, DrawTextures& stages) {
@@ -2001,17 +2227,20 @@ bool D3D12Backend::BindStageTexturesAndTargets(const State& s, DrawTextures& sta
 
 constexpr uint64_t kPixelKeySalt = 0x9E3779B97F4A7C15ull;
 
-// sets sh.ph and sh.ps_code, compiling the shader on a cache miss
+// sets sh.ph, sh.pid and sh.ps_code, compiling the shader on a cache miss
 void D3D12Backend::EnsurePixelShader(const PixelKey& pk, DrawShaders& sh) {
     // pixel shaders share the map with vertex shaders, the salt keeps their keys apart
     auto pit = shader_src_.find(sh.pkey ^ kPixelKeySalt);
     if (pit != shader_src_.end()) {
-        sh.ps_code = blobs_[pit->second].Get();
-        sh.ph = pit->second;
+        sh.ps_code = blobs_[pit->second.hash].Get();
+        sh.ph = pit->second.hash;
+        sh.pid = pit->second.id;
         return;
     }
     sh.ps_code = Compile(PixelHlsl(pk), "main", "ps_5_0", sh.ph);
-    shader_src_[sh.pkey ^ kPixelKeySalt] = sh.ph;
+    sh.pid = shader_record::Id(shader_record::kPixel, &pk, sizeof(pk));
+    shader_src_[sh.pkey ^ kPixelKeySalt] = {sh.ph, sh.pid};
+    if (sh.ps_code) record_.Add(shader_record::kPixel, &pk, sizeof(pk));
 }
 
 void KeyBlend(const State& s, PsoKey& k) {
@@ -2360,8 +2589,7 @@ void D3D12Backend::CaptureShader(const char* kind, uint64_t key, const std::stri
 }
 
 void D3D12Backend::CaptureShaders(const State& s, const Assembled& a, const DrawShaders& sh, const PixelKey& pk) {
-    std::string src = VertexHlsl(s, a, sh);
-    CaptureShader("vs", sh.vkey, sh.quad ? QuadHlsl(std::move(src)) : src);
+    CaptureShader("vs", sh.vkey, VertexHlsl(MakeVertexEntry(s, a, sh), DrawProgram(s, sh)));
     CaptureShader("ps", sh.pkey, PixelHlsl(pk));
 }
 
@@ -2626,7 +2854,7 @@ void D3D12Backend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t 
     // pipeline
     PsoKey k;
     BuildPipelineKey(s, a, sh.vh, sh.ph, k);
-    ID3D12PipelineState* pso = EnsurePipeline(k, sh.vs_code, sh.ps_code);
+    ID3D12PipelineState* pso = EnsurePipeline(k, sh);
     if (!pso) return CountedSkip(s, "pipeline");
     cl_->SetPipelineState(pso);
 

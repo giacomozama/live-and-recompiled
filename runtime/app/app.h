@@ -22,6 +22,7 @@ struct Settings {
     uint32_t fps_cap = 60;           // 0 unlimited
     bool vsync = true;
     uint32_t aniso = 0;              // 0 as the game asks
+    bool shader_warmup = true;       // make the shaders shaders.rec lists while the title boots
     std::string aspect = "auto";     // "W:H" ("4:3", "16:9", "21:9", ...), or "auto": the output's own shape
     std::string join_ip;                   // co-op: a host past the LAN the system link search also asks
 };

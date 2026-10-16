@@ -50,6 +50,7 @@ void Load() {
     s.fps_cap = t["fps_cap"].value_or(s.fps_cap);
     s.vsync = t["vsync"].value_or(s.vsync);
     s.aniso = t["anisotropic_filtering"].value_or(s.aniso);
+    s.shader_warmup = t["shader_warmup"].value_or(s.shader_warmup);
     s.aspect = t["aspect"].value_or(s.aspect);
     s.join_ip = t["join_ip"].value_or(s.join_ip);
     for (const Option& o : kGame.options) {
@@ -70,6 +71,7 @@ toml::table Table() {
                   {"fps_cap", int64_t(s.fps_cap)},
                   {"vsync", s.vsync},
                   {"anisotropic_filtering", int64_t(s.aniso)},
+                  {"shader_warmup", s.shader_warmup},
                   {"aspect", s.aspect},
                   {"join_ip", s.join_ip}};
     for (const Option& o : kGame.options) {
