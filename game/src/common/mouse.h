@@ -10,9 +10,11 @@ struct Pad;
 // cursor in the window; keyboard::Pad hands the motion to the player camera's angles, or as right stick to any other.
 namespace mouse {
 
-// settings.toml mouse_look, mouse_sensitivity (percent) and mouse_invert_y; read live, so the F1 menu applies them
+// settings.toml mouse_look, mouse_sensitivity (percent), mouse_sensitivity_y (percent of that, vertical only) and
+// mouse_invert_y; read live, so the F1 menu applies them
 extern bool g_look;
 extern uint32_t g_sensitivity;
+extern uint32_t g_sensitivity_y;
 extern bool g_invert_y;
 
 // posted to the game window when the setting changes off the window thread (WM_APP + 0x41); Message refreshes

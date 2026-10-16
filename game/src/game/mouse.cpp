@@ -50,6 +50,7 @@ namespace mouse {
 
 bool g_look = false;
 uint32_t g_sensitivity = 100;
+uint32_t g_sensitivity_y = 100;
 bool g_invert_y = false;
 
 namespace {
@@ -62,8 +63,8 @@ constexpr float kMinDeflection = 0.25f;
 constexpr float kDegreesPerCount = 0.04f;
 // a stick past this is tilting the camera (XInput's right stick dead zone); a gamepad at rest sits inside it
 constexpr int kStickDeadZone = 8689;
-// stick a count tilts at 100% sensitivity: 500 counts (well under an inch at 800 dpi) is full tilt
-constexpr float kTiltPerCount = 1.0f / 500.0f;
+// stick a count tilts at 100% sensitivity: 250 counts (a third of an inch at 800 dpi) is full tilt
+constexpr float kTiltPerCount = 1.0f / 250.0f;
 
 // the player's object, its camera, and the camera's angles (see the top of the file)
 constexpr uint32_t kPlayer = 0x8470DC, kPlayerCamera = 0x4;
@@ -166,7 +167,8 @@ bool Turn(input::Pad& pad) {
     g_tilt_us = now;
     if (!stick_y) {
         // raw y grows downward: mouse up is the stick up
-        g_tilt = std::clamp(g_tilt + float(g_invert_y ? dy : -dy) * kTiltPerCount * sens, -1.0f, 1.0f);
+        const float k = kTiltPerCount * sens * float(g_sensitivity_y) / 100.0f;
+        g_tilt = std::clamp(g_tilt + float(g_invert_y ? dy : -dy) * k, -1.0f, 1.0f);
         if (g_tilt != 0.0f) {
             // lifted past the game's dead zone, as the stick emulation does
             const float out = kMinDeflection + (1.0f - kMinDeflection) * std::fabs(g_tilt);
@@ -286,7 +288,7 @@ void Pad(input::Pad& pad) {
 
     // counts a second into deflection, then lifted past the dead zone along its own direction
     const float scale = float(g_sensitivity) / 100.0f / kFullSpeed / frame;
-    float x = float(dx) * scale, y = float(-dy) * scale;  // raw y grows downward, the stick's up
+    float x = float(dx) * scale, y = float(-dy) * scale * float(g_sensitivity_y) / 100.0f;  // raw y grows down
     if (g_invert_y) y = -y;
     const float len = std::hypot(x, y);
     const float out = kMinDeflection + (1.0f - kMinDeflection) * std::min(len, 1.0f);
@@ -305,6 +307,7 @@ namespace mouse {
 
 bool g_look = false;
 uint32_t g_sensitivity = 100;
+uint32_t g_sensitivity_y = 100;
 bool g_invert_y = false;
 
 void Message(void*, uint32_t, uintptr_t, intptr_t) {}

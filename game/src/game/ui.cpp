@@ -206,6 +206,9 @@ void Draw(double fps) {
         ImGui::TextDisabled("turns the camera; F1 or alt-tab frees the cursor");
         const uint32_t sens_min = 10, sens_max = 500;
         ImGui::SliderScalar("Sensitivity %", ImGuiDataType_U32, &mouse::g_sensitivity, &sens_min, &sens_max, "%u");
+        ImGui::SliderScalar("Vertical %", ImGuiDataType_U32, &mouse::g_sensitivity_y, &sens_min, &sens_max, "%u");
+        ImGui::SameLine();
+        ImGui::TextDisabled("of the above");
         ImGui::Checkbox("Invert Y", &mouse::g_invert_y);
 
         ImGui::SeparatorText("FPS");
