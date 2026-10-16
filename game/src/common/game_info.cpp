@@ -25,8 +25,8 @@ const app::GameInfo app::kGame = {
                 {"mouse_sensitivity", nullptr, &mouse::g_sensitivity},  // percent
                 {"mouse_sensitivity_y", nullptr, &mouse::g_sensitivity_y},  // percent of it, vertical only
                 {"mouse_invert_y", &mouse::g_invert_y, nullptr}},
-    .load = nullptr,                      // reads more from the settings file's toml::table
-    .save = nullptr,                      // writes more into it
+    .load = keyboard::Load,               // the [keys] table: keyboard bindings (src/game/keyboard.cpp)
+    .save = keyboard::Save,               // writes it
     .init = nullptr,                      // after the settings load, before the window and boot
     .loaded = nullptr,                    // image in memory, before its entry point runs
     .window = nullptr,                    // the game window is up

@@ -48,6 +48,20 @@ the same time.
 | Start / Back | `Enter` / `Backspace` |
 | Left / right stick click | `C` / `V` |
 
+These are the defaults: every action can be rebound to another key or a mouse button under **Keyboard** in the F1
+menu (click an action, press its key; right click unbinds) and saved with the menu's **Save**. They live in the
+`[keys]` table of `settings.toml`, by key name, so they can be edited there too:
+
+```toml
+[keys]
+move_up = 'W'
+a = 'Mouse 1'
+lt = 'none'
+```
+
+The names are the ones the menu shows (`Space`, `Left Shift`, `Numpad 0`, `Mouse 4`, `F5`, `;` ...). F1, Insert and
+Escape are kept for the menu.
+
 ### General
 - **Skippable Cutscenes** - LT skips any in-engine cutscene, not only the ones already seen this playthrough. Turn it on
   in the F1 menu or with `skippable_cutscenes = true` in `settings.toml`.

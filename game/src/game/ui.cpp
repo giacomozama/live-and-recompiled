@@ -31,6 +31,7 @@
 #include "common/cutscenes.h"
 #include "common/display.h"
 #include "common/grass.h"
+#include "common/keyboard.h"
 #include "common/mouse.h"
 
 namespace ui {
@@ -72,6 +73,77 @@ const std::vector<app::Mode>& Modes() {
     return modes;
 }
 
+// the keyboard action waiting for its new key, -1 none; render thread only
+int g_rebind = -1;
+// a rebind waits for every key to be up before it takes one, so the click that started it is not the key
+bool g_rebind_armed = false;
+// after a rebind, frames left until its key counts as let go: ImGui would otherwise take it as a click too (a
+// mouse button is released to ImGui a frame or so after GetAsyncKeyState says so)
+int g_rebind_settle = 0;
+constexpr int kSettleFrames = 3;
+
+bool AnyDown() {
+    for (int vk = 1; vk < 0x100; vk++)
+        if ((keyboard::Bindable(vk) || vk == VK_ESCAPE) && (GetAsyncKeyState(vk) & 0x8000)) return true;
+    return false;
+}
+
+// the menu is up and an action is waiting: the first key or button pressed is its new one
+void PollRebind() {
+    g_rebind_settle = AnyDown() ? (g_rebind_settle ? kSettleFrames : 0) : std::max(g_rebind_settle - 1, 0);
+    if (g_rebind < 0) return;
+    if (!g_rebind_armed) {
+        g_rebind_armed = !AnyDown();
+        return;
+    }
+    if (GetAsyncKeyState(VK_ESCAPE) & 0x8000) {
+        g_rebind = -1;
+        g_rebind_settle = kSettleFrames;
+        return;
+    }
+    for (int vk = 1; vk < 0x100; vk++) {
+        if (!keyboard::Bindable(vk) || !(GetAsyncKeyState(vk) & 0x8000)) continue;
+        // a key drives one action: one that had it takes this action's old key instead
+        for (int a = 0; a < keyboard::kActions; a++)
+            if (a != g_rebind && keyboard::g_keys[a] == vk) keyboard::g_keys[a] = keyboard::g_keys[g_rebind];
+        keyboard::g_keys[g_rebind] = vk;
+        g_rebind = -1;
+        g_rebind_settle = kSettleFrames;
+        return;
+    }
+}
+
+void DrawKeys() {
+    PollRebind();
+    if (!ImGui::CollapsingHeader("Keyboard")) return;
+    ImGui::TextDisabled("click an action, then press its key or mouse button");
+    ImGui::TextDisabled("Esc cancels, right click unbinds; a key in use swaps");
+    if (ImGui::BeginTable("##keys", 2, ImGuiTableFlags_SizingStretchSame)) {
+        for (int a = 0; a < keyboard::kActions; a++) {
+            ImGui::TableNextColumn();
+            ImGui::PushID(a);
+            const char* key = g_rebind == a ? "press a key..." : keyboard::KeyName(keyboard::g_keys[a]);
+            ImGui::AlignTextToFramePadding();
+            ImGui::TextUnformatted(keyboard::ActionLabel(a));
+            ImGui::SameLine(ImGui::GetColumnWidth() * 0.55f);
+            if (ImGui::Button(key, ImVec2(-FLT_MIN, 0)) && !g_rebind_settle) {
+                g_rebind = a;
+                g_rebind_armed = false;
+            }
+            if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) {
+                keyboard::g_keys[a] = 0;
+                if (g_rebind == a) g_rebind = -1;
+            }
+            ImGui::PopID();
+        }
+        ImGui::EndTable();
+    }
+    if (ImGui::Button("Default keys")) {
+        keyboard::ResetKeys();
+        g_rebind = -1;
+    }
+}
+
 }  // namespace
 
 void Draw(double fps) {
@@ -86,6 +158,7 @@ void Draw(double fps) {
         pending_w = app::Get().width;
         pending_h = app::Get().height;
     }
+    if (!open) g_rebind = -1;  // closing the menu cancels a rebind
     was_open = open;
 
     // not from here: SetWindowTextW from the render thread could deadlock on WndProc's UiLock; post instead
@@ -210,6 +283,8 @@ void Draw(double fps) {
         ImGui::SameLine();
         ImGui::TextDisabled("of the above");
         ImGui::Checkbox("Invert Y", &mouse::g_invert_y);
+
+        DrawKeys();
 
         ImGui::SeparatorText("FPS");
         ImGui::Checkbox("Overlay", &g_fps_overlay);
