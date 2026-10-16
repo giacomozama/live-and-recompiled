@@ -255,11 +255,15 @@ bool Analysis::Walk(uint32_t entry, bool trusted, std::vector<uint32_t>* calls) 
                     uint32_t bound = 0;
                     uint32_t byte_table = 0;
                     ZydisRegister byte_idx = ZYDIS_REGISTER_NONE;
-                    for (int k = 1; k < 4 && k < nring; k++) {
+                    // three instructions back, not counting pushes (registers saved between the cmp and the jmp).
+                    // Any further, a cmp can bound an index biased into a table that starts mid code.
+                    for (int k = 1, seen = 1; seen < 4 && k < 8 && k < nring; k++) {
                         uint32_t pa = ring[(nring - 1 - k) & 7];
                         ZydisDecodedInstruction pi;
                         ZydisDecodedOperand po[ZYDIS_MAX_OPERAND_COUNT];
                         if (!Decode(pa, pi, po)) break;
+                        if (pi.mnemonic == ZYDIS_MNEMONIC_PUSH) continue;
+                        seen++;
                         if (pi.mnemonic == ZYDIS_MNEMONIC_MOVZX && po[0].type == ZYDIS_OPERAND_TYPE_REGISTER &&
                             ZydisRegisterGetLargestEnclosing(ZYDIS_MACHINE_MODE_LEGACY_32, po[0].reg.value) == idx &&
                             po[1].type == ZYDIS_OPERAND_TYPE_MEMORY && po[1].size == 8 &&
@@ -296,7 +300,12 @@ bool Analysis::Walk(uint32_t entry, bool trusted, std::vector<uint32_t>* calls) 
                         }
                     }
                     if (!bound && byte_table) {
-                        // unbounded index table: it runs while its bytes index the dword table
+                        // unbounded index table: the dword table ends where the index table starts (read on, its
+                        // first bytes looked like one more target), and it runs while its bytes index the dword table
+                        size_t keep = 0;
+                        while (keep < jt.slots.size() && !(jt.slots[0] < byte_table && jt.slots[keep] + 4 > byte_table)) keep++;
+                        jt.targets.resize(keep);
+                        jt.slots.resize(keep);
                         for (uint32_t a = byte_table; a >= lo_ && a < hi_ && a - byte_table < 4096 && cover_[a - lo_] == 0; a++) {
                             int64_t o = img.Offset(a);
                             if (o < 0 || img.file[size_t(o)] >= jt.targets.size()) break;
