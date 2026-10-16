@@ -2579,7 +2579,7 @@ void FillCombinerConstants(const State& s, DrawConstants& c) {
     }
     Color(SimpleState(s, kMPsFinalConstant0), c.pc[16]);
     Color(SimpleState(s, kMPsFinalConstant1), c.pc[17]);
-    Color(s.rs[kRsTextureFactor], c.tfactor);
+    Color(TextureFactor(s), c.tfactor);
 }
 
 constexpr float kGlowBoxTexels = 3.0f;  // console texels across the box each wide tap averages

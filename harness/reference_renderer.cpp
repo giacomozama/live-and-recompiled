@@ -1111,7 +1111,7 @@ void Draw(const State& s, uint32_t prim, uint32_t start, uint32_t count, const u
     }
     mat.pc[16] = Unpack(simple(kMPsFinalConstant0));
     mat.pc[17] = Unpack(simple(kMPsFinalConstant1));
-    mat.tfactor = Unpack(s.rs[kRsTextureFactor]);
+    mat.tfactor = Unpack(TextureFactor(s));
 
     // vertices
     bool program = (s.vs_handle & 1) && s.vs && !s.vs->program.empty();

@@ -191,7 +191,16 @@ struct State {
     // While chip_fog is set those are what runs, over the D3D fog render states (whichever was written last).
     uint32_t chip_fog = 0, fog_enable = 0, fog_mode = 0;
     float fog_param[2] = {};
+    // The fixed function's TFACTOR is the combiner's factor 0 on the chip, which the library's TEXTUREFACTOR pushes.
+    // A title that inlines it writes NV097_SET_COMBINER_FACTOR0 raw; while chip_tfactor is set that register is the
+    // texture factor, over D3DRS_TEXTUREFACTOR (whichever was written last).
+    uint32_t chip_tfactor = 0;
 };
+
+// the fixed function's D3DTA_TFACTOR: stage 0's combiner factor 0 when the title wrote it raw last
+inline uint32_t TextureFactor(const State& s) {
+    return s.chip_tfactor ? s.simple[kMPsConstant0 >> 2] : s.rs[kRsTextureFactor];
+}
 
 // The chip's fog factor in the form the shaders' fogfactor() evaluates (xemu glsl/vsh.c): x the first parameter
 // less the mode's bias, y the second, z 1 for the ABS modes, w 4 linear, 5 exp, 6 exp2. False when the D3D fog

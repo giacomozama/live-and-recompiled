@@ -242,6 +242,7 @@ void UpdateViewportConstants() {
 
 void SetComplex(uint32_t rs, uint32_t v) {
     g_state.rs[rs] = v;
+    if (rs == gpu::kRsTextureFactor) g_state.chip_tfactor = 0;
     W32(kRenderState + rs * 4, v);
 }
 
@@ -1142,6 +1143,7 @@ HLE_STDCALL(D3DDevice_SetPixelShader, 1) {
     // the definition loads the combiner state like the XDK pushes it
     const uint32_t* d = g_state.ps->def;
     auto put = [&](uint32_t method, uint32_t v) { g_state.simple[method >> 2] = v; };
+    g_state.chip_tfactor = 0;  // the factors are the shader's constants now, not a texture factor
     for (int i = 0; i < 8; i++) {
         put(gpu::kMPsAlphaInputs + i * 4, d[0 + i]);
         put(gpu::kMPsConstant0 + i * 4, d[10 + i]);
@@ -1886,6 +1888,7 @@ void Walk(uint32_t end) {
                 NoteRawMethod(m, v);
                 g_state.simple[m >> 2] = v;
                 if (m == 0x1E70) g_state.rs[gpu::kRsPsTextureModes] = v;  // NV097_SET_SHADER_STAGE_PROGRAM
+                if (m == gpu::kMPsConstant0) g_state.chip_tfactor = 1;     // NV097_SET_COMBINER_FACTOR0, stage 0
                 if (m == 0x3B8) {  // NV097_SET_SPECULAR_ENABLE
                     g_spec_raw = true;
                     g_spec_value = v;
