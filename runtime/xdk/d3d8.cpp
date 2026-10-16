@@ -1894,6 +1894,10 @@ void Walk(uint32_t end) {
                     g_spec_value = v;
                     g_state.rs[gpu::kRsSpecularEnable] = v;
                 }
+                // NV097_SET_STENCIL_TEST_ENABLE / _OP_FAIL: the renderers take these two from the render states, and
+                // the title's material blocks set them raw (Conker's glow marks its surfaces in the stencil)
+                if (m == gpu::kMStencilTestEnable) g_state.rs[gpu::kRsStencilEnable] = v;
+                if (m == gpu::kMStencilFail) g_state.rs[gpu::kRsStencilFail] = v;
                 // NV097_SET_FOG_ENABLE / _MODE / _PARAMS: the title runs the fog unit itself
                 if (m == 0x2A4 || m == 0x29C || m == 0x9C0 || m == 0x9C4) {
                     g_state.chip_fog = 1;

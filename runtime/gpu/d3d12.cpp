@@ -2797,6 +2797,11 @@ void D3D12Backend::CaptureDraw(const State& s, uint32_t prim, uint32_t count, co
             cap_i_++, s.rt.data, bound_ds_ ? s.zs.data : 0, prim, count, s.vs_handle, s.ps ? s.ps->handle : 0, k.blend,
             k.src, k.dst, k.zen, k.zfunc, k.zwrite, k.zbias, k.zslope, k.cull, k.wmask, c.pc[0][0], c.pc[0][1],
             c.pc[0][2], c.pc[0][3]);
+    // stencil as drawn, then the chip's own enable and fail op (the renderer takes those two from the render states)
+    fprintf(cap_, " sten %u func %X ref %02X mask %02X wmask %02X ops %X %X %X chip %X %X", k.sten,
+            SimpleState(s, kMStencilFunc), SimpleState(s, kMStencilRef) & 0xFF, SimpleState(s, kMStencilMask) & 0xFF,
+            SimpleState(s, kMStencilWriteMask) & 0xFF, s.rs[kRsStencilFail], SimpleState(s, kMStencilZFail),
+            SimpleState(s, kMStencilPass), SimpleState(s, kMStencilTestEnable), SimpleState(s, kMStencilFail));
     CaptureTextures(s, stages);
 }
 
@@ -3175,8 +3180,8 @@ void D3D12Backend::Clear(const State& s, uint32_t count, const uint8_t* rects, u
     PerfScope perf_clear{g_perf.clear};
     if (cap_) {
         CapStep(s.rt);
-        fprintf(cap_, "%04u clear rt %08X ds %08X flags %X color %08X z %.3f\n", cap_i_++, s.rt.data, s.zs.data, flags,
-                color, z);
+        fprintf(cap_, "%04u clear rt %08X ds %08X flags %X color %08X z %.3f stencil %02X\n", cap_i_++, s.rt.data,
+                s.zs.data, flags, color, z, stencil & 0xFF);
     }
     Target* rt = (flags & kClearTarget) ? EnsureTarget(s.rt, false) : nullptr;
     Target* ds = (flags & (kClearZ | kClearStencil)) ? EnsureTarget(s.zs, true) : nullptr;
