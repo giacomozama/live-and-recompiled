@@ -51,7 +51,7 @@ namespace {
 // compiles this file against a small Win32 shim that declares only a few of them.
 enum : int {
     kUp = 0x26, kDown = 0x28, kLeft = 0x25, kRight = 0x27,
-    kSpace = 0x20, kEnter = 0x0D, kBackspace = 0x08, kLShift = 0xA0, kEscape = 0x1B,
+    kSpace = 0x20, kEnter = 0x0D, kBackspace = 0x08, kLShift = 0xA0,
     kF1 = 0x70, kInsert = 0x2D,
 };
 
@@ -155,7 +155,7 @@ const char* ActionDefault(int action) { return action >= 0 && action < kActions 
 
 const char* KeyName(int vk) { return vk ? Named(vk) : "-"; }
 
-bool Bindable(int vk) { return vk > 0 && vk < 0x100 && vk != kF1 && vk != kInsert && vk != kEscape && Named(vk); }
+bool Bindable(int vk) { return vk > 0 && vk < 0x100 && vk != kF1 && vk != kInsert && Named(vk); }
 
 void ResetKey(int action) {
     if (action < 0 || action >= kActions) return;

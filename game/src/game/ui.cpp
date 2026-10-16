@@ -83,9 +83,12 @@ bool g_rebind_armed = false;
 int g_rebind_settle = 0;
 constexpr int kSettleFrames = 3;
 
+// the waiting row's Cancel was under the mouse last frame: a left click there cancels instead of binding Mouse 1
+bool g_cancel_hovered = false;
+
 bool AnyDown() {
     for (int vk = 1; vk < 0x100; vk++)
-        if ((keyboard::Bindable(vk) || vk == VK_ESCAPE) && (GetAsyncKeyState(vk) & 0x8000)) return true;
+        if (keyboard::Bindable(vk) && (GetAsyncKeyState(vk) & 0x8000)) return true;
     return false;
 }
 
@@ -97,13 +100,13 @@ void PollRebind() {
         g_rebind_armed = !AnyDown();
         return;
     }
-    if (GetAsyncKeyState(VK_ESCAPE) & 0x8000) {
-        g_rebind = -1;
-        g_rebind_settle = kSettleFrames;
-        return;
-    }
     for (int vk = 1; vk < 0x100; vk++) {
         if (!keyboard::Bindable(vk) || !(GetAsyncKeyState(vk) & 0x8000)) continue;
+        if (vk == VK_LBUTTON && g_cancel_hovered) {
+            g_rebind = -1;
+            g_rebind_settle = kSettleFrames;
+            return;
+        }
         // a key drives one action once: wherever it was, it swaps with the key it replaces (this action's other
         // slot included)
         int& target = keyboard::g_keys[g_rebind][g_rebind_slot];
@@ -134,9 +137,10 @@ void Slider(const char* label, uint32_t* v, uint32_t min, uint32_t max, uint32_t
 
 void DrawKeys() {
     PollRebind();
+    g_cancel_hovered = false;  // the waiting row sets it again as it draws
     ImGui::SeparatorText("Keyboard");
     ImGui::TextDisabled("two keys or mouse buttons each: click one, then press the key or button");
-    ImGui::TextDisabled("Esc cancels, right click unbinds; a key in use swaps");
+    ImGui::TextDisabled("Cancel stops a rebind, right click unbinds; a key in use swaps");
     // a frame per part of the controller; the frame names the part, so a row only names its action
     struct Row {
         int action;
@@ -166,7 +170,8 @@ void DrawKeys() {
         ImGui::SeparatorText(g.title);
         // label, the action's keys side by side, then its Reset; the keys line up down the frame
         const float spacing = ImGui::GetStyle().ItemInnerSpacing.x;
-        const float reset = ImGui::CalcTextSize("Reset").x + ImGui::GetStyle().FramePadding.x * 2.0f;
+        const float reset = std::max(ImGui::CalcTextSize("Reset").x, ImGui::CalcTextSize("Cancel").x) +
+                            ImGui::GetStyle().FramePadding.x * 2.0f;  // the same button, either label
         const float avail = ImGui::GetContentRegionAvail().x;
         const float column = ImGui::GetCursorPosX() + avail * 0.3f;
         const float key_w = std::max((avail * 0.7f - reset - spacing * kSlots) / kSlots, 1.0f);
@@ -192,14 +197,17 @@ void DrawKeys() {
                 ImGui::PopID();
             }
             ImGui::SameLine(0, spacing);
-            ImGui::BeginDisabled(IsDefault(r.action));
-            if (ImGui::Button("Reset")) {
-                ResetKey(r.action);
-                if (g_rebind == r.action) g_rebind = -1;
+            if (g_rebind == r.action) {
+                // waiting: Reset becomes Cancel, which PollRebind honours when the left click lands on it
+                ImGui::Button("Cancel", ImVec2(reset, 0));
+                g_cancel_hovered = ImGui::IsItemHovered();
+            } else {
+                ImGui::BeginDisabled(IsDefault(r.action));
+                if (ImGui::Button("Reset", ImVec2(reset, 0))) ResetKey(r.action);
+                ImGui::EndDisabled();
+                if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+                    ImGui::SetTooltip("default: %s", ActionDefault(r.action));
             }
-            ImGui::EndDisabled();
-            if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-                ImGui::SetTooltip("default: %s", ActionDefault(r.action));
             ImGui::PopID();
         }
         ImGui::EndChild();

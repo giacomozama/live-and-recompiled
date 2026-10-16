@@ -60,8 +60,8 @@ a = ['Space', 'Mouse 1']
 lt = 'none'
 ```
 
-The names are the ones the menu shows (`Space`, `Left Shift`, `Numpad 0`, `Mouse 4`, `F5`, `;` ...). F1, Insert and
-Escape are kept for the menu.
+The names are the ones the menu shows (`Space`, `Left Shift`, `Escape`, `Numpad 0`, `Mouse 4`, `F5`, `;` ...). F1
+and Insert are kept for opening the menu.
 
 ### General
 - **Skippable Cutscenes** - LT skips any in-engine cutscene, not only the ones already seen this playthrough. Turn it on

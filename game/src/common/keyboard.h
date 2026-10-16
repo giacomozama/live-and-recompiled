@@ -28,7 +28,7 @@ extern int g_keys[kActions][kSlots];
 const char* ActionLabel(int action);  // for the F1 menu, "Move up"
 const char* ActionDefault(int action);  // its default key's name
 const char* KeyName(int vk);          // "W", "Space", "Mouse 4"; "-" for 0, null for a key that cannot be bound
-bool Bindable(int vk);                // not F1 / Insert (the menu) or Escape (cancels a rebind)
+bool Bindable(int vk);                // not F1 / Insert, which open the menu
 void ResetKeys();                     // the default layout
 void ResetKey(int action);            // one action's default: its key in the first slot, the second empty
 bool IsDefault(int action);
