@@ -8,3 +8,5 @@ iso/
 60fps/
 umu-run/
 .claude/
+# pinned llvm-mingw (tools/fetch-toolchain.sh)
+toolchain/

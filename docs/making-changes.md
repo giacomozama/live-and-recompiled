@@ -102,6 +102,10 @@ bound one, `[[switch]] at, targets` for a jump table it misreads, `[xbe] data_ra
 
 ## Rules that have bitten
 
+- **Never distribute game code.** No `Game.exe`, generated sources, objects, dumps or `shader_programs.bin` in
+  releases, issues or chats. Releases are made with `tools/package.sh`; see [distribution.md](distribution.md).
+  Keep the host side free of the title's code too: `libGame_host.a` ships to players.
+
 - **Walk before you apply.** Any new HLE that changes GPU state or draws must `Walk(Dev(kDevPush))` first. This has
   caused black frames, missing glow and shadow smears.
 - **An HLE'd body's side effects are gone.** Model what later code reads (see the list in architecture.md).

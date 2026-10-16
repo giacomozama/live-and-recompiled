@@ -19,6 +19,7 @@ shader warm-up, keyboard and mouse controls, and skippable cutscenes. The player
 | [docs/making-changes.md](docs/making-changes.md) | Where a change goes, recipes (hooks, settings, NV2A methods), rules that have caused bugs |
 | [docs/conker.md](docs/conker.md) | The game: config notes, every hook, engine addresses and facts, known issues |
 | [docs/debugging.md](docs/debugging.md) | Proton vs harness, F3 captures, environment variables, profiler, tools |
+| [docs/distribution.md](docs/distribution.md) | Releases carry no game code: players build `Game.exe` with `Setup.exe`; making a release |
 
 ## Layout
 
@@ -32,7 +33,8 @@ conker-lar/
     generated/ out/ assets/ winrun/ prefix/    gitignored: generated C++, builds, disc links, Proton run folder
   rebuild.sh            ISO -> extracted disc -> tools -> config -> recompiled C++
   run-proton.sh         build the Windows exe and launch it under GE-Proton
-  tools/                XBE / vertex-program disassembly helpers
+  tools/                fetch-toolchain.sh (pinned llvm-mingw), package.sh (player release), disassembly helpers
+  toolchain/            gitignored: llvm-mingw, fetched on demand
   docs/
 ```
 
@@ -41,23 +43,24 @@ source), `clr_unpack/`, `60fps/`.
 
 ## Building and running (Linux host)
 
-Prerequisites: `extract-xiso`, `clang`/`clang++`, `cmake`, `ninja`, `lld`/`llvm-ar`, `mingw-w64` (x86_64, posix
-threads), `ndisasm` for the disassembly tool, and for running the Windows build **GE-Proton** plus
-**umu-launcher** (`umu-run`). Neither is part of the repository; install them separately.
+Prerequisites: `extract-xiso`, `clang`/`clang++`, `cmake`, `ninja`, `curl`, `zip`, `ndisasm` for the disassembly
+tool, and for running the Windows build **GE-Proton** plus **umu-launcher** (`umu-run`), installed separately. The
+Windows compiler, a pinned llvm-mingw, is downloaded into `toolchain/` the first time it's needed.
 
 ```bash
 ./rebuild.sh --iso "Conker Live and Reloaded.iso"   # extract, build xbe_recomp, recompile (first run is long)
-./run-proton.sh                                     # build game/out/build/win/Game.exe, copy to game/winrun, launch
+./run-proton.sh                                     # build game/out/build/llvm-mingw/Game.exe, copy to game/winrun, launch
 ./run-proton.sh --skip-fmv                          # same, skipping the intro movies
 ./rebuild.sh --harness                              # Linux headless harness (see docs/debugging.md)
+tools/package.sh                                    # player release: Setup.exe + kit, no game code (docs/distribution.md)
 ```
 
 `run-proton.sh` runs the `umu-run` on `PATH` (or `UMU=/path/to/umu-run`) and reads `PROTONPATH` (default
-`~/.local/share/Steam/compatibilitytools.d/GE-Proton11-7`), `GAMEID` and `JOBS`. The Windows exe finds `assets/` by walking up from its own folder, so it runs straight from
-`game/winrun/`; its settings (`settings.toml`), logs, shader records and saves live there too.
+`~/.local/share/Steam/compatibilitytools.d/GE-Proton11-7`), `GAMEID` and `JOBS`. The Windows exe finds `assets/`
+by walking up from its own folder, so it runs straight from `game/winrun/`; its settings (`settings.toml`), logs, shader records and saves live there too.
 
-On Windows the game repository builds natively with `game/build.bat` (Visual Studio with Clang), as
-[game/README.md](game/README.md) describes.
+On Windows the game repository builds natively with `game/build.bat` (Visual Studio with Clang), for developers
+working on Windows. Players use the release's `Setup.exe` instead.
 
 ## SDK updates
 

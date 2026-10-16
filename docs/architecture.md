@@ -49,11 +49,17 @@ iso/default.xbe ──xbe_symbols──▶ game/config/game.toml  (written once,
 
    Only files whose content changed are rewritten, so a config edit recompiles little.
 3. **`add_xbe_image`** (`sdk/cmake/XbeRecomp.cmake`) reruns codegen when the config, the XDK tables or the XBE
-   change, and links one executable from the runtime, `src/common`, `src/game`, the generated code and ImGui. The
-   XBE's SHA-1 is baked in; at launch the exe picks the copy in `assets` (folder or ISO) with that exact XBE, and
-   only offers another release when none matches.
+   change. It builds `<target>_host`, a static library of everything but the title's code (the runtime,
+   `src/common`, `src/game`, ImGui, the XBE's SHA-1), and links the exe from the generated objects plus that library
+   as a **whole archive**. Without that, the linker would never pull in a replacement whose recompiled weak twin
+   already resolved the symbol. At launch the exe picks the copy in `assets` (folder or ISO) with that exact XBE,
+   and only offers another release when none matches.
 4. **Windows cross build.** Codegen runs a *native* `xbe_recomp` (`XBE_CODEGEN_TOOL`) while the game is compiled
-   with mingw (`game/cmake-mingw.cmake`). `run-proton.sh` does this and runs the result under GE-Proton.
+   with the pinned llvm-mingw (`game/cmake-llvm-mingw.cmake`, fetched by `tools/fetch-toolchain.sh`).
+   `run-proton.sh` builds in `game/out/build/llvm-mingw` and runs the result under GE-Proton.
+5. **Player kit.** Releases don't contain `Game.exe`. `add_xbe_player_kit` stages `Setup.exe` with the host
+   library, the recompiler and a compiler, and players build the exe themselves. See
+   [distribution.md](distribution.md).
 
 ## Execution model
 

@@ -9,9 +9,17 @@ This port was created using the [Xbox XBE Recomp](https://github.com/TGP482/Xbox
 
 ## Installation
 
-- Put your game files in the `assets` folder. This can be an ISO, or the extracted data files.
-- Run `Game.exe`.
-- Recomp settings can be adjusted in `settings.toml` beside the exe.
+The release contains no game code: the game is built on your PC from your own copy, once.
+
+1. Put your game in the `assets` folder: the disc image (`.iso`), or `default.xbe` with the game's folders beside it.
+2. Run `Setup.exe`. It checks your copy is the release this build supports, recompiles it and writes `Game.exe`. This
+   takes a few minutes; nothing is downloaded.
+3. Run `Game.exe`. Settings are in `settings.toml` beside it, and in the F1 menu.
+
+`Setup.exe` keeps nothing it generated except `Game.exe`. Run it again after updating to a new release.
+
+On Linux or Steam Deck, run both through Proton or Wine, for example `umu-run Setup.exe`, or add each as a non-Steam
+game.
 
 ## Features
 
@@ -77,7 +85,9 @@ and Insert are kept for opening the menu.
   - Windows 10 64-bit
 - **GPU** with support for Direct3D 12
 
-## Building
+## Building from Source
+
+Only needed to work on the port; players use `Setup.exe` from a release.
 
 ### 1. Clone the Repository
 Clone this repository using [Git](https://git-scm.com/).
@@ -96,3 +106,4 @@ Run `build.bat`. The first build recompiles the game and takes a while. The exe 
 - [Xbox XBE Recomp](https://github.com/TGP482/XboxXBE-Recomp), the recompiler and runtime this is built on.
 - [XenonRecomp](https://github.com/hedge-dev/XenonRecomp) for the overridable function layout and instruction hooks.
 - [Zydis](https://github.com/zyantific/zydis) for decoding x86 instructions, [toml++](https://github.com/marzer/tomlplusplus) for the configs, [Dear ImGui](https://github.com/ocornut/imgui) for the settings overlay and [SDL](https://github.com/libsdl-org/SDL) for the window, input and controllers.
+- [llvm-mingw](https://github.com/mstorsjo/llvm-mingw) (Clang, LLD, mingw-w64, libc++), the compiler `Setup.exe` builds the game with.
