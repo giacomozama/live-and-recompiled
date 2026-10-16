@@ -916,7 +916,8 @@ std::string QuadHlsl(std::string s) {
 }
 
 // a point covers a square of its size in console pixels, more host pixels on an upscaled target: drawn as a quad of that
-// size. A point sprite also spans stage 3's coordinates from 0, 0 at the top left to 1, 1, as the console's do.
+// size. A point sprite also spans stage 3's coordinates from 0, 0 at the top left to 1, 1, as the console's do, or stage
+// 0's for the fixed function, which samples stage 3's texture there (SpriteStage).
 std::string PointHlsl() {
     return Common() + R"(
 [maxvertexcount(4)]
@@ -929,7 +930,9 @@ void main(point VOut v[1], inout TriangleStream<VOut> strip) {
         VOut o = v[0];
         o.pos.x += (i & 1) ? half_size.x : -half_size.x - back.x;
         o.pos.y += (i & 2) ? -half_size.y : half_size.y + back.y;
-        if (ptsk.w != 0) o.tc3 = float4(i & 1, (i >> 1) & 1, 0, 1);
+        float4 corner = float4(i & 1, (i >> 1) & 1, 0, 1);
+        if (ptsk.w == 1) o.tc3 = corner;
+        if (ptsk.w == 2) o.tc0 = corner;
         strip.Append(o);
     }
 }

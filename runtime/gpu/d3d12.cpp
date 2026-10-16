@@ -863,6 +863,7 @@ private:
     bool tearing_ = false;
     uint64_t presents_ = 0;
     uint64_t draw_serial_ = 0;  // draws so far, Target::fb_draw
+    State sprite_;              // a fixed function point sprite's state as the console draws it (SpriteStage)
     double fps_ = 0;
     std::chrono::steady_clock::time_point fps_t_ = std::chrono::steady_clock::now();
     uint64_t fps_n_ = 0;
@@ -2606,7 +2607,8 @@ constexpr float kMaxPointSize = 64;  // the console's largest point
 // a vertex program's oPts is the size; the fixed function takes D3DRS_POINTSIZE, scaled when D3DRS_POINTSCALEENABLE is
 void FillPointConstants(const State& s, bool vertex_program, DrawConstants& c) {
     c.pts[3] = kMaxPointSize;
-    c.ptsk[3] = s.rs[kRsPointSpriteEnable] ? 1.0f : 0.0f;
+    // the sprite's coordinates: stage 3's under a pixel shader, stage 0's for the fixed function (FixedSprite)
+    c.ptsk[3] = !s.rs[kRsPointSpriteEnable] ? 0.0f : s.ps ? 1.0f : 2.0f;
     if (vertex_program) return;
     c.pts[0] = Bits(s.rs[kRsPointSize]);
     if (s.rs[kRsPointScaleEnable]) {
@@ -3104,7 +3106,31 @@ void CountedSkip(const State& s, const char* why) {
     if (trace && s.simple[kMCountEnable >> 2] && n++ < 64) LOGR("d3d12: counted draw skipped (%s)", why);
 }
 
+constexpr uint32_t kPrimPoints = 1;  // D3DPT_POINTLIST
+
+// The console gives only stage 3 sprite coordinates, so the fixed function draws a point sprite with stage 0's colour
+// and alpha ops on stage 3's texture, sampled as stage 3 sets it: Conker binds its blood sprite there and leaves stage
+// 0 empty, which read as white squares
+bool FixedSprite(const State& s, uint32_t prim) {
+    return prim == kPrimPoints && !s.ps && s.rs[kRsPointSpriteEnable] && s.textures[3];
+}
+
+// s as FixedSprite draws it: stage 3's texture and sampling on stage 0
+void SpriteStage(State& s) {
+    s.textures[0] = std::exchange(s.textures[3], 0);
+    s.palettes[0] = std::exchange(s.palettes[3], 0);
+    for (uint32_t i : {kTssAddressU, kTssAddressV, kTssAddressW, kTssMagFilter, kTssMinFilter, kTssMipFilter,
+                       kTssMipLodBias, kTssMaxMipLevel, kTssMaxAnisotropy, kTssColorKeyOp, kTssColorSign,
+                       kTssAlphaKill, kTssBorderColor, kTssColorKeyColor})
+        s.tss[0][i] = s.tss[3][i];
+}
+
 void D3D12Backend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t count, const uint8_t* indices) {
+    if (&s != &sprite_ && FixedSprite(s, prim)) {
+        sprite_ = s;
+        SpriteStage(sprite_);
+        return Draw(sprite_, prim, start, count, indices);
+    }
     PerfScope perf_draw{g_perf.draw};
     g_perf.draws++;
     frame_draws_++;
