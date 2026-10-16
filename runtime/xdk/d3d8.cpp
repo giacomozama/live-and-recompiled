@@ -246,6 +246,28 @@ void SetComplex(uint32_t rs, uint32_t v) {
     W32(kRenderState + rs * 4, v);
 }
 
+// NV097_SET_CULL_FACE_ENABLE / _CULL_FACE / _FRONT_FACE, which the library's CullMode and FrontFace push
+constexpr uint32_t kMCullEnable = 0x308, kMCullFace = 0x39C, kMFrontFace = 0x3A0;
+constexpr uint32_t kGlFront = 0x404, kGlBack = 0x405, kCw = 0x900;
+
+// the renderers cull by the render states (the winding culled, D3DCULL), so a raw write lands there as the chip
+// reads it: the front face's winding when culling GL_FRONT, the other one when culling GL_BACK
+void ChipCull() {
+    uint32_t front = g_state.simple[kMFrontFace >> 2] ? g_state.simple[kMFrontFace >> 2] : kCw;
+    uint32_t face = g_state.simple[kMCullFace >> 2] ? g_state.simple[kMCullFace >> 2] : kGlBack;
+    uint32_t culled = face == kGlFront ? front : front ^ 1;  // 0x900 CW, 0x901 CCW
+    g_state.rs[gpu::kRsFrontFace] = front;
+    g_state.rs[gpu::kRsCullMode] = g_state.simple[kMCullEnable >> 2] ? culled : 0;
+}
+
+// what the library's CullMode pushes, so a later raw write to one of the three combines with it
+void CullPush(uint32_t cull) {
+    uint32_t front = g_state.rs[gpu::kRsFrontFace] ? g_state.rs[gpu::kRsFrontFace] : kCw;
+    g_state.simple[kMFrontFace >> 2] = front;
+    g_state.simple[kMCullEnable >> 2] = cull != 0;
+    if (cull) g_state.simple[kMCullFace >> 2] = cull == front ? kGlFront : kGlBack;
+}
+
 // The library's default render and texture stage states; its pushes land in the scratch buffer
 void ApplyDefaultStates(X86Context& ctx) {
 #if HAS_D3D_InitDefaultState
@@ -824,8 +846,20 @@ HLE_STDCALL(D3DDevice_SetRenderState_StencilEnable, 1) {
     return 0;
 }
 COMPLEX_STATE(StencilFail, gpu::kRsStencilFail)
-COMPLEX_STATE(FrontFace, gpu::kRsFrontFace)
-COMPLEX_STATE(CullMode, gpu::kRsCullMode)
+HLE_STDCALL(D3DDevice_SetRenderState_FrontFace, 1) {
+    std::lock_guard<std::recursive_mutex> lock(g_lock);
+    Walk(Dev(kDevPush));  // state set around a raw push must not reach the pending commands first
+    SetComplex(gpu::kRsFrontFace, a[0]);
+    CullPush(g_state.rs[gpu::kRsCullMode]);  // the library's FrontFace pushes the cull face again
+    return 0;
+}
+HLE_STDCALL(D3DDevice_SetRenderState_CullMode, 1) {
+    std::lock_guard<std::recursive_mutex> lock(g_lock);
+    Walk(Dev(kDevPush));  // state set around a raw push must not reach the pending commands first
+    SetComplex(gpu::kRsCullMode, a[0]);
+    CullPush(a[0]);
+    return 0;
+}
 COMPLEX_STATE(TextureFactor, gpu::kRsTextureFactor)
 COMPLEX_STATE(LogicOp, gpu::kRsLogicOp)
 COMPLEX_STATE(EdgeAntiAlias, gpu::kRsEdgeAntiAlias)
@@ -1934,6 +1968,7 @@ void Walk(uint32_t end) {
                     NoteStencil("raw at", v, p);
                 }
                 if (m == gpu::kMStencilFail) g_state.rs[gpu::kRsStencilFail] = v;
+                if (m == kMCullEnable || m == kMCullFace || m == kMFrontFace) ChipCull();
                 // NV097_SET_FOG_ENABLE / _MODE / _PARAMS: the title runs the fog unit itself
                 if (m == 0x2A4 || m == 0x29C || m == 0x9C0 || m == 0x9C4) {
                     g_state.chip_fog = 1;
