@@ -375,6 +375,22 @@ its target, and guest memory never held it.
 - **Limits.** Occlusion counts divide by the samples, as they did by the render scale. Alpha-tested edges (foliage,
   fur) don't get smoother; that would need alpha to coverage. With a renderer extension, MSAA stays off.
 
+### Grass popping out at medium distance (2026-10-16)
+Grass patches vanished all at once at medium distance and came back up close. The engine draws each patch with one of
+two fixed-function variants (TrainingLevel, alpha tested, 64x256 DXT): near ones with a wind program (`vs B0101651`
+on Proton, `B0001651` on the harness), and the rest with a plain transform (`B0101661`) whose alpha is
+`texture * diffuse * TFACTOR.a`, the fade. Both are submitted every frame, so this was never culling (and
+`XBE_REPORTS_VISIBLE`, aspect, frame rate and render scale made no difference). The fade comes from `0x83F30`, an
+inlined `SetRenderState(TEXTUREFACTOR)`: it pushes `NV097_SET_COMBINER_FACTOR0` (`0xA60`) raw and keeps it in the
+library's `PSCONSTANT0_0` shadow (`0x549A20`, render state 10). The image has no `SetRenderState_TextureFactor`,
+so `D3DRS_TEXTUREFACTOR` (148) never changes, and the renderers read `tfactor` from it: alpha 0, alpha test failed,
+patch gone the moment it switched variant. On the chip TFACTOR is factor 0, so `State::chip_tfactor` now makes a raw
+`0xA60` the texture factor until a D3D `TEXTUREFACTOR` or a pixel shader definition takes it back (the `chip_fog`
+rule). Found with two D3D12 F3 captures (patch showing, patch gone): same 12 grass draws, one patch moved from `651`
+to `661`. Ruled out on the way: the `CONTROL0` LOD clamps (Conker only ever writes 0..15.996).
+Harness note: walking in TrainingLevel (pad `LSD`) hit a guest divide error at `0x53A833` (D3D library); not
+investigated.
+
 ### Open
 - **missing loading screen**: the game freezes where a loading screen should show (after the boot splash, when starting
   a new game, between cutscenes); it continues once the level has loaded.
