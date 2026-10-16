@@ -113,6 +113,21 @@ void PollRebind() {
     }
 }
 
+// a percent slider with a Reset beside it, greyed out while the value is its default
+void Slider(const char* label, uint32_t* v, uint32_t min, uint32_t max, uint32_t def) {
+    ImGui::PushID(label);
+    const float reset = ImGui::CalcTextSize("Reset").x + ImGui::GetStyle().FramePadding.x * 2.0f;
+    ImGui::SetNextItemWidth(ImGui::CalcItemWidth() - reset - ImGui::GetStyle().ItemInnerSpacing.x);
+    ImGui::SliderScalar("##slider", ImGuiDataType_U32, v, &min, &max, "%u");
+    ImGui::SameLine(0, ImGui::GetStyle().ItemInnerSpacing.x);
+    ImGui::BeginDisabled(*v == def);
+    if (ImGui::Button("Reset")) *v = def;
+    ImGui::EndDisabled();
+    ImGui::SameLine(0, ImGui::GetStyle().ItemInnerSpacing.x);
+    ImGui::TextUnformatted(label);
+    ImGui::PopID();
+}
+
 void DrawKeys() {
     PollRebind();
     ImGui::SeparatorText("Keyboard");
@@ -257,9 +272,7 @@ void Draw(double fps) {
 
             if (tab("Graphics")) {
                 ImGui::SeparatorText("Rendering");
-                const uint32_t render_min = 25, render_max = 400;
-                ImGui::SliderScalar("Render %", ImGuiDataType_U32, &s.render_percent, &render_min, &render_max,
-                                    "%u");
+                Slider("Render %", &s.render_percent, 25, 400, app::Settings{}.render_percent);
                 ImGui::Checkbox("V-Sync", &s.vsync);
 
                 constexpr uint32_t kCaps[] = {0, 30, 60, 120, 144, 240};
@@ -309,11 +322,8 @@ void Draw(double fps) {
                 ImGui::Checkbox("Mouse look", &mouse::g_look);
                 ImGui::SameLine();
                 ImGui::TextDisabled("turns the camera; F1 or alt-tab frees the cursor");
-                const uint32_t sens_min = 10, sens_max = 500;
-                ImGui::SliderScalar("Sensitivity %", ImGuiDataType_U32, &mouse::g_sensitivity, &sens_min, &sens_max,
-                                    "%u");
-                ImGui::SliderScalar("Vertical %", ImGuiDataType_U32, &mouse::g_sensitivity_y, &sens_min, &sens_max,
-                                    "%u");
+                Slider("Sensitivity %", &mouse::g_sensitivity, 10, 500, mouse::kDefaultSensitivity);
+                Slider("Vertical %", &mouse::g_sensitivity_y, 10, 500, mouse::kDefaultSensitivity);
                 ImGui::SameLine();
                 ImGui::TextDisabled("of the above");
                 ImGui::Checkbox("Invert Y", &mouse::g_invert_y);

@@ -36,8 +36,8 @@
 namespace mouse {
 
 bool g_look = false;
-uint32_t g_sensitivity = 100;
-uint32_t g_sensitivity_y = 100;
+uint32_t g_sensitivity = kDefaultSensitivity;
+uint32_t g_sensitivity_y = kDefaultSensitivity;
 bool g_invert_y = false;
 
 namespace {
@@ -171,8 +171,8 @@ void Pad(input::Pad& pad) {
 namespace mouse {
 
 bool g_look = false;
-uint32_t g_sensitivity = 100;
-uint32_t g_sensitivity_y = 100;
+uint32_t g_sensitivity = kDefaultSensitivity;
+uint32_t g_sensitivity_y = kDefaultSensitivity;
 bool g_invert_y = false;
 
 void Message(void*, uint32_t, uintptr_t, intptr_t) {}
