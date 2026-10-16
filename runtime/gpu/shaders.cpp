@@ -880,7 +880,9 @@ std::string PixelHlsl(const PixelKey& k) {
             else if (t.kind == kTex2D) body += F("float4 t%d = tex%d.Sample(smp%d, %s);\n", i, i, i, uv.c_str());
             else if (t.kind == kTexCube && !(cube = Hooks().Cube(t, i, F("tc%d.xyz", i))).empty()) body += F("float4 t%d = %s;\n", i, cube.c_str());
             else if (t.kind) body += F("float4 t%d = tex%d.Sample(smp%d, tc%d.xyz);\n", i, i, i, i);
-            else body += F("float4 t%d = float4(1,1,1,1);\n", i);
+            // a stage without a texture reads black, as on the console (Conker's peephole bars select it over black
+            // vertices), and as a combiner stage that samples nothing does
+            else body += F("float4 t%d = float4(0,0,0,1);\n", i);
             body += Hooks().Fetched(t, i);
             if ((k.alphakill >> i) & 1) body += F("if (t%d.a == 0) discard;\n", i);
             const char* dst = f[8] == 5 ? "tmp" : "cur";
