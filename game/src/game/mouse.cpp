@@ -75,6 +75,9 @@ constexpr uint32_t kView = 0x34, kViewTarget = 0x38, kViewSpeed = 0x3C;
 constexpr float kViewLow = -45.0f, kViewHigh = -3.69f;
 // the mouse takes the pitch only once the game's camera has settled this close to its target
 constexpr float kViewSettled = 1.0f;
+// the camera's own limits on the view's pitch: -45 and 45 in first person; in third person the largest float, no
+// limit of its own (the view goes as far as the camera fits around the scene)
+constexpr uint32_t kViewMin = 0x50, kViewMax = 0x54;
 
 // the player's object, its camera, and the camera's angles (see the top of the file)
 constexpr uint32_t kPlayer = 0x8470DC, kPlayerCamera = 0x4;
@@ -130,7 +133,7 @@ int64_t Now();
 
 // the pitch the mouse holds (see Turn); guest threads, under g_view_lock
 std::mutex g_view_lock;
-float g_view_lo = kViewLow, g_view_hi = kViewHigh;  // the range the mouse may take it through
+float g_view_lo = kViewLow, g_view_hi = kViewHigh;  // the range seen in a camera without limits of its own
 bool g_view_held = false;  // the mouse has taken the pitch
 float g_view_pitch = 0;    // the pitch it holds, in degrees
 uint32_t g_view_cam = 0;
@@ -175,8 +178,9 @@ void Dump(uint32_t cam) {
 // moves, mouse look holds a pitch of its own, taken from the game's target, and writes it over the view and the
 // target every poll with the easing stopped: the view answers at once and stays where the mouse left it, whatever
 // the game's rest does. It takes the pitch only once the game's camera has settled (a level's camera eases in from
-// its floor), and keeps it inside the range the game's own camera has been seen to reach, starting from what the
-// stick reaches in the Cock and Plucker (the game limits what the stick asks for, not what is written). A keyboard or gamepad stick held up or down, a new camera, or a pause in the polls
+// its floor), and keeps it inside the camera's own limits where it has them (first person, +0x50 and +0x54), else
+// inside the range the game's camera has been seen to reach, starting from what the stick reaches in the Cock and
+// Plucker (the game limits what the stick asks for, not what is written). A keyboard or gamepad stick held up or down, a new camera, or a pause in the polls
 // (the cursor let go) drops the mouse's pitch and leaves it to the game.
 bool Turn(input::Pad& pad) {
     int64_t dx, dy;
@@ -208,11 +212,15 @@ bool Turn(input::Pad& pad) {
     if (stick_y || cam != g_view_cam || now - g_view_us > 500000) g_view_held = false;
     g_view_cam = cam;
     g_view_us = now;
-    // wherever the game takes the view itself (the keyboard's or a gamepad's stick, first person) the mouse may too
-    if (!g_view_held) {
+    // a camera with limits of its own (first person) is held to them; one without (third person), to wherever the
+    // game has been seen to take the view itself (the keyboard's or a gamepad's stick)
+    const float min = RF(cam + kViewMin), max = RF(cam + kViewMax);
+    const bool limited = std::fabs(min) <= 90.0f && std::fabs(max) <= 90.0f && min < max;
+    if (!limited && !g_view_held) {
         g_view_lo = std::min(g_view_lo, view);
         g_view_hi = std::max(g_view_hi, view);
     }
+    const float lo = limited ? min : g_view_lo, hi = limited ? max : g_view_hi;
     static int burst = 0;
     if (Trace() && burst > 0) {
         // the polls after a write: what the game made of it, and the camera's floats around the pitch
@@ -233,7 +241,7 @@ bool Turn(input::Pad& pad) {
         // mouse up tilts as the stick up does, lowering the pitch; raw y grows downward
         const float ky = k * float(g_sensitivity_y) / 100.0f;
         const float was = g_view_pitch;
-        g_view_pitch = std::clamp(g_view_pitch + float(g_invert_y ? -dy : dy) * ky, g_view_lo, g_view_hi);
+        g_view_pitch = std::clamp(g_view_pitch + float(g_invert_y ? -dy : dy) * ky, lo, hi);
         WF(cam + kViewTarget, g_view_pitch);
         WF(cam + kView, g_view_pitch);
         WF(cam + kViewSpeed, 0.0f);
@@ -251,7 +259,7 @@ bool Turn(input::Pad& pad) {
             LOGR("mouse: pitch %7.2f target %7.2f speed %7.3f  %s %7.2f  range %7.2f %7.2f%s  dy %+lld  sum %7.2f  "
                  "yaw %7.2f",
                  RF(cam + kView), RF(cam + kViewTarget), RF(cam + kViewSpeed), g_view_held ? "held" : "free",
-                 g_view_pitch, g_view_lo, g_view_hi, stick_y ? "  stick" : "", (long long)moved, RF(cam + kPitch),
+                 g_view_pitch, lo, hi, stick_y ? "  stick" : "", (long long)moved, RF(cam + kPitch),
                  RF(cam + kYaw));
             moved = 0;
         }
