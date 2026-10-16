@@ -666,6 +666,7 @@ private:
     void ResetFrame();
     void CountFps();
     void ApplySettings();
+    void RemakeTargets(float scale, uint32_t samples);
     ComPtr<ID3D12Resource> Shrink(ID3D12Resource* src, D3D12_RESOURCE_STATES& st, DXGI_FORMAT fmt, uint32_t w,
                                   uint32_t h, const ShrinkOptions& o = {});
     bool ReadBack(ID3D12Resource* res, uint32_t w, uint32_t h, std::vector<uint8_t>& out);
@@ -3611,12 +3612,70 @@ void D3D12Backend::Present(const Surface& front) {
     ApplySettings();
 }
 
+// every target made again at the scale and samples, keeping its picture: a texture the title drew once (an
+// environment map) is read from its target for the rest of the level, and guest memory never had it
+void D3D12Backend::RemakeTargets(float scale, uint32_t samples) {
+    std::unordered_map<uint64_t, Target> old;
+    old.swap(targets_);
+    bound_rt_ = bound_ds_ = nullptr;
+    // RTVs and DSVs are read as the copies are recorded: the old ones go back to the pools once res holds all
+    for (auto& [key, o] : old) ResolveSamples(o);
+    for (auto& [key, o] : old) {
+        auto& pool = o.depth ? free_dsv_ : free_rtv_;
+        pool.push_back(o.view);
+        if (o.ms) pool.push_back(o.ms_view);
+        if (o.zb) free_rtv_.push_back(o.zb_view);
+    }
+    scale_ = scale;
+    msaa_ = samples;
+    ID3D12PipelineState* depth_pso = EnsureDepthCopyPipeline();
+    for (auto& [key, o] : old) {
+        auto& garbage = CurrentFrame().garbage;
+        for (ID3D12Resource* r : {o.res.Get(), o.ms.Get(), o.fb.Get(), o.zb.Get()}) {
+            if (r) garbage.push_back(r);
+        }
+        Target t;
+        t.depth = o.depth;
+        t.gw = o.gw;
+        t.gh = o.gh;
+        t.fmt = o.fmt;
+        if (!CreateTargetResource(t, Surface{}) || !CreateTargetView(t)) continue;
+        CreateSampledTarget(t);
+        if (t.depth) {
+            if (depth_pso) DrawDepthCopy(o, t, depth_pso);
+        } else {
+            WriteRes(t, true);
+            Transition(o.res.Get(), o.state, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+            Transition(t.res.Get(), t.state, D3D12_RESOURCE_STATE_RENDER_TARGET);
+            SetBlitTarget(Cpu(rtv_heap_.Get(), t.view, rtv_inc_), t.w, t.h);
+            float uv[4] = {0, 0, 1, 1};
+            uint32_t taps = uint32_t(std::ceil(std::max(float(o.w) / t.w, 1.0f) - kTapsSlack));
+            Blit(o.res.Get(), o.fmt, uv, {.alpha = true, .taps = taps, .rtv = t.fmt});
+        }
+        t.data = o.data;
+        t.bytes = o.bytes;
+        t.epoch = o.epoch;
+        t.sig = o.sig;
+        t.drawn = o.drawn;
+        t.read = std::move(o.read);
+        t.range = o.range;
+        t.tag = o.tag;
+        targets_[key] = std::move(t);
+    }
+    bound_rt_ = bound_ds_ = nullptr;
+    LOGI("d3d12: %zu targets made again at render scale %.3f, %ux msaa", targets_.size(), scale_, msaa_);
+}
+
 void D3D12Backend::ApplySettings() {
     float want = app::RenderScale(guest_h_);
     bool remake = ext_ && ext_->Settings();
     uint32_t samples = WantSamples();
     if (std::fabs(want - scale_) > 1e-4f || samples != msaa_ || remake) {
         Flush();
+        if (!ext_) {
+            RemakeTargets(want, samples);
+            return;
+        }
         for (auto& [key, tg] : targets_) {
             auto& pool = tg.depth ? free_dsv_ : free_rtv_;
             pool.push_back(tg.view);
