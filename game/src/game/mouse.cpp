@@ -3,11 +3,12 @@
 // The window thread takes raw mouse motion (WM_INPUT, unaccelerated counts). keyboard::Pad, on the guest's threads,
 // hands it to the game one of two ways:
 //
-// - straight into the player camera's angles, in degrees, when the camera is found (Turn). XBE_CAMSCAN found them:
-//   the camera is [[0x8470DC] + 4] (the player array, 0x770 apart, then its camera), yaw at +0x60 and pitch at
-//   +0x970, which the game copies every frame (yaw to +0x5C and +0x124, pitch to +0x97C, +0x980 and +0x9BC). Stick
-//   right and stick up both lower them. Yaw keeps what is written; pitch the game eases back to its rest once the
-//   stick is let go, so mouse look holds its own (see Turn).
+// - into the player camera, when the camera is found (Turn). XBE_CAMSCAN found it: the camera is [[0x8470DC] + 4]
+//   (the player array, 0x770 apart, then its camera), yaw at +0x60, in degrees, which the game copies every frame
+//   (to +0x5C and +0x124) and which keeps what is written; stick right lowers it. The tilt has no angle to write:
+//   the camera follows how far the stick is pushed, so the mouse holds a stick of its own (see Turn). The camera's
+//   +0x970 adds up the stick's y (copied to +0x97C, +0x980 and +0x9BC) without moving the view; it only serves the
+//   check that the camera is there.
 // - else as right stick, for any other camera: the motion of the last game frame becomes a deflection, faster
 //   motion pushing it further.
 //
@@ -61,8 +62,8 @@ constexpr float kMinDeflection = 0.25f;
 constexpr float kDegreesPerCount = 0.04f;
 // a stick past this is tilting the camera (XInput's right stick dead zone); a gamepad at rest sits inside it
 constexpr int kStickDeadZone = 8689;
-// pitch is held inside this; the stick reached 55
-constexpr float kPitchLimit = 55.0f;
+// stick a count tilts at 100% sensitivity: 500 counts (well under an inch at 800 dpi) is full tilt
+constexpr float kTiltPerCount = 1.0f / 500.0f;
 
 // the player's object, its camera, and the camera's angles (see the top of the file)
 constexpr uint32_t kPlayer = 0x8470DC, kPlayerCamera = 0x4;
@@ -114,15 +115,12 @@ uint32_t Camera() {
 
 int64_t Now();
 
-// the pitch mouse look holds (see Turn); guest threads, under g_turn_lock
-std::mutex g_turn_lock;
-struct Pitch {
-    uint32_t cam = 0;  // the camera it was taken from
-    float hold = 0, written = 0;
-    int64_t us = 0;  // when it was last written
-} g_pitch;
+// the stick tilt mouse look holds (see Turn); guest threads, under g_tilt_lock
+std::mutex g_tilt_lock;
+float g_tilt = 0;          // -1 (stick full down) to 1 (full up)
+int64_t g_tilt_us = 0;     // when it was last handed to the game
 
-// XBE_MOUSE_TRACE=1 logs the camera's pitch as Turn sees it
+// XBE_MOUSE_TRACE=1 logs the camera as Turn sees it
 bool Trace() {
     static const bool on = [] {
         const char* e = std::getenv("XBE_MOUSE_TRACE");
@@ -131,13 +129,15 @@ bool Trace() {
     return on;
 }
 
-// the motion since the last call straight into the camera's angles; false when there is no camera to turn.
+// the motion since the last call into the player camera; false when there is no camera to turn.
 //
-// Yaw takes the motion as it comes. Pitch the game eases back to its rest when the stick is let go, so a pitch the
-// mouse sets would drift away: mouse look keeps its own and writes it every poll. It takes the game's back when the
-// keyboard or a gamepad tilts the camera (stick_y), when the game moves it far (another camera mode), after a pause
-// in the polls, and when the camera changes.
-bool Turn(bool stick_y) {
+// Yaw takes the motion straight. The camera's tilt has no angle to write: it follows how far the stick is pushed
+// up or down and eases back to rest when the stick is let go (+0x970 only adds up the stick and does not move the
+// view; a trace showed it swing 85 degrees under mouse writes with the view still). So the mouse moves a stick of
+// its own, which stays where the mouse left it, and pad carries it to the game every poll: the camera stays tilted
+// as far as the mouse took it. It goes back to rest when the keyboard or a gamepad tilts the camera, after a pause
+// in the polls (the cursor let go), and when the camera changes.
+bool Turn(input::Pad& pad) {
     int64_t dx, dy;
     {
         std::lock_guard lock(g_lock);
@@ -148,47 +148,41 @@ bool Turn(bool stick_y) {
     }
     static std::atomic<uint32_t> last{~0u};
     const uint32_t cam = Camera();
-    if (last.exchange(cam) != cam) {
+    const uint32_t was = last.exchange(cam);
+    if (was != cam) {
         const logx::Level lv = Trace() ? logx::Level::Report : logx::Level::Info;
-        if (cam) logx::Write(lv, "mouse: look turns the camera at %08X (yaw %.1f, pitch %.1f)", cam, RF(cam + kYaw),
-                             RF(cam + kPitch));
+        if (cam) logx::Write(lv, "mouse: look turns the camera at %08X (yaw %.1f)", cam, RF(cam + kYaw));
         else logx::Write(lv, "mouse: no player camera, look drives the right stick");
     }
     if (!cam) return false;
-    const float k = kDegreesPerCount * float(g_sensitivity) / 100.0f;
-    // mouse right turns as the stick right does, mouse up tilts as the stick up does: both lower the angle
-    if (dx) WF(cam + kYaw, RF(cam + kYaw) - float(dx) * k);
+    const float sens = float(g_sensitivity) / 100.0f;
+    // mouse right turns as the stick right does: it lowers the yaw
+    if (dx) WF(cam + kYaw, RF(cam + kYaw) - float(dx) * kDegreesPerCount * sens);
 
-    std::lock_guard lock(g_turn_lock);
-    Pitch& p = g_pitch;
-    const float game = RF(cam + kPitch);
+    std::lock_guard lock(g_tilt_lock);
     const int64_t now = Now();
-    if (p.cam != cam) p = {}, p.cam = cam;
-    const bool fresh = !p.us || now - p.us > 500000 || stick_y || std::fabs(game - p.written) > 20.0f;
+    const bool stick_y = std::abs(pad.ry) > kStickDeadZone;
+    if (stick_y || was != cam || now - g_tilt_us > 500000) g_tilt = 0;
+    g_tilt_us = now;
+    if (!stick_y) {
+        // raw y grows downward: mouse up is the stick up
+        g_tilt = std::clamp(g_tilt + float(g_invert_y ? dy : -dy) * kTiltPerCount * sens, -1.0f, 1.0f);
+        if (g_tilt != 0.0f) {
+            // lifted past the game's dead zone, as the stick emulation does
+            const float out = kMinDeflection + (1.0f - kMinDeflection) * std::fabs(g_tilt);
+            pad.ry = int16_t(std::copysign(out, g_tilt) * 32767.0f);
+        }
+    }
     if (Trace()) {
-        // XBE_MOUSE_TRACE: what the game did with the last write, four times a second
-        static int64_t next = 0;
-        static int64_t moved = 0;
+        static int64_t next = 0, moved = 0;
         moved += dy;
         if (now >= next) {
             next = now + 250000;
-            LOGR("mouse: pitch game %7.2f (copies %7.2f %7.2f) wrote %7.2f hold %7.2f%s%s  dy %+lld  yaw %7.2f  "
-                 "eased %7.2f",
-                 game, RF(cam + 0x97C), RF(cam + kPitchCopy), p.written, p.hold, fresh ? "  fresh" : "",
-                 stick_y ? "  stick" : "", (long long)moved, RF(cam + kYaw), RF(0x771B5C));
+            LOGR("mouse: tilt %+.3f ry %+6d%s  dy %+lld  yaw %7.2f  stick sum %7.2f  eased %7.2f", g_tilt, pad.ry,
+                 stick_y ? "  stick" : "", (long long)moved, RF(cam + kYaw), RF(cam + kPitch), RF(0x771B5C));
             moved = 0;
         }
     }
-    if (fresh) p.hold = game;
-    if (stick_y) {
-        p.us = now;
-        p.written = game;
-        return true;
-    }
-    p.hold = std::clamp(p.hold + float(g_invert_y ? -dy : dy) * k, -kPitchLimit, kPitchLimit);
-    WF(cam + kPitch, p.hold);
-    p.written = p.hold;
-    p.us = now;
     return true;
 }
 
@@ -278,7 +272,7 @@ void Message(void* hwnd, uint32_t msg, uintptr_t wp, intptr_t lp) {
 void Pad(input::Pad& pad) {
     if (!g_look || !g_held.load()) return;
     // the player camera turns with the mouse (the keyboard's or a gamepad's stick is in pad already)
-    if (Turn(std::abs(pad.ry) > kStickDeadZone)) return;
+    if (Turn(pad)) return;
     // the motion of the last game frame
     const float frame = 1.0f / float(std::max<uint32_t>(display::g_frame_rate, 30));
     const int64_t since = Now() - int64_t(frame * 1e6f);
