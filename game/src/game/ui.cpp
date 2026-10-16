@@ -265,11 +265,11 @@ void Draw(double fps) {
     if (!open) return;
 
     app::Settings& s = app::Get();
-    // first opened (there is no imgui.ini, so each launch): most of the display, centred, never smaller than the
+    // first opened (there is no imgui.ini, so each launch): about half the display, centred, never smaller than the
     // keyboard bindings need nor larger than the display
     const ImVec2 display = ImGui::GetIO().DisplaySize;
-    const ImVec2 size(std::min(std::max(display.x * 0.6f, 800.0f), display.x),
-                      std::min(std::max(display.y * 0.8f, 700.0f), display.y));
+    const ImVec2 size(std::min(std::max(display.x * 0.45f, 720.0f), display.x),
+                      std::min(std::max(display.y * 0.65f, 640.0f), display.y));
     ImGui::SetNextWindowSize(size, ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowPos(ImVec2(display.x * 0.5f, display.y * 0.5f), ImGuiCond_FirstUseEver, ImVec2(0.5f, 0.5f));
     if (ImGui::Begin("Settings")) {
