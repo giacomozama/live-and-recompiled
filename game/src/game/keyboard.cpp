@@ -20,6 +20,7 @@
 
 #include <windows.h>
 
+#include "common/camscan.h"
 #include "common/keyboard.h"
 #include "common/mouse.h"
 #include "common/ui.h"
@@ -101,6 +102,7 @@ void Pad(int port, input::Pad& pad) {
     if (Down(k4)) pad.analog[7] = 0xFF;  // right trigger
 
     mouse::Pad(pad);  // the mouse, while it looks, takes the right stick
+    camscan::Tick(pad);  // XBE_CAMSCAN: the camera angle search watches the stick the game gets
 
     LOG_FIRST(1, "input: keyboard controls active (WASD move, IJKL camera, space A, shift B, E X, Q Y)");
 }
