@@ -32,6 +32,7 @@ struct VOut {
     float4 tc2 : TEXCOORD2;
     float4 tc3 : TEXCOORD3;
     float fogamt : TEXCOORD4;
+    float psize : TEXCOORD6;  // a point's size in console pixels, PointHlsl reads it
 };
 cbuffer VC : register(b0) { float4 c[192]; };
 cbuffer DC : register(b1) {
@@ -53,6 +54,8 @@ const char* kCommonTail = R"(    float4 spread[4];
     float4 mat[5];
     float4 amb;
     float4 lt[56];
+    float4 pts;
+    float4 ptsk;
 };
 )";
 
@@ -246,6 +249,7 @@ const char* kVsEpilogue = R"(
     o.tc2 = oT2;
     o.tc3 = oT3;
     o.fogamt = fogfactor(oFog.x);
+    o.psize = oPts.x;
     return o;
 }
 )";
@@ -779,7 +783,10 @@ std::string FixedVertexHlsl(uint16_t regs, bool pretransformed, uint64_t decode,
         s += "    }\n";
     }
     s += "    oFog = " + v(5, "float4(0,0,0,0)") + ";\n";
-    if (pretransformed) return s + kVsEpilogue;
+    // D3DRS_POINTSIZE, scaled by the eye distance under D3DRS_POINTSCALEENABLE: Vh * size * sqrt(1 / (A + B d + C d^2))
+    if (pretransformed) return s + "    oPts.x = pts.x;\n" + kVsEpilogue;
+    s += "    float de = length(vp);\n";
+    s += "    oPts.x = pts.y ? pts.x * pts.y * rsqrt(max(ptsk.x + ptsk.y * de + ptsk.z * de * de, 1e-20)) : pts.x;\n";
     s += R"(
     VOut o;
     // like the pretransformed ones, target sized passes end half a console pixel short of the far edges
@@ -796,6 +803,7 @@ std::string FixedVertexHlsl(uint16_t regs, bool pretransformed, uint64_t decode,
     o.tc2 = oT2;
     o.tc3 = oT3;
     o.fogamt = fogfactor(abs(cp.z));
+    o.psize = oPts.x;
     return o;
 }
 )";
@@ -907,18 +915,21 @@ std::string QuadHlsl(std::string s) {
     return s;
 }
 
-// a point covers its console pixel, several host pixels on an upscaled target: drawn as a quad of that size
+// a point covers a square of its size in console pixels, more host pixels on an upscaled target: drawn as a quad of that
+// size. A point sprite also spans stage 3's coordinates from 0, 0 at the top left to 1, 1, as the console's do.
 std::string PointHlsl() {
     return Common() + R"(
 [maxvertexcount(4)]
 void main(point VOut v[1], inout TriangleStream<VOut> strip) {
-    float2 half_pixel = v[0].pos.w / surf.xy;  // in clip units, the target spans 2 across surf.xy pixels
+    float size = max(clamp(v[0].psize, pts.z, pts.w), 1);
+    float2 half_size = size * v[0].pos.w / surf.xy;  // in clip units, the target spans 2 across surf.xy pixels
     // a target is read half a host pixel back (surf.w host pixels per console pixel): left and top reach that far
-    float2 back = (0.5 - 1e-3) * 2 * half_pixel / surf.w;
+    float2 back = (0.5 - 1e-3) * 2 * v[0].pos.w / surf.xy / surf.w;
     for (int i = 0; i < 4; i++) {
         VOut o = v[0];
-        o.pos.x += (i & 1) ? half_pixel.x : -half_pixel.x - back.x;
-        o.pos.y += (i & 2) ? -half_pixel.y : half_pixel.y + back.y;
+        o.pos.x += (i & 1) ? half_size.x : -half_size.x - back.x;
+        o.pos.y += (i & 2) ? -half_size.y : half_size.y + back.y;
+        if (ptsk.w != 0) o.tc3 = float4(i & 1, (i >> 1) & 1, 0, 1);
         strip.Append(o);
     }
 }

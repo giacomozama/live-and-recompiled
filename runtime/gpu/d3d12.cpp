@@ -2601,6 +2601,26 @@ void FillSurfaceConstants(const State& s, GuestExtent size, DrawConstants& c) {
     c.misc[3] = s.rs[kRsSpecularEnable] ? 1.0f : 0.0f;
 }
 
+constexpr float kMaxPointSize = 64;  // the console's largest point
+
+// a vertex program's oPts is the size; the fixed function takes D3DRS_POINTSIZE, scaled when D3DRS_POINTSCALEENABLE is
+void FillPointConstants(const State& s, bool vertex_program, DrawConstants& c) {
+    c.pts[3] = kMaxPointSize;
+    c.ptsk[3] = s.rs[kRsPointSpriteEnable] ? 1.0f : 0.0f;
+    if (vertex_program) return;
+    c.pts[0] = Bits(s.rs[kRsPointSize]);
+    if (s.rs[kRsPointScaleEnable]) {
+        c.pts[1] = float(s.viewport.h);
+        c.ptsk[0] = Bits(s.rs[kRsPointScaleA]);
+        c.ptsk[1] = Bits(s.rs[kRsPointScaleB]);
+        c.ptsk[2] = Bits(s.rs[kRsPointScaleC]);
+    }
+    // the limits as set, when they make sense
+    float lo = Bits(s.rs[kRsPointSizeMin]), hi = Bits(s.rs[kRsPointSizeMax]);
+    if (hi > 0 && hi < kMaxPointSize) c.pts[3] = hi;
+    if (lo > 0 && lo <= c.pts[3]) c.pts[2] = lo;
+}
+
 void FillCombinerConstants(const State& s, DrawConstants& c) {
     for (int i = 0; i < 8; i++) {
         Color(SimpleState(s, kMPsConstant0 + i * 4), c.pc[i * 2]);
@@ -2764,7 +2784,10 @@ void D3D12Backend::UploadConstants(const State& s, const DrawShaders& sh, const 
     Alloc dc = Upload(sizeof(DrawConstants), 256);
     FillSurfaceConstants(s, size, c);
     // points: host pixels per console pixel, also keeps them off the far edge pull out of screen passes
-    if (k.topo == uint32_t(Topology::Points)) c.surf[3] = PointScale();
+    if (k.topo == uint32_t(Topology::Points)) {
+        c.surf[3] = PointScale();
+        FillPointConstants(s, sh.prog, c);
+    }
     FillFogConstants(s, sh.prog, c);
     FillCombinerConstants(s, c);
     if (ext_) ext_->Constants(reinterpret_cast<float(*)[4]>(vc.cpu), c.ext, bound_rt_, k.blend ? k.src : 1);
@@ -3136,6 +3159,9 @@ void D3D12Backend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t 
                 s.chip_fog, s.fog_enable, s.fog_mode, s.fog_param[0], s.fog_param[1], s.rs[kRsFogEnable],
                 s.rs[kRsFogTableMode], c.fog[0], c.fog[1], c.fog[2], c.fog[3], s.rs[kRsFogColor],
                 s.simple[0x288 >> 2], s.simple[0x28C >> 2]);
+        if (k.topo == uint32_t(Topology::Points))
+            fprintf(cap_, "\n     points sprite %u size %g scale %u %g %g %g limits %g %g", s.rs[kRsPointSpriteEnable],
+                    c.pts[0], s.rs[kRsPointScaleEnable], c.ptsk[0], c.ptsk[1], c.ptsk[2], c.pts[2], c.pts[3]);
         for (int i = 0; i < 2; i++) {
             D3D12_SAMPLER_DESC sd = StageSampler(s, i, stages, UnitTexcoords(a), app::Get().aniso);
             fprintf(cap_, "\n     s%d filter %X addr %u %u lod %g..%g bias %g aniso %u mips %u+%u", i, sd.Filter,
