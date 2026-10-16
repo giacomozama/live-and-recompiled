@@ -35,6 +35,7 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <mutex>
 
@@ -60,7 +61,7 @@ constexpr float kMinDeflection = 0.25f;
 constexpr float kDegreesPerCount = 0.04f;
 // a stick past this is tilting the camera (XInput's right stick dead zone); a gamepad at rest sits inside it
 constexpr int kStickDeadZone = 8689;
-// pitch is held inside this until the game shows a tighter limit; the stick reached 55
+// pitch is held inside this; the stick reached 55
 constexpr float kPitchLimit = 55.0f;
 
 // the player's object, its camera, and the camera's angles (see the top of the file)
@@ -117,18 +118,25 @@ int64_t Now();
 std::mutex g_turn_lock;
 struct Pitch {
     uint32_t cam = 0;  // the camera it was taken from
-    float hold = 0, written = 0, seen = 0;
-    float lo = -kPitchLimit, hi = kPitchLimit;
+    float hold = 0, written = 0;
     int64_t us = 0;  // when it was last written
-    int pinned = 0;  // polls in a row the game held it short of what was written
 } g_pitch;
+
+// XBE_MOUSE_TRACE=1 logs the camera's pitch as Turn sees it
+bool Trace() {
+    static const bool on = [] {
+        const char* e = std::getenv("XBE_MOUSE_TRACE");
+        return e && *e && *e != '0';
+    }();
+    return on;
+}
 
 // the motion since the last call straight into the camera's angles; false when there is no camera to turn.
 //
 // Yaw takes the motion as it comes. Pitch the game eases back to its rest when the stick is let go, so a pitch the
 // mouse sets would drift away: mouse look keeps its own and writes it every poll. It takes the game's back when the
 // keyboard or a gamepad tilts the camera (stick_y), when the game moves it far (another camera mode), after a pause
-// in the polls, and when the camera changes; and it learns the game's limits from the game holding it short.
+// in the polls, and when the camera changes.
 bool Turn(bool stick_y) {
     int64_t dx, dy;
     {
@@ -141,8 +149,10 @@ bool Turn(bool stick_y) {
     static std::atomic<uint32_t> last{~0u};
     const uint32_t cam = Camera();
     if (last.exchange(cam) != cam) {
-        if (cam) LOGI("mouse: look turns the camera at %08X (yaw %.1f, pitch %.1f)", cam, RF(cam + kYaw), RF(cam + kPitch));
-        else LOGI("mouse: no player camera, look drives the right stick");
+        const logx::Level lv = Trace() ? logx::Level::Report : logx::Level::Info;
+        if (cam) logx::Write(lv, "mouse: look turns the camera at %08X (yaw %.1f, pitch %.1f)", cam, RF(cam + kYaw),
+                             RF(cam + kPitch));
+        else logx::Write(lv, "mouse: no player camera, look drives the right stick");
     }
     if (!cam) return false;
     const float k = kDegreesPerCount * float(g_sensitivity) / 100.0f;
@@ -155,23 +165,27 @@ bool Turn(bool stick_y) {
     const int64_t now = Now();
     if (p.cam != cam) p = {}, p.cam = cam;
     const bool fresh = !p.us || now - p.us > 500000 || stick_y || std::fabs(game - p.written) > 20.0f;
-    if (!fresh && std::fabs(game - p.written) > 2.0f && game == p.seen) {
-        // held short of what was written, the same each poll: the game's limit
-        if (++p.pinned >= 3) {
-            if (p.written > game) p.hi = game;
-            else p.lo = game;
+    if (Trace()) {
+        // XBE_MOUSE_TRACE: what the game did with the last write, four times a second
+        static int64_t next = 0;
+        static int64_t moved = 0;
+        moved += dy;
+        if (now >= next) {
+            next = now + 250000;
+            LOGR("mouse: pitch game %7.2f (copies %7.2f %7.2f) wrote %7.2f hold %7.2f%s%s  dy %+lld  yaw %7.2f  "
+                 "eased %7.2f",
+                 game, RF(cam + 0x97C), RF(cam + kPitchCopy), p.written, p.hold, fresh ? "  fresh" : "",
+                 stick_y ? "  stick" : "", (long long)moved, RF(cam + kYaw), RF(0x771B5C));
+            moved = 0;
         }
-    } else {
-        p.pinned = 0;
     }
-    p.seen = game;
     if (fresh) p.hold = game;
     if (stick_y) {
         p.us = now;
         p.written = game;
         return true;
     }
-    p.hold = std::clamp(p.hold + float(g_invert_y ? -dy : dy) * k, p.lo, p.hi);
+    p.hold = std::clamp(p.hold + float(g_invert_y ? -dy : dy) * k, -kPitchLimit, kPitchLimit);
     WF(cam + kPitch, p.hold);
     p.written = p.hold;
     p.us = now;
