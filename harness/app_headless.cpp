@@ -19,7 +19,9 @@ void ApplyDisplay() {}
 Mode Desktop() { return {1280, 720}; }
 Mode Output() { return Desktop(); }
 float RenderScale(uint32_t) { return 1.0f; }
+float Aspect() { return 16.0f / 9.0f; }
 bool Widescreen() { return true; }
+float FrameAspect() { return kGame.aspect ? kGame.aspect(Aspect()) : 16.0f / 9.0f; }
 
 std::filesystem::path ExeDir() {
     static const std::filesystem::path dir = std::filesystem::current_path();

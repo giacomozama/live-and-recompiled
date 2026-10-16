@@ -22,7 +22,7 @@ struct Settings {
     uint32_t fps_cap = 60;           // 0 unlimited
     bool vsync = true;
     uint32_t aniso = 0;              // 0 as the game asks
-    std::string aspect = "auto";     // "4:3", "16:9", or "auto": 16:9 when the output is 3:2 or wider
+    std::string aspect = "auto";     // "W:H" ("4:3", "16:9", "21:9", ...), or "auto": the output's own shape
     std::string join_ip;                   // co-op: a host past the LAN the system link search also asks
 };
 
@@ -38,8 +38,13 @@ struct Mode {
 Mode Desktop();
 Mode Output();
 float RenderScale(uint32_t guest_height);
-// the output is 3:2 or wider: the console reports a widescreen TV and the frame is shown 16:9, else 4:3 as on a 4:3 TV
+// the display shape the aspect setting asks for, width over height: with "auto" the output's own
+float Aspect();
+// the display is 3:2 or wider: the console reports a widescreen TV and the frame is shown 16:9, else 4:3 as on a 4:3 TV
 bool Widescreen();
+// the shape of the frame the title draws, which the window letterboxes: GameInfo::aspect's for a title patched to
+// draw any, else 16:9 on a widescreen TV and 4:3 on a 4:3 one
+float FrameAspect();
 
 std::filesystem::path ExeDir();
 // the game in assets (game_files.cpp): its folder and this executable's xbe, from the extracted files or a disc
@@ -91,6 +96,9 @@ struct GameInfo {
     void (*ui)(double fps);        // each frame inside the ImGui frame, UiLock held
     void (*pad)(int port, input::Pad& pad);  // a polled pad before the game gets it
     void (*rumble)(int port, uint16_t& left, uint16_t& right);
+    // the shape of the frame the title draws for a display of this shape (width over height), for a title whose
+    // projection the game patches to fit any; null: the console's 16:9 or 4:3 (Widescreen)
+    float (*aspect)(float display);
 };
 extern const GameInfo kGame;
 

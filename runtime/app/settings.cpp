@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cstdio>
 #include <fstream>
 #include <sstream>
 
@@ -112,20 +113,27 @@ Mode Output() {
     return Desktop();
 }
 
-bool Widescreen() {
+float Aspect() {
     // asked per frame and per HUD quad: the desktop mode lookup only runs when the resolution setting changes
     static std::atomic<uint64_t> key{~0ull};
-    static std::atomic<bool> wide{true};
+    static std::atomic<float> output{16.0f / 9.0f};
     const Settings& s = Get();
-    // the aspect setting picks the TV the console reports; the title reads it once at boot
-    if (s.aspect == "4:3") return false;
-    if (s.aspect == "16:9") return true;
+    float w = 0, h = 0;
+    if (std::sscanf(s.aspect.c_str(), "%f:%f", &w, &h) == 2 && w > 0 && h > 0) return std::clamp(w / h, 0.5f, 4.0f);
     uint64_t k = uint64_t(s.width) << 32 | s.height;
     if (key.exchange(k) != k) {
         Mode m = Output();
-        wide = m.width * 2 >= m.height * 3;  // 3:2 or wider
+        if (m.width && m.height) output = std::clamp(float(m.width) / float(m.height), 0.5f, 4.0f);
     }
-    return wide;
+    return output;
+}
+
+// the aspect setting picks the TV the console reports; the title reads it once at boot
+bool Widescreen() { return Aspect() >= 1.5f - 1e-4f; }  // 3:2 or wider
+
+float FrameAspect() {
+    if (kGame.aspect) return std::clamp(kGame.aspect(Aspect()), 0.5f, 4.0f);
+    return Widescreen() ? 16.0f / 9.0f : 4.0f / 3.0f;
 }
 
 float RenderScale(uint32_t guest_height) {
