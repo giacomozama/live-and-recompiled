@@ -1,7 +1,7 @@
 # Conker: Live & Reloaded — static recompilation handoff
 
 Unofficial native port of the original-Xbox *Conker: Live & Reloaded* built with
-[Xbox XBE Recomp](../../) (this workspace's `XboxXBERecomp/`, the SDK). The game's x86 `.xbe` is translated
+[Xbox XBE Recomp](game/sdk/) (vendored in `game/sdk/`, the SDK). The game's x86 `.xbe` is translated
 to C++ ahead of time; the Xbox kernel and XDK libraries are implemented at the API level and drawn with a
 Direct3D 12 renderer. This document is the state of the port at handoff.
 
@@ -187,7 +187,7 @@ runtime only listened to the D3D API. Several fixes the previous handoff describ
 (count-0 slots, the `DrawUp` stale layout, the chip program); they are re-implemented here. Each fix below is "last
 writer wins" between the D3D path and the engine's raw writes, which is how the chip behaves.
 
-| # | What the engine writes raw | Runtime fix (`XboxXBERecomp`) |
+| # | What the engine writes raw | Runtime fix (`game/sdk`) |
 |---|---|---|
 | 1 | vertex programs: `SET_TRANSFORM_PROGRAM` (`0xB00`), `_LOAD` (`0x1E9C`), `_START` (`0x1EA0`) | `d3d8.cpp` keeps the chip's 136-slot program memory; `BackendDraw` swaps the bound shader's program for the chip's (start → FINAL bit) when an upload/start came after the last `SetVertexShader`. `Load/SelectVertexShader` HLEs implemented. **This is what made geometry appear.** |
 | 2 | transform constants continue across packets | `0xB80..0xBFC` advance the load pointer like xemu (and `0xC00..0x14FF`, the light methods, no longer land in `vsc`) |
@@ -982,14 +982,13 @@ conker-lar/
   Conker Live and Reloaded.iso     the user's disc image (gitignored via iso/)
   iso/                             extracted disc (default.xbe, dvddata/, media/)
   umu-run                          umu-launcher 1.4.1, runs the Windows build under Proton
-  XboxXBERecomp/                   the SDK, vendored (git subtree of TGP482/XboxXBERecomp)
   clr_unpack/  xemu/               provided references (unused so far)
   REVERSE_ENGINEERING.md           forum notes for Conker internals
   tools/xbe_disasm.py              disassemble an XBE range by VA (ndisasm)
   tools/xbe_d3d_internals.py       list D3D internals .text calls directly
   notes/d3d_internals_called_from_text.txt
   game/                            the game repo (the port)
-    sdk -> ../XboxXBERecomp        symlink the template expects
+    sdk/                           the SDK, vendored (git subtree of TGP482/XboxXBERecomp)
     assets/ -> iso symlinks        default.xbe, dvddata, media
     config/game.toml               recompiler config ([abi]/[data]/hooks)
     src/game/hooks.cpp             host replacements for D3D internals
@@ -1007,7 +1006,7 @@ conker-lar/
 - `extract-xiso`, `clang`/`clang++` 23, `cmake` 4.4, `ninja`, `ndisasm`
 - `mingw-w64` (x86_64, posix threads), `llvm` (`ld.lld`, `llvm-ar`)
 - For testing the Windows exe: **GE-Proton11-7** and **umu-run 1.4.1**
-- The SDK is vendored in `XboxXBERecomp/`, a git subtree of `TGP482/XboxXBERecomp` with its history kept
+- The SDK is vendored in `game/sdk/`, a git subtree of `TGP482/XboxXBERecomp` with its history kept
   (the old fork `giacomozama/XboxXBERecomp`, branch `conker`, is frozen at the vendoring point `a10407e`).
 
 ## Reproduce from scratch
@@ -1022,10 +1021,10 @@ cd /home/giacomo/Projects/conker-lar
 extract-xiso -x "Conker Live and Reloaded.iso" -d iso
 ```
 
-### 2. Create the game repo
+### 2. Link the assets
+`game/` is checked in (made from the SDK's `templates/game`, with the SDK itself in `game/sdk/`); it only
+needs the disc linked in.
 ```bash
-cp -r XboxXBERecomp/templates/game game
-ln -s ../XboxXBERecomp game/sdk
 mkdir -p game/assets
 ln -s ../../iso/default.xbe game/assets/default.xbe
 ln -s ../../iso/dvddata     game/assets/dvddata
@@ -1213,8 +1212,9 @@ The internals that need it are host-replaced instead.
 - `harness/build.sh`, `harness/run.sh` — executable bit only.
 
 SDK changes are ordinary commits in this repo, next to the game changes they serve. Upstream fixes come in with
-`git subtree pull --prefix=XboxXBERecomp https://github.com/TGP482/XboxXBERecomp.git main`; changes can go back
-upstream through `git subtree split --prefix=XboxXBERecomp`. `git log -- XboxXBERecomp` lists the SDK history.
+`git subtree pull --prefix=game/sdk https://github.com/TGP482/XboxXBERecomp.git main`; changes can go back
+upstream through `git subtree split --prefix=game/sdk`. `git log --follow -- game/sdk/<file>` shows a file's
+history across the move from `XboxXBERecomp/`.
 
 ## Current state
 
@@ -1284,7 +1284,7 @@ and the `0x4E1D20..0x4E1D40` table of DSP function pointers the library's device
 - `umu-run` (umu-launcher 1.4.1) is provided at the repository root as `./umu-run`; GE-Proton11-7 lives in
   the Steam `compatibilitytools.d` directory.
 - `.gitignore` files: `iso/`, `game/{out,assets,prefix,winrun,generated,third_party/mingw/lib}` are ignored;
-  the SDK is vendored in `XboxXBERecomp/` (a git subtree), so a plain clone is complete.
+  the SDK is vendored in `game/sdk/` (a git subtree), so a plain clone is complete.
 
 ### Audio: XACT clock, stream stops, 3D sound (2026-10-15)
 - **XACT's clock** reads the APU's free-running 48 kHz sample counter `0xFE80200C` (`0x55485B`). The scratch-backed

@@ -1,4 +1,4 @@
-# provided tools / references (see HANDOFF.md; the SDK is vendored in XboxXBERecomp/)
+# provided tools / references (see HANDOFF.md; the SDK is vendored in game/sdk/)
 clr_unpack/
 xemu/
 .vscode/
