@@ -120,11 +120,30 @@ void ConkerFrameTicks(X86Context& ctx, uint8_t* base) {
     uint64_t us = uint64_t(kernel::R32(ctx.esp + 0x10)) | uint64_t(kernel::R32(ctx.esp + 0x14)) << 32;
     double t = carry + double(int64_t(us)) * 60e-6;
     int32_t ticks = int32_t(std::min(std::max(t + 0.5, 0.0), 60.0));
-    if (base[display::kFixedStep] && ticks < 1) ticks = 1;
+    // fixed step, or 60 FPS and below: a frame is a tick at least. The console never sees a frame of none, and a
+    // short frame after a long one rounded to none (carry -0.5 + 0.9) made the step 0x2D37F4 stores zero and divided by it
+    if ((base[display::kFixedStep] || Rate() <= 60) && ticks < 1) ticks = 1;
     carry = std::clamp(t - ticks, -0.5, 0.5);
     static const bool trace = std::getenv("XBE_TRACE_TICKS") != nullptr;
     if (trace) LOGR("display: frame %llu us, %d ticks (console's %u), carry %.2f", (unsigned long long)us, ticks, ctx.ecx, carry);
     ctx.ecx = uint32_t(ticks);
+}
+
+// [[hook]] before 0x2D37F4: cx holds the frame's step, int(speed [edi+0x11C] * [0x7F9F54] * dt [0x7FA24C] * 100), which
+// 0x2DA316 and others divide by. Above 60 FPS a frame may be no tick at all, dt 0 and the step with it, which the console
+// never has: such a frame takes one tick's step (dt 0.5), at least 1.
+void ConkerFrameStep(X86Context& ctx, uint8_t* base) {
+    (void)base;
+    if (uint16_t(ctx.ecx)) return;
+    auto f32 = [](uint32_t va) {
+        uint32_t v = kernel::R32(va);
+        float f;
+        std::memcpy(&f, &v, 4);
+        return f;
+    };
+    if (f32(0x7FA24C) != 0.0f) return;  // a step the game made zero itself stays
+    int32_t step = int32_t(f32(ctx.edi + 0x11C) * f32(0x7F9F54) * 0.5f * 100.0f);
+    ctx.ecx = (ctx.ecx & 0xFFFF0000u) | uint16_t(std::clamp(step, 1, 0x7FFF));
 }
 
 // [[hook]] before 0x64468 in the camera projection: xmm1 holds the camera's aspect
