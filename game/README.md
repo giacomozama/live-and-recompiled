@@ -23,6 +23,11 @@ This port was created using the [Xbox XBE Recomp](https://github.com/TGP482/Xbox
 
 
 ### Graphics
+- **Shader Warm-up** - The shaders and pipelines a run builds are listed in `shaders.rec` beside the exe, and the next
+  launch builds them in the background while the game boots, before the frames that need them. `shaders.rec` holds no
+  game code and can be shared: vertex programs are named in it by hash, and their code goes in `shader_programs.bin`,
+  which stays on your PC. A shared `shaders.rec` alone warms everything but the vertex shaders of programs your copy
+  has not run yet. `shader_warmup = false` in `settings.toml` turns the warm-up off; recording stays on.
 
 ### Controller
 Supports Xbox, PlayStation and Switch controllers, with hot plugging and rumble.

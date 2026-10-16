@@ -327,6 +327,32 @@ they are hooks (`src/game/display.cpp`, two `[[hook]]`s in `game.toml`), applied
   `W:H`; the harness keeps 4:3 unless `XBE_ASPECT=W:H`, and 30 FPS unless `XBE_FRAME_RATE`. `XBE_TRACE_TICKS=1`
   logs each frame's microseconds and ticks; `display:` lines log rate and aspect changes.
 
+### Shader recording and warm-up (2026-10-16)
+Every D3D12 shader and pipeline is made on the frame that first draws with it (FXC, then the driver), and nothing
+was kept between runs. Now `runtime/gpu/shader_record.{h,cpp}` records each one the first time it is made, and the
+next launch makes them in the background from the start.
+- **What a record holds** is the generator inputs, not HLSL or bytecode, so records stay valid when the generators
+  change. A vertex shader record is a `VertexEntry`: the program hash (`VertexShader::hash`, 0 for fixed function),
+  regs, decode, `FixedKey`, pretransformed and quad. A pixel shader record is the `PixelKey`. A pipeline record is a
+  `PipelineEntry`: its shaders' record ids and the `PsoKey` with `vs`/`ps` zeroed, since those are source hashes and
+  change with the generators.
+- **Files beside the exe.** `shaders.rec` is shareable and holds no microcode. `shader_programs.bin` maps program
+  hash to words and stays local. The split is needed because Conker's vertex programs can't be referenced any other
+  way: they reach the chip inline (`SET_TRANSFORM_PROGRAM`), never through `CreateVertexShader`. Of 63 frontend chip
+  programs (`XBE_DUMP_PROGRAM`), only 2 occur verbatim in `default.xbe` or `dvddata/aid`, so the rest are assembled
+  at runtime or stored compressed.
+- **Warm-up.** `StartWarmUp` runs from `Init`. It compiles the records on `hardware_concurrency/2` threads (1 to 6)
+  at below-normal priority, shaders first and then pipelines. The results sit in `warm_`, which `Compile` and
+  `EnsurePipeline` check under a lock on a miss. A vertex shader whose program isn't in `shader_programs.bin` is
+  skipped, along with its pipelines. The log reports `shaders: made N of M recorded shaders and P of Q pipelines
+  ahead in T ms`.
+- **Validity.** `kRecordLayout` covers the record sizes plus `kRecordRevision`; a file with another layout starts
+  over. Bump the revision when a record keeps its size but changes meaning.
+  - The `PsoKey`'s `zslope` includes the render scale, so a depth-biased pipeline recorded at another Render % doesn't
+    match and is rebuilt as before.
+  - `Instance() > 1` reads the files without writing them.
+  - `shader_warmup = false` in `settings.toml` turns the warm-up off; recording stays on.
+
 ### Open
 - **missing loading screen**: the game freezes where a loading screen should show (after the boot splash, when starting
   a new game, between cutscenes); it continues once the level has loaded.
@@ -1107,6 +1133,9 @@ The internals that need it are host-replaced instead.
 - `runtime/app` (`app.h`, `settings.cpp`), `runtime/gpu/d3d12.cpp`, `harness/app_headless.cpp` — the `aspect`
   setting takes any `W:H` (`app::Aspect`; `Widescreen()` is 3:2 or wider as before), and `GameInfo::aspect` lets a
   title whose projection the game patches draw any shape: `app::FrameAspect()` is what the window letterboxes to.
+- `runtime/gpu/shader_record.{h,cpp}` (new), `runtime/gpu/d3d12.cpp`, `runtime/app` — shaders and pipelines are
+  recorded to `shaders.rec` / `shader_programs.bin` and made ahead at the next launch (`shader_warmup` setting); see
+  [Shader recording and warm-up](#shader-recording-and-warm-up-2026-10-16).
 - `harness/build.sh`, `harness/run.sh` — executable bit only. Regenerate the whole patch with
   `git -C XboxXBERecomp diff > ../patches/xboxxberecomp.patch`.
 
