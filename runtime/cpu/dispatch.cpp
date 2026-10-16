@@ -2,6 +2,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <algorithm>
 #include <mutex>
 #include <unordered_set>
 #include <vector>
@@ -29,6 +30,43 @@ struct Export {
 };
 Export g_exports[400];
 
+// the recompiled functions by host address, to name the guest function a host pc is in
+std::vector<std::pair<uintptr_t, uint32_t>> g_by_host;
+
+// XBE_CRASH_TRAIL set: each thread keeps its last indirect calls, kernel calls and host calls into the guest, for the
+// crash report
+struct TrailEntry {
+    uint32_t kind, target, ret, esp;  // kind 'I' indirect call, 'K' kernel export, 'H' host into guest, 'R' resume
+};
+constexpr uint32_t kTrailLen = 64, kTrailThreads = 64;
+struct Trail {
+    std::atomic<const X86Context*> ctx{nullptr};
+    uint32_t next = 0;
+    TrailEntry e[kTrailLen];
+};
+Trail g_trails[kTrailThreads];
+const bool g_trail_on = std::getenv("XBE_CRASH_TRAIL") != nullptr;
+
+void Note(const X86Context& ctx, uint32_t kind, uint32_t target, uint32_t ret) {
+    thread_local Trail* t = nullptr;
+    if (!t || t->ctx.load(std::memory_order_relaxed) != &ctx) {
+        t = nullptr;
+        for (Trail& s : g_trails) {
+            const X86Context* cur = s.ctx.load();
+            if (cur == &ctx) {
+                t = &s;
+                break;
+            }
+            if (!cur && s.ctx.compare_exchange_strong(cur, &ctx)) {
+                t = &s;
+                break;
+            }
+        }
+        if (!t) return;  // more threads than slots: the later ones go untraced
+    }
+    t->e[t->next++ % kTrailLen] = {kind, target, ret, ctx.esp};
+}
+
 }  // namespace
 
 // synthetic guest addresses for kernel functions reached through a pointer
@@ -46,8 +84,42 @@ void Init() {
     g_continuation.assign(g_hi - g_lo, false);
     for (const uint32_t* c = X86Continuations; *c; c++)
         if (*c >= g_lo && *c < g_hi) g_continuation[*c - g_lo] = true;
+    g_by_host.clear();
+    for (const X86FuncMapping* m = X86FuncMappings; m->host; m++)
+        g_by_host.emplace_back(reinterpret_cast<uintptr_t>(m->host), m->guest);
+    std::sort(g_by_host.begin(), g_by_host.end());
     LOGI("dispatch: %zu functions over %08X..%08X", n, g_lo, g_hi);
+    if (g_trail_on) LOGI("dispatch: XBE_CRASH_TRAIL keeps the last %u calls of each thread", kTrailLen);
 }
+
+// the guest function whose recompiled body starts at host, or with exact false the nearest one starting below it
+uint32_t GuestAt(uintptr_t host, bool exact) {
+    auto it = std::upper_bound(g_by_host.begin(), g_by_host.end(), std::make_pair(host, ~0u));
+    if (it == g_by_host.begin()) return 0;
+    --it;
+    return !exact || it->first == host ? it->second : 0;
+}
+
+// the trail of the thread running ctx, oldest first; false when it has none
+bool LogTrail(const X86Context& ctx) {
+    for (Trail& s : g_trails) {
+        if (s.ctx.load() != &ctx) continue;
+        uint32_t n = std::min(s.next, kTrailLen);
+        for (uint32_t i = 0; i < n; i++) {
+            const TrailEntry& e = s.e[(s.next - n + i) % kTrailLen];
+            if (e.kind == 'K')
+                LOGE("    -%02u kernel %3u %-28s from %08X esp %08X", n - i, e.target, kernel::ExportName(e.target), e.ret,
+                     e.esp);
+            else
+                LOGE("    -%02u %s %08X from %08X esp %08X", n - i,
+                     e.kind == 'I' ? "icall " : e.kind == 'H' ? "host->" : "resume", e.target, e.ret, e.esp);
+        }
+        return true;
+    }
+    return false;
+}
+
+bool TrailOn() { return g_trail_on; }
 
 X86Func* Find(uint32_t guest) {
     if (guest >= g_lo && guest < g_hi) return g_table[guest - g_lo];
@@ -73,6 +145,7 @@ uint32_t KernelThunkAddress(uint32_t ordinal) { return kKernelThunkBase + ordina
 
 void x86_icall(X86Context& ctx, uint8_t* base, uint32_t target) {
     ctx.last_icall = target;
+    if (g_trail_on) Note(ctx, 'I', target, kernel::R32(ctx.esp));
     if (target >= g_lo && target < g_hi && g_continuation[target - g_lo]) throw X86Resume{target, ctx.esp};
     if (X86Func* f = dispatch::Find(target)) {
         f(ctx, base);
@@ -102,10 +175,12 @@ void x86_icall(X86Context& ctx, uint8_t* base, uint32_t target) {
 
 void x86_resume(X86Context& ctx, uint8_t* base, const X86Resume& r) {
     ctx.esp = r.esp;
+    if (g_trail_on) Note(ctx, 'R', r.target, 0);
     dispatch::Find(r.target)(ctx, base);
 }
 
 void x86_kernel(X86Context& ctx, uint8_t* base, uint32_t ordinal) {
+    if (g_trail_on) Note(ctx, 'K', ordinal, kernel::R32(ctx.esp));
     if (ordinal < 400 && g_exports[ordinal].fn) {
         g_exports[ordinal].fn(ctx, base);
         return;
@@ -151,6 +226,7 @@ uint32_t CallGuest(X86Context& ctx, uint32_t fn, const uint32_t* args, size_t co
     }
     ctx.esp -= 4;
     W32(ctx.esp, 0xFFFFFFF0u);  // never used as a target, calls return through the host stack
+    if (g_trail_on) Note(ctx, 'H', fn, 0);
     x86_icall(ctx, g_base, fn);
     uint32_t result = ctx.eax;
     ctx.eax = saved.eax;

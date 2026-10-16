@@ -6,12 +6,10 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
-#include <dbghelp.h>
 #include <timeapi.h>
 
 #include <algorithm>
 #include <chrono>
-#include <csignal>
 #include <cwchar>
 #include <thread>
 
@@ -37,38 +35,6 @@ HWND g_hwnd = nullptr;
 constexpr UINT kApplyDisplay = WM_APP + 1, kOpenWindow = WM_APP + 2;
 bool g_mode_changed = false;
 bool g_apply_posted = false;  // a display apply is waiting in the queue or running
-
-// crash dump in CrashDumps beside the exe
-LONG WINAPI WriteCrashDump(EXCEPTION_POINTERS* e) {
-    // the dump holds no guest memory: the guest registers and return addresses go to the log
-    if (kernel::Thread* t = kernel::Current(); e && t && t->ctx) {
-        auto* r = e->ExceptionRecord;
-        LOGE("exception %08lX at %p on guest thread %X", r->ExceptionCode, r->ExceptionAddress, t->id);
-        if (r->ExceptionCode == EXCEPTION_ACCESS_VIOLATION && r->NumberParameters >= 2) {
-            uint64_t va = r->ExceptionInformation[1], g = uint64_t(reinterpret_cast<uintptr_t>(kernel::g_base));
-            LOGE("  %s %llX, guest %08llX", r->ExceptionInformation[0] ? "write" : "read", (unsigned long long)va,
-                 (unsigned long long)(va - g));
-        }
-        kernel::LogGuestStack(*t->ctx, 256);
-    }
-    auto dir = ExeDir() / "CrashDumps";
-    CreateDirectoryW(dir.c_str(), nullptr);
-    SYSTEMTIME t;
-    GetLocalTime(&t);
-    wchar_t name[64];
-    swprintf(name, 64, L"%ls.%04u.%02u.%02u_%02u.%02u.%02u.dmp", kGame.name, t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute,
-             t.wSecond);
-    HANDLE f = CreateFileW((dir / name).c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (f == INVALID_HANDLE_VALUE) return EXCEPTION_CONTINUE_SEARCH;
-    MINIDUMP_EXCEPTION_INFORMATION info{GetCurrentThreadId(), e, FALSE};
-    MiniDumpWriteDump(GetCurrentProcess(), GetCurrentProcessId(), f,
-                      MINIDUMP_TYPE(MiniDumpWithDataSegs | MiniDumpWithHandleData | MiniDumpWithThreadInfo |
-                                    MiniDumpWithUnloadedModules | MiniDumpWithIndirectlyReferencedMemory),
-                      e ? &info : nullptr, nullptr, nullptr);
-    CloseHandle(f);
-    logx::Flush();
-    return EXCEPTION_CONTINUE_SEARCH;
-}
 
 void DumpThreads() {
     gpu::g_capture = true;
@@ -220,8 +186,7 @@ void Pace(uint32_t vblanks) {
 }  // namespace app
 
 int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
-    SetUnhandledExceptionFilter(app::WriteCrashDump);
-    std::signal(SIGABRT, [](int) { app::WriteCrashDump(nullptr); });
+    app::InstallCrashHandler();
     timeBeginPeriod(1);
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     // one log a session: a relaunch into another image carries on its predecessor's
