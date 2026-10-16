@@ -39,7 +39,9 @@
 #include <chrono>
 #include <cmath>
 #include <cstdlib>
+#include <cstdio>
 #include <cstring>
+#include <string>
 #include <mutex>
 
 #include "common/display.h"
@@ -170,6 +172,19 @@ bool Turn(input::Pad& pad) {
     g_view_lo = std::min({g_view_lo, view, target});
     g_view_hi = std::max({g_view_hi, view, target});
     const bool stick_y = std::abs(pad.ry) > kStickDeadZone;
+    static int burst = 0;
+    if (Trace() && burst > 0) {
+        // the polls after a write: what the game made of it, and the camera's floats around the pitch
+        burst--;
+        std::string floats;
+        for (uint32_t o = 0x20; o <= 0x5C; o += 4) {
+            char buf[24];
+            std::snprintf(buf, sizeof buf, " %X:%.2f", o, RF(cam + o));
+            floats += buf;
+        }
+        LOGR("mouse: after  pitch %7.2f target %7.2f speed %7.3f  sum %7.2f |%s", view, target, RF(cam + kViewSpeed),
+             RF(cam + kPitch), floats.c_str());
+    }
     if (dy && !stick_y) {
         // mouse up tilts as the stick up does, lowering the pitch; raw y grows downward
         const float ky = k * float(g_sensitivity_y) / 100.0f;
@@ -177,6 +192,10 @@ bool Turn(input::Pad& pad) {
         WF(cam + kViewTarget, pitch);
         WF(cam + kView, pitch);
         WF(cam + kViewSpeed, 0.0f);
+        if (Trace()) {
+            LOGR("mouse: write  pitch %7.2f -> %7.2f (dy %+lld)", target, pitch, (long long)dy);
+            burst = 12;
+        }
     }
     if (Trace()) {
         static int64_t next = 0, moved = 0;
