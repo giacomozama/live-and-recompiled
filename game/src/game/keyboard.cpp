@@ -14,16 +14,18 @@
 //   start        enter            back                   backspace
 //   stick clicks C (left)         V (right)
 //
-// Every action can be rebound, to a key or a mouse button: in the F1 menu, or in settings.toml's [keys]
-// table by key name (move_up = 'W', a = 'Mouse 1', 'none' unbinds).
+// Every action can be rebound, to up to two keys or mouse buttons: in the F1 menu, or in settings.toml's [keys]
+// table by key name (move_up = 'W', a = ['Space', 'Mouse 1'], 'none' unbinds).
 //
 // With mouse look on (src/game/mouse.cpp) the mouse also turns the camera, over the camera keys while it moves.
+#include <algorithm>
 #include <cctype>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include <windows.h>
 
@@ -41,7 +43,7 @@
 
 namespace keyboard {
 
-int g_keys[kActions];
+int g_keys[kActions][kSlots];
 
 namespace {
 
@@ -122,7 +124,21 @@ bool SameName(const char* a, const char* b) {
 }
 
 bool Down(int vk) { return vk && (GetAsyncKeyState(vk) & 0x8000) != 0; }
-bool Down(Action a) { return Down(g_keys[a]); }
+bool Down(Action a) {
+    for (int vk : g_keys[a])
+        if (Down(vk)) return true;
+    return false;
+}
+
+#ifdef KEYBOARD_TOML
+// one name from settings.toml; false for one that names no key
+bool Parse(const std::string& name, int& vk) {
+    if (name == "none" || name == "-" || name.empty()) return vk = 0, true;
+    for (int k = 1; k < 0x100; k++)
+        if (Bindable(k) && SameName(Named(k), name.c_str())) return vk = k, true;
+    return false;
+}
+#endif
 
 // one axis from its two keys: keyboard strokes are digital, so a held key is full deflection
 int16_t Axis(bool negative, bool positive) {
@@ -135,38 +151,77 @@ int16_t Axis(bool negative, bool positive) {
 
 const char* ActionLabel(int action) { return action >= 0 && action < kActions ? kInfo[action].label : ""; }
 
+const char* ActionDefault(int action) { return action >= 0 && action < kActions ? KeyName(kInfo[action].vk) : ""; }
+
 const char* KeyName(int vk) { return vk ? Named(vk) : "-"; }
 
 bool Bindable(int vk) { return vk > 0 && vk < 0x100 && vk != kF1 && vk != kInsert && vk != kEscape && Named(vk); }
 
+void ResetKey(int action) {
+    if (action < 0 || action >= kActions) return;
+    g_keys[action][0] = kInfo[action].vk;
+    for (int s = 1; s < kSlots; s++) g_keys[action][s] = 0;
+}
+
 void ResetKeys() {
-    for (int a = 0; a < kActions; a++) g_keys[a] = kInfo[a].vk;
+    for (int a = 0; a < kActions; a++) ResetKey(a);
+}
+
+bool IsDefault(int action) {
+    if (action < 0 || action >= kActions || g_keys[action][0] != kInfo[action].vk) return false;
+    for (int s = 1; s < kSlots; s++)
+        if (g_keys[action][s]) return false;
+    return true;
 }
 
 #ifdef KEYBOARD_TOML
 
+// an action is one name ('W') or a list of up to kSlots (['W', 'Up']); a bad name keeps the action as it was
 void Load(const void* table) {
     const toml::table* keys = (*static_cast<const toml::table*>(table))["keys"].as_table();
     if (!keys) return;
     for (int a = 0; a < kActions; a++) {
-        std::optional<std::string> name = (*keys)[kInfo[a].key].value<std::string>();
-        if (!name) continue;
-        if (*name == "none" || *name == "-" || name->empty()) {
-            g_keys[a] = 0;
-            continue;
+        const toml::node* node = keys->get(kInfo[a].key);
+        if (!node) continue;
+        std::vector<std::string> names;
+        if (const toml::array* list = node->as_array()) {
+            for (const toml::node& n : *list)
+                if (std::optional<std::string> name = n.value<std::string>()) names.push_back(*name);
+        } else if (std::optional<std::string> name = node->value<std::string>()) {
+            names.push_back(*name);
         }
-        int vk = 0;
-        for (int k = 1; k < 0x100 && !vk; k++)
-            if (Bindable(k) && SameName(Named(k), name->c_str())) vk = k;
-        if (vk) g_keys[a] = vk;
-        else LOGW("input: settings [keys] %s = '%s' is not a key name, keeping %s", kInfo[a].key, name->c_str(),
-                 KeyName(g_keys[a]));
+        if (names.size() > size_t(kSlots))
+            LOGW("input: settings [keys] %s has %zu keys, keeping the first %d", kInfo[a].key, names.size(), kSlots);
+        int vks[kSlots] = {};
+        bool ok = true;
+        for (size_t s = 0; s < names.size() && s < size_t(kSlots); s++) {
+            if (Parse(names[s], vks[s])) continue;
+            LOGW("input: settings [keys] %s: '%s' is not a key name, keeping %s", kInfo[a].key, names[s].c_str(),
+                 KeyName(g_keys[a][0]));
+            ok = false;
+        }
+        if (ok) std::copy(vks, vks + kSlots, g_keys[a]);
     }
 }
 
+// one name for an action with a single key, else the list: 'W', ['W', 'Up'], 'none'
 void Save(void* table) {
     toml::table keys;
-    for (int a = 0; a < kActions; a++) keys.insert(kInfo[a].key, g_keys[a] ? Named(g_keys[a]) : "none");
+    for (int a = 0; a < kActions; a++) {
+        const char* names[kSlots];
+        int n = 0;
+        for (int vk : g_keys[a])
+            if (vk) names[n++] = Named(vk);
+        if (n == 0) {
+            keys.insert(kInfo[a].key, "none");
+        } else if (n == 1) {
+            keys.insert(kInfo[a].key, names[0]);
+        } else {
+            toml::array list;
+            for (int i = 0; i < n; i++) list.push_back(names[i]);
+            keys.insert(kInfo[a].key, std::move(list));
+        }
+    }
     static_cast<toml::table*>(table)->insert_or_assign("keys", std::move(keys));
 }
 
@@ -221,11 +276,11 @@ void Pad(int port, input::Pad& pad) {
     mouse::Pad(pad);  // the mouse, while it looks, takes the right stick
     camscan::Tick(pad);  // XBE_CAMSCAN: the camera angle search watches the stick the game gets
 
+    // the first key of each: the rest are in the settings log
+    auto key = [](Action a) { return KeyName(g_keys[a][0]); };
     LOG_FIRST(1, "input: keyboard controls active (move %s%s%s%s, camera %s%s%s%s, A %s, B %s, X %s, Y %s)",
-              KeyName(g_keys[kMoveUp]), KeyName(g_keys[kMoveLeft]), KeyName(g_keys[kMoveDown]),
-              KeyName(g_keys[kMoveRight]), KeyName(g_keys[kCamUp]), KeyName(g_keys[kCamLeft]),
-              KeyName(g_keys[kCamDown]), KeyName(g_keys[kCamRight]), KeyName(g_keys[kA]), KeyName(g_keys[kB]),
-              KeyName(g_keys[kX]), KeyName(g_keys[kY]));
+              key(kMoveUp), key(kMoveLeft), key(kMoveDown), key(kMoveRight), key(kCamUp), key(kCamLeft),
+              key(kCamDown), key(kCamRight), key(kA), key(kB), key(kX), key(kY));
 }
 
 }  // namespace keyboard

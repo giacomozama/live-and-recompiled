@@ -48,14 +48,15 @@ the same time.
 | Start / Back | `Enter` / `Backspace` |
 | Left / right stick click | `C` / `V` |
 
-These are the defaults: every action can be rebound to another key or a mouse button under **Keyboard** in the F1
-menu (click an action, press its key; right click unbinds) and saved with the menu's **Save**. They live in the
-`[keys]` table of `settings.toml`, by key name, so they can be edited there too:
+These are the defaults: every action can have up to two keys or mouse buttons, rebound under **Controls → Keyboard**
+in the F1 menu (click a key, press the new one; right click unbinds, **Reset** brings back that action's default) and
+saved with the menu's **Save**. They live in the `[keys]` table of `settings.toml`, by key name, so they can be edited
+there too:
 
 ```toml
 [keys]
 move_up = 'W'
-a = 'Mouse 1'
+a = ['Space', 'Mouse 1']
 lt = 'none'
 ```
 

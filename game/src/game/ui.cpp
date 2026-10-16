@@ -73,8 +73,9 @@ const std::vector<app::Mode>& Modes() {
     return modes;
 }
 
-// the keyboard action waiting for its new key, -1 none; render thread only
+// the keyboard action waiting for its new key, -1 none, and which of its keys; render thread only
 int g_rebind = -1;
+int g_rebind_slot = 0;
 // a rebind waits for every key to be up before it takes one, so the click that started it is not the key
 bool g_rebind_armed = false;
 // after a rebind, frames left until its key counts as let go: ImGui would otherwise take it as a click too (a
@@ -103,10 +104,13 @@ void PollRebind() {
     }
     for (int vk = 1; vk < 0x100; vk++) {
         if (!keyboard::Bindable(vk) || !(GetAsyncKeyState(vk) & 0x8000)) continue;
-        // a key drives one action: one that had it takes this action's old key instead
-        for (int a = 0; a < keyboard::kActions; a++)
-            if (a != g_rebind && keyboard::g_keys[a] == vk) keyboard::g_keys[a] = keyboard::g_keys[g_rebind];
-        keyboard::g_keys[g_rebind] = vk;
+        // a key drives one action once: wherever it was, it swaps with the key it replaces (this action's other
+        // slot included)
+        int& target = keyboard::g_keys[g_rebind][g_rebind_slot];
+        for (auto& keys : keyboard::g_keys)
+            for (int& k : keys)
+                if (&k != &target && k == vk) k = target;
+        target = vk;
         g_rebind = -1;
         g_rebind_settle = kSettleFrames;
         return;
@@ -131,28 +135,77 @@ void Slider(const char* label, uint32_t* v, uint32_t min, uint32_t max, uint32_t
 void DrawKeys() {
     PollRebind();
     ImGui::SeparatorText("Keyboard");
-    ImGui::TextDisabled("click an action, then press its key or mouse button");
+    ImGui::TextDisabled("two keys or mouse buttons each: click one, then press the key or button");
     ImGui::TextDisabled("Esc cancels, right click unbinds; a key in use swaps");
-    if (ImGui::BeginTable("##keys", 2, ImGuiTableFlags_SizingStretchSame)) {
-        for (int a = 0; a < keyboard::kActions; a++) {
-            ImGui::TableNextColumn();
-            ImGui::PushID(a);
-            const char* key = g_rebind == a ? "press a key..." : keyboard::KeyName(keyboard::g_keys[a]);
+    // a frame per part of the controller; the frame names the part, so a row only names its action
+    struct Row {
+        int action;
+        const char* label;
+    };
+    struct Group {
+        const char* title;
+        std::vector<Row> rows;
+    };
+    using namespace keyboard;
+    static const Group kGroups[] = {
+        {"Left stick", {{kMoveUp, "Up"}, {kMoveDown, "Down"}, {kMoveLeft, "Left"}, {kMoveRight, "Right"},
+                        {kLS, "Click"}}},
+        {"Right stick (camera)", {{kCamUp, "Up"}, {kCamDown, "Down"}, {kCamLeft, "Left"}, {kCamRight, "Right"},
+                                  {kRS, "Click"}}},
+        {"D-pad", {{kDpadUp, "Up"}, {kDpadDown, "Down"}, {kDpadLeft, "Left"}, {kDpadRight, "Right"}}},
+        {"Face buttons", {{kA, "A"}, {kB, "B"}, {kX, "X"}, {kY, "Y"}}},
+        {"Shoulders and triggers", {{kLB, "LB (white)"}, {kRB, "RB (black)"}, {kLT, "LT"}, {kRT, "RT"}}},
+        {"Start / Back", {{kStart, "Start"}, {kBack, "Back"}}},
+    };
+    // two columns, the groups in pairs: the sticks, d-pad and face buttons, shoulders and start / back
+    if (!ImGui::BeginTable("##groups", 2, ImGuiTableFlags_SizingStretchSame)) return;
+    for (const Group& g : kGroups) {
+        ImGui::TableNextColumn();
+        ImGui::PushID(g.title);
+        ImGui::BeginChild("##group", ImVec2(0, 0), ImGuiChildFlags_Border | ImGuiChildFlags_AutoResizeY);
+        ImGui::SeparatorText(g.title);
+        // label, the action's keys side by side, then its Reset; the keys line up down the frame
+        const float spacing = ImGui::GetStyle().ItemInnerSpacing.x;
+        const float reset = ImGui::CalcTextSize("Reset").x + ImGui::GetStyle().FramePadding.x * 2.0f;
+        const float avail = ImGui::GetContentRegionAvail().x;
+        const float column = ImGui::GetCursorPosX() + avail * 0.3f;
+        const float key_w = std::max((avail * 0.7f - reset - spacing * kSlots) / kSlots, 1.0f);
+        for (const Row& r : g.rows) {
+            ImGui::PushID(r.action);
             ImGui::AlignTextToFramePadding();
-            ImGui::TextUnformatted(keyboard::ActionLabel(a));
-            ImGui::SameLine(ImGui::GetColumnWidth() * 0.55f);
-            if (ImGui::Button(key, ImVec2(-FLT_MIN, 0)) && !g_rebind_settle) {
-                g_rebind = a;
-                g_rebind_armed = false;
+            ImGui::TextUnformatted(r.label);
+            ImGui::SameLine(column);
+            for (int s = 0; s < kSlots; s++) {
+                if (s) ImGui::SameLine(0, spacing);
+                ImGui::PushID(s);
+                const bool waiting = g_rebind == r.action && g_rebind_slot == s;
+                if (ImGui::Button(waiting ? "press..." : KeyName(g_keys[r.action][s]), ImVec2(key_w, 0)) &&
+                    !g_rebind_settle) {
+                    g_rebind = r.action;
+                    g_rebind_slot = s;
+                    g_rebind_armed = false;
+                }
+                if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) {
+                    g_keys[r.action][s] = 0;
+                    if (waiting) g_rebind = -1;
+                }
+                ImGui::PopID();
             }
-            if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) {
-                keyboard::g_keys[a] = 0;
-                if (g_rebind == a) g_rebind = -1;
+            ImGui::SameLine(0, spacing);
+            ImGui::BeginDisabled(IsDefault(r.action));
+            if (ImGui::Button("Reset")) {
+                ResetKey(r.action);
+                if (g_rebind == r.action) g_rebind = -1;
             }
+            ImGui::EndDisabled();
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+                ImGui::SetTooltip("default: %s", ActionDefault(r.action));
             ImGui::PopID();
         }
-        ImGui::EndTable();
+        ImGui::EndChild();
+        ImGui::PopID();
     }
+    ImGui::EndTable();
     if (ImGui::Button("Default keys")) {
         keyboard::ResetKeys();
         g_rebind = -1;
@@ -204,7 +257,7 @@ void Draw(double fps) {
     if (!open) return;
 
     app::Settings& s = app::Get();
-    ImGui::SetNextWindowSize(ImVec2(520, 560), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(640, 600), ImGuiCond_FirstUseEver);
     if (ImGui::Begin("Settings")) {
         bool keys_shown = false;
         if (ImGui::BeginTabBar("##tabs")) {

@@ -20,13 +20,18 @@ enum Action : int {
     kActions
 };
 
-// settings.toml [keys]: each action's Windows virtual-key code, 0 unbound; read live, so the F1 menu rebinds
-extern int g_keys[kActions];
+// settings.toml [keys]: up to two Windows virtual-key codes (a key or a mouse button) per action, either one drives
+// it, 0 unbound; read live, so the F1 menu rebinds
+constexpr int kSlots = 2;
+extern int g_keys[kActions][kSlots];
 
 const char* ActionLabel(int action);  // for the F1 menu, "Move up"
+const char* ActionDefault(int action);  // its default key's name
 const char* KeyName(int vk);          // "W", "Space", "Mouse 4"; "-" for 0, null for a key that cannot be bound
 bool Bindable(int vk);                // not F1 / Insert (the menu) or Escape (cancels a rebind)
 void ResetKeys();                     // the default layout
+void ResetKey(int action);            // one action's default: its key in the first slot, the second empty
+bool IsDefault(int action);
 
 // the GameInfo::load / save hooks: the [keys] table of settings.toml
 void Load(const void* table);
