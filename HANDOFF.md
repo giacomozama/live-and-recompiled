@@ -357,7 +357,9 @@ next launch makes them in the background from the start.
 ### MSAA (2026-10-16)
 `msaa` in `settings.toml` (1, 2, 4 or 8; F1 menu "MSAA") multisamples the targets the size of the title's frame
 (`guest_w_` x `guest_h_`). Shadow maps and the other smaller targets stay single sampled. Changing it applies live,
-like Render %: every target is made again.
+like Render %: `RemakeTargets` makes every target again and draws the old picture into the new one. Dropping them
+instead, as before, turned the bar's bottles into noise: their environment map is drawn once per level and read from
+its target, and guest memory never held it.
 - **Two copies per target.** A multisampled `Target` keeps `res` (single sample) and adds `ms`. `res` stays what
   everything reads: textures, `Feedback`, `DepthBytes`, copies, read-backs, captures and the present.
 - **What goes to the samples.** A draw goes to the samples only when every bound target has them; otherwise it goes
