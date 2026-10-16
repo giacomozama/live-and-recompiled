@@ -52,8 +52,8 @@ threads), `ndisasm` for the disassembly tool, and for running the Windows build 
 ./rebuild.sh --harness                              # Linux headless harness (see docs/debugging.md)
 ```
 
-`run-proton.sh` reads `PROTONPATH` (default `~/.local/share/Steam/compatibilitytools.d/GE-Proton11-7`), `GAMEID`
-and `JOBS`. The Windows exe finds `assets/` by walking up from its own folder, so it runs straight from
+`run-proton.sh` runs the `umu-run` on `PATH` (or `UMU=/path/to/umu-run`) and reads `PROTONPATH` (default
+`~/.local/share/Steam/compatibilitytools.d/GE-Proton11-7`), `GAMEID` and `JOBS`. The Windows exe finds `assets/` by walking up from its own folder, so it runs straight from
 `game/winrun/`; its settings (`settings.toml`), logs, shader records and saves live there too.
 
 On Windows the game repository builds natively with `game/build.bat` (Visual Studio with Clang), as

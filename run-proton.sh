@@ -8,7 +8,7 @@
 #   ./run-proton.sh --skippable-cutscenes   launch with XBE_SKIPPABLE_CUTSCENES: LT skips any in-engine cutscene,
 #                                  seen or not
 #
-# env overrides: PROTONPATH, GAMEID, JOBS
+# env overrides: PROTONPATH, GAMEID, JOBS, UMU (umu-run, default: the one on PATH)
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -17,7 +17,7 @@ WIN="$GAME/out/build/win"
 RUN="$GAME/winrun"
 XRE="$GAME/out/build/release/xbe_recomp"
 PROTON="${PROTONPATH:-$HOME/.local/share/Steam/compatibilitytools.d/GE-Proton11-7}"
-UMU="umu-run"
+UMU="${UMU:-umu-run}"
 JOBS="${JOBS:-$(nproc)}"
 
 export PROTON_ENABLE_WAYLAND=1
@@ -37,7 +37,7 @@ for a in "$@"; do
     esac
 done
 
-[ -x "$UMU" ]    || { echo "missing umu-run: $UMU" >&2; exit 1; }
+command -v "$UMU" >/dev/null || { echo "missing umu-run: install umu-launcher or set UMU" >&2; exit 1; }
 [ -d "$PROTON" ] || { echo "missing Proton: $PROTON" >&2; exit 1; }
 
 if [ "$DO_BUILD" = 1 ]; then
