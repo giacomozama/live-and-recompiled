@@ -418,6 +418,14 @@ The D3D12 F3 capture now prints each draw's stencil state (`sten func ref mask w
 and fail op), a clear's stencil value, and `note stencil enable <v> from <caller>` lines through the new
 `Backend::Note()`, in order with the draws.
 
+### The soldier's flag drew one-sided (2026-10-16)
+The flag on the soldier's pole in the throne room vanished or showed a sliver from behind (draw with texture
+`82429B80`, skinned program `B0101701`, every vertex on bone 0). The renderers culled by the `CULLMODE` /
+`FRONTFACE` render states only, while the title also writes `NV097_SET_CULL_FACE_ENABLE` (`0x308`), `_CULL_FACE`
+(`0x39C`) and `_FRONT_FACE` (`0x3A0`) raw. Raw writes now set the render states as the chip reads them (`ChipCull`:
+the front face's winding when culling `GL_FRONT`, the other one for `GL_BACK`), and the `CullMode` / `FrontFace`
+HLEs fill the three registers as the library's `0x537070` / `0x5370F0` push them.
+
 ### Open
 - **missing loading screen**: the game freezes where a loading screen should show (after the boot splash, when starting
   a new game, between cutscenes); it continues once the level has loaded.
