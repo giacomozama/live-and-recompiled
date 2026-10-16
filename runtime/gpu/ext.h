@@ -33,6 +33,7 @@ struct Target {
     std::vector<uint8_t> read;    // what Sync left in guest memory
     Microsoft::WRL::ComPtr<ID3D12Resource> fb;  // copy read by draws that sample the target they render to
     D3D12_RESOURCE_STATES fb_state = D3D12_RESOURCE_STATE_COPY_DEST;
+    uint64_t fb_draw = 0;  // the draw fb was copied for, which its other stages reading the target share
     // a depth target read as a 32 bit colour texture: its bytes as colour, R the top depth byte (DepthBytes)
     Microsoft::WRL::ComPtr<ID3D12Resource> zb;
     D3D12_RESOURCE_STATES zb_state = D3D12_RESOURCE_STATE_RENDER_TARGET;

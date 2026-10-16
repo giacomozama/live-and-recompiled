@@ -460,6 +460,7 @@ struct DrawTextures {
     D3D12_SHADER_RESOURCE_VIEW_DESC sv[4];
     ID3D12Resource* res[4];
     bool rt[4] = {};            // stage samples a render target
+    uint32_t sampled = 0xF;     // bit per stage the pixel shader reads: the others are bound nothing
     float k[4] = {1, 1, 1, 1};  // Extension::Sample's k
     float wide[4] = {};         // host texels per console texel of a target read into a smaller one, 0 otherwise
 };
@@ -861,6 +862,7 @@ private:
     uint32_t frame_draws_ = 0, frame_opaque_ = 0, frame_counted_ = 0;  // for the optional per-frame summary
     bool tearing_ = false;
     uint64_t presents_ = 0;
+    uint64_t draw_serial_ = 0;  // draws so far, Target::fb_draw
     double fps_ = 0;
     std::chrono::steady_clock::time_point fps_t_ = std::chrono::steady_clock::now();
     uint64_t fps_n_ = 0;
@@ -2096,12 +2098,17 @@ ID3D12Resource* D3D12Backend::BindTargetTexture(const State& s, int stage, const
     }
     if (ext_) ext_->Sampled(d, &t, 0, info);
     sv.Format = t.depth ? DXGI_FORMAT_R24_UNORM_X8_TYPELESS : t.fmt;
-    // the console reads the pixels it is about to overwrite: give the draw a copy
-    if (feedback) return Feedback(t);
+    if (t.depth) info.shadow = ShadowDepthKind(d.format);
+    // left bound but never read (particles over a pass that read the frame): the same shader, no copy or resolve
+    if (!((stages.sampled >> stage) & 1)) return nullptr;
+    // the console reads the pixels it is about to overwrite: give the draw a copy, one for all its stages
+    if (feedback) {
+        if (t.fb && t.fb_draw == draw_serial_) return t.fb.Get();
+        t.fb_draw = draw_serial_;
+        return Feedback(t);
+    }
     ResolveSamples(t);
     Transition(t.res.Get(), t.state, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
-    if (t.depth) info.shadow = ShadowDepthKind(d.format);
-    info.kind = kTex2D;
     return t.res.Get();
 }
 
@@ -2293,12 +2300,14 @@ ID3D12Resource* D3D12Backend::BindTexture(const State& s, int stage, DrawTexture
     if (tit == targets_.end() && !fi.depth && !fi.compressed && fi.bits == 32 && !d.cube && d.depth == 1) {
         auto zit = targets_.find(SizedTargetKey(d.data, true, d.width, d.height));
         if (zit != targets_.end() && zit->second.res) {
-            if (ID3D12Resource* r = DepthBytes(zit->second, d.format)) {
-                stages.rt[stage] = true;
-                info.kind = kTex2D;
-                sv.Format = kBgra;
-                return r;
-            }
+            stages.rt[stage] = true;
+            info.kind = kTex2D;
+            sv.Format = kBgra;
+            if (!((stages.sampled >> stage) & 1)) return nullptr;
+            if (ID3D12Resource* r = DepthBytes(zit->second, d.format)) return r;
+            stages.rt[stage] = false;
+            info.kind = TextureKind(d);
+            sv.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
         }
     }
     return BindGuestTexture(s, stage, d, fi, stages);
@@ -2447,10 +2456,27 @@ void D3D12Backend::EnsureVertexShader(const State& s, const Assembled& a, DrawSh
     if (sh.prog) record_.AddProgram(s.vs->hash, s.vs->program);
 }
 
+// the stages the pixel shader reads: a combiner's by their texture modes (as MakePixelKey takes them), the fixed
+// function's up to the first disabled one
+uint32_t SampledStages(const State& s) {
+    uint32_t mask = 0;
+    if (s.ps) {
+        uint32_t modes = s.rs[kRsPsTextureModes];
+        for (int i = 0; i < 4; i++) {
+            uint32_t m = (modes >> (i * 5)) & 0x1F;
+            if (m && m != 4 && m != 5 && m != 0xA && m != 0x11) mask |= 1u << i;  // none, pass through, clip plane, dots
+        }
+        return mask;
+    }
+    for (int i = 0; i < 4 && s.tss[size_t(i)][kTssColorOp] > 1; i++) mask |= 1u << i;  // D3DTOP_DISABLE
+    return mask;
+}
+
 bool D3D12Backend::BindStageTexturesAndTargets(const State& s, DrawTextures& stages) {
     auto perf_t = PerfClock::now();
     draw_rt_ = bound_rt_;
     draw_ds_ = bound_ds_;
+    stages.sampled = SampledStages(s);
     for (int i = 0; i < 4; i++) stages.res[i] = BindTexture(s, i, stages);
     g_perf.bind += PerfMs(perf_t);
     // textures may have recorded copies that unbound the targets
@@ -3059,6 +3085,7 @@ void D3D12Backend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t 
     PerfScope perf_draw{g_perf.draw};
     g_perf.draws++;
     frame_draws_++;
+    draw_serial_++;
     if (!s.simple[kMBlendEnable >> 2]) frame_opaque_++;
     if (cap_) {
         CapStep(s.rt);
