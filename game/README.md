@@ -1,6 +1,6 @@
-# Game Title - XBE Recomp
+# Conker: Live & Reloaded - XBE Recomp
 
-An unofficial native PC port of the original Xbox version of Game Title, with extended graphics options and other enhancements.
+An unofficial native PC port of the original Xbox version of Conker: Live & Reloaded, with extended graphics options and other enhancements.
 
 This port was created using the [Xbox XBE Recomp](https://github.com/TGP482/XboxXBE-Recomp) tool.
 

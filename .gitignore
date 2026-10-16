@@ -1,4 +1,4 @@
-# provided tools / references (see HANDOFF.md; the SDK is vendored in game/sdk/)
+# provided references, kept beside the checkout (see README.md)
 clr_unpack/
 xemu/
 .vscode/
