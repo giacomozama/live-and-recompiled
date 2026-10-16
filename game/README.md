@@ -23,6 +23,8 @@ This port was created using the [Xbox XBE Recomp](https://github.com/TGP482/Xbox
 
 
 ### Graphics
+- **MSAA** - 2x, 4x or 8x multisample anti-aliasing of the 3D view, from the F1 menu or `msaa` in `settings.toml`. It
+  applies at once. Alpha-tested edges such as foliage and fur are not smoothed.
 - **Shader Warm-up** - The shaders and pipelines a run builds are listed in `shaders.rec` beside the exe, and the next
   launch builds them in the background while the game boots, before the frames that need them. `shaders.rec` holds no
   game code and can be shared: vertex programs are named in it by hash, and their code goes in `shader_programs.bin`,

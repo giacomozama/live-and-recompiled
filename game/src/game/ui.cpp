@@ -152,6 +152,12 @@ void Draw(double fps) {
             if (kAniso[i] == s.aniso) aniso = i;
         if (ImGui::Combo("Anisotropic", &aniso, "Game default\0 2x\0 4x\0 8x\0 16x\0")) s.aniso = kAniso[aniso];
 
+        constexpr uint32_t kMsaa[] = {1, 2, 4, 8};
+        int msaa = 0;
+        for (int i = 0; i < 4; i++)
+            if (kMsaa[i] == s.msaa) msaa = i;
+        if (ImGui::Combo("MSAA", &msaa, "Off\0 2x\0 4x\0 8x\0")) s.msaa = kMsaa[msaa];
+
         constexpr uint32_t kRates[] = {30, 60, 120};
         int rate = 0;
         for (int i = 0; i < 3; i++)

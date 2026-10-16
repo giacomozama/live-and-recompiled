@@ -354,6 +354,25 @@ next launch makes them in the background from the start.
   - `Instance() > 1` reads the files without writing them.
   - `shader_warmup = false` in `settings.toml` turns the warm-up off; recording stays on.
 
+### MSAA (2026-10-16)
+`msaa` in `settings.toml` (1, 2, 4 or 8; F1 menu "MSAA") multisamples the targets the size of the title's frame
+(`guest_w_` x `guest_h_`). Shadow maps and the other smaller targets stay single sampled. Changing it applies live,
+like Render %: every target is made again.
+- **Two copies per target.** A multisampled `Target` keeps `res` (single sample) and adds `ms`. `res` stays what
+  everything reads: textures, `Feedback`, `DepthBytes`, copies, read-backs, captures and the present.
+- **What goes to the samples.** A draw goes to the samples only when every bound target has them; otherwise it goes
+  to `res` (for example, a colour format the GPU can't multisample).
+- **Which copy is newer.** `ms_ahead` and `res_ahead` say which copy is newer:
+  - `ResolveSamples` runs before `res` is read or partly written. Colour uses `ResolveSubresource`. Depth and
+    stencil take sample 0: depth through `SV_Depth`, and stencil one bit per pass (clear, then 8 passes with REPLACE
+    and a one-bit write mask), because stencil export isn't available everywhere under vkd3d-proton.
+  - `SpreadSamples` copies `res` back to the samples before the next draw or clear, after a CPU upload, a copy, or a
+    depth copy into the target. Conker's depth of field masks by stencil, which is why the stencil travels too.
+- **Pipelines.** `PsoKey::samples` carries the sample count into recorded pipelines. Adding it changed
+  `kRecordLayout`, so `shaders.rec` from before this change starts over once.
+- **Limits.** Occlusion counts divide by the samples, as they did by the render scale. Alpha-tested edges (foliage,
+  fur) don't get smoother; that would need alpha to coverage. With a renderer extension, MSAA stays off.
+
 ### Open
 - **missing loading screen**: the game freezes where a loading screen should show (after the boot splash, when starting
   a new game, between cutscenes); it continues once the level has loaded.
@@ -1137,6 +1156,8 @@ The internals that need it are host-replaced instead.
 - `runtime/gpu/shader_record.{h,cpp}` (new), `runtime/gpu/d3d12.cpp`, `runtime/app` — shaders and pipelines are
   recorded to `shaders.rec` / `shader_programs.bin` and made ahead at the next launch (`shader_warmup` setting); see
   [Shader recording and warm-up](#shader-recording-and-warm-up-2026-10-16).
+- `runtime/gpu/d3d12.cpp`, `runtime/gpu/ext.h` (`Target::ms`), `runtime/app` — the `msaa` setting multisamples the
+  frame-sized targets; see [MSAA](#msaa-2026-10-16).
 - `harness/build.sh`, `harness/run.sh` — executable bit only. Regenerate the whole patch with
   `git -C XboxXBERecomp diff > ../patches/xboxxberecomp.patch`.
 
