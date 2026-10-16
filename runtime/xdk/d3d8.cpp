@@ -767,12 +767,16 @@ HLE_STDCALL(D3DDevice_SetScreenSpaceOffset, 2) {
 // render states
 
 HLE_FASTCALL(D3DDevice_SetRenderState_Simple, 0) {
+    std::lock_guard<std::recursive_mutex> lock(g_lock);
+    Walk(Dev(kDevPush));  // state set around a raw push must not reach the pending commands first
     uint32_t method = a[0] & 0x1FFC, value = a[1];
     g_state.simple[method >> 2] = value;
     return 0;
 }
 
 HLE_STDCALL(D3DDevice_SetRenderStateNotInline, 2) {
+    std::lock_guard<std::recursive_mutex> lock(g_lock);
+    Walk(Dev(kDevPush));  // state set around a raw push must not reach the pending commands first
     uint32_t rs = a[0], v = a[1];
     if (rs < gpu::kRsDeferredFirst) {
         uint32_t method = R32(kSimpleEncode + rs * 4) & 0x1FFC;
@@ -784,10 +788,12 @@ HLE_STDCALL(D3DDevice_SetRenderStateNotInline, 2) {
     return 0;
 }
 
-#define COMPLEX_STATE(name, rs)                       \
-    HLE_STDCALL(D3DDevice_SetRenderState_##name, 1) { \
-        SetComplex(rs, a[0]);                         \
-        return 0;                                     \
+#define COMPLEX_STATE(name, rs)                                \
+    HLE_STDCALL(D3DDevice_SetRenderState_##name, 1) {          \
+        std::lock_guard<std::recursive_mutex> lock(g_lock);    \
+        Walk(Dev(kDevPush));                                   \
+        SetComplex(rs, a[0]);                                  \
+        return 0;                                              \
     }
 COMPLEX_STATE(PSTextureModes, gpu::kRsPsTextureModes)
 COMPLEX_STATE(VertexBlend, gpu::kRsVertexBlend)
@@ -801,6 +807,8 @@ namespace {
 void NoteStencil(const char* how, uint32_t v, uint32_t from);
 }  // namespace
 HLE_STDCALL(D3DDevice_SetRenderState_StencilEnable, 1) {
+    std::lock_guard<std::recursive_mutex> lock(g_lock);
+    Walk(Dev(kDevPush));  // state set around a raw push must not reach the pending commands first
     NoteStencil("from", a[0], R32(ctx.esp));
     SetComplex(gpu::kRsStencilEnable, a[0]);
     return 0;
