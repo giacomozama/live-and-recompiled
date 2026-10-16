@@ -2196,6 +2196,8 @@ void D3D12Backend::UploadTexture(Tex& tx, const TextureDesc& d, const FormatInfo
         for (uint32_t l = 0; l < tx.levels; l++) {
             uint32_t pitch;
             DecodeLevel(d, l, f, p, colours, px, pitch);
+            if (OffsetSigned(d.format))
+                for (uint8_t& b : px) b ^= 0x80;
             if (ext_) ext_->Decoded(d, fi, f, l, px, pitch, tx.flags);
             UploadTextureLevel(tx, f, l, px, pitch);
         }
@@ -2267,6 +2269,7 @@ ID3D12Resource* D3D12Backend::BindGuestTexture(const State& s, int stage, const 
     }
     FillTextureView(tx, d, stages.sv[stage]);
     if (fi.depth) info.shadow = ShadowDepthKind(d.format);
+    if (OffsetSigned(d.format)) info.flags |= kTexOffset;
     if (ext_) ext_->Sampled(d, nullptr, tx.flags, info);
     return tx.res.Get();
 }

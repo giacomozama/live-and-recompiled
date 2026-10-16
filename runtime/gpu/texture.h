@@ -19,6 +19,9 @@ struct FormatInfo {
 };
 
 const FormatInfo& Format(uint32_t xbox_format);
+// V8U8 and LIN_V8U8, two's complement du dv: uploaded offset by 128 so the filter blends them as signed (+1 next to -1
+// blended as unsigned bytes reads -1, an outline along every zero of a bump map); the shader takes the 128 off again
+bool OffsetSigned(uint32_t xbox_format);
 
 // a D3DPixelContainer decoded
 struct TextureDesc {

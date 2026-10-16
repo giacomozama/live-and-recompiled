@@ -14,10 +14,11 @@ struct TexInfo {
     uint8_t kind = kTexNone;
     uint8_t rect = 0;    // linear texture, coordinates in texels
     uint8_t shadow = 0;  // depth texture: 1 D24, 2 D16
-    uint8_t flags = 0;   // kTexWide; bits 0 and 1 are a backend extension's
+    uint8_t flags = 0;   // kTexWide, kTexOffset; bits 0 and 1 are a backend extension's
 };
 enum : uint8_t {
-    kTexWide = 4,  // an upscaled target shrunk by the pass: each tap averaged over console texels
+    kTexWide = 4,    // an upscaled target shrunk by the pass: each tap averaged over console texels
+    kTexOffset = 8,  // uploaded offset by 128 (OffsetSigned): the fetch reads back the console's bytes
 };
 
 struct PixelKey {

@@ -377,6 +377,13 @@ struct Ps {
     }
 };
 
+// a kTexOffset fetch back to the console's bytes, filtered as signed: from 127.5 down a blend of -1 and 0 reads just
+// under 256 (or just under 0), which sbyte takes as the small negative it is
+std::string Unoffset(const TexInfo& t, int i) {
+    if (!(t.flags & kTexOffset)) return {};
+    return F("{ float4 o = t%d * 255; t%d = (o + (o < 127.5 ? 128 : -128)) / 255; }\n", i, i);
+}
+
 // a dot stage's operand: the source stage's rgb, raw or read back as signed bytes
 std::string DotInput(uint32_t map, uint32_t src) {
     switch (map) {
@@ -827,6 +834,7 @@ std::string PixelHlsl(const PixelKey& k) {
     if (k.programmable) {
         for (int i = 0; i < 4; i++) {
             body += TexFetch(k, i);
+            body += Unoffset(k.tex[i], i);
             body += Hooks().Fetched(k.tex[i], i);
         }
         for (int i = 0; i < 4; i++) {
@@ -883,6 +891,7 @@ std::string PixelHlsl(const PixelKey& k) {
             // a stage without a texture reads black, as on the console (Conker's peephole bars select it over black
             // vertices), and as a combiner stage that samples nothing does
             else body += F("float4 t%d = float4(0,0,0,1);\n", i);
+            body += Unoffset(t, i);
             body += Hooks().Fetched(t, i);
             if ((k.alphakill >> i) & 1) body += F("if (t%d.a == 0) discard;\n", i);
             const char* dst = f[8] == 5 ? "tmp" : "cur";

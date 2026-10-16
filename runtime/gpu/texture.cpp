@@ -266,6 +266,8 @@ const FormatInfo& Format(uint32_t f) {
     return kUnknown;
 }
 
+bool OffsetSigned(uint32_t f) { return f == 0x28 || f == 0x17; }
+
 bool Describe(uint32_t header, TextureDesc& d) {
     using namespace kernel;
     if (!header) return false;
