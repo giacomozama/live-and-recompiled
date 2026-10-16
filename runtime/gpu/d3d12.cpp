@@ -2604,11 +2604,11 @@ void FillSurfaceConstants(const State& s, GuestExtent size, DrawConstants& c) {
 
 constexpr float kMaxPointSize = 64;  // the console's largest point
 
-// a vertex program's oPts is the size; the fixed function takes D3DRS_POINTSIZE, scaled when D3DRS_POINTSCALEENABLE is
-void FillPointConstants(const State& s, bool vertex_program, DrawConstants& c) {
+// a vertex program's oPts is the size; the fixed function takes D3DRS_POINTSIZE, scaled when D3DRS_POINTSCALEENABLE
+// is; stage0: the sprite's coordinates go to stage 0 (FixedSprite), else to stage 3
+void FillPointConstants(const State& s, bool vertex_program, bool stage0, DrawConstants& c) {
     c.pts[3] = kMaxPointSize;
-    // the sprite's coordinates: stage 3's under a pixel shader, stage 0's for the fixed function (FixedSprite)
-    c.ptsk[3] = !s.rs[kRsPointSpriteEnable] ? 0.0f : s.ps ? 1.0f : 2.0f;
+    c.ptsk[3] = !s.rs[kRsPointSpriteEnable] ? 0.0f : stage0 ? 2.0f : 1.0f;
     if (vertex_program) return;
     c.pts[0] = Bits(s.rs[kRsPointSize]);
     if (s.rs[kRsPointScaleEnable]) {
@@ -2788,7 +2788,7 @@ void D3D12Backend::UploadConstants(const State& s, const DrawShaders& sh, const 
     // points: host pixels per console pixel, also keeps them off the far edge pull out of screen passes
     if (k.topo == uint32_t(Topology::Points)) {
         c.surf[3] = PointScale();
-        FillPointConstants(s, sh.prog, c);
+        FillPointConstants(s, sh.prog, &s == &sprite_, c);
     }
     FillFogConstants(s, sh.prog, c);
     FillCombinerConstants(s, c);
@@ -3108,14 +3108,18 @@ void CountedSkip(const State& s, const char* why) {
 
 constexpr uint32_t kPrimPoints = 1;  // D3DPT_POINTLIST
 
-// The console gives only stage 3 sprite coordinates, so the fixed function draws a point sprite with stage 0's colour
-// and alpha ops on stage 3's texture, sampled as stage 3 sets it: Conker binds its blood sprite there and leaves stage
-// 0 empty, which read as white squares
+// The console gives only stage 3 sprite coordinates. A fixed function point sprite whose stages reach stage 3 samples
+// the sprite there; one whose stages end before it runs them on stage 3's texture in stage 0, sampled as stage 3 sets
+// it. Conker draws one blood splash both ways, by the stage states earlier draws left: stages 0 to 3 with the sprite
+// on stage 3, or stage 0 alone, empty, with the sprite on stage 3, which read as white squares.
 bool FixedSprite(const State& s, uint32_t prim) {
-    return prim == kPrimPoints && !s.ps && s.rs[kRsPointSpriteEnable] && s.textures[3];
+    if (prim != kPrimPoints || s.ps || !s.rs[kRsPointSpriteEnable] || !s.textures[3]) return false;
+    uint32_t stages = 0;
+    while (stages < 4 && s.tss[stages][kTssColorOp] > 1) stages++;  // D3DTOP_DISABLE ends them
+    return stages >= 1 && stages < 4;
 }
 
-// s as FixedSprite draws it: stage 3's texture and sampling on stage 0
+// s as FixedSprite draws it: stage 3's texture and sampling on stage 0, which takes the sprite's coordinates
 void SpriteStage(State& s) {
     s.textures[0] = std::exchange(s.textures[3], 0);
     s.palettes[0] = std::exchange(s.palettes[3], 0);
