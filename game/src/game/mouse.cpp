@@ -44,6 +44,7 @@
 #include <string>
 #include <mutex>
 
+#include "app/app.h"
 #include "common/display.h"
 #include "common/ui.h"
 #include "core/input.h"
@@ -144,6 +145,27 @@ bool Trace() {
     return on;
 }
 
+// XBE_MOUSE_TRACE and F10: the player camera and the player object to camdump_N.bin beside the exe (camera 0xA00
+// bytes, then player 0x770), to tell the camera's modes apart
+void Dump(uint32_t cam) {
+    static bool was = false;
+    const bool down = (GetAsyncKeyState(VK_F10) & 0x8000) != 0;
+    const bool press = down && !was;
+    was = down;
+    if (!press) return;
+    static int n = 0;
+    const uint32_t player = R32(kPlayer);
+    if (!Readable(cam, 0xA00) || !Readable(player, 0x770)) return;
+    const std::string name = (app::ExeDir() / ("camdump_" + std::to_string(++n) + ".bin")).string();
+    if (FILE* f = std::fopen(name.c_str(), "wb")) {
+        std::fwrite(mem::Base() + cam, 1, 0xA00, f);
+        std::fwrite(mem::Base() + player, 1, 0x770, f);
+        std::fclose(f);
+        LOGR("mouse: dumped camera %08X and player %08X to %s (pitch %.2f, sum %.2f)", cam, player, name.c_str(),
+             RF(cam + kView), RF(cam + kPitch));
+    }
+}
+
 // the motion since the last call straight into the player camera's yaw and the view's pitch; false when there is no
 // camera to turn.
 //
@@ -174,6 +196,7 @@ bool Turn(input::Pad& pad) {
         else logx::Write(lv, "mouse: no player camera, look drives the right stick");
     }
     if (!cam) return false;
+    if (Trace()) Dump(cam);
     const float k = kDegreesPerCount * float(g_sensitivity) / 100.0f;
     // mouse right turns as the stick right does: it lowers the yaw
     if (dx) WF(cam + kYaw, RF(cam + kYaw) - float(dx) * k);
