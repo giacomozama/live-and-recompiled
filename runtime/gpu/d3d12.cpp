@@ -3159,9 +3159,14 @@ void D3D12Backend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t 
                 s.chip_fog, s.fog_enable, s.fog_mode, s.fog_param[0], s.fog_param[1], s.rs[kRsFogEnable],
                 s.rs[kRsFogTableMode], c.fog[0], c.fog[1], c.fog[2], c.fog[3], s.rs[kRsFogColor],
                 s.simple[0x288 >> 2], s.simple[0x28C >> 2]);
+        // the stages as the pixel shader reads them: texture modes (5 bits per stage) or the fixed function's
+        fprintf(cap_, "\n     stages modes %05X sampled %X", s.ps ? s.rs[kRsPsTextureModes] : 0, stages.sampled);
+        // points: the render states the renderer draws by, then what the title pushed raw for the same registers
+        // (NV097_SET_POINT_PARAMS_ENABLE 0x318, _POINT_SMOOTH_ENABLE 0x31C, _POINT_SIZE 0x43C)
         if (k.topo == uint32_t(Topology::Points))
-            fprintf(cap_, "\n     points sprite %u size %g scale %u %g %g %g limits %g %g", s.rs[kRsPointSpriteEnable],
-                    c.pts[0], s.rs[kRsPointScaleEnable], c.ptsk[0], c.ptsk[1], c.ptsk[2], c.pts[2], c.pts[3]);
+            fprintf(cap_, "\n     points sprite %u size %g scale %u %g %g %g limits %g %g | raw 318 %X 31C %X 43C %X",
+                    s.rs[kRsPointSpriteEnable], c.pts[0], s.rs[kRsPointScaleEnable], c.ptsk[0], c.ptsk[1], c.ptsk[2],
+                    c.pts[2], c.pts[3], s.simple[0x318 >> 2], s.simple[0x31C >> 2], s.simple[0x43C >> 2]);
         for (int i = 0; i < 2; i++) {
             D3D12_SAMPLER_DESC sd = StageSampler(s, i, stages, UnitTexcoords(a), app::Get().aniso);
             fprintf(cap_, "\n     s%d filter %X addr %u %u lod %g..%g bias %g aniso %u mips %u+%u", i, sd.Filter,
