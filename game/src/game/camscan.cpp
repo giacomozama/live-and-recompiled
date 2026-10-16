@@ -4,14 +4,18 @@
 // is copied into each player's pad by 0x4E0D0; past that every reader goes through player objects). So this watches
 // the result instead: a background thread passes over every committed page of guest memory, and each float that
 // changed since the last pass gets a vote: +1 when it moved the way the right stick points (x for yaw, y for
-// pitch), -1 the other way, and a mark against it when it changed with the stick at rest. An angle the stick turns
-// collects votes on every pass the stick is held; a position or a sine flips sign with the quadrant and cancels out.
+// pitch), -1 the other way, and a mark against it when it changed with the stick at rest for over a second (so a
+// value that eases after the stick is let go is not marked). An angle the stick turns collects votes on every pass
+// the stick is held; a position or a sine flips sign with the quadrant and cancels out.
 //
 // Use: stand still in a level, F6, then hold the right stick (or the mouse with mouse look on) left, right, up and
 // down for a few seconds each, resting between. F7 logs the best candidates, each with the image globals that point
-// a little below it (an object holding it) and, for the best three, the nearest pointers to it anywhere in memory,
-// as "camscan:" lines. F8 then nudges each candidate and logs which ones the camera keeps (see Probe). F6 again
-// starts over (and takes in pages committed since).
+// a little below it (an object holding it) and, for the best pitch ones, the nearest pointers to it anywhere in
+// memory, as "camscan:" lines. F8 then nudges each pitch candidate in turn and logs what follows it (see Probe). F6
+// again starts over (and takes in pages committed since).
+//
+// Found so far: the player camera is [[0x8470DC] + 4], yaw at +0x60 (mouse.cpp turns it). Its +0x970 moves with the
+// stick's y and keeps a written value, but writing it does not tilt the view.
 #include "common/camscan.h"
 
 #if defined(_WIN32)
@@ -51,7 +55,9 @@ constexpr uint32_t kDataLow = 0x64F980, kDataHigh = 0x883280;
 
 std::atomic<int> g_rx{0}, g_ry{0};
 std::atomic<bool> g_reset{true}, g_dump{false}, g_probe{false};
-std::vector<uint32_t> g_candidates;  // the last F7's best, yaw then pitch
+std::vector<uint32_t> g_candidates;  // the last F7's best pitch candidates, for F8
+// a value that eases after the stick is let go still counts as still once the stick has rested this long
+constexpr int64_t kSettleUs = 1000000;
 
 struct Slot {
     uint32_t bits;
@@ -99,7 +105,13 @@ void Pass() {
     const int rx = g_rx.load(), ry = g_ry.load();
     const int sx = rx >= kHeld ? 1 : rx <= -kHeld ? -1 : 0;
     const int sy = ry >= kHeld ? 1 : ry <= -kHeld ? -1 : 0;
-    const bool rest = std::abs(rx) < 2000 && std::abs(ry) < 2000;
+    static int64_t rest_since = 0;
+    const int64_t now = std::chrono::duration_cast<std::chrono::microseconds>(
+                            std::chrono::steady_clock::now().time_since_epoch()).count();
+    const bool idle = std::abs(rx) < 2000 && std::abs(ry) < 2000;
+    if (!idle) rest_since = 0;
+    else if (!rest_since) rest_since = now;
+    const bool rest = idle && now - rest_since > kSettleUs;
     if (sx) g_passes_x++;
     if (sy) g_passes_y++;
     if (rest) g_passes_still++;
@@ -148,32 +160,39 @@ void HeapOwners(uint32_t va) {
         LOGR("camscan:     *%08X = %08X, +0x%X", below[i].second, va - below[i].first, below[i].first);
 }
 
-// F8: nudges each candidate by 10 and looks again 300 ms later. The value the camera keeps holds the nudge and its
-// copies follow it; a copy the game derives each frame is written back.
+// F8: nudges each pitch candidate (10 for an angle, 0.2 for a sine or a vector) and looks again 500 ms later. The
+// value the camera keeps holds the nudge and what it drives follows it; a value the game derives each frame is
+// written back. Numbered and a second apart, so the player can tell which ones tilted the view.
 void Probe() {
     if (g_candidates.empty()) {
         LOGR("camscan: F7 first, the probe nudges its candidates");
         return;
     }
-    LOGR("camscan: probing %zu candidates; leave the stick at rest", g_candidates.size());
-    for (uint32_t c : g_candidates) {
+    LOGR("camscan: probing %zu candidates a second apart; leave the stick at rest, watch the view tilt",
+         g_candidates.size());
+    for (size_t n = 0; n < g_candidates.size(); n++) {
+        const uint32_t c = g_candidates[n];
         std::vector<float> before;
         for (uint32_t o : g_candidates) before.push_back(LoadF(o));
-        StoreF(c, LoadF(c) + 10.0f);
-        std::this_thread::sleep_for(std::chrono::milliseconds(300));
+        const float nudge = std::fabs(LoadF(c)) > 2.0f ? 10.0f : 0.2f;
+        StoreF(c, LoadF(c) + nudge);
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
         std::string followers;
         float kept = 0;
         for (size_t i = 0; i < g_candidates.size(); i++) {
             const float d = LoadF(g_candidates[i]) - before[i];
             if (g_candidates[i] == c) kept = d;
-            else if (std::fabs(d) > 0.5f) {
+            else if (std::fabs(d) > 0.01f) {
                 char buf[48];
-                std::snprintf(buf, sizeof buf, " %08X%+.1f", g_candidates[i], d);
+                std::snprintf(buf, sizeof buf, " %08X%+.3f", g_candidates[i], d);
                 followers += buf;
             }
         }
-        LOGR("camscan:   %08X kept %+.2f of +10; moved with it:%s", c, kept, followers.empty() ? " none" : followers.c_str());
+        LOGR("camscan:   #%zu %08X kept %+.3f of %+.1f; moved with it:%s", n + 1, c, kept, nudge,
+             followers.empty() ? " none" : followers.c_str());
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
     }
+    LOGR("camscan: probe done");
 }
 
 void Dump() {
@@ -187,7 +206,7 @@ void Dump() {
             const int v = std::abs(axis ? s.y : s.x) - 2 * s.still;
             if (v > 4) best.push_back({v, i});
         }
-        const size_t n = std::min<size_t>(best.size(), 16);
+        const size_t n = std::min<size_t>(best.size(), axis ? 24 : 8);
         std::partial_sort(best.begin(), best.begin() + n, best.end(), std::greater<>());
         LOGR("camscan: %s candidates (%zu scored)", axis ? "pitch (stick y)" : "yaw (stick x)", best.size());
         for (size_t j = 0; j < n; j++) {
@@ -196,9 +215,9 @@ void Dump() {
             float f;
             std::memcpy(&f, &s.bits, 4);
             LOGR("camscan:   %08X = %10.4f  x %+d  y %+d  at rest %u", va, f, s.x, s.y, s.still);
-            if (j < 8) g_candidates.push_back(va);
+            if (axis) g_candidates.push_back(va);
             if (j < 8) Owners(va);
-            if (j < 3) HeapOwners(va);
+            if (axis && j < 6) HeapOwners(va);
         }
     }
 }
