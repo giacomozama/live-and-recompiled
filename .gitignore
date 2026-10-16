@@ -6,3 +6,5 @@ xemu/
 iso/
 *.iso
 60fps/
+umu-run/
+.claude/
