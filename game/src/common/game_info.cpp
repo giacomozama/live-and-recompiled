@@ -1,6 +1,7 @@
 #include "app/app.h"
 #include "common/cutscenes.h"
 #include "common/display.h"
+#include "common/grass.h"
 #include "common/keyboard.h"
 #include "common/ui.h"
 
@@ -17,7 +18,8 @@ const app::GameInfo app::kGame = {
     .options = {{"fps_overlay", &ui::g_fps_overlay, nullptr},  // ImGui settings menu options (src/game/ui.cpp)
                 {"fps_in_title", &ui::g_fps_title, nullptr},
                 {"frame_rate", nullptr, &display::g_frame_rate},  // 30, 60 or 120 (src/game/display.cpp)
-                {"skippable_cutscenes", &cutscenes::g_skippable, nullptr}},  // LT skips any cutscene (hooks.cpp)
+                {"skippable_cutscenes", &cutscenes::g_skippable, nullptr},  // LT skips any cutscene (hooks.cpp)
+                {"grass_wind", &grass::g_wind, nullptr}},  // distant grass sways too (hooks.cpp)
     .load = nullptr,                      // reads more from the settings file's toml::table
     .save = nullptr,                      // writes more into it
     .init = nullptr,                      // after the settings load, before the window and boot

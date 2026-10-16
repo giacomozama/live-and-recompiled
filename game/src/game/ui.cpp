@@ -30,6 +30,7 @@
 #include "app/app.h"
 #include "common/cutscenes.h"
 #include "common/display.h"
+#include "common/grass.h"
 
 namespace ui {
 
@@ -157,6 +158,10 @@ void Draw(double fps) {
         for (int i = 0; i < 4; i++)
             if (kMsaa[i] == s.msaa) msaa = i;
         if (ImGui::Combo("MSAA", &msaa, "Off\0 2x\0 4x\0 8x\0")) s.msaa = kMsaa[msaa];
+
+        ImGui::Checkbox("Wind on distant grass", &grass::g_wind);
+        ImGui::SameLine();
+        ImGui::TextDisabled("the console keeps it still");
 
         constexpr uint32_t kRates[] = {30, 60, 120};
         int rate = 0;

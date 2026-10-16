@@ -391,6 +391,12 @@ to `661`. Ruled out on the way: the `CONTROL0` LOD clamps (Conker only ever writ
 Harness note: walking in TrainingLevel (pad `LSD`) hit a guest divide error at `0x53A833` (D3D library); not
 investigated.
 
+**Wind on distant grass** (enhancement, `grass_wind` setting, default on; F1 "Wind on distant grass";
+`XBE_GRASS_WIND=0` off). The patch renderer `0x1A9540` binds the wind program from `[0x6B89A4]` at full strength
+and the plain one from `[0x6B89DC]` while `[patch+0x5C] < 255`. Both declarations read the same stride 12 vertices
+(texcoord as `v7` / `v2`) with the same constants, so a wrapper in `src/game/hooks.cpp` points `[0x6B89DC]` at the
+wind handle for the call and puts it back; the fade (stage 1 `alpha * TFACTOR`, scaled alpha reference) is unchanged.
+
 ### Open
 - **missing loading screen**: the game freezes where a loading screen should show (after the boot splash, when starting
   a new game, between cutscenes); it continues once the level has loaded.

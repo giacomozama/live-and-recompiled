@@ -16,6 +16,7 @@
 #include "xdk/dsound.h"
 
 #include "common/cutscenes.h"
+#include "common/grass.h"
 
 namespace {
 
@@ -61,6 +62,28 @@ X86_FUNC(sub_0004FF00) {
         return;
     }
     __imp__sub_0004FF00(ctx, base);
+}
+
+// 0x1A9540: draws one grass patch (a node renderer, [patch+0x5C] its fade). A patch at full strength binds the wind
+// program (handle at 0x6B89A4: blades bend with time and away from the player, by (1 - v)^2 up the blade); a fading
+// one binds a plain transform (0x6B89DC) and fades it with the texture factor and a scaled alpha reference. The two
+// declarations read the same stride 12 vertices, the texture coordinate as v7 or v2, and share their constants, so
+// grass::g_wind (or XBE_GRASS_WIND=0 off) hands the fading patches the wind program too: only the handle the
+// fading path reads changes, for this call, and the rest of its fade stays as it is.
+bool grass::g_wind = true;
+
+X86_EXTERN_FUNC(__imp__sub_001A9540);
+X86_FUNC(sub_001A9540) {
+    static const char* env = std::getenv("XBE_GRASS_WIND");
+    constexpr uint32_t kWind = 0x6B89A4, kFade = 0x6B89DC;
+    uint32_t wind = kernel::R32(kWind), fade = kernel::R32(kFade);
+    if (!(env ? env[0] != '0' : grass::g_wind) || !wind) {
+        __imp__sub_001A9540(ctx, base);
+        return;
+    }
+    kernel::W32(kFade, wind);
+    __imp__sub_001A9540(ctx, base);
+    kernel::W32(kFade, fade);
 }
 
 // 0x4C950: the controller layer's init. It first opens the pads XGetDevices reports (0x3D19C0, which marks each
