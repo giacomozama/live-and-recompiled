@@ -17,7 +17,7 @@ WIN="$GAME/out/build/win"
 RUN="$GAME/winrun"
 XRE="$GAME/out/build/release/xbe_recomp"
 PROTON="${PROTONPATH:-$HOME/.local/share/Steam/compatibilitytools.d/GE-Proton11-7}"
-UMU="$ROOT/umu-run"
+UMU="umu-run"
 JOBS="${JOBS:-$(nproc)}"
 
 export PROTON_ENABLE_WAYLAND=1
