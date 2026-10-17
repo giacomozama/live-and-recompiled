@@ -130,6 +130,9 @@ conker-lar/
   toolchain/            gitignored: llvm-mingw and Zig, fetched on demand
 ```
 
+The config keys beyond the basics (`[[hook]]`, `[[function]]`, `[[switch]]`, `data_ranges`) are described at the top of
+`game/sdk/tools/recomp/main.cpp`, and `game/sdk/tools/symbols/xbe2pe.py` makes a Ghidra-loadable PE of the image.
+
 ## Two ways to get the game
 
 There are two ways to end up with `Game.exe` or the native Linux `Game`, and both start from your own copy of the
@@ -288,6 +291,7 @@ Both scripts run `tools/package.cmake`, which can also be run directly: `cmake -
 
 - [Xbox XBE Recomp](https://github.com/TGP482/XboxXBE-Recomp), the recompiler and runtime this is built on.
 - [XenonRecomp](https://github.com/hedge-dev/XenonRecomp) for the overridable function layout and instruction hooks.
+- [xemu](https://github.com/xemu-project/xemu) and [Cxbx-Reloaded](https://github.com/Cxbx-Reloaded/Cxbx-Reloaded) as references for the Xbox's hardware and API behaviour. This project does not use emulation or any emulator code.
 - [Zydis](https://github.com/zyantific/zydis) for decoding x86 instructions, [toml++](https://github.com/marzer/tomlplusplus) for the configs, [Dear ImGui](https://github.com/ocornut/imgui) for the settings overlay and [SDL](https://github.com/libsdl-org/SDL) for the window, input and controllers.
 - [llvm-mingw](https://github.com/mstorsjo/llvm-mingw) (Clang, LLD, mingw-w64, libc++), the compiler `setup-windows.exe` builds the game with.
 - [Zig](https://ziglang.org) (`zig c++`: Clang, LLD, glibc stubs, libc++), the compiler `setup-linux` builds the native game with.
