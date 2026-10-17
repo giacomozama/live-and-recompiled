@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # package.sh - build the player release: Setup.exe and a kit with everything but the game's code.
 #
-# Players build the game on their own machine from their own copy: Setup.exe finds the game in assets/, recompiles it,
-# compiles the result with the kit's compiler and links Game.exe. Nothing in the release is the title's code (see
-# docs/distribution.md).
+# Players build the game on their own machine from their own copy: Setup.exe finds the game in assets/, downloads the
+# pinned llvm-mingw, recompiles the game, compiles the result and links Game.exe. Nothing in the release is the
+# title's code, or the compiler (see docs/distribution.md).
 #
 #   tools/package.sh              build the kit, test it against the game in game/assets, zip it
 #   tools/package.sh --no-test    skip the test (it needs the game in game/assets)
@@ -18,7 +18,6 @@ GAME="$ROOT/game"
 VERSION_TC="$(sed -n 's/^VERSION=//p' "$ROOT/tools/fetch-toolchain.sh")"
 TC="${LLVM_MINGW_ROOT:-$ROOT/toolchain}"
 LIN="$TC/llvm-mingw-$VERSION_TC-linux"
-WIN="$TC/llvm-mingw-$VERSION_TC-windows"
 BUILD="$GAME/out/build/llvm-mingw"
 REL="$GAME/out/build/release"
 OUT="$GAME/out/release"
@@ -36,8 +35,8 @@ while [ $# -gt 0 ]; do
     shift
 done
 
-echo "[1/5] toolchains"
-LLVM_MINGW_ROOT="$TC" "$ROOT/tools/fetch-toolchain.sh" --windows
+echo "[1/5] toolchain"
+LLVM_MINGW_ROOT="$TC" "$ROOT/tools/fetch-toolchain.sh"
 
 echo "[2/5] kit"
 if [ ! -f "$BUILD/build.ninja" ]; then
@@ -61,35 +60,16 @@ mkdir -p "$OUT"
 cp -r "$BUILD/package/Game" "$DEST"
 cp "$GAME/README.md" "$DEST/README.md"
 
-# the Windows-hosted compiler and linker, the x86_64 target's headers and libraries; nothing for other targets
-T="$DEST/kit/toolchain"
-CLANG_VER="$(ls "$WIN/lib/clang")"
-mkdir -p "$T/bin" "$T/x86_64-w64-mingw32" "$T/lib/clang/$CLANG_VER/lib/windows"
-for f in x86_64-w64-mingw32-clang++.exe clang++.exe clang.exe "clang-$CLANG_VER.exe" ld.lld.exe; do
-    cp "$WIN/bin/$f" "$T/bin/"
-done
-cp "$WIN"/bin/*.cfg "$T/bin/"
-# the DLLs those load, and the ones those load
-want=$(ls "$T"/bin/*.exe)
-while [ -n "$want" ]; do
-    next=""
-    for f in $want; do
-        for dll in $("$LIN/bin/llvm-objdump" -p "$f" | awk '/DLL Name:/ {print $3}'); do
-            if [ -f "$WIN/bin/$dll" ] && [ ! -f "$T/bin/$dll" ]; then
-                cp "$WIN/bin/$dll" "$T/bin/"
-                next="$next $T/bin/$dll"
-            fi
-        done
-    done
-    want="$next"
-done
-cp -r "$WIN/include" "$T/"
-find "$T/include" -name '*.idl' -delete
-cp -r "$WIN/x86_64-w64-mingw32/lib" "$T/x86_64-w64-mingw32/"
-cp -r "$WIN/lib/clang/$CLANG_VER/include" "$T/lib/clang/$CLANG_VER/"
-cp "$WIN/lib/clang/$CLANG_VER/lib/windows/libclang_rt.builtins-x86_64.a" "$T/lib/clang/$CLANG_VER/lib/windows/"
-cp "$WIN/LICENSE.TXT" "$T/LICENSE.TXT"
-echo "      toolchain $(du -sh "$T" | cut -f1), kit $(du -sh "$DEST/kit" | cut -f1)"
+# no compiler in the release: Setup downloads the Windows-hosted llvm-mingw of the same release on the player's machine
+read -r TC_URL TC_SHA < <("$ROOT/tools/fetch-toolchain.sh" --print-windows)
+cat >> "$DEST/kit/kit.toml" <<EOF
+
+# the compiler (Windows-hosted llvm-mingw $VERSION_TC), downloaded into kit/toolchain on Setup's first run
+[toolchain]
+url = "$TC_URL"
+sha256 = "$TC_SHA"
+EOF
+echo "      kit $(du -sh "$DEST/kit" | cut -f1), Setup downloads llvm-mingw $VERSION_TC"
 
 echo "[4/5] test"
 if [ "$TEST" = 1 ]; then

@@ -12,11 +12,13 @@ This port was created using the [Xbox XBE Recomp](https://github.com/TGP482/Xbox
 The release contains no game code: the game is built on your PC from your own copy, once.
 
 1. Put your game in the `assets` folder: the disc image (`.iso`), or `default.xbe` with the game's folders beside it.
-2. Run `Setup.exe`. It checks your copy is the release this build supports, recompiles it and writes `Game.exe`. This
-   takes a few minutes; nothing is downloaded.
+2. Run `Setup.exe`. It checks your copy is the release this build supports, downloads the compiler it needs
+   ([llvm-mingw](https://github.com/mstorsjo/llvm-mingw), about 180 MB, the first time only), recompiles the game and
+   writes `Game.exe`. This takes a few minutes. Nothing of the game is uploaded or downloaded.
 3. Run `Game.exe`. Settings are in `settings.toml` beside it, and in the F1 menu.
 
-`Setup.exe` keeps nothing it generated except `Game.exe`. Run it again after updating to a new release.
+`Setup.exe` keeps nothing it generated except `Game.exe` and the compiler in `kit/toolchain`. Run it again after
+updating to a new release.
 
 On Linux or Steam Deck, run both through Proton or Wine, for example `umu-run Setup.exe`, or add each as a non-Steam
 game.

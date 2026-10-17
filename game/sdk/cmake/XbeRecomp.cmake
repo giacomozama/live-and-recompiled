@@ -21,7 +21,9 @@ set(SDL_RENDER OFF CACHE BOOL "" FORCE)
 set(SDL_GPU OFF CACHE BOOL "" FORCE)
 set(SDL_CAMERA OFF CACHE BOOL "" FORCE)
 FetchContent_Declare(SDL3 GIT_REPOSITORY https://github.com/libsdl-org/SDL.git GIT_TAG release-3.4.16 GIT_SHALLOW TRUE)
-FetchContent_MakeAvailable(zydis tomlplusplus imgui SDL3)
+# miniz for Setup, which unpacks the compiler it downloads
+FetchContent_Declare(miniz GIT_REPOSITORY https://github.com/richgel999/miniz.git GIT_TAG 3.1.2 GIT_SHALLOW TRUE)
+FetchContent_MakeAvailable(zydis tomlplusplus imgui SDL3 miniz)
 
 # When cross compiling, codegen runs on the host: set XBE_CODEGEN_TOOL to a native xbe_recomp path.
 set(XBE_CODEGEN_TOOL "xbe_recomp" CACHE FILEPATH "xbe_recomp used for codegen (a host path when cross compiling)")
@@ -44,7 +46,7 @@ add_executable(xbe_setup ${XBE_SDK_DIR}/tools/setup/main.cpp ${XBE_SDK_DIR}/runt
     ${XBE_SDK_DIR}/runtime/kernel/crypto.cpp)
 target_include_directories(xbe_setup PRIVATE ${XBE_SDK_DIR}/runtime)
 target_compile_definitions(xbe_setup PRIVATE _CRT_SECURE_NO_WARNINGS)
-target_link_libraries(xbe_setup PRIVATE tomlplusplus::tomlplusplus)
+target_link_libraries(xbe_setup PRIVATE tomlplusplus::tomlplusplus miniz $<$<PLATFORM_ID:Windows>:winhttp>)
 
 set(XBE_IMGUI_SOURCES
     ${imgui_SOURCE_DIR}/imgui.cpp
@@ -127,7 +129,8 @@ endfunction()
 #   kit/config, xdk/   the image's config and the SDK's XDK tables
 #   kit/include/       the headers the generated code includes, and image_symbols.h to check the recompile against
 #   kit/lib/           the prebuilt host (runtime, game hooks, ImGui), SDL and the xaudio2 import library
-# kit/toolchain/ (a Windows-hosted llvm-mingw of the version the kit was built with) is added by the packaging script.
+# kit.toml's [toolchain] (where Setup downloads the Windows-hosted llvm-mingw of the version the kit was built with, and
+# its SHA-256) is added by the packaging script; Setup unpacks it into kit/toolchain on the first run.
 # title is the name Setup shows.
 function(add_xbe_player_kit target title)
     if(NOT MINGW)

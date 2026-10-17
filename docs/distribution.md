@@ -26,13 +26,16 @@ Conker/
   THIRD_PARTY.txt
   assets/              empty: the player's disc image or game files go here
   kit/
-    kit.toml           the release's SHA-1, the compile and link lines
+    kit.toml           the release's SHA-1, the compile and link lines, the compiler's URL and SHA-256
     bin/xbe_recomp.exe the recompiler
     config/, xdk/      game.toml and the XDK tables: addresses, layouts, signature hashes
     include/           cpu/x86_ops.h, cpu/x86_context.h, image_symbols.h (addresses)
     lib/               libGame_host.a (runtime + hooks + ImGui), libSDL3.a, libxaudio2.a
-    toolchain/         llvm-mingw (Windows-hosted, x86_64 only): clang, lld, headers, libraries
 ```
+
+The compiler isn't in the release either. Setup downloads the Windows-hosted llvm-mingw that `kit.toml` pins on its
+first run and unpacks it into `kit/toolchain/` (about 180 MB to download, 380 MB unpacked: clang, lld, headers,
+x86_64 libraries and builtins).
 
 **Never put in a release, an issue or a chat:** `Game.exe`, anything from `game/generated/` or `kit/work/`, object
 files built from them, crash dumps (`CrashDumps/*.dmp` hold the running game), `shader_programs.bin` (the game's
@@ -42,15 +45,18 @@ vertex programs), F3 captures with textures, or any file from the disc. `shaders
 
 1. Finds `assets/` (beside it or in a folder above), and in it `default.xbe` or a `.iso` with it on the disc.
 2. Checks the XBE's SHA-1 against `kit.toml`: the prebuilt host is only valid for that exact release.
-3. Runs `xbe_recomp` into `kit/work/generated`, then checks the `image_symbols.h` it wrote is byte-identical to the
+3. Unless `kit/toolchain/` already holds it, downloads the llvm-mingw zip `kit.toml` names (WinHTTP, so it works
+   under Wine too), checks its SHA-256, and unpacks what an x86_64 build needs. `kit/toolchain/sha256.txt` records
+   which zip is unpacked; a mismatch downloads again. `--fetch-toolchain` does only this step.
+4. Runs `xbe_recomp` into `kit/work/generated`, then checks the `image_symbols.h` it wrote is byte-identical to the
    one the host library was compiled against.
-4. Compiles every generated file with the kit's clang, in parallel (biggest first), at below-normal priority.
-5. Links `Game.exe` with the host library as a whole archive. The order matches the SDK's own build, so a player's
+5. Compiles every generated file with the kit's clang, in parallel (biggest first), at below-normal priority.
+6. Links `Game.exe` with the host library as a whole archive. The order matches the SDK's own build, so a player's
    exe has the same code layout as the developers' build of the same version, and crash addresses line up.
-6. Deletes `kit/work` (`--keep` leaves it) and writes `setup.log`.
+7. Deletes `kit/work` (`--keep` leaves it) and writes `setup.log`. The toolchain stays for the next run.
 
-Measured on a 16-thread machine: about 50 s in total, with 9.8 CPU-minutes of compiling. A 6–8-thread PC should take
-2–3 minutes.
+Measured on a 16-thread machine, not counting the download: about 50 s in total, with 9.8 CPU-minutes of
+compiling. A 6–8-thread PC should take 2–3 minutes.
 
 ## How the pieces fit in the build
 
@@ -59,26 +65,26 @@ Measured on a 16-thread machine: about 50 s in total, with 9.8 CPU-minutes of co
 - `add_xbe_player_kit` (MinGW builds only) stages the release into `out/build/llvm-mingw/package/Game`: `Setup.exe`,
   `kit.toml` with the exact flags, the libraries and the headers.
 - The compiler is **llvm-mingw**, pinned in `tools/fetch-toolchain.sh` with SHA-256 checks. The Linux-hosted build
-  compiles the host library; the Windows-hosted build of the same release goes in the kit. `run-proton.sh` uses the
-  same toolchain and build folder, so what you test is what players build.
+  compiles the host library; `package.sh` writes the Windows-hosted build of the same release into `kit.toml`
+  (`fetch-toolchain.sh --print-windows`), and Setup downloads that. `run-proton.sh` uses the same toolchain and
+  build folder, so what you test is what players build.
 
 ## Making a release
 
 ```bash
-tools/package.sh            # fetch toolchains, build the kit, test it, zip it
+tools/package.sh            # fetch the toolchain, build the kit, test it, zip it
 ```
 
-1. **Toolchains.** It downloads both llvm-mingw builds into `toolchain/` if they're missing.
+1. **Toolchain.** It downloads the Linux-hosted llvm-mingw into `toolchain/` if it's missing.
 2. **Kit.** It builds `Game_kit` in `game/out/build/llvm-mingw`, plus the native `xbe_recomp` and `xbe_setup`.
-3. **Staging.** It copies the kit into `game/out/release/Conker/` and adds a trimmed Windows toolchain: the clang and
-   lld executables and the DLLs they load, headers without `.idl`, x86_64 libraries and builtins. That's about 310 MB
-   unpacked.
+3. **Staging.** It copies the kit into `game/out/release/Conker/` and adds the Windows-hosted llvm-mingw's URL and
+   SHA-256 to `kit.toml` as `[toolchain]`. No compiler is copied.
 4. **Test.** It runs the player's steps on Linux (native `Setup`, Linux-hosted llvm-mingw of the same release) against
    `game/assets`, and fails unless a `Game.exe` comes out and `kit/work` is gone. `--no-test` skips it.
-5. **Zip.** It writes `game/out/release/Conker-<git describe>.zip` (about 77 MB).
+5. **Zip.** It writes `game/out/release/Conker-<git describe>.zip`.
 
 Before publishing, run the Windows-hosted kit once for real: on Windows, or with `umu-run Setup.exe` in an unpacked
-copy. The automatic test can't run the Windows-hosted compiler.
+copy. The automatic test can't run the Windows-hosted compiler or Setup's download.
 
 ## Updating the toolchain
 

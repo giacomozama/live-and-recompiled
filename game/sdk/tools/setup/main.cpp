@@ -1,13 +1,16 @@
 // Setup: builds the game on the player's machine from the player's own copy, so no release ever carries the
 // title's code. A release is this program, a kit (kit/: the recompiler, the prebuilt host library with everything
-// but the title's code, the headers the generated code includes, the config, a compiler) and an empty assets folder.
+// but the title's code, the headers the generated code includes, the config) and an empty assets folder.
 // Setup finds the game in assets (its files or a disc image), checks it is the release the kit was made for,
-// recompiles it, compiles the result with the kit's compiler and links <exe>.exe beside itself.
+// downloads the compiler kit.toml pins into kit/toolchain (once), recompiles the game, compiles the result with that
+// compiler and links <exe>.exe beside itself.
 //
-//   Setup [--jobs N] [--keep] [--toolchain DIR] [--root DIR]
+//   Setup [--jobs N] [--keep] [--toolchain DIR] [--root DIR] [--fetch-toolchain]
 //
 // --keep leaves kit/work (the generated code and objects) in place; --toolchain uses another llvm-mingw of the
-// kit's version (a Linux-hosted one tests a kit without Windows); --root is the folder Setup would be in.
+// kit's version (a Linux-hosted one tests a kit without Windows); --root is the folder Setup would be in;
+// --fetch-toolchain only downloads the compiler.
+#include <miniz.h>
 #include <toml++/toml.hpp>
 
 #include <algorithm>
@@ -29,6 +32,7 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#include <winhttp.h>
 #else
 #include <fcntl.h>
 #include <spawn.h>
@@ -66,6 +70,7 @@ struct Kit {
     fs::path config, xdk, recomp, cxx;
     std::vector<fs::path> include;
     std::vector<std::string> cxxflags, ldflags, libs;
+    std::string toolchain_url, toolchain_sha256;  // [toolchain]: the llvm-mingw zip Setup downloads
 };
 
 std::vector<std::string> Strings(const toml::node_view<toml::node>& n) {
@@ -96,8 +101,14 @@ bool LoadKit(const fs::path& kit_dir, Kit& k, std::string& error) {
     k.cxxflags = Strings(t["cxxflags"]);
     k.ldflags = Strings(t["ldflags"]);
     for (auto& s : Strings(t["libs"])) k.libs.push_back(s.rfind("-", 0) == 0 ? s : (kit_dir / s).generic_string());
+    k.toolchain_url = t["toolchain"]["url"].value_or(std::string());
+    k.toolchain_sha256 = t["toolchain"]["sha256"].value_or(std::string());
     if (k.exe.empty() || k.xbe.empty() || k.sha1.size() != 40) {
         error = "exe, xbe and sha1 must be set";
+        return false;
+    }
+    if (!k.toolchain_url.empty() && k.toolchain_sha256.size() != 64) {
+        error = "[toolchain] needs the sha256 of its url";
         return false;
     }
 #ifdef _WIN32
@@ -319,6 +330,236 @@ bool Run(const char* what, const fs::path& exe, const std::vector<std::string>& 
     return true;
 }
 
+// the toolchain: kit.toml pins an llvm-mingw zip by URL and SHA-256, Setup downloads it into kit/toolchain once
+
+std::string Sha256File(const fs::path& p) {
+    static const uint32_t K[64] = {
+        0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+        0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+        0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+        0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+        0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+        0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+        0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+        0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2};
+    uint32_t h[8] = {0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19};
+    auto rotr = [](uint32_t x, int n) { return (x >> n) | (x << (32 - n)); };
+    auto block = [&](const uint8_t* b) {
+        uint32_t w[64];
+        for (int i = 0; i < 16; i++)
+            w[i] = uint32_t(b[4 * i]) << 24 | uint32_t(b[4 * i + 1]) << 16 | uint32_t(b[4 * i + 2]) << 8 | b[4 * i + 3];
+        for (int i = 16; i < 64; i++) {
+            uint32_t s0 = rotr(w[i - 15], 7) ^ rotr(w[i - 15], 18) ^ (w[i - 15] >> 3);
+            uint32_t s1 = rotr(w[i - 2], 17) ^ rotr(w[i - 2], 19) ^ (w[i - 2] >> 10);
+            w[i] = w[i - 16] + s0 + w[i - 7] + s1;
+        }
+        uint32_t a = h[0], c1 = h[1], c2 = h[2], d = h[3], e = h[4], f = h[5], g = h[6], hh = h[7];
+        for (int i = 0; i < 64; i++) {
+            uint32_t t1 = hh + (rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25)) + ((e & f) ^ (~e & g)) + K[i] + w[i];
+            uint32_t t2 = (rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22)) + ((a & c1) ^ (a & c2) ^ (c1 & c2));
+            hh = g, g = f, f = e, e = d + t1, d = c2, c2 = c1, c1 = a, a = t1 + t2;
+        }
+        h[0] += a, h[1] += c1, h[2] += c2, h[3] += d, h[4] += e, h[5] += f, h[6] += g, h[7] += hh;
+    };
+    std::ifstream in(p, std::ios::binary);
+    if (!in) return {};
+    std::vector<uint8_t> buf(1 << 20), tail;  // a multiple of 64: only the last read leaves a partial block
+    uint64_t total = 0;
+    for (;;) {
+        in.read(reinterpret_cast<char*>(buf.data()), std::streamsize(buf.size()));
+        size_t n = size_t(in.gcount()), whole = n / 64 * 64;
+        total += n;
+        for (size_t i = 0; i < whole; i += 64) block(buf.data() + i);
+        if (whole < n || !n) {
+            tail.assign(buf.begin() + std::ptrdiff_t(whole), buf.begin() + std::ptrdiff_t(n));
+            break;
+        }
+    }
+    tail.push_back(0x80);
+    while (tail.size() % 64 != 56) tail.push_back(0);
+    for (int i = 7; i >= 0; i--) tail.push_back(uint8_t((total * 8) >> (i * 8)));
+    for (size_t i = 0; i < tail.size(); i += 64) block(tail.data() + i);
+    std::string hex;
+    for (uint32_t v : h)
+        for (int i = 28; i >= 0; i -= 4) hex += "0123456789abcdef"[(v >> i) & 15];
+    return hex;
+}
+
+#ifdef _WIN32
+// WinHTTP, which every Windows and Wine have (curl.exe is not in Wine)
+bool Download(const std::string& url, const fs::path& to, const fs::path&) {
+    std::wstring wurl = Wide(url);
+    URL_COMPONENTS u{};
+    u.dwStructSize = sizeof(u);
+    u.dwHostNameLength = u.dwUrlPathLength = u.dwExtraInfoLength = DWORD(-1);
+    if (!WinHttpCrackUrl(wurl.c_str(), 0, 0, &u)) {
+        Say("Cannot read the download address %s\n", url.c_str());
+        return false;
+    }
+    std::wstring host(u.lpszHostName, u.dwHostNameLength), path(u.lpszUrlPath, u.dwUrlPathLength);
+    if (u.lpszExtraInfo) path.append(u.lpszExtraInfo, u.dwExtraInfoLength);
+    HINTERNET session =
+        WinHttpOpen(L"Setup", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+    HINTERNET conn = session ? WinHttpConnect(session, host.c_str(), u.nPort, 0) : nullptr;
+    HINTERNET req = conn ? WinHttpOpenRequest(conn, L"GET", path.c_str(), nullptr, WINHTTP_NO_REFERER,
+                                              WINHTTP_DEFAULT_ACCEPT_TYPES,
+                                              u.nScheme == INTERNET_SCHEME_HTTPS ? WINHTTP_FLAG_SECURE : 0)
+                         : nullptr;
+    // redirects (GitHub sends one to its file host) are followed by default
+    bool ok = req && WinHttpSendRequest(req, WINHTTP_NO_ADDITIONAL_HEADERS, 0, WINHTTP_NO_REQUEST_DATA, 0, 0, 0) &&
+              WinHttpReceiveResponse(req, nullptr);
+    DWORD error = ok ? 0 : GetLastError(), status = 0, total = 0, size = sizeof(DWORD);
+    if (ok)
+        WinHttpQueryHeaders(req, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_HEADER_NAME_BY_INDEX,
+                            &status, &size, WINHTTP_NO_HEADER_INDEX);
+    if (ok && status == 200) {
+        size = sizeof(DWORD);
+        WinHttpQueryHeaders(req, WINHTTP_QUERY_CONTENT_LENGTH | WINHTTP_QUERY_FLAG_NUMBER,
+                            WINHTTP_HEADER_NAME_BY_INDEX, &total, &size, WINHTTP_NO_HEADER_INDEX);
+        std::ofstream f(to, std::ios::binary | std::ios::trunc);
+        std::vector<char> buf(1 << 20);
+        uint64_t got = 0, shown = ~0ull;
+        DWORD n = 0;
+        while ((ok = f && WinHttpReadData(req, buf.data(), DWORD(buf.size()), &n)) && n) {
+            ok = bool(f.write(buf.data(), n));
+            got += n;
+            if (got >> 20 != shown) {
+                shown = got >> 20;
+                if (total) Say("\r  %llu / %llu MB", (unsigned long long)shown, (unsigned long long)(total >> 20));
+                else Say("\r  %llu MB", (unsigned long long)shown);
+            }
+        }
+        if (!ok) error = GetLastError();
+        ok = ok && f.flush() && (!total || got == total);
+        Say("\n");
+    }
+    if (req) WinHttpCloseHandle(req);
+    if (conn) WinHttpCloseHandle(conn);
+    if (session) WinHttpCloseHandle(session);
+    if (!ok || status != 200) {
+        if (ok) Say("The download failed: the server answered %lu.\n", (unsigned long)status);
+        else Say("The download failed (error %lu). Check the internet connection and run Setup again.\n",
+                 (unsigned long)error);
+        return false;
+    }
+    return true;
+}
+#else
+// curl, for trying a kit on Linux
+bool Download(const std::string& url, const fs::path& to, const fs::path& log) {
+    return Run("Downloading", "/usr/bin/env", {"curl", "-fL", "--retry", "3", "-sS", "-o", to.string(), url}, log);
+}
+#endif
+
+// the zip's files below its top folder into dest, those a Windows x86_64 build needs: the compiler and linker
+// (bin), the headers without their .idl sources, clang's headers and x86_64 builtins, the x86_64 libraries
+bool Wanted(const std::string& name) {
+    if (name.size() > 4 && name.compare(name.size() - 4, 4, ".idl") == 0) return false;
+    if (name.rfind("lib/clang/", 0) == 0) {  // lib/clang/<version>/...
+        size_t v = name.find('/', 10);
+        std::string sub = v == std::string::npos ? std::string() : name.substr(v + 1);
+        return sub.rfind("include/", 0) == 0 || sub == "lib/windows/libclang_rt.builtins-x86_64.a";
+    }
+    static const char* const kKeep[] = {"bin/", "include/", "x86_64-w64-mingw32/", "LICENSE.TXT"};
+    return std::any_of(std::begin(kKeep), std::end(kKeep), [&](const char* k) { return name.rfind(k, 0) == 0; });
+}
+
+bool Unzip(const fs::path& zip, const fs::path& dest) {
+    std::ifstream in(zip, std::ios::binary);
+    std::error_code ec;
+    uint64_t size = fs::file_size(zip, ec);
+    mz_zip_archive z{};
+    z.m_pIO_opaque = &in;
+    z.m_pRead = [](void* io, mz_uint64 ofs, void* buf, size_t n) -> size_t {
+        auto& s = *static_cast<std::ifstream*>(io);
+        s.clear();
+        s.seekg(std::streamoff(ofs));
+        s.read(static_cast<char*>(buf), std::streamsize(n));
+        return size_t(s.gcount());
+    };
+    if (!in || ec || !mz_zip_reader_init(&z, size, 0)) {
+        Say("Cannot read %s as a zip.\n", zip.string().c_str());
+        return false;
+    }
+    bool ok = true;
+    size_t files = 0;
+    for (mz_uint i = 0, count = mz_zip_reader_get_num_files(&z); ok && i < count; i++) {
+        mz_zip_archive_file_stat st;
+        if (!mz_zip_reader_file_stat(&z, i, &st)) {
+            ok = false;
+            break;
+        }
+        std::string name = st.m_filename;
+        size_t slash = name.find('/');
+        if (slash == std::string::npos) continue;
+        name.erase(0, slash + 1);
+        if (!Wanted(name)) continue;
+        fs::path rel = fs::path(name).lexically_normal();
+        if (rel.is_absolute() || std::find(rel.begin(), rel.end(), "..") != rel.end()) continue;  // not below dest
+        fs::path out = dest / rel;
+        if (st.m_is_directory) {
+            fs::create_directories(out, ec);
+            continue;
+        }
+        fs::create_directories(out.parent_path(), ec);
+        std::ofstream f(out, std::ios::binary | std::ios::trunc);
+        auto write = [](void* o, mz_uint64, const void* buf, size_t n) -> size_t {
+            return static_cast<std::ofstream*>(o)->write(static_cast<const char*>(buf), std::streamsize(n)) ? n : 0;
+        };
+        ok = f && mz_zip_reader_extract_to_callback(&z, i, write, &f, 0) && f.flush();
+        if (!ok) Say("\nCannot unpack %s\n", out.string().c_str());
+        if (++files % 100 == 0) Say("\r  %zu files", files);
+    }
+    Say("\r  %zu files\n", files);
+    mz_zip_reader_end(&z);
+    return ok;
+}
+
+// kit/toolchain holds the zip kit.toml pins once it is downloaded, checked and unpacked; sha256.txt in it says which
+bool EnsureToolchain(const fs::path& kit_dir, const Kit& k) {
+    fs::path tc = kit_dir / "toolchain", stamp = tc / "sha256.txt";
+    std::error_code ec;
+    std::vector<uint8_t> have;
+    if (fs::exists(k.cxx, ec) && (k.toolchain_url.empty() || (ReadFile(stamp, have) &&
+                                                              std::string(have.begin(), have.end()) == k.toolchain_sha256)))
+        return true;
+    if (k.toolchain_url.empty()) {
+        Say("The compiler %s is missing and kit.toml names none to download. The kit is damaged.\n",
+            k.cxx.string().c_str());
+        return false;
+    }
+    fs::path zip = kit_dir / "toolchain.zip", fresh = kit_dir / "toolchain.new";
+    fs::remove(zip, ec);
+    fs::remove_all(fresh, ec);
+    Say("Downloading the compiler (llvm-mingw, about 180 MB), once:\n  %s\n", k.toolchain_url.c_str());
+    if (!Download(k.toolchain_url, zip, kit_dir / "download.log")) {
+        fs::remove(zip, ec);
+        return false;
+    }
+    std::string sha = Sha256File(zip);
+    if (sha != k.toolchain_sha256) {
+        Say("The download is not the compiler this kit was made with (sha256 %s, expected %s).\n"
+            "Run Setup again; if this keeps happening, the address in kit/kit.toml is wrong.\n",
+            sha.c_str(), k.toolchain_sha256.c_str());
+        fs::remove(zip, ec);
+        return false;
+    }
+    Say("Unpacking the compiler ...\n");
+    bool ok = Unzip(zip, fresh) && WriteFile(fresh / "sha256.txt", sha.data(), sha.size());
+    fs::remove(zip, ec);
+    if (ok) {
+        fs::remove_all(tc, ec);
+        fs::rename(fresh, tc, ec);
+        ok = !ec;
+    }
+    if (!ok || !fs::exists(k.cxx, ec)) {
+        Say("Cannot set up the compiler in %s\n", tc.string().c_str());
+        fs::remove_all(fresh, ec);
+        return false;
+    }
+    return true;
+}
+
 fs::path ExeDir() {
 #ifdef _WIN32
     std::wstring p(32768, L'\0');
@@ -351,15 +592,16 @@ int Fail() {
 int main(int argc, char** argv) {
     fs::path root = ExeDir(), toolchain;
     unsigned jobs = std::max(1u, std::thread::hardware_concurrency());
-    bool keep = false;
+    bool keep = false, fetch_only = false;
     for (int i = 1; i < argc; i++) {
         std::string a = argv[i];
         if (a == "--jobs" && i + 1 < argc) jobs = unsigned(std::max(1, std::atoi(argv[++i])));
         else if (a == "--keep") keep = true;
+        else if (a == "--fetch-toolchain") fetch_only = true;
         else if (a == "--toolchain" && i + 1 < argc) toolchain = fs::absolute(argv[++i]);
         else if (a == "--root" && i + 1 < argc) root = fs::absolute(argv[++i]);
         else {
-            std::fprintf(stderr, "usage: Setup [--jobs N] [--keep] [--toolchain DIR] [--root DIR]\n");
+            std::fprintf(stderr, "usage: Setup [--jobs N] [--keep] [--toolchain DIR] [--root DIR] [--fetch-toolchain]\n");
             return 2;
         }
     }
@@ -377,11 +619,18 @@ int main(int argc, char** argv) {
         return Fail();
     }
     if (!toolchain.empty()) k.cxx = toolchain / "bin" / k.cxx.filename();
+    if (fetch_only) {
+        if (!EnsureToolchain(kit_dir, k)) return Fail();
+        Say("The compiler is in %s\n", k.cxx.parent_path().parent_path().string().c_str());
+        if (g_log) std::fclose(g_log);
+        return 0;
+    }
     Say("Building %s from your copy of the game. This takes a few minutes, once.\n\n", k.title.c_str());
 
     // 1. the game
     std::vector<uint8_t> xbe;
     if (!FindXbe(root, k, xbe)) return Fail();
+    if (toolchain.empty() && !EnsureToolchain(kit_dir, k)) return Fail();
 
     fs::path work = kit_dir / "work", gen = work / "generated", obj = work / "obj", logs = work / "logs";
     std::error_code ec;

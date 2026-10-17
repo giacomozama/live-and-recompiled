@@ -4,8 +4,10 @@
 # The prebuilt half of a release and the player's own build of the game code must come from the same compiler and
 # runtime libraries, so the version is pinned here and checked by SHA-256.
 #
-#   tools/fetch-toolchain.sh            the Linux-hosted toolchain (builds Game.exe and the package on this machine)
-#   tools/fetch-toolchain.sh --windows  the Windows-hosted toolchain too (what the package ships to players)
+#   tools/fetch-toolchain.sh                  the Linux-hosted toolchain (builds Game.exe and the package here)
+#   tools/fetch-toolchain.sh --windows        the Windows-hosted toolchain too (the one Setup downloads for players)
+#   tools/fetch-toolchain.sh --print-windows  print the Windows-hosted zip's URL and SHA-256 (package.sh puts them
+#                                             in kit.toml), download nothing
 #
 # Installs into $LLVM_MINGW_ROOT (default: toolchain/ at the repository root):
 #   llvm-mingw-<ver>-linux/    llvm-mingw-<ver>-windows/
@@ -15,6 +17,8 @@ VERSION=20260922
 LINUX_SHA=bb7bb7654b33d5aa8712acb837c963b2e0c56352560c76105270a3268c665c21
 WINDOWS_SHA=e3ad77d117a4bea19a7a3b333341824d79a5a371004a10e25b8504e7b3047666
 URL=https://github.com/mstorsjo/llvm-mingw/releases/download/$VERSION
+LINUX_ZIP=llvm-mingw-$VERSION-ucrt-ubuntu-22.04-x86_64.tar.xz
+WINDOWS_ZIP=llvm-mingw-$VERSION-ucrt-x86_64.zip
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DEST="${LLVM_MINGW_ROOT:-$ROOT/toolchain}"
@@ -23,7 +27,8 @@ WINDOWS=0
 for a in "$@"; do
     case "$a" in
         --windows) WINDOWS=1 ;;
-        -h|--help) sed -n '2,13p' "$0"; exit 0 ;;
+        --print-windows) echo "$URL/$WINDOWS_ZIP $WINDOWS_SHA"; exit 0 ;;
+        -h|--help) sed -n '2,15p' "$0"; exit 0 ;;
         *) echo "unknown option: $a" >&2; exit 2 ;;
     esac
 done
@@ -51,6 +56,6 @@ fetch() {
 }
 
 mkdir -p "$DEST"
-fetch "llvm-mingw-$VERSION-ucrt-ubuntu-22.04-x86_64.tar.xz" "$LINUX_SHA" "llvm-mingw-$VERSION-linux"
-[ "$WINDOWS" = 1 ] && fetch "llvm-mingw-$VERSION-ucrt-x86_64.zip" "$WINDOWS_SHA" "llvm-mingw-$VERSION-windows"
+fetch "$LINUX_ZIP" "$LINUX_SHA" "llvm-mingw-$VERSION-linux"
+[ "$WINDOWS" = 1 ] && fetch "$WINDOWS_ZIP" "$WINDOWS_SHA" "llvm-mingw-$VERSION-windows"
 exit 0
