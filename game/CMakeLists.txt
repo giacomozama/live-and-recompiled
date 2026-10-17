@@ -1,4 +1,4 @@
-# Game Title (original Xbox), statically recompiled
+# Conker: Live & Reloaded (original Xbox), statically recompiled
 
 cmake_minimum_required(VERSION 3.25)
 project(game LANGUAGES C CXX)
@@ -37,3 +37,8 @@ endif()
 
 # target name = GAME_EXE in build.bat, xbe = GAME_XBE
 add_xbe_image(Game default.xbe game.toml ${GAME_PARTITIONS} game)
+
+# a player kit (MinGW builds): Setup and everything but the game code, for players to build from their own copy
+if(MINGW)
+    add_xbe_player_kit(Game "Conker: Live & Reloaded")
+endif()

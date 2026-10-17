@@ -23,7 +23,6 @@ settings.toml
 /prefix/
 /out/
 /winrun/
-/third_party/mingw/lib/
 
 # editors
 .vs/

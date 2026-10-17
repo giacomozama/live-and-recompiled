@@ -13,7 +13,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 GAME="$ROOT/game"
-WIN="$GAME/out/build/win"
+WIN="$GAME/out/build/llvm-mingw"  # the toolchain and build tools/package.sh makes the player kit with
 RUN="$GAME/winrun"
 XRE="$GAME/out/build/release/xbe_recomp"
 PROTON="${PROTONPATH:-$HOME/.local/share/Steam/compatibilitytools.d/GE-Proton11-7}"
@@ -41,19 +41,13 @@ command -v "$UMU" >/dev/null || { echo "missing umu-run: install umu-launcher or
 [ -d "$PROTON" ] || { echo "missing Proton: $PROTON" >&2; exit 1; }
 
 if [ "$DO_BUILD" = 1 ]; then
-    # the runtime links "xaudio2"; mingw ships libxaudio2_8.a
-    mkdir -p "$GAME/third_party/mingw/lib"
-    ln -sf /usr/x86_64-w64-mingw32/lib/libxaudio2_8.a "$GAME/third_party/mingw/lib/libxaudio2.a"
-
     [ -x "$XRE" ] || { echo "missing native codegen tool: $XRE" >&2; exit 1; }
+    "$ROOT/tools/fetch-toolchain.sh"
 
     if [ ! -f "$WIN/build.ninja" ]; then
         echo "== configuring the Windows build =="
         cmake -S "$GAME" -B "$WIN" -G Ninja -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_TOOLCHAIN_FILE="$GAME/cmake-mingw.cmake" \
-            -DCMAKE_C_FLAGS="-march=x86-64-v2" -DCMAKE_CXX_FLAGS="-march=x86-64-v2" \
-            -DCMAKE_EXE_LINKER_FLAGS="-L$GAME/third_party/mingw/lib -municode -static -lwinpthread" \
-            -DXBE_CODEGEN_TOOL="$XRE"
+            -DCMAKE_TOOLCHAIN_FILE="$GAME/cmake-llvm-mingw.cmake" -DXBE_CODEGEN_TOOL="$XRE"
     fi
 
     echo "== building Game.exe =="
