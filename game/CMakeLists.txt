@@ -44,7 +44,8 @@ set_target_properties(unpack_store PROPERTIES OUTPUT_NAME unpack-store)
 # target name = GAME_EXE in build.bat, xbe = GAME_XBE
 add_xbe_image(Game default.xbe game.toml ${GAME_PARTITIONS} game)
 
-# a player kit (MinGW builds): Setup and everything but the game code, for players to build from their own copy
-if(MINGW)
+# a player kit (MinGW and Zig glibc builds): Setup and everything but the game code, for players to build from their
+# own copy
+if(MINGW OR XBE_ZIG_TARGET)
     add_xbe_player_kit(Game "Conker: Live & Reloaded")
 endif()

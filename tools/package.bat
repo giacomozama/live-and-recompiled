@@ -8,7 +8,7 @@ rem   tools\package.bat -j N             parallel jobs (default: every core)
 rem
 rem Needs CMake 3.25 or newer, Ninja and Git on PATH (winget install --id Kitware.CMake / Ninja-build.Ninja /
 rem Git.Git, or game\build.bat offers to). The compiler, llvm-mingw, is downloaded into toolchain\. No Visual Studio.
-rem A release made here has no setup-linux.
+rem A release made here has no native Linux half: its setup-linux builds Game.exe alone.
 setlocal
 set "ARGS="
 :args

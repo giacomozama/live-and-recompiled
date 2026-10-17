@@ -3,10 +3,12 @@
 #   llvm-mingw  the Windows compiler: the Windows build, the player kit and Setup all use this release. The prebuilt
 #               half of a release and the player's own build of the game code must come from the same compiler and
 #               runtime libraries.
-#   zig         `zig cc` against musl: the static Linux setup-linux and xbe_recomp of a release, from Linux or Windows
+#   zig         `zig cc` against musl: the static Linux setup-linux and xbe_recomp of a release, from Linux or Windows;
+#               `zig c++` against glibc: the native Linux port's player kit, and setup-linux downloads it to build the
+#               game with it. A new Zig needs a new player release too.
 #
-# Included by game/cmake-llvm-mingw.cmake, game/cmake-zig-linux.cmake, fetch-toolchain.cmake, configure.cmake and
-# package.cmake. To update one: change its version and both SHA-256s (llvm-mingw's release page and ziglang.org's
+# Included by game/cmake-llvm-mingw.cmake, game/cmake-zig-linux.cmake, game/cmake-zig-glibc.cmake,
+# fetch-toolchain.cmake, configure.cmake and package.cmake. To update one: change its version and both SHA-256s (llvm-mingw's release page and ziglang.org's
 # download index list them), then delete the build folders that use it. A new llvm-mingw needs a new player release,
 # since the host library and the kit's compiler must match.
 

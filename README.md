@@ -29,16 +29,20 @@ machine.
    download its package manually with the [Xodus project](https://github.com/xodus-gaming/xodus); put the
    `DefaultPackage` and `DefaultPackage.data` it gives you in `assets` and run `./unpack-store-linux`.
 2. Run `setup-windows.exe` (on Linux, `./setup-linux` in a terminal opened in this folder). It checks your
-   copy is the release this build supports, downloads the compiler it needs
-   ([llvm-mingw](https://github.com/mstorsjo/llvm-mingw), 80 to 180 MB, the first time only), recompiles the game and
-   writes `Game.exe`. This takes a few minutes. Nothing of the game is uploaded or downloaded.
-3. Run `Game.exe`. Settings are in `settings.toml` beside it, and in the F1 menu.
+   copy is the release this build supports, downloads the compiler it needs the first time only
+   ([llvm-mingw](https://github.com/mstorsjo/llvm-mingw), 80 to 180 MB, on Windows; [Zig](https://ziglang.org), about
+   50 MB, on Linux), recompiles the game and writes `Game.exe` (on Linux, the native `Game`). This takes a few
+   minutes. Nothing of the game is uploaded or downloaded.
+3. Run `Game.exe` (on Linux, `./Game`). Settings are in `settings.toml` beside it, and in the F1 menu.
 
-Setup keeps nothing it generated except `Game.exe` and the compiler in `kit/toolchain`. Run it again after updating
+Setup keeps nothing it generated except the game and the compiler in `kit/toolchain`. Run it again after updating
 to a new release.
 
-On Linux, `Game.exe` runs through Proton or Wine: add it as a non-Steam game, or use
-`umu-run Game.exe`. If `./setup-linux` says permission denied, your unzip tool dropped its executable bit:
+On Linux, `./Game` is the native port: an SDL3 window (X11 or Wayland) drawn with Vulkan, which needs a Vulkan 1.3
+driver and glibc 2.31 or newer (any distro since 2020, SteamOS included). Add it to Steam as a non-Steam game to play
+it from Game Mode. It has everything `Game.exe` has but the D3D12 renderer, the boot splash and the window kept up
+across a relaunch. To build `Game.exe` instead, for Proton or Wine, run `./setup-linux --target windows`; it downloads
+llvm-mingw then. If `./setup-linux` says permission denied, your unzip tool dropped its executable bit:
 `chmod +x setup-linux kit/bin/xbe_recomp`. `setup-windows.exe` works under Proton too (`umu-run setup-windows.exe`).
 
 Developers: building from source differs from Setup, see [Building from source](#building-from-source).
@@ -124,20 +128,20 @@ conker-lar/
   tools/                unpack-store (the digital release's package to game files), build.sh (Linux dev
                         build), package.cmake + package.sh/.bat (player release), toolchains.cmake (the pinned
                         llvm-mingw and Zig), fetch-toolchain.cmake, disassembly helpers
-  toolchain/            gitignored: llvm-mingw, fetched on demand
+  toolchain/            gitignored: llvm-mingw and Zig, fetched on demand
 ```
 
-## Two ways to get Game.exe
+## Two ways to get the game
 
-There are two ways to end up with `Game.exe`, and both start from your own copy of the game. Either way the result
-is a Windows program; on Linux it runs with Proton or Wine.
+There are two ways to end up with `Game.exe` or the native Linux `Game`, and both start from your own copy of the
+game.
 
 | | From a release (players) | From source (developers) |
 |---|---|---|
 | What you download | A small zip: `setup-windows.exe`, `setup-linux`, a kit | This repository |
 | What your machine builds | The game's recompiled code only | Everything: recompiler, runtime, hooks, game code |
 | What comes prebuilt | The runtime, hooks and recompiler | Nothing |
-| Compiler | Pinned llvm-mingw, downloaded by Setup | The same pinned llvm-mingw, downloaded by the first build |
+| Compiler | Pinned llvm-mingw (`Game.exe`) or Zig (Linux `Game`), downloaded by Setup | The same pinned llvm-mingw, downloaded by the first build; the native port uses the system clang |
 | Time | A few minutes, once | Longer the first time, then incremental |
 | Can you change the port | No | Yes |
 
@@ -153,8 +157,8 @@ reimplementation of the Xbox and XDK APIs), the hooks, and the addresses and fac
 only that, and Setup turns your own copy into a program on your own machine. Emulators and decompilation projects
 use the same model. (This isn't legal advice.)
 
-The same rule covers the compiler. Setup downloads llvm-mingw from its official release, checks the file's
-SHA-256, and builds with exactly the version the kit was made with. No copy of it is redistributed here.
+The same rule covers the compiler. Setup downloads llvm-mingw or Zig from its official release, checks the file's
+SHA-256, and builds with exactly the version the kit was made with. No copy of either is redistributed here.
 
 It also explains two limits:
 - **One release of the game.** The config, and the prebuilt runtime in a release, match one exact `default.xbe`
@@ -199,8 +203,9 @@ changed.
 `Game.exe` finds `game/assets/` by walking up from its own folder. It keeps `settings.toml`, its logs, shader records
 and saves beside itself, and so does the native `Game`. The native port is the same game in an SDL3 window, drawn
 with Vulkan and played through SDL3's audio; it has everything `Game.exe` has but the D3D12 renderer, the boot splash
-and the window kept up across a relaunch. For now it is built from source only: releases carry `Game.exe`. `tools/build.sh --harness` also builds `game/out/harness/conker`, a headless Linux build with
-no window or GPU, for testing.
+and the window kept up across a relaunch. This build uses the system clang and libstdc++; a release's native `Game` is
+built with the pinned Zig instead (see [Building a release](#building-a-release)). `tools/build.sh --harness` also
+builds `game/out/harness/conker`, a headless Linux build with no window or GPU, for testing.
 
 ### On Windows
 
@@ -238,8 +243,8 @@ Releases ship it as `unpack-store-windows.exe` and `unpack-store-linux`.
 ## Building a release
 
 A release is `setup-windows.exe`, `setup-linux`, `unpack-store-windows.exe`, `unpack-store-linux` and a kit: the
-recompiler, the prebuilt runtime and hooks, the config, the headers the generated code includes, and the pinned
-compiler's address and SHA-256. It contains none of the game.
+recompiler, the prebuilt runtime and hooks for Windows and for Linux, the config, the headers the generated code
+includes, and the pinned compilers' addresses and SHA-256s. It contains none of the game.
 
 ### On Linux
 
@@ -250,10 +255,14 @@ tools/package.sh                         # writes game/out/release/Conker-<versi
 ```
 
 It downloads the pinned llvm-mingw and Zig if they're missing (the pins are in `tools/toolchains.cmake`). It builds
-the kit with llvm-mingw, and `setup-linux` and the Linux `xbe_recomp` with Zig: static musl programs that run on any
-x86_64 distro. Then it tests the release as a Linux player would: the
-packaged `setup-linux` builds `Game.exe` from the game in `game/assets/`, and the test fails unless one comes out.
-`--no-test` skips the test, and `--test-download` makes it use the compiler Setup downloads.
+the kit's Windows half with llvm-mingw, and with Zig `setup-linux` and the Linux `xbe_recomp` (static musl programs
+that run on any x86_64 distro) and the kit's Linux half (`game/out/build/zig-glibc`): the native port's runtime,
+against glibc 2.31 and Zig's own static libc++, which a player's Zig links the game code with into a `Game` that needs
+only glibc. Its SDL is built against this system's X11, Wayland, ALSA, PulseAudio and PipeWire headers (it loads those
+libraries at run time), which the native build needs anyway. Then it tests the release as a Linux player would: the
+packaged `setup-linux` builds the native `Game`, then `Game.exe` (`--target windows`), from the game in
+`game/assets/`, and the test fails unless both come out. `--no-test` skips the test, and `--test-download` makes it
+use the compilers Setup downloads.
 
 The kit only accepts the exact XBE it was packaged from, so package from the supported release.
 
@@ -270,8 +279,8 @@ tools\package.bat
 It writes `game\out\release\Conker-<version>.zip` and takes the same `--no-test`, `--test-download` and
 `-j N` options. Here the test runs the packaged `setup-windows.exe`.
 
-Zig builds `setup-linux` and the Linux `xbe_recomp` on Windows too, so a release is the same whichever system
-packaged it.
+Zig builds `setup-linux` and the Linux `xbe_recomp` on Windows too, but the kit's Linux half needs Linux's headers: a
+release packaged on Windows has none, and its `setup-linux` builds `Game.exe`.
 
 Both scripts run `tools/package.cmake`, which can also be run directly: `cmake -P tools/package.cmake`, with
 `-DTEST=OFF`, `-DTEST_DOWNLOAD=ON` or `-DJOBS=N` before `-P`.
@@ -282,3 +291,4 @@ Both scripts run `tools/package.cmake`, which can also be run directly: `cmake -
 - [XenonRecomp](https://github.com/hedge-dev/XenonRecomp) for the overridable function layout and instruction hooks.
 - [Zydis](https://github.com/zyantific/zydis) for decoding x86 instructions, [toml++](https://github.com/marzer/tomlplusplus) for the configs, [Dear ImGui](https://github.com/ocornut/imgui) for the settings overlay and [SDL](https://github.com/libsdl-org/SDL) for the window, input and controllers.
 - [llvm-mingw](https://github.com/mstorsjo/llvm-mingw) (Clang, LLD, mingw-w64, libc++), the compiler `setup-windows.exe` builds the game with.
+- [Zig](https://ziglang.org) (`zig c++`: Clang, LLD, glibc stubs, libc++), the compiler `setup-linux` builds the native game with.

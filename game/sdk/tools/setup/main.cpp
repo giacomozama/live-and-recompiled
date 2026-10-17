@@ -3,15 +3,17 @@
 // but the title's code, the headers the generated code includes, the config) and an empty assets folder.
 // Setup finds the game in assets (its files or a disc image; on Windows it offers the Microsoft Store install, unpacked
 // by unpack-store), checks it is the release the kit was made for,
-// downloads the compiler kit.toml pins for this host into kit/toolchain/<host> (once), recompiles the game, compiles
-// the result with that compiler and links <exe>.exe beside itself. It runs on Windows and on Linux (the exe is for
-// Windows either way, Linux players start it with Proton).
+// downloads the compiler kit/<os>.toml pins for this host into kit/toolchain/<os>-<host> (once), recompiles the game,
+// compiles the result with that compiler and links the game beside itself. It runs on Windows and on Linux, and builds
+// for either: <exe>.exe for Windows (llvm-mingw; on Linux it runs with Proton) or the native Linux <exe> (Zig, against
+// glibc). By default it builds for the system it runs on, or for Windows when the kit has no Linux half.
 //
-//   setup-windows.exe, setup-linux [--jobs N] [--keep] [--toolchain DIR] [--root DIR] [--fetch-toolchain]
+//   setup-windows.exe, setup-linux [--target windows|linux] [--jobs N] [--keep] [--toolchain DIR] [--root DIR]
+//                                  [--fetch-toolchain]
 //
-// --keep leaves kit/work (the generated code and objects) in place; --toolchain uses another llvm-mingw of the
-// kit's version (a Linux-hosted one tests a kit without Windows); --root is the folder Setup would be in;
-// --fetch-toolchain only downloads the compiler.
+// --keep leaves kit/work (the generated code and objects) in place; --toolchain uses another copy of the target's
+// compiler of the kit's version (a Linux-hosted llvm-mingw tests a kit without Windows); --root is the folder Setup
+// would be in; --fetch-toolchain only downloads the compiler.
 #include <miniz.h>
 #include <toml++/toml.hpp>
 
@@ -74,14 +76,17 @@ void Say(const char* fmt, ...) {
     va_end(a);
 }
 
-// what the kit says, kit/kit.toml
+// what the kit says, kit/kit.toml and kit/<os>.toml for the target
 struct Kit {
     std::string title, exe, xbe, sha1;
+    std::string target;  // windows or linux, what the game is built for
     fs::path config, xdk, recomp, cxx;
     std::vector<fs::path> include;
+    std::vector<std::string> driver;  // the compiler's own first arguments (zig's "c++"), before every command
     std::vector<std::string> cxxflags, ldflags, libs;
-    fs::path toolchain;                           // kit/toolchain/<host>, cxx is in it
-    std::string toolchain_url, toolchain_sha256;  // [toolchain.<host>]: the llvm-mingw archive Setup downloads
+    fs::path toolchain;                           // kit/toolchain/<os>-<host>, cxx is in it
+    std::string toolchain_url, toolchain_sha256;  // [toolchain.<host>]: the compiler's archive Setup downloads
+    std::string Game() const { return target == "windows" ? exe + ".exe" : exe; }
 };
 
 std::vector<std::string> Strings(const toml::node_view<toml::node>& n) {
@@ -92,14 +97,27 @@ std::vector<std::string> Strings(const toml::node_view<toml::node>& n) {
     return out;
 }
 
-bool LoadKit(const fs::path& kit_dir, Kit& k, std::string& error) {
-    toml::table t;
+bool ParseToml(const fs::path& p, toml::table& t, std::string& error) {
     try {
-        t = toml::parse_file((kit_dir / "kit.toml").string());
+        t = toml::parse_file(p.string());
     } catch (const toml::parse_error& e) {
-        error = std::string(e.description());
+        error = p.string() + ": " + std::string(e.description());
         return false;
     }
+    return true;
+}
+
+// target empty: this host's, when the kit has it, else windows
+bool LoadKit(const fs::path& kit_dir, std::string target, Kit& k, std::string& error) {
+    std::error_code ec;
+    if (target.empty()) target = fs::exists(kit_dir / (std::string(kHost) + ".toml"), ec) ? kHost : "windows";
+    if (!fs::exists(kit_dir / (target + ".toml"), ec)) {
+        error = "this kit cannot build for " + target + " (no kit/" + target + ".toml)";
+        return false;
+    }
+    toml::table t, o;
+    if (!ParseToml(kit_dir / "kit.toml", t, error) || !ParseToml(kit_dir / (target + ".toml"), o, error)) return false;
+    k.target = target;
     k.title = t["title"].value_or(std::string("the game"));
     k.exe = t["exe"].value_or(std::string());
     k.xbe = t["xbe"].value_or(std::string());
@@ -107,20 +125,21 @@ bool LoadKit(const fs::path& kit_dir, Kit& k, std::string& error) {
     k.config = kit_dir / t["config"].value_or(std::string());
     k.xdk = kit_dir / t["xdk"].value_or(std::string());
     k.recomp = kit_dir / t["recomp"].value_or(std::string());
-    k.toolchain = kit_dir / "toolchain" / kHost;
-    k.cxx = k.toolchain / t["cxx"].value_or(std::string());
+    k.toolchain = kit_dir / "toolchain" / (target + "-" + kHost);
+    k.cxx = k.toolchain / o["cxx"].value_or(std::string());
     for (auto& s : Strings(t["include"])) k.include.push_back(kit_dir / s);
-    k.cxxflags = Strings(t["cxxflags"]);
-    k.ldflags = Strings(t["ldflags"]);
-    for (auto& s : Strings(t["libs"])) k.libs.push_back(s.rfind("-", 0) == 0 ? s : (kit_dir / s).generic_string());
-    k.toolchain_url = t["toolchain"][kHost]["url"].value_or(std::string());
-    k.toolchain_sha256 = t["toolchain"][kHost]["sha256"].value_or(std::string());
+    k.driver = Strings(o["driver"]);
+    k.cxxflags = Strings(o["cxxflags"]);
+    k.ldflags = Strings(o["ldflags"]);
+    for (auto& s : Strings(o["libs"])) k.libs.push_back(s.rfind("-", 0) == 0 ? s : (kit_dir / s).generic_string());
+    k.toolchain_url = o["toolchain"][kHost]["url"].value_or(std::string());
+    k.toolchain_sha256 = o["toolchain"][kHost]["sha256"].value_or(std::string());
     if (k.exe.empty() || k.xbe.empty() || k.sha1.size() != 40) {
         error = "exe, xbe and sha1 must be set";
         return false;
     }
     if (!k.toolchain_url.empty() && k.toolchain_sha256.size() != 64) {
-        error = std::string("[toolchain.") + kHost + "] needs the sha256 of its url";
+        error = target + ".toml: [toolchain." + kHost + "] needs the sha256 of its url";
         return false;
     }
 #ifdef _WIN32
@@ -352,7 +371,8 @@ bool Run(const char* what, const fs::path& exe, const std::vector<std::string>& 
     return true;
 }
 
-// the toolchain: kit.toml pins an llvm-mingw zip by URL and SHA-256, Setup downloads it into kit/toolchain once
+// the toolchain: kit/<os>.toml pins the compiler's archive by URL and SHA-256, Setup downloads it into kit/toolchain
+// once
 
 std::string Sha256File(const fs::path& p) {
     static const uint32_t K[64] = {
@@ -473,10 +493,9 @@ bool Download(const std::string& url, const fs::path& to, const fs::path&) {
 }
 #endif
 
-// what a Windows x86_64 build needs of an llvm-mingw, by path below its top folder: the compiler and linker (bin, and
-// the LLVM libraries a Linux-hosted one loads), the headers without their .idl sources (a Linux-hosted one keeps them in
-// generic-w64-mingw32), clang's headers and x86_64
-// builtins, the x86_64 libraries
+// what a Windows x86_64 build needs of an llvm-mingw (Zig is kept whole), by path below its top folder: the compiler
+// and linker (bin, and the LLVM libraries a Linux-hosted one loads), the headers without their .idl sources (a
+// Linux-hosted one keeps them in generic-w64-mingw32), clang's headers and x86_64 builtins, the x86_64 libraries
 bool Wanted(const std::string& name) {
     if (name.size() > 4 && name.compare(name.size() - 4, 4, ".idl") == 0) return false;
     if (name.rfind("lib/clang/", 0) == 0) {  // lib/clang/<version>/...
@@ -559,9 +578,10 @@ void Prune(const fs::path& dir) {
 }
 #endif
 
-// a .zip (the Windows-hosted builds) with miniz; a .tar.xz (the Linux-hosted ones) with the system tar
-bool Unpack(const fs::path& archive, const std::string& url, const fs::path& dest,
-            [[maybe_unused]] const fs::path& log) {
+// a .zip (the Windows-hosted builds) with miniz; a .tar.xz (the Linux-hosted ones) with the system tar; prune keeps
+// only what Wanted says
+bool Unpack(const fs::path& archive, const std::string& url, const fs::path& dest, [[maybe_unused]] const fs::path& log,
+            [[maybe_unused]] bool prune) {
     if (url.size() > 4 && url.compare(url.size() - 4, 4, ".zip") == 0) return Unzip(archive, dest);
 #ifdef _WIN32
     Say("Cannot unpack %s: Setup on Windows reads only .zip\n", url.c_str());
@@ -572,13 +592,13 @@ bool Unpack(const fs::path& archive, const std::string& url, const fs::path& des
     if (!Run("Unpacking", "/usr/bin/env",
              {"tar", "-xJf", archive.string(), "-C", dest.string(), "--strip-components=1"}, log))
         return false;
-    Prune(dest);
+    if (prune) Prune(dest);
     return true;
 #endif
 }
 
-// kit/toolchain/<host> holds the archive kit.toml pins for this host once it is downloaded, checked and unpacked;
-// sha256.txt in it says which
+// kit/toolchain/<os>-<host> holds the archive kit/<os>.toml pins for this host once it is downloaded, checked and
+// unpacked; sha256.txt in it says which
 bool EnsureToolchain(const fs::path& kit_dir, const Kit& k) {
     fs::path tc = k.toolchain, stamp = tc / "sha256.txt";
     std::error_code ec;
@@ -587,15 +607,16 @@ bool EnsureToolchain(const fs::path& kit_dir, const Kit& k) {
                                                               std::string(have.begin(), have.end()) == k.toolchain_sha256)))
         return true;
     if (k.toolchain_url.empty()) {
-        Say("This kit has no compiler for %s: %s is missing and kit.toml names none to download.\n", kHost,
-            k.cxx.string().c_str());
+        Say("This kit has no compiler for building the %s game on %s: %s is missing and kit/%s.toml names none to "
+            "download.\n", k.target.c_str(), kHost, k.cxx.string().c_str(), k.target.c_str());
         return false;
     }
     fs::path archive = tc.string() + ".download", fresh = tc.string() + ".new";
     fs::create_directories(tc.parent_path(), ec);
     fs::remove(archive, ec);
     fs::remove_all(fresh, ec);
-    Say("Downloading the compiler (llvm-mingw), once:\n  %s\n", k.toolchain_url.c_str());
+    Say("Downloading the compiler (%s), once:\n  %s\n", k.target == "windows" ? "llvm-mingw" : "Zig",
+        k.toolchain_url.c_str());
     if (!Download(k.toolchain_url, archive, kit_dir / "download.log")) {
         fs::remove(archive, ec);
         return false;
@@ -603,13 +624,13 @@ bool EnsureToolchain(const fs::path& kit_dir, const Kit& k) {
     std::string sha = Sha256File(archive);
     if (sha != k.toolchain_sha256) {
         Say("The download is not the compiler this kit was made with (sha256 %s, expected %s).\n"
-            "Run Setup again; if this keeps happening, the address in kit/kit.toml is wrong.\n",
-            sha.c_str(), k.toolchain_sha256.c_str());
+            "Run Setup again; if this keeps happening, the address in kit/%s.toml is wrong.\n",
+            sha.c_str(), k.toolchain_sha256.c_str(), k.target.c_str());
         fs::remove(archive, ec);
         return false;
     }
     Say("Unpacking the compiler ...\n");
-    bool ok = Unpack(archive, k.toolchain_url, fresh, kit_dir / "unpack.log") &&
+    bool ok = Unpack(archive, k.toolchain_url, fresh, kit_dir / "unpack.log", k.target == "windows") &&
               WriteFile(fresh / "sha256.txt", sha.data(), sha.size());
     fs::remove(archive, ec);
     if (ok) {
@@ -705,17 +726,22 @@ int Fail() {
 
 int main(int argc, char** argv) {
     fs::path root = ExeDir(), toolchain;
+    std::string target;
     unsigned jobs = std::max(1u, std::thread::hardware_concurrency());
     bool keep = false, fetch_only = false;
     for (int i = 1; i < argc; i++) {
         std::string a = argv[i];
-        if (a == "--jobs" && i + 1 < argc) jobs = unsigned(std::max(1, std::atoi(argv[++i])));
+        if (a == "--target" && i + 1 < argc && (std::strcmp(argv[i + 1], "windows") == 0 ||
+                                                std::strcmp(argv[i + 1], "linux") == 0))
+            target = argv[++i];
+        else if (a == "--jobs" && i + 1 < argc) jobs = unsigned(std::max(1, std::atoi(argv[++i])));
         else if (a == "--keep") keep = true;
         else if (a == "--fetch-toolchain") fetch_only = true;
         else if (a == "--toolchain" && i + 1 < argc) toolchain = fs::absolute(argv[++i]);
         else if (a == "--root" && i + 1 < argc) root = fs::absolute(argv[++i]);
         else {
-            std::fprintf(stderr, "usage: setup [--jobs N] [--keep] [--toolchain DIR] [--root DIR] [--fetch-toolchain]\n");
+            std::fprintf(stderr, "usage: setup [--target windows|linux] [--jobs N] [--keep] [--toolchain DIR] "
+                                 "[--root DIR] [--fetch-toolchain]\n");
             return 2;
         }
     }
@@ -728,18 +754,26 @@ int main(int argc, char** argv) {
     fs::path kit_dir = root / "kit";
     Kit k;
     std::string error;
-    if (!LoadKit(kit_dir, k, error)) {
-        Say("%s: %s\n", (kit_dir / "kit.toml").string().c_str(), error.c_str());
+    if (!LoadKit(kit_dir, target, k, error)) {
+        Say("%s: %s\n", kit_dir.string().c_str(), error.c_str());
         return Fail();
     }
-    if (!toolchain.empty()) k.cxx = toolchain / "bin" / k.cxx.filename();
+    if (!toolchain.empty()) k.cxx = toolchain / k.cxx.lexically_relative(k.toolchain);
+#ifndef _WIN32
+    // Zig's caches: the C++ library it builds for the target once beside the downloaded compiler (with --toolchain, in
+    // kit/work like the rest)
+    fs::path zig_cache = toolchain.empty() ? k.toolchain / "cache" : kit_dir / "work" / "zig-cache";
+    setenv("ZIG_GLOBAL_CACHE_DIR", zig_cache.c_str(), 1);
+    setenv("ZIG_LOCAL_CACHE_DIR", (kit_dir / "work" / "zig-cache").c_str(), 1);
+#endif
     if (fetch_only) {
         if (!EnsureToolchain(kit_dir, k)) return Fail();
         Say("The compiler is in %s\n", k.cxx.parent_path().parent_path().string().c_str());
         if (g_log) std::fclose(g_log);
         return 0;
     }
-    Say("Building %s from your copy of the game. This takes a few minutes, once.\n\n", k.title.c_str());
+    Say("Building %s for %s from your copy of the game. This takes a few minutes, once.\n\n", k.title.c_str(),
+        k.target == "windows" ? "Windows" : "Linux");
 
     // 1. the game
     std::vector<uint8_t> xbe;
@@ -794,7 +828,8 @@ int main(int argc, char** argv) {
         while (!failed && next < sources.size() && running.size() < jobs) {
             size_t i = next++;
             objects[i] = obj / (sources[i].stem().string() + ".o");
-            std::vector<std::string> args = base;
+            std::vector<std::string> args = k.driver;
+            args.insert(args.end(), base.begin(), base.end());
             args.insert(args.end(), {"-c", sources[i].generic_string(), "-o", objects[i].generic_string()});
             Child c;
             c.job = i;
@@ -825,8 +860,8 @@ int main(int argc, char** argv) {
     if (failed) return Fail();
 
     // 4. link beside Setup; a response file keeps the command line short
-    Say("Linking %s.exe ...\n", k.exe.c_str());
-    fs::path rsp = work / "link.rsp", out = root / (k.exe + ".exe"), tmp = root / (k.exe + ".exe.new");
+    Say("Linking %s ...\n", k.Game().c_str());
+    fs::path rsp = work / "link.rsp", out = root / k.Game(), tmp = root / (k.Game() + ".new");
     {
         std::ofstream f(rsp);
         auto put = [&](const std::string& s) { f << '"' << s << "\"\n"; };
@@ -845,7 +880,9 @@ int main(int argc, char** argv) {
         put("-o");
         put(tmp.generic_string());
     }
-    if (!Run("Linking", k.cxx, {"@" + rsp.generic_string()}, logs / "link.log")) return Fail();
+    std::vector<std::string> link = k.driver;
+    link.push_back("@" + rsp.generic_string());
+    if (!Run("Linking", k.cxx, link, logs / "link.log")) return Fail();
     fs::rename(tmp, out, ec);
     if (ec) {
         Say("Cannot replace %s: %s (is the game still running?)\n", out.string().c_str(), ec.message().c_str());
@@ -855,7 +892,13 @@ int main(int argc, char** argv) {
     // the generated code and objects are the title's code: only kept when asked for
     if (!keep) fs::remove_all(work, ec);
     double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
-    Say("\nDone in %.0f s: %s\nStart the game with %s.exe.\n", secs, out.string().c_str(), k.exe.c_str());
+    Say("\nDone in %.0f s: %s\n", secs, out.string().c_str());
+    if (k.target == "linux") Say("Start the game with ./%s.\n", k.Game().c_str());
+#ifdef _WIN32
+    else Say("Start the game with %s.\n", k.Game().c_str());
+#else
+    else Say("Start %s with Proton or Wine.\n", k.Game().c_str());
+#endif
     if (g_log) std::fclose(g_log);
     Pause();
     return 0;

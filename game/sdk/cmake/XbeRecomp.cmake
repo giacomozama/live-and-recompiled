@@ -202,22 +202,31 @@ function(add_xbe_image target xbe config partitions game_dir)
         XBE_GEN ${GEN})
 endfunction()
 
-# A player kit for an image (MinGW builds): everything a player needs to build the game from their own copy, and none
-# of the title's code. Staged in <build>/package/<target>:
-#   setup-windows.exe  xbe_setup: finds the game, recompiles, compiles and links <target>.exe beside itself
+# A player kit for an image (MinGW builds, and the Zig glibc builds of cmake-zig-glibc.cmake): everything a player needs
+# to build the game from their own copy, and none of the title's code. Staged in <build>/package/<target>, one half of
+# it per build (tools/package.cmake puts the two together):
+#   setup-windows.exe  xbe_setup: finds the game, recompiles, compiles and links <target>.exe (or <target>) beside it
 #   assets/            empty, the player's game goes here
-#   kit/kit.toml       what Setup reads: the release's sha1, the commands' flags and libraries
+#   kit/kit.toml       what Setup reads first: the release's sha1, the config, the recompiler, the headers
+#   kit/<os>.toml      how to build for that OS (windows: <target>.exe, linux: the native <target>): the compiler, its
+#                      flags and the libraries
 #   kit/bin/           xbe_recomp (the packaging script adds the Linux one, and setup-linux beside setup-windows.exe)
 #   kit/config, xdk/   the image's config and the SDK's XDK tables
 #   kit/include/       the headers the generated code includes, and image_symbols.h to check the recompile against
-#   kit/lib/           the prebuilt host (runtime, game hooks, ImGui), glslang, SDL and the xaudio2 import library
-# kit.toml's [toolchain.windows] and [toolchain.linux] (where Setup downloads the llvm-mingw of the version the kit was
-# built with for the host it runs on, and its SHA-256) are added by the packaging script; Setup unpacks it into
-# kit/toolchain/<host> on the first run, and cxx is relative to that.
+#   kit/lib/<os>/      the prebuilt host (runtime, game hooks, ImGui), glslang, SDL and on Windows the xaudio2 import
+#                      library
+# <os>.toml's [toolchain.windows] and [toolchain.linux] (where Setup downloads the compiler of the version the kit was
+# built with, llvm-mingw or Zig, for the host it runs on, and its SHA-256) are added by the packaging script; Setup
+# unpacks it into kit/toolchain/<os>-<host> on the first run, and cxx is relative to that.
 # title is the name Setup shows.
 function(add_xbe_player_kit target title)
-    if(NOT MINGW)
-        message(FATAL_ERROR "add_xbe_player_kit needs a MinGW build (llvm-mingw): players build with the same toolchain")
+    if(MINGW)
+        set(os windows)
+    elseif(XBE_ZIG_TARGET)
+        set(os linux)
+    else()
+        message(FATAL_ERROR "add_xbe_player_kit needs a MinGW build (llvm-mingw) or a Zig glibc one "
+            "(cmake-zig-glibc.cmake): players build with the same toolchain")
     endif()
     get_target_property(xbe ${target} XBE_FILE)
     get_target_property(sha1_file ${target} XBE_SHA1_FILE)
@@ -225,6 +234,7 @@ function(add_xbe_player_kit target title)
     get_target_property(gen ${target} XBE_GEN)
     set(pkg ${CMAKE_BINARY_DIR}/package/${target})
     set(kit ${pkg}/kit)
+    set(lib lib/${os})
 
     # the compile line of the generated sources, as add_xbe_image's target has it in a Release build
     separate_arguments(cxx_flags NATIVE_COMMAND "${CMAKE_CXX_FLAGS} -DNDEBUG")
@@ -233,27 +243,41 @@ function(add_xbe_player_kit target title)
         list(APPEND cxxflags -D${d})
     endforeach()
     list(APPEND cxxflags ${XBE_GEN_COMPILE_OPTIONS})
-    # the link line: the host whole (its replacements beat the recompiled weak functions), SDL and its system
+    # the link line: the host whole (its replacements beat the recompiled weak functions), glslang, SDL and its system
     # libraries (SDL3staticTargets.cmake), the host's, CMake's defaults for a C++ program
     separate_arguments(std_libs NATIVE_COMMAND "${CMAKE_CXX_STANDARD_LIBRARIES}")
-    set(libs -Wl,--whole-archive lib/lib${target}_host.a -Wl,--no-whole-archive)
-    foreach(lib ${XBE_GLSLANG_LIBS})
-        list(APPEND libs lib/$<TARGET_FILE_NAME:${lib}>)
+    set(libs -Wl,--whole-archive ${lib}/lib${target}_host.a -Wl,--no-whole-archive)
+    foreach(l ${XBE_GLSLANG_LIBS})
+        list(APPEND libs ${lib}/$<TARGET_FILE_NAME:${l}>)
     endforeach()
-    list(APPEND libs lib/libSDL3.a lib/libxaudio2.a)
-    foreach(l m kernel32 user32 gdi32 winmm imm32 ole32 oleaut32 version uuid advapi32 setupapi shell32 dinput8
-              ${XBE_HOST_SYSTEM_LIBS})
+    list(APPEND libs ${lib}/libSDL3.a)
+    if(os STREQUAL "windows")
+        list(APPEND libs ${lib}/libxaudio2.a)
+        set(sdl_libs m kernel32 user32 gdi32 winmm imm32 ole32 oleaut32 version uuid advapi32 setupapi shell32 dinput8)
+        set(ldflags -static -mwindows -municode -fuse-ld=lld)
+        set(cxx bin/x86_64-w64-mingw32-clang++)
+        set(driver)
+    else()
+        set(sdl_libs m)
+        # the compile flags too, as CMake links: without zig's -target the game would ask for this host's glibc
+        separate_arguments(ldflags NATIVE_COMMAND "${CMAKE_CXX_FLAGS}")
+        list(APPEND ldflags -fuse-ld=lld -pthread)
+        set(cxx zig)
+        set(driver c++)  # zig's own first argument, before every compile and link
+    endif()
+    foreach(l ${sdl_libs} ${XBE_HOST_SYSTEM_LIBS})
         list(APPEND libs -l${l})
     endforeach()
     list(APPEND libs ${std_libs})
-    set(ldflags -static -mwindows -municode -fuse-ld=lld)
     set(toml "# written by add_xbe_player_kit; Setup reads it\n")
     # the sha1 is filled in at build time, from the game in assets/ then (xbe_sha1.cmake)
     string(APPEND toml "title = \"${title}\"\nexe = \"${target}\"\nxbe = \"${xbe}\"\nsha1 = \"@XBE_SHA1@\"\n")
     get_filename_component(config_name ${config} NAME)
     string(APPEND toml "config = \"config/${config_name}\"\nxdk = \"xdk\"\nrecomp = \"bin/xbe_recomp\"\n")
-    string(APPEND toml "cxx = \"bin/x86_64-w64-mingw32-clang++\"\ninclude = [\"include\"]\n")
-    foreach(key cxxflags ldflags libs)
+    string(APPEND toml "include = [\"include\"]\n")
+    file(GENERATE OUTPUT ${CMAKE_BINARY_DIR}/${target}_kit.toml.in CONTENT "${toml}")
+    set(toml "# written by add_xbe_player_kit: building ${target} for ${os}; Setup reads it\ncxx = \"${cxx}\"\n")
+    foreach(key driver cxxflags ldflags libs)
         set(items)
         foreach(v ${${key}})
             list(APPEND items "\"${v}\"")
@@ -261,25 +285,33 @@ function(add_xbe_player_kit target title)
         list(JOIN items ", " items)
         string(APPEND toml "${key} = [${items}]\n")
     endforeach()
-    file(GENERATE OUTPUT ${CMAKE_BINARY_DIR}/${target}_kit.toml.in CONTENT "${toml}")
+    file(GENERATE OUTPUT ${kit}/${os}.toml CONTENT "${toml}")
 
-    set(xaudio2 "")
-    foreach(dir ${CMAKE_CXX_IMPLICIT_LINK_DIRECTORIES} ${CMAKE_FIND_ROOT_PATH}/lib)
-        if(NOT xaudio2 AND EXISTS ${dir}/libxaudio2_8.a)
-            set(xaudio2 ${dir}/libxaudio2_8.a)
+    set(extra)
+    if(os STREQUAL "windows")
+        set(xaudio2 "")
+        foreach(dir ${CMAKE_CXX_IMPLICIT_LINK_DIRECTORIES} ${CMAKE_FIND_ROOT_PATH}/lib)
+            if(NOT xaudio2 AND EXISTS ${dir}/libxaudio2_8.a)
+                set(xaudio2 ${dir}/libxaudio2_8.a)
+            endif()
+        endforeach()
+        if(NOT xaudio2)
+            message(FATAL_ERROR "libxaudio2_8.a not found in the toolchain")
         endif()
-    endforeach()
-    if(NOT xaudio2)
-        message(FATAL_ERROR "libxaudio2_8.a not found in the toolchain")
+        set(extra
+            COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:xbe_setup> ${pkg}/setup-windows$<TARGET_FILE_SUFFIX:xbe_setup>
+            COMMAND ${CMAKE_COMMAND} -E copy ${xaudio2} ${kit}/${lib}/libxaudio2.a)
     endif()
     set(glslang_libs)
-    foreach(lib ${XBE_GLSLANG_LIBS})
-        list(APPEND glslang_libs $<TARGET_FILE:${lib}>)
+    foreach(l ${XBE_GLSLANG_LIBS})
+        list(APPEND glslang_libs $<TARGET_FILE:${l}>)
     endforeach()
+    # <os>.toml is written at configure time, so the rest of the folder is cleared around it
     add_custom_target(${target}_kit
-        COMMAND ${CMAKE_COMMAND} -E rm -rf ${pkg}
-        COMMAND ${CMAKE_COMMAND} -E make_directory ${pkg}/assets ${kit}/bin ${kit}/config ${kit}/include/cpu ${kit}/lib
-        COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:xbe_setup> ${pkg}/setup-windows$<TARGET_FILE_SUFFIX:xbe_setup>
+        COMMAND ${CMAKE_COMMAND} -E rm -rf ${pkg}/assets ${pkg}/THIRD_PARTY.txt ${kit}/bin ${kit}/config ${kit}/xdk
+            ${kit}/include ${kit}/lib ${kit}/kit.toml
+        COMMAND ${CMAKE_COMMAND} -E make_directory ${pkg}/assets ${kit}/bin ${kit}/config ${kit}/include/cpu
+            ${kit}/${lib}
         COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:xbe_recomp> ${kit}/bin/
         COMMAND ${CMAKE_COMMAND} -DMODE=kit -DSHA=${sha1_file} -DIN=${CMAKE_BINARY_DIR}/${target}_kit.toml.in
             -DOUT=${kit}/kit.toml -P ${XBE_SDK_DIR}/cmake/xbe_sha1.cmake
@@ -288,11 +320,11 @@ function(add_xbe_player_kit target title)
         COMMAND ${CMAKE_COMMAND} -E copy ${XBE_SDK_DIR}/runtime/cpu/x86_ops.h ${XBE_SDK_DIR}/runtime/cpu/x86_context.h
             ${kit}/include/cpu/
         COMMAND ${CMAKE_COMMAND} -E copy ${gen}/image_symbols.h ${kit}/include/
-        COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:${target}_host> $<TARGET_FILE:SDL3::SDL3-static> ${kit}/lib/
-        COMMAND ${CMAKE_COMMAND} -E copy ${glslang_libs} ${kit}/lib/
-        COMMAND ${CMAKE_COMMAND} -E copy ${xaudio2} ${kit}/lib/libxaudio2.a
+        COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:${target}_host> $<TARGET_FILE:SDL3::SDL3-static> ${kit}/${lib}/
+        COMMAND ${CMAKE_COMMAND} -E copy ${glslang_libs} ${kit}/${lib}/
+        ${extra}
         COMMAND ${CMAKE_COMMAND} -E copy ${XBE_SDK_DIR}/THIRD_PARTY.txt ${pkg}/
         DEPENDS ${target}_host xbe_setup xbe_recomp SDL3::SDL3-static ${XBE_GLSLANG_LIBS} ${sha1_file}
-        COMMENT "Staging the player kit for ${target} in ${pkg}"
+        COMMENT "Staging the ${os} player kit for ${target} in ${pkg}"
         VERBATIM)
 endfunction()

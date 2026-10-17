@@ -2,8 +2,8 @@
 # everything but the game's code.
 #
 # Players build the game on their own machine from their own copy: Setup finds the game in assets/, downloads the
-# pinned llvm-mingw for its host, recompiles the game, compiles the result and links Game.exe. Nothing in the release
-# is the title's code, or the compiler.
+# pinned compiler for its host, recompiles the game, compiles the result and links it: Game.exe with llvm-mingw, or on
+# Linux the native Game with Zig (against glibc). Nothing in the release is the title's code, or the compiler.
 #
 #   cmake -P tools/package.cmake                    build the kit, test it against the game in game/assets, zip it
 #   cmake -DTEST=OFF -P tools/package.cmake         skip the test
@@ -12,8 +12,10 @@
 # tools/package.sh and tools/package.bat run it with the same options as flags.
 #
 # Output: game/out/release/Conker/ and game/out/release/Conker-<version>.zip
-# setup-linux and the Linux xbe_recomp are built with the pinned Zig, so a release is the same from either host. The
-# test runs this host's Setup: setup-linux on Linux, setup-windows.exe on Windows.
+# setup-linux and the Linux xbe_recomp are built with the pinned Zig, so those are the same from either host. The kit's
+# Linux half (the native game's prebuilt host) is built on Linux only, against the X11, Wayland and audio headers SDL
+# needs: a release packaged on Windows builds Game.exe alone. The test runs this host's Setup: setup-linux on Linux for
+# both the native Game and Game.exe, setup-windows.exe on Windows.
 cmake_minimum_required(VERSION 3.25)
 include(${CMAKE_CURRENT_LIST_DIR}/configure.cmake)
 
@@ -47,31 +49,48 @@ xbe_configure(zig-linux)
 build(zig-linux xbe_recomp xbe_setup unpack_store)
 xbe_configure(llvm-mingw)
 build(llvm-mingw Game_kit unpack_store)
+if(NOT CMAKE_HOST_WIN32)
+    xbe_configure(zig-glibc)
+    build(zig-glibc Game_kit)
+endif()
 
 set(DEST ${OUT}/${NAME})
 message(STATUS "[3/5] staging ${DEST}")
 file(REMOVE_RECURSE ${DEST})
 file(COPY ${XBE_BUILDS}/llvm-mingw/package/Game/ DESTINATION ${DEST})
+if(NOT CMAKE_HOST_WIN32)
+    # the Linux half beside it: kit.toml and the rest are the same in both
+    file(COPY ${XBE_BUILDS}/zig-glibc/package/Game/kit/linux.toml DESTINATION ${DEST}/kit)
+    file(COPY ${XBE_BUILDS}/zig-glibc/package/Game/kit/lib/linux DESTINATION ${DEST}/kit/lib)
+endif()
 file(COPY ${XBE_ROOT}/README.md DESTINATION ${DEST})
 file(COPY ${XBE_BUILDS}/zig-linux/xbe_setup DESTINATION ${DEST})
 file(RENAME ${DEST}/xbe_setup ${DEST}/setup-linux)
 file(COPY_FILE ${XBE_BUILDS}/zig-linux/unpack-store ${DEST}/unpack-store-linux)
 file(COPY_FILE ${XBE_BUILDS}/llvm-mingw/unpack-store.exe ${DEST}/unpack-store-windows.exe)
 file(COPY ${XBE_BUILDS}/zig-linux/xbe_recomp DESTINATION ${DEST}/kit/bin)
-# no compiler in the release: Setup downloads the llvm-mingw of the same release for its host on the player's machine
-set(toml "\n# the compiler (llvm-mingw ${LLVM_MINGW_VERSION}) for the host Setup runs on, downloaded into ")
-string(APPEND toml "kit/toolchain/<host> once\n")
-foreach(host windows linux)
-    string(APPEND toml "[toolchain.${host}]\nurl = \"${LLVM_MINGW_URL}/${LLVM_MINGW_${host}_ARCHIVE}\"\n")
-    string(APPEND toml "sha256 = \"${LLVM_MINGW_${host}_SHA256}\"\n")
-endforeach()
-file(APPEND ${DEST}/kit/kit.toml "${toml}")
-message(STATUS "      Setup downloads llvm-mingw ${LLVM_MINGW_VERSION}")
+# no compiler in the release: Setup downloads the one of the same release for its host on the player's machine,
+# llvm-mingw for Game.exe from either, Zig for the native Linux game from Linux
+function(kit_toolchain os tool version)
+    set(toml "\n# the compiler (${tool} ${version}) for the host Setup runs on, downloaded into ")
+    string(APPEND toml "kit/toolchain/${os}-<host> once\n")
+    foreach(host ${ARGN})
+        string(APPEND toml "[toolchain.${host}]\nurl = \"${${tool}_URL}/${${tool}_${host}_ARCHIVE}\"\n")
+        string(APPEND toml "sha256 = \"${${tool}_${host}_SHA256}\"\n")
+    endforeach()
+    file(APPEND ${DEST}/kit/${os}.toml "${toml}")
+endfunction()
+kit_toolchain(windows LLVM_MINGW ${LLVM_MINGW_VERSION} windows linux)
+message(STATUS "      Setup downloads llvm-mingw ${LLVM_MINGW_VERSION} for Game.exe")
+if(EXISTS ${DEST}/kit/linux.toml)
+    kit_toolchain(linux ZIG ${ZIG_VERSION} linux)
+    message(STATUS "      setup-linux downloads Zig ${ZIG_VERSION} for the native Game")
+endif()
 
 message(STATUS "[4/5] test")
 if(TEST)
     # a player's steps on this host: the release's Setup and recompiler, the game's default.xbe, and this host's
-    # llvm-mingw from toolchain/ (or, with TEST_DOWNLOAD, the one Setup downloads)
+    # compiler from toolchain/ (or, with TEST_DOWNLOAD, the one Setup downloads)
     string(RANDOM LENGTH 6 tag)
     set(scratch ${OUT}/.test-${tag})
     file(MAKE_DIRECTORY ${scratch}/assets)
@@ -80,23 +99,34 @@ if(TEST)
     if(NOT CMAKE_HOST_WIN32)
         file(COPY ${DEST}/setup-linux DESTINATION ${scratch})
         set(setup ${scratch}/setup-linux)
+        set(targets linux windows)
     else()
         file(COPY ${DEST}/setup-windows.exe DESTINATION ${scratch})
         set(setup ${scratch}/setup-windows.exe)
+        set(targets windows)
     endif()
-    set(args --jobs ${JOBS})
-    if(NOT TEST_DOWNLOAD)
-        list(APPEND args --toolchain ${LLVM_MINGW_HOST_DIR})
-    endif()
-    execute_process(COMMAND ${setup} ${args} RESULT_VARIABLE code)
-    if(code OR NOT EXISTS ${scratch}/Game.exe)
-        message(FATAL_ERROR "the test build made no Game.exe (exit ${code}); ${scratch}/setup.log has the run")
-    endif()
-    if(EXISTS ${scratch}/kit/work)
-        message(FATAL_ERROR "Setup left kit/work behind in ${scratch}")
-    endif()
+    foreach(target ${targets})
+        set(args --target ${target} --jobs ${JOBS})
+        if(target STREQUAL "windows")
+            set(game Game.exe)
+            set(toolchain ${LLVM_MINGW_HOST_DIR})
+        else()
+            set(game Game)
+            set(toolchain ${ZIG_HOST_DIR})
+        endif()
+        if(NOT TEST_DOWNLOAD)
+            list(APPEND args --toolchain ${toolchain})
+        endif()
+        execute_process(COMMAND ${setup} ${args} RESULT_VARIABLE code)
+        if(code OR NOT EXISTS ${scratch}/${game})
+            message(FATAL_ERROR "the test build made no ${game} (exit ${code}); ${scratch}/setup.log has the run")
+        endif()
+        if(EXISTS ${scratch}/kit/work)
+            message(FATAL_ERROR "Setup left kit/work behind in ${scratch}")
+        endif()
+        message(STATUS "      the kit builds ${game}")
+    endforeach()
     file(REMOVE_RECURSE ${scratch})
-    message(STATUS "      the kit builds Game.exe")
 else()
     message(STATUS "      skipped")
 endif()
