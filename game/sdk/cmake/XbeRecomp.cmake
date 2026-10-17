@@ -77,24 +77,40 @@ function(add_xbe_image target xbe config partitions game_dir)
         list(APPEND GEN_SOURCES ${GEN}/x86_recomp.${i}.cpp)
     endforeach()
     file(GLOB configs CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/config/*.toml ${XBE_SDK_DIR}/xdk/*/*.toml)
+    # the xbe's SHA-1, checked on every build and rewritten only when it changed: what follows depends on the game by
+    # its content (xbe_sha1.cmake)
+    set(xbe_file ${CMAKE_CURRENT_SOURCE_DIR}/assets/${xbe})
+    if(NOT EXISTS ${xbe_file})
+        message(FATAL_ERROR "${xbe_file} is missing: put the game in assets/ (tools/build.sh --iso FILE)")
+    endif()
+    set(XBE_SHA1_FILE ${CMAKE_CURRENT_BINARY_DIR}/${target}_xbe.sha1)
+    add_custom_target(${target}_xbe_sha1
+        COMMAND ${CMAKE_COMMAND} -DMODE=stamp -DXBE=${xbe_file} -DOUT=${XBE_SHA1_FILE}
+            -P ${XBE_SDK_DIR}/cmake/xbe_sha1.cmake
+        BYPRODUCTS ${XBE_SHA1_FILE}
+        COMMENT "Checking ${xbe}"
+        VERBATIM)
     add_custom_command(
         OUTPUT ${GEN}/codegen.stamp
         BYPRODUCTS ${GEN_SOURCES} ${GEN}/x86_recomp_shared.h ${GEN}/image_symbols.h
         COMMAND ${XBE_CODEGEN_TOOL} config/${config} --xdk ${XBE_SDK_DIR}/xdk
         COMMAND ${CMAKE_COMMAND} -E touch ${GEN}/codegen.stamp
-        DEPENDS ${XBE_CODEGEN_TOOL} ${configs} ${CMAKE_CURRENT_SOURCE_DIR}/assets/${xbe}
+        DEPENDS ${XBE_CODEGEN_TOOL} ${configs} ${XBE_SHA1_FILE}
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
         COMMENT "Recompiling ${xbe}"
         VERBATIM)
     add_custom_target(recompile_${target} DEPENDS ${GEN}/codegen.stamp)
+    add_dependencies(recompile_${target} ${target}_xbe_sha1)
     set_source_files_properties(${GEN_SOURCES} PROPERTIES GENERATED TRUE COMPILE_OPTIONS "${XBE_GEN_COMPILE_OPTIONS}")
     file(GLOB GAME_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/src/${game_dir}/*.cpp)
-    # the xbe's SHA-1: the executable checks the game it finds is the release it was made from
-    set(xbe_file ${CMAKE_CURRENT_SOURCE_DIR}/assets/${xbe})
-    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${xbe_file})
-    file(SHA1 ${xbe_file} xbe_sha1)
+    # the xbe's SHA-1 in the executable: it checks the game it finds is the release it was made from
     set(XBE_HASH ${CMAKE_CURRENT_BINARY_DIR}/${target}_xbe.cpp)
-    file(CONFIGURE OUTPUT ${XBE_HASH} CONTENT "extern const char kImageSha1[] = \"${xbe_sha1}\";\n")
+    add_custom_command(
+        OUTPUT ${XBE_HASH}
+        COMMAND ${CMAKE_COMMAND} -DMODE=cpp -DSHA=${XBE_SHA1_FILE} -DOUT=${XBE_HASH}
+            -P ${XBE_SDK_DIR}/cmake/xbe_sha1.cmake
+        DEPENDS ${XBE_SHA1_FILE} ${XBE_SDK_DIR}/cmake/xbe_sha1.cmake
+        VERBATIM)
     # Everything but the title's own code: the runtime, the game's hooks, ImGui and the xbe's hash. It reads only the
     # addresses in image_symbols.h, so it can be built ahead and linked with game code recompiled on another machine
     # (a player-side build, see add_xbe_player_kit).
@@ -117,7 +133,8 @@ function(add_xbe_image target xbe config partitions game_dir)
     if(MINGW)
         target_link_options(${target} PRIVATE -municode)  # the host's entry is wWinMain
     endif()
-    set_target_properties(${target} PROPERTIES XBE_FILE ${xbe} XBE_SHA1 ${xbe_sha1} XBE_CONFIG ${config} XBE_GEN ${GEN})
+    set_target_properties(${target} PROPERTIES XBE_FILE ${xbe} XBE_SHA1_FILE ${XBE_SHA1_FILE} XBE_CONFIG ${config}
+        XBE_GEN ${GEN})
 endfunction()
 
 # A player kit for an image (MinGW builds): everything a player needs to build the game from their own copy, and none
@@ -138,7 +155,7 @@ function(add_xbe_player_kit target title)
         message(FATAL_ERROR "add_xbe_player_kit needs a MinGW build (llvm-mingw): players build with the same toolchain")
     endif()
     get_target_property(xbe ${target} XBE_FILE)
-    get_target_property(sha1 ${target} XBE_SHA1)
+    get_target_property(sha1_file ${target} XBE_SHA1_FILE)
     get_target_property(config ${target} XBE_CONFIG)
     get_target_property(gen ${target} XBE_GEN)
     set(pkg ${CMAKE_BINARY_DIR}/package/${target})
@@ -162,7 +179,8 @@ function(add_xbe_player_kit target title)
     list(APPEND libs ${std_libs})
     set(ldflags -static -mwindows -municode -fuse-ld=lld)
     set(toml "# written by add_xbe_player_kit; Setup reads it\n")
-    string(APPEND toml "title = \"${title}\"\nexe = \"${target}\"\nxbe = \"${xbe}\"\nsha1 = \"${sha1}\"\n")
+    # the sha1 is filled in at build time, from the game in assets/ then (xbe_sha1.cmake)
+    string(APPEND toml "title = \"${title}\"\nexe = \"${target}\"\nxbe = \"${xbe}\"\nsha1 = \"@XBE_SHA1@\"\n")
     get_filename_component(config_name ${config} NAME)
     string(APPEND toml "config = \"config/${config_name}\"\nxdk = \"xdk\"\nrecomp = \"bin/xbe_recomp\"\n")
     string(APPEND toml "cxx = \"bin/x86_64-w64-mingw32-clang++\"\ninclude = [\"include\"]\n")
@@ -174,7 +192,7 @@ function(add_xbe_player_kit target title)
         list(JOIN items ", " items)
         string(APPEND toml "${key} = [${items}]\n")
     endforeach()
-    file(GENERATE OUTPUT ${CMAKE_BINARY_DIR}/${target}_kit.toml CONTENT "${toml}")
+    file(GENERATE OUTPUT ${CMAKE_BINARY_DIR}/${target}_kit.toml.in CONTENT "${toml}")
 
     set(xaudio2 "")
     foreach(dir ${CMAKE_CXX_IMPLICIT_LINK_DIRECTORIES} ${CMAKE_FIND_ROOT_PATH}/lib)
@@ -190,7 +208,8 @@ function(add_xbe_player_kit target title)
         COMMAND ${CMAKE_COMMAND} -E make_directory ${pkg}/assets ${kit}/bin ${kit}/config ${kit}/include/cpu ${kit}/lib
         COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:xbe_setup> ${pkg}/Setup$<TARGET_FILE_SUFFIX:xbe_setup>
         COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:xbe_recomp> ${kit}/bin/
-        COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_BINARY_DIR}/${target}_kit.toml ${kit}/kit.toml
+        COMMAND ${CMAKE_COMMAND} -DMODE=kit -DSHA=${sha1_file} -DIN=${CMAKE_BINARY_DIR}/${target}_kit.toml.in
+            -DOUT=${kit}/kit.toml -P ${XBE_SDK_DIR}/cmake/xbe_sha1.cmake
         COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_CURRENT_SOURCE_DIR}/config/${config} ${kit}/config/
         COMMAND ${CMAKE_COMMAND} -E copy_directory ${XBE_SDK_DIR}/xdk ${kit}/xdk
         COMMAND ${CMAKE_COMMAND} -E copy ${XBE_SDK_DIR}/runtime/cpu/x86_ops.h ${XBE_SDK_DIR}/runtime/cpu/x86_context.h
@@ -199,7 +218,7 @@ function(add_xbe_player_kit target title)
         COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:${target}_host> $<TARGET_FILE:SDL3::SDL3-static> ${kit}/lib/
         COMMAND ${CMAKE_COMMAND} -E copy ${xaudio2} ${kit}/lib/libxaudio2.a
         COMMAND ${CMAKE_COMMAND} -E copy ${XBE_SDK_DIR}/THIRD_PARTY.txt ${pkg}/
-        DEPENDS ${target}_host xbe_setup xbe_recomp SDL3::SDL3-static
+        DEPENDS ${target}_host xbe_setup xbe_recomp SDL3::SDL3-static ${sha1_file}
         COMMENT "Staging the player kit for ${target} in ${pkg}"
         VERBATIM)
 endfunction()

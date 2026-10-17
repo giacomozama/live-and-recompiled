@@ -21,7 +21,8 @@ conker-lar/
     src/common/         app::kGame and shared headers
     src/game/           Conker hooks, frame rate / aspect, keyboard, mouse, F1 menu
     generated/ out/ assets/ winrun/ prefix/    gitignored: generated C++, builds, disc links, Proton run folder
-  tools/                fetch-toolchain.sh (pinned llvm-mingw), package.sh (player release), disassembly helpers
+  tools/                build.sh (dev build), package.sh (player release), fetch-toolchain.sh (pinned llvm-mingw),
+                        disassembly helpers
   toolchain/            gitignored: llvm-mingw, fetched on demand
 ```
 
@@ -30,12 +31,21 @@ source), `toolchain/` (llvm-mingw, fetched on demand).
 
 ## Building and running (Linux host)
 
-Prerequisites: `clang`/`clang++`, `cmake`, `ninja`, `curl`, `zip`, and `ndisasm` for the disassembly tool. The
-Windows compiler, a pinned llvm-mingw, is downloaded into `toolchain/` the first time it's needed.
+Prerequisites: `clang`/`clang++`, `cmake`, `ninja`, `curl`, `zip`, `extract-xiso` to unpack a disc image, and
+`ndisasm` for the disassembly tool. The Windows compiler, a pinned llvm-mingw, is downloaded into `toolchain/` the
+first time it's needed.
 
 ```bash
-tools/package.sh   # player release: Setup.exe, setup-linux + kit, no game code
+tools/build.sh --iso path/to/disc.iso                 # extract into iso/, link game/assets, build Game.exe (long)
+tools/build.sh --game /path/to/extracted              # or link game/assets to files you already extracted
+tools/build.sh                                        # rebuild after a change (incremental)
+tools/build.sh --harness                              # also the Linux headless harness, game/out/harness/conker
+tools/package.sh                                      # player release: Setup.exe, setup-linux + kit, no game code
 ```
+
+The exe is `game/out/build/llvm-mingw/Game.exe`, for Windows: run it with Proton or Wine (for example
+`umu-run game/out/build/llvm-mingw/Game.exe`). It finds `game/assets/` by walking up from its own folder, and keeps
+its settings, logs, shader records and saves beside itself.
 
 On Windows the game repository builds natively with `game/build.bat` (Visual Studio with Clang), for developers
 working on Windows. Players use the release's `Setup.exe` instead.

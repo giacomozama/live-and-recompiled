@@ -14,17 +14,9 @@
 # env overrides: LLVM_MINGW_ROOT (toolchains, default toolchain/), JOBS
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-GAME="$ROOT/game"
-VERSION_TC="$(sed -n 's/^VERSION=//p' "$ROOT/tools/fetch-toolchain.sh")"
-TC="${LLVM_MINGW_ROOT:-$ROOT/toolchain}"
-LIN="$TC/llvm-mingw-$VERSION_TC-linux"
-BUILD="$GAME/out/build/llvm-mingw"
-REL="$GAME/out/build/release"
-LINUX="$GAME/out/build/linux-kit"  # setup-linux and xbe_recomp for players: static, any distro
+source "$(dirname "${BASH_SOURCE[0]}")/configure.sh"
 OUT="$GAME/out/release"
 NAME=Conker
-JOBS="${JOBS:-$(nproc)}"
 TEST=1
 TEST_DOWNLOAD=0
 
@@ -43,23 +35,10 @@ echo "[1/5] toolchain"
 LLVM_MINGW_ROOT="$TC" "$ROOT/tools/fetch-toolchain.sh"
 
 echo "[2/5] kit"
-if [ ! -f "$BUILD/build.ninja" ]; then
-    cmake -S "$GAME" -B "$BUILD" -G Ninja -DCMAKE_BUILD_TYPE=Release \
-        -DCMAKE_TOOLCHAIN_FILE="$GAME/cmake-llvm-mingw.cmake" -DLLVM_MINGW="$LIN" \
-        -DXBE_CODEGEN_TOOL="$REL/xbe_recomp"
-fi
-if [ ! -f "$REL/build.ninja" ]; then
-    cmake -S "$GAME" -B "$REL" -G Ninja -DCMAKE_BUILD_TYPE=Release \
-        -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
-        -DCMAKE_C_FLAGS="-march=x86-64-v2" -DCMAKE_CXX_FLAGS="-march=x86-64-v2" \
-        -DXBE_CODEGEN_TOOL="$REL/xbe_recomp"
-fi
-if [ ! -f "$LINUX/build.ninja" ]; then
-    cmake -S "$GAME" -B "$LINUX" -G Ninja -DCMAKE_BUILD_TYPE=Release \
-        -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
-        -DCMAKE_C_FLAGS="-march=x86-64-v2" -DCMAKE_CXX_FLAGS="-march=x86-64-v2" -DCMAKE_EXE_LINKER_FLAGS="-static" \
-        -DXBE_CODEGEN_TOOL="$REL/xbe_recomp"
-fi
+[ -e "$GAME/assets/default.xbe" ] || { echo "      no game in game/assets (tools/build.sh --iso FILE sets it up)" >&2; exit 1; }
+configure_rel
+configure_mingw
+configure_linux_kit
 cmake --build "$REL" --target xbe_recomp -j "$JOBS"
 cmake --build "$LINUX" --target xbe_recomp xbe_setup -j "$JOBS"
 cmake --build "$BUILD" --target Game_kit -j "$JOBS"
