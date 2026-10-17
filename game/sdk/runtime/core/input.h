@@ -12,6 +12,8 @@ struct Pad {
 };
 
 void Init();  // window thread, before boot
+// window thread, an SDL window's (XBE_SDL): an SDL_Event, the controllers plugged in or out
+void HandleEvent(const void* sdl_event);
 // the controller on that port, then GameInfo::pad
 Pad Poll(int port);
 void Rumble(int port, uint16_t left, uint16_t right);

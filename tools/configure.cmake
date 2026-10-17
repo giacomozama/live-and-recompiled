@@ -1,6 +1,6 @@
 # configure.cmake - the build folders tools/build.sh and tools/package.cmake share, configured the same way.
 #
-#   release     native, Linux only: xbe_recomp, the codegen tool of the other builds there
+#   release     native, Linux only: xbe_recomp, the codegen tool of the other builds there, and the native Linux port
 #   llvm-mingw  Windows, with the pinned llvm-mingw (fetched first if missing): Game.exe and the player kit. On Windows
 #               it runs its own xbe_recomp
 #   zig-linux   static Linux programs with the pinned Zig (musl), on either host: setup-linux and xbe_recomp for

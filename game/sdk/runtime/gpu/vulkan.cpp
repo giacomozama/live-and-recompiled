@@ -24,7 +24,7 @@
 #include <glslang/Public/ResourceLimits.h>
 #include <glslang/Public/ShaderLang.h>
 
-#include <dxgiformat.h>  // the formats Assemble and the pipeline key name
+#include "gpu/dxgi_formats.h"
 
 #include <algorithm>
 #include <array>
@@ -481,7 +481,9 @@ VkExtent2D WindowExtent() {
     if (!GetClientRect(static_cast<HWND>(app::Window()), &rc)) return {0, 0};
     return {uint32_t(std::max<LONG>(rc.right - rc.left, 0)), uint32_t(std::max<LONG>(rc.bottom - rc.top, 0))};
 #else
-    return {0, 0};
+    VkExtent2D e{};
+    app::PixelSize(e.width, e.height);
+    return e;
 #endif
 }
 
@@ -999,9 +1001,10 @@ bool VulkanBackend::CreateInstance() {
         LOGE("vulkan: the loader is older than Vulkan 1.3");
         return false;
     }
-    std::vector<const char*> exts = {VK_KHR_SURFACE_EXTENSION_NAME};
 #ifdef _WIN32
-    exts.push_back(VK_KHR_WIN32_SURFACE_EXTENSION_NAME);
+    std::vector<const char*> exts = {VK_KHR_SURFACE_EXTENSION_NAME, VK_KHR_WIN32_SURFACE_EXTENSION_NAME};
+#else
+    std::vector<const char*> exts = app::VulkanExtensions();  // the SDL window's surface ones
 #endif
     bool debug = std::getenv("XBE_VULKAN_DEBUG") != nullptr;
     const char* validation = "VK_LAYER_KHRONOS_validation";
@@ -1053,8 +1056,11 @@ bool VulkanBackend::CreateSurface() {
     }
     return true;
 #else
-    LOGE("vulkan: no window surface on this system yet");
-    return false;
+    if (!app::VulkanSurface(inst_, &surface_)) {
+        LOGE("vulkan: no surface for the window");
+        return false;
+    }
+    return true;
 #endif
 }
 
@@ -3394,6 +3400,8 @@ void VulkanBackend::RenderUi() {
     ImGui_ImplVulkan_NewFrame();
 #ifdef _WIN32
     ImGui_ImplWin32_NewFrame();
+#else
+    app::UiNewFrame();
 #endif
     ImGui::NewFrame();
     if (app::kGame.ui) app::kGame.ui(fps_);
@@ -3515,8 +3523,8 @@ void VulkanBackend::Present(const Surface& front) {
     presents_seen_.store(presents_);
     frame_++;
     if (std::getenv("XBE_FRAME_LOG"))
-        LOGI("frame %llu: %u draws, %u opaque, %u counted, %zu reports left", presents_, frame_draws_, frame_opaque_,
-             frame_counted_, reports_.size());
+        LOGI("frame %llu: %u draws, %u opaque, %u counted, %zu reports left", (unsigned long long)presents_,
+             frame_draws_, frame_opaque_, frame_counted_, reports_.size());
     frame_draws_ = frame_opaque_ = frame_counted_ = 0;
     ReleaseOldTextures();
     ResetFrame();

@@ -5,6 +5,7 @@
 #   tools/build.sh --iso FILE      first extract the disc image into iso/ and link game/assets to it
 #   tools/build.sh --store PATH    the same from the digital release's DefaultPackage (or its folder), see unpack-store
 #   tools/build.sh --game DIR      first link game/assets to an extracted copy (default.xbe, dvddata/, media/)
+#   tools/build.sh --linux         also build the native Linux port, game/out/build/release/Game (SDL3, Vulkan)
 #   tools/build.sh --harness       also build the Linux headless harness, game/out/harness/conker
 #   tools/build.sh --pdb           also write Game.pdb (off again: cmake -DXBE_PDB=OFF game/out/build/llvm-mingw)
 #   tools/build.sh -j N            parallel jobs (default: nproc)
@@ -22,6 +23,7 @@ ISO=""
 STORE=""
 FROM=""
 HARNESS=0
+LINUX=0
 PDB=0
 
 while [ $# -gt 0 ]; do
@@ -30,9 +32,10 @@ while [ $# -gt 0 ]; do
         --store) STORE="${2:-}"; [ -n "$STORE" ] || { echo "--store needs a package" >&2; exit 2; }; shift ;;
         --game) FROM="${2:-}"; [ -n "$FROM" ] || { echo "--game needs a folder" >&2; exit 2; }; shift ;;
         --harness) HARNESS=1 ;;
+        --linux) LINUX=1 ;;
         --pdb) PDB=1 ;;
         -j) JOBS="${2:-}"; [ -n "$JOBS" ] || { echo "-j needs a number" >&2; exit 2; }; shift ;;
-        -h|--help) sed -n '2,15p' "$0"; exit 0 ;;
+        -h|--help) sed -n '2,16p' "$0"; exit 0 ;;
         *) echo "unknown option: $1" >&2; exit 2 ;;
     esac
     shift
@@ -97,6 +100,12 @@ configure_mingw
 [ "$PDB" = 1 ] && cmake -DXBE_PDB=ON "$BUILD" >/dev/null
 cmake --build "$BUILD" --target Game -j "$JOBS"
 echo "      $BUILD/Game.exe"
+
+if [ "$LINUX" = 1 ]; then
+    echo "[+] native Linux port"
+    cmake --build "$REL" --target Game -j "$JOBS"
+    echo "      $REL/Game"
+fi
 
 if [ "$HARNESS" = 1 ]; then
     echo "[+] headless harness"

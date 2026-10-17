@@ -10,3 +10,4 @@ toolchain/
 
 docs/
 run-proton.sh
+run-linux.sh

@@ -19,10 +19,11 @@ settings.toml
 /hdd/
 /CrashDumps/
 
-# Windows/Proton test prefix, run folder and local link shims
+# Windows/Proton test prefix, run folders and local link shims
 /prefix/
 /out/
 /winrun/
+/linrun/
 
 # editors
 .vs/

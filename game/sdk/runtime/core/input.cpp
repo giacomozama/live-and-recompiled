@@ -38,8 +38,10 @@ void RemovePad(SDL_JoystickID id) {
     }
 }
 
-// once a millisecond at most, however many ports and threads read
+// once a millisecond at most, however many ports and threads read. With an SDL window (XBE_SDL) its thread pumps the
+// events and hands the controllers' over (HandleEvent): SDL's video must not be pumped from another thread.
 void UpdatePads() {
+#ifndef XBE_SDL
     static uint64_t last = 0;
     uint64_t now = SDL_GetTicks();
     if (!g_sdl || now == last) return;
@@ -50,6 +52,7 @@ void UpdatePads() {
         if (e.type == SDL_EVENT_GAMEPAD_ADDED) AddPad(e.gdevice.which);
         else if (e.type == SDL_EVENT_GAMEPAD_REMOVED) RemovePad(e.gdevice.which);
     }
+#endif
 }
 
 }  // namespace
@@ -76,6 +79,15 @@ void Init() {
         for (int i = 0; i < count; i++) AddPad(ids[i]);
         SDL_free(ids);
     }
+}
+
+void HandleEvent(const void* sdl_event) {
+    const SDL_Event& e = *static_cast<const SDL_Event*>(sdl_event);
+    if (e.type != SDL_EVENT_GAMEPAD_ADDED && e.type != SDL_EVENT_GAMEPAD_REMOVED) return;
+    std::lock_guard lock(g_lock);
+    if (!g_sdl) return;
+    if (e.type == SDL_EVENT_GAMEPAD_ADDED) AddPad(e.gdevice.which);
+    else RemovePad(e.gdevice.which);
 }
 
 Pad Poll(int port) {

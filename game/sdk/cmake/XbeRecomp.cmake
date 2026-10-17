@@ -12,7 +12,7 @@ set(ZYDIS_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(ZYDIS_BUILD_DOXYGEN OFF CACHE BOOL "" FORCE)
 FetchContent_Declare(zydis GIT_REPOSITORY https://github.com/zyantific/zydis.git GIT_TAG v4.1.1 GIT_SHALLOW TRUE)
 FetchContent_Declare(tomlplusplus GIT_REPOSITORY https://github.com/marzer/tomlplusplus.git GIT_TAG v3.4.0 GIT_SHALLOW TRUE)
-FetchContent_Declare(imgui GIT_REPOSITORY https://github.com/ocornut/imgui.git GIT_TAG v1.91.0 GIT_SHALLOW TRUE)
+FetchContent_Declare(imgui GIT_REPOSITORY https://github.com/ocornut/imgui.git GIT_TAG v1.91.9b GIT_SHALLOW TRUE)
 # SDL3 for controllers, static so it links into the exe
 set(SDL_SHARED OFF CACHE BOOL "" FORCE)
 set(SDL_STATIC ON CACHE BOOL "" FORCE)
@@ -72,13 +72,26 @@ set(XBE_IMGUI_SOURCES
     ${imgui_SOURCE_DIR}/imgui_draw.cpp
     ${imgui_SOURCE_DIR}/imgui_tables.cpp
     ${imgui_SOURCE_DIR}/imgui_widgets.cpp
-    ${imgui_SOURCE_DIR}/backends/imgui_impl_win32.cpp
-    ${imgui_SOURCE_DIR}/backends/imgui_impl_dx12.cpp
     ${imgui_SOURCE_DIR}/backends/imgui_impl_vulkan.cpp)
 
+# The host's platform: on Windows a Win32 window, XAudio2 and D3D12 beside Vulkan; elsewhere an SDL3 window and audio
+# (XBE_SDL) and Vulkan alone. Each side's own sources are left out of the other's build.
 file(GLOB XBE_RUNTIME_SOURCES CONFIGURE_DEPENDS ${XBE_SDK_DIR}/runtime/*/*.cpp)
-# SDL's headers go to the input code alone (it is linked LINK_ONLY), so the generated sources' compile line stays the same
-set_source_files_properties(${XBE_SDK_DIR}/runtime/core/input.cpp PROPERTIES INCLUDE_DIRECTORIES "${sdl3_SOURCE_DIR}/include")
+if(WIN32)
+    list(APPEND XBE_IMGUI_SOURCES ${imgui_SOURCE_DIR}/backends/imgui_impl_win32.cpp
+        ${imgui_SOURCE_DIR}/backends/imgui_impl_dx12.cpp)
+    list(FILTER XBE_RUNTIME_SOURCES EXCLUDE REGEX "/(app/main_sdl|app/crash_posix|app/system_info_posix|audio/sdl_audio)\\.cpp$")
+    set(XBE_SDL_SOURCES ${XBE_SDK_DIR}/runtime/core/input.cpp)
+else()
+    list(APPEND XBE_IMGUI_SOURCES ${imgui_SOURCE_DIR}/backends/imgui_impl_sdl3.cpp)
+    list(FILTER XBE_RUNTIME_SOURCES EXCLUDE REGEX
+        "/(app/main|app/crash|app/splash|app/handover|app/system_info|audio/xaudio2|gpu/d3d12)\\.cpp$")
+    set(XBE_SDL_SOURCES ${XBE_SDK_DIR}/runtime/core/input.cpp ${XBE_SDK_DIR}/runtime/app/main_sdl.cpp
+        ${XBE_SDK_DIR}/runtime/audio/sdl_audio.cpp ${imgui_SOURCE_DIR}/backends/imgui_impl_sdl3.cpp)
+endif()
+# SDL's headers go to the code that uses it alone (it is linked LINK_ONLY), so the generated sources' compile line stays
+# the same
+set_source_files_properties(${XBE_SDL_SOURCES} PROPERTIES INCLUDE_DIRECTORIES "${sdl3_SOURCE_DIR}/include")
 # Vulkan's and glslang's the same way, to the renderer and ImGui's backend for it; ENABLE_HLSL is glslang's own define
 set(XBE_VULKAN_INCLUDES ${vulkan_headers_SOURCE_DIR}/include ${volk_SOURCE_DIR})
 set_source_files_properties(${XBE_SDK_DIR}/runtime/gpu/vulkan.cpp PROPERTIES
@@ -93,7 +106,11 @@ set(XBE_GLSLANG_LIBS glslang glslang-default-resource-limits)
 set(XBE_GEN_COMPILE_OPTIONS -O2 -fno-strict-aliasing -Wno-unused-label -Wno-parentheses-equality -Wno-unused-variable)
 set(XBE_HOST_DEFINITIONS UNICODE _UNICODE _CRT_SECURE_NO_WARNINGS)
 # what the host links besides SDL; xaudio2 is the Windows SDK's name, mingw's is xaudio2_8
-set(XBE_HOST_SYSTEM_LIBS d3d12 dxgi dxguid d3dcompiler ole32 windowscodecs dbghelp winmm dwmapi ws2_32)
+if(WIN32)
+    set(XBE_HOST_SYSTEM_LIBS d3d12 dxgi dxguid d3dcompiler ole32 windowscodecs dbghelp winmm dwmapi ws2_32)
+else()
+    set(XBE_HOST_SYSTEM_LIBS ${CMAKE_DL_LIBS} pthread)
+endif()
 
 # One executable per recompiled image: its code from config/<config> (partitions as that config sets them),
 # the SDK runtime, XBE_HOST_SOURCES shared by every image of the game, and src/<game_dir> hooks only this image has.
@@ -155,7 +172,12 @@ function(add_xbe_image target xbe config partitions game_dir)
     target_include_directories(${target}_host SYSTEM PRIVATE ${imgui_SOURCE_DIR})
     target_compile_options(${target}_host PUBLIC -fno-strict-aliasing)
     target_compile_definitions(${target}_host PUBLIC ${XBE_HOST_DEFINITIONS})
-    target_link_libraries(${target}_host PUBLIC tomlplusplus::tomlplusplus $<LINK_ONLY:SDL3::SDL3-static> ${XBE_HOST_SYSTEM_LIBS} xaudio2)
+    target_link_libraries(${target}_host PUBLIC tomlplusplus::tomlplusplus $<LINK_ONLY:SDL3::SDL3-static> ${XBE_HOST_SYSTEM_LIBS}
+        $<$<PLATFORM_ID:Windows>:xaudio2>)
+    # the game's hooks see an SDL window (src/game), the runtime's input code hands it the controllers
+    if(NOT WIN32)
+        target_compile_definitions(${target}_host PRIVATE XBE_SDL)
+    endif()
     foreach(lib ${XBE_GLSLANG_LIBS})
         target_link_libraries(${target}_host PUBLIC $<LINK_ONLY:${lib}>)
     endforeach()

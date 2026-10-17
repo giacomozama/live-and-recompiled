@@ -172,8 +172,10 @@ It also explains two limits:
   (`default.xbe` with `dvddata/` and `media/` beside it), or the digital release's package (`DefaultPackage` and its
   `DefaultPackage.data` folder), which `tools/unpack-store` unpacks (a Microsoft Store install keeps it in
   `C:\XboxGames\Conker- Live and Reloaded\Content\Game`; see Installation).
-- **Linux:** `clang`/`clang++`, `cmake` (3.25 or newer), `ninja`, `curl` and `zip`. Add `extract-xiso` to build from a
-  disc image, and Wine or Proton to run the result. `ndisasm` is only for `tools/xbe_disasm.py`.
+- **Linux:** `clang`/`clang++`, `lld`, `cmake` (3.25 or newer), `ninja`, `git`, `curl` and `zip`. Add `extract-xiso`
+  to build from a disc image, and Wine or Proton to run `Game.exe`. The native port (`--linux`) also needs the X11 and
+  Wayland development headers SDL builds against (SDL loads the libraries themselves at run time), and a Vulkan 1.3
+  driver to run. `ndisasm` is only for `tools/xbe_disasm.py`.
 - **Windows:** CMake (3.25 or newer), Ninja and Git. `build.bat` offers to install whichever is missing with
   `winget`. No Visual Studio: the compiler is the pinned llvm-mingw on Windows too.
 
@@ -185,6 +187,8 @@ tools/build.sh --store path/to/package   # or from the digital release's Default
 tools/build.sh --game path/to/files      # or from files you already extracted
 tools/build.sh                           # after a change: incremental
 umu-run game/out/build/llvm-mingw/Game.exe
+tools/build.sh --linux                   # also the native Linux port
+game/out/build/release/Game
 ```
 
 `--iso`, `--store` and `--game` link `game/assets/` to the game. You only need them once, or to switch to another copy; the
@@ -193,7 +197,9 @@ its SHA-256, then recompiles the whole XBE and compiles the result, so it takes 
 changed.
 
 `Game.exe` finds `game/assets/` by walking up from its own folder. It keeps `settings.toml`, its logs, shader records
-and saves beside itself. `tools/build.sh --harness` also builds `game/out/harness/conker`, a headless Linux build with
+and saves beside itself, and so does the native `Game`. The native port is the same game in an SDL3 window, drawn
+with Vulkan and played through SDL3's audio; it has everything `Game.exe` has but the D3D12 renderer, the boot splash
+and the window kept up across a relaunch. For now it is built from source only: releases carry `Game.exe`. `tools/build.sh --harness` also builds `game/out/harness/conker`, a headless Linux build with
 no window or GPU, for testing.
 
 ### On Windows
