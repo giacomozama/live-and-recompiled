@@ -9,7 +9,10 @@ This port was created using the [Xbox XBE Recomp](https://github.com/TGP482/Xbox
 
 ## Installation
 
-The release contains no game code: the game is built on your PC from your own copy, once.
+The release contains no game code: the game is built on your PC from your own copy, once. The recompiled game is a
+translation of the original program, so sharing it would mean sharing the rights holders' code. What this project
+shares is its own work, the recompiler, the runtime and the hooks, and Setup combines them with your copy on your
+machine.
 
 1. Put your game in the `assets` folder: the disc image (`.iso`), or `default.xbe` with the game's folders beside it.
 2. Run `Setup.exe` (on Linux or Steam Deck, `./setup-linux` in a terminal opened in this folder). It checks your
@@ -91,19 +94,8 @@ and Insert are kept for opening the menu.
 
 ## Building from Source
 
-Only needed to work on the port; players use `Setup.exe` from a release.
-
-### 1. Clone the Repository
-Clone this repository using [Git](https://git-scm.com/).
-
-### 2. Add the Required Game Files
-Place your extracted game data files in the `assets` folder. `default.xbe` must be there, with the game's folders beside it.
-
-### 3. Install Dependencies
-Install Visual Studio 2022 with **Desktop development with C++**, **C++ Clang tools for Windows** and **C++ CMake tools for Windows** (`build.bat` offers to add the last two).
-
-### 4. Build the Project
-Run `build.bat`. The first build recompiles the game and takes a while. The exe is written to `out\build\release`.
+Only needed to work on the port; players use `Setup.exe` from a release. The source repository's README explains how
+building from source differs from Setup, and how to build the port and a release on Linux and Windows.
 
 ## Credits
 
