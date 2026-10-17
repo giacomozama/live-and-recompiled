@@ -1,7 +1,8 @@
 // Setup: builds the game on the player's machine from the player's own copy, so no release ever carries the
 // title's code. A release is this program, a kit (kit/: the recompiler, the prebuilt host library with everything
 // but the title's code, the headers the generated code includes, the config) and an empty assets folder.
-// Setup finds the game in assets (its files or a disc image), checks it is the release the kit was made for,
+// Setup finds the game in assets (its files or a disc image; on Windows it offers the Microsoft Store install, unpacked
+// by unpack-store), checks it is the release the kit was made for,
 // downloads the compiler kit.toml pins for this host into kit/toolchain/<host> (once), recompiles the game, compiles
 // the result with that compiler and links <exe>.exe beside itself. It runs on Windows and on Linux (the exe is for
 // Windows either way, Linux players start it with Proton).
@@ -21,6 +22,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <iostream>
 #include <string>
 #include <thread>
 #include <vector>
@@ -32,6 +34,7 @@
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
+#include <io.h>
 #include <windows.h>
 #include <winhttp.h>
 #else
@@ -153,19 +156,22 @@ bool WriteFile(const fs::path& p, const void* data, size_t n) {
     return f.write(static_cast<const char*>(data), std::streamsize(n)) && f.flush();
 }
 
-// the game in assets: beside Setup or in a folder above (as the game looks), its files or a disc image
-bool FindXbe(const fs::path& root, const Kit& k, std::vector<uint8_t>& xbe) {
-    fs::path assets;
+// the assets folder: beside Setup or in a folder above (as the game looks)
+fs::path FindAssets(const fs::path& root) {
     std::error_code ec;
     for (fs::path dir = root; !dir.empty(); dir = dir.parent_path()) {
-        if (fs::is_directory(dir / "assets", ec)) {
-            assets = dir / "assets";
-            break;
-        }
+        if (fs::is_directory(dir / "assets", ec)) return dir / "assets";
         if (dir.parent_path() == dir) break;
     }
+    return {};
+}
+
+// the game in assets: its files or a disc image; quiet leaves the explanation of a miss to the caller
+bool FindXbe(const fs::path& root, const Kit& k, std::vector<uint8_t>& xbe, bool quiet) {
+    fs::path assets = FindAssets(root);
+    std::error_code ec;
     if (assets.empty()) {
-        Say("No assets folder found beside %s.\n", root.string().c_str());
+        if (!quiet) Say("No assets folder found beside %s.\n", root.string().c_str());
         return false;
     }
     std::vector<std::string> other;  // releases found that the kit was not made for
@@ -205,6 +211,7 @@ bool FindXbe(const fs::path& root, const Kit& k, std::vector<uint8_t>& xbe) {
         }
         other.push_back(iso.string() + " (sha1 " + sha + ")");
     }
+    if (quiet) return false;
     if (other.empty()) {
         Say("Put the game in %s first: its disc image (.iso), or %s with its folders beside it.\n",
             assets.string().c_str(), k.xbe.c_str());
@@ -628,6 +635,55 @@ fs::path ExeDir() {
 #endif
 }
 
+// The digital, backwards compatible release (the Microsoft Store's) installs unencrypted, its package in this folder.
+// Windows only; offered when assets has no game. unpack-store, beside Setup, turns the package into the game's files.
+#ifdef _WIN32
+constexpr const wchar_t* kStoreFolder = L"C:\\XboxGames\\Conker- Live and Reloaded\\Content\\Game";
+
+bool OfferStore(const fs::path& root) {
+    std::error_code ec;
+    fs::path store = kStoreFolder;
+    if (!fs::is_regular_file(store / "DefaultPackage", ec) || !fs::is_directory(store / "DefaultPackage.data", ec))
+        return false;
+    Say("\nFound the Microsoft Store version of the game:\n  %s\n", store.string().c_str());
+    if (!_isatty(_fileno(stdin))) return false;
+    Say("Use it as your copy? Setup unpacks it into the assets folder (about 5 GB). [Y/n] ");
+    std::string answer;
+    std::getline(std::cin, answer);
+    if (!answer.empty() && answer[0] != 'y' && answer[0] != 'Y') return false;
+
+    fs::path assets = FindAssets(root);
+    if (assets.empty()) assets = root / "assets";
+    fs::path unpack = ExeDir() / "unpack-store-windows.exe";
+    if (!fs::is_regular_file(unpack, ec)) {
+        Say("%s is missing; it comes with the release.\n", unpack.string().c_str());
+        return false;
+    }
+    std::wstring cmd = Quote(unpack.wstring()) + L" " + Quote(store.wstring()) + L" " + Quote(assets.wstring());
+    STARTUPINFOW si{};
+    si.cb = sizeof(si);
+    PROCESS_INFORMATION pi{};
+    // same console, so its progress shows
+    if (!CreateProcessW(unpack.wstring().c_str(), cmd.data(), nullptr, nullptr, TRUE, 0, nullptr, nullptr, &si, &pi)) {
+        Say("Cannot start %s\n", unpack.string().c_str());
+        return false;
+    }
+    WaitForSingleObject(pi.hProcess, INFINITE);
+    DWORD code = 1;
+    GetExitCodeProcess(pi.hProcess, &code);
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+    if (code) {
+        Say("Unpacking the Store version failed (exit %lu).\n", (unsigned long)code);
+        return false;
+    }
+    Say("Unpacked into %s\n\n", assets.string().c_str());
+    return true;
+}
+#else
+bool OfferStore(const fs::path&) { return false; }
+#endif
+
 // double-clicked: the console would close before the player reads it
 void Pause() {
 #ifdef _WIN32
@@ -687,7 +743,10 @@ int main(int argc, char** argv) {
 
     // 1. the game
     std::vector<uint8_t> xbe;
-    if (!FindXbe(root, k, xbe)) return Fail();
+    if (!FindXbe(root, k, xbe, true) && !(OfferStore(root) && FindXbe(root, k, xbe, true))) {
+        FindXbe(root, k, xbe, false);  // says what is missing
+        return Fail();
+    }
     if (toolchain.empty() && !EnsureToolchain(kit_dir, k)) return Fail();
 
     fs::path work = kit_dir / "work", gen = work / "generated", obj = work / "obj", logs = work / "logs";
