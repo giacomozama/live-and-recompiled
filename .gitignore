@@ -1,12 +1,12 @@
-# provided references, kept beside the checkout (see README.md)
-clr_unpack/
 xemu/
-.vscode/
-# the user's disc image and its extraction
+
 iso/
 *.iso
-60fps/
-umu-run/
-.claude/
-# pinned llvm-mingw (tools/fetch-toolchain.sh)
+
 toolchain/
+
+.vscode/
+.claude/
+
+docs/
+run-proton.sh

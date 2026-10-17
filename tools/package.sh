@@ -3,7 +3,7 @@
 #
 # Players build the game on their own machine from their own copy: Setup finds the game in assets/, downloads the
 # pinned llvm-mingw for its host, recompiles the game, compiles the result and links Game.exe. Nothing in the release
-# is the title's code, or the compiler (see docs/distribution.md).
+# is the title's code, or the compiler.
 #
 #   tools/package.sh                  build the kit, test it against the game in game/assets, zip it
 #   tools/package.sh --no-test        skip the test (it needs the game in game/assets)
