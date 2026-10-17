@@ -1,5 +1,5 @@
-# package.cmake - build the player release, on Linux or Windows: Setup.exe, setup-linux and a kit with everything but
-# the game's code.
+# package.cmake - build the player release, on Linux or Windows: setup-windows.exe, setup-linux and a kit with
+# everything but the game's code.
 #
 # Players build the game on their own machine from their own copy: Setup finds the game in assets/, downloads the
 # pinned llvm-mingw for its host, recompiles the game, compiles the result and links Game.exe. Nothing in the release
@@ -13,7 +13,7 @@
 #
 # Output: game/out/release/Conker/ and game/out/release/Conker-<version>.zip
 # setup-linux and the Linux xbe_recomp are built with the pinned Zig, so a release is the same from either host. The
-# test runs this host's Setup: setup-linux on Linux, Setup.exe on Windows.
+# test runs this host's Setup: setup-linux on Linux, setup-windows.exe on Windows.
 cmake_minimum_required(VERSION 3.25)
 include(${CMAKE_CURRENT_LIST_DIR}/configure.cmake)
 
@@ -79,8 +79,8 @@ if(TEST)
         file(COPY ${DEST}/setup-linux DESTINATION ${scratch})
         set(setup ${scratch}/setup-linux)
     else()
-        file(COPY ${DEST}/Setup.exe DESTINATION ${scratch})
-        set(setup ${scratch}/Setup.exe)
+        file(COPY ${DEST}/setup-windows.exe DESTINATION ${scratch})
+        set(setup ${scratch}/setup-windows.exe)
     endif()
     set(args --jobs ${JOBS})
     if(NOT TEST_DOWNLOAD)

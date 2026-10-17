@@ -154,10 +154,10 @@ endfunction()
 
 # A player kit for an image (MinGW builds): everything a player needs to build the game from their own copy, and none
 # of the title's code. Staged in <build>/package/<target>:
-#   Setup.exe          xbe_setup: finds the game, recompiles, compiles and links <target>.exe beside itself
+#   setup-windows.exe  xbe_setup: finds the game, recompiles, compiles and links <target>.exe beside itself
 #   assets/            empty, the player's game goes here
 #   kit/kit.toml       what Setup reads: the release's sha1, the commands' flags and libraries
-#   kit/bin/           xbe_recomp (the packaging script adds the Linux one, and setup-linux beside Setup.exe)
+#   kit/bin/           xbe_recomp (the packaging script adds the Linux one, and setup-linux beside setup-windows.exe)
 #   kit/config, xdk/   the image's config and the SDK's XDK tables
 #   kit/include/       the headers the generated code includes, and image_symbols.h to check the recompile against
 #   kit/lib/           the prebuilt host (runtime, game hooks, ImGui), SDL and the xaudio2 import library
@@ -219,9 +219,9 @@ function(add_xbe_player_kit target title)
         message(FATAL_ERROR "libxaudio2_8.a not found in the toolchain")
     endif()
     add_custom_target(${target}_kit
-        COMMAND ${CMAKE_COMMAND} -E rm -rf ${kit}/bin ${kit}/config ${kit}/xdk ${kit}/include ${kit}/lib
+        COMMAND ${CMAKE_COMMAND} -E rm -rf ${pkg}
         COMMAND ${CMAKE_COMMAND} -E make_directory ${pkg}/assets ${kit}/bin ${kit}/config ${kit}/include/cpu ${kit}/lib
-        COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:xbe_setup> ${pkg}/Setup$<TARGET_FILE_SUFFIX:xbe_setup>
+        COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:xbe_setup> ${pkg}/setup-windows$<TARGET_FILE_SUFFIX:xbe_setup>
         COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:xbe_recomp> ${kit}/bin/
         COMMAND ${CMAKE_COMMAND} -DMODE=kit -DSHA=${sha1_file} -DIN=${CMAKE_BINARY_DIR}/${target}_kit.toml.in
             -DOUT=${kit}/kit.toml -P ${XBE_SDK_DIR}/cmake/xbe_sha1.cmake

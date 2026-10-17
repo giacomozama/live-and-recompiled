@@ -37,7 +37,7 @@ is a Windows program; on Linux it runs with Proton or Wine.
 
 | | From a release (players) | From source (developers) |
 |---|---|---|
-| What you download | A small zip: `Setup.exe`, `setup-linux`, a kit | This repository |
+| What you download | A small zip: `setup-windows.exe`, `setup-linux`, a kit | This repository |
 | What your machine builds | The game's recompiled code only | Everything: recompiler, runtime, hooks, game code |
 | What comes prebuilt | The runtime, hooks and recompiler | Nothing |
 | Compiler | Pinned llvm-mingw, downloaded by Setup | The same pinned llvm-mingw, downloaded by the first build |
@@ -111,8 +111,9 @@ the compiler.
 
 ## Building a release
 
-A release is `Setup.exe`, `setup-linux` and a kit: the recompiler, the prebuilt runtime and hooks, the config, the
-headers the generated code includes, and the pinned compiler's address and SHA-256. It contains none of the game.
+A release is `setup-windows.exe`, `setup-linux` and a kit: the recompiler, the prebuilt runtime and hooks, the config,
+the headers the generated code includes, and the pinned compiler's address and SHA-256. It contains none of the
+game.
 
 ### On Linux
 
@@ -141,7 +142,7 @@ tools\package.bat
 ```
 
 It writes `game\out\release\Conker-<version>.zip` and takes the same `--no-test`, `--test-download` and
-`-j N` options. Here the test runs the packaged `Setup.exe`.
+`-j N` options. Here the test runs the packaged `setup-windows.exe`.
 
 Zig builds `setup-linux` and the Linux `xbe_recomp` on Windows too, so a release is the same whichever system
 packaged it.

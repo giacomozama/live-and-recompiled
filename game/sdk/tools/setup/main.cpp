@@ -6,7 +6,7 @@
 // the result with that compiler and links <exe>.exe beside itself. It runs on Windows and on Linux (the exe is for
 // Windows either way, Linux players start it with Proton).
 //
-//   Setup [--jobs N] [--keep] [--toolchain DIR] [--root DIR] [--fetch-toolchain]
+//   setup-windows.exe, setup-linux [--jobs N] [--keep] [--toolchain DIR] [--root DIR] [--fetch-toolchain]
 //
 // --keep leaves kit/work (the generated code and objects) in place; --toolchain uses another llvm-mingw of the
 // kit's version (a Linux-hosted one tests a kit without Windows); --root is the folder Setup would be in;
@@ -659,7 +659,7 @@ int main(int argc, char** argv) {
         else if (a == "--toolchain" && i + 1 < argc) toolchain = fs::absolute(argv[++i]);
         else if (a == "--root" && i + 1 < argc) root = fs::absolute(argv[++i]);
         else {
-            std::fprintf(stderr, "usage: Setup [--jobs N] [--keep] [--toolchain DIR] [--root DIR] [--fetch-toolchain]\n");
+            std::fprintf(stderr, "usage: setup [--jobs N] [--keep] [--toolchain DIR] [--root DIR] [--fetch-toolchain]\n");
             return 2;
         }
     }

@@ -15,7 +15,7 @@ shares is its own work, the recompiler, the runtime and the hooks, and Setup com
 machine.
 
 1. Put your game in the `assets` folder: the disc image (`.iso`), or `default.xbe` with the game's folders beside it.
-2. Run `Setup.exe` (on Linux, `./setup-linux` in a terminal opened in this folder). It checks your
+2. Run `setup-windows.exe` (on Linux, `./setup-linux` in a terminal opened in this folder). It checks your
    copy is the release this build supports, downloads the compiler it needs
    ([llvm-mingw](https://github.com/mstorsjo/llvm-mingw), 80 to 180 MB, the first time only), recompiles the game and
    writes `Game.exe`. This takes a few minutes. Nothing of the game is uploaded or downloaded.
@@ -26,7 +26,7 @@ to a new release.
 
 On Linux, `Game.exe` runs through Proton or Wine: add it as a non-Steam game, or use
 `umu-run Game.exe`. If `./setup-linux` says permission denied, your unzip tool dropped its executable bit:
-`chmod +x setup-linux kit/bin/xbe_recomp`. `Setup.exe` works under Proton too (`umu-run Setup.exe`).
+`chmod +x setup-linux kit/bin/xbe_recomp`. `setup-windows.exe` works under Proton too (`umu-run setup-windows.exe`).
 
 ## Features
 
@@ -94,12 +94,13 @@ and Insert are kept for opening the menu.
 
 ## Building from Source
 
-Only needed to work on the port; players use `Setup.exe` from a release. The source repository's README explains how
-building from source differs from Setup, and how to build the port and a release on Linux and Windows.
+Only needed to work on the port; players use `setup-windows.exe` or `setup-linux` from a release. The source
+repository's README explains how building from source differs from Setup, and how to build the port and a release on
+Linux and Windows.
 
 ## Credits
 
 - [Xbox XBE Recomp](https://github.com/TGP482/XboxXBE-Recomp), the recompiler and runtime this is built on.
 - [XenonRecomp](https://github.com/hedge-dev/XenonRecomp) for the overridable function layout and instruction hooks.
 - [Zydis](https://github.com/zyantific/zydis) for decoding x86 instructions, [toml++](https://github.com/marzer/tomlplusplus) for the configs, [Dear ImGui](https://github.com/ocornut/imgui) for the settings overlay and [SDL](https://github.com/libsdl-org/SDL) for the window, input and controllers.
-- [llvm-mingw](https://github.com/mstorsjo/llvm-mingw) (Clang, LLD, mingw-w64, libc++), the compiler `Setup.exe` builds the game with.
+- [llvm-mingw](https://github.com/mstorsjo/llvm-mingw) (Clang, LLD, mingw-w64, libc++), the compiler `setup-windows.exe` builds the game with.
