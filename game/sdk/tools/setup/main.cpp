@@ -2,8 +2,9 @@
 // title's code. A release is this program, a kit (kit/: the recompiler, the prebuilt host library with everything
 // but the title's code, the headers the generated code includes, the config) and an empty assets folder.
 // Setup finds the game in assets (its files or a disc image), checks it is the release the kit was made for,
-// downloads the compiler kit.toml pins into kit/toolchain (once), recompiles the game, compiles the result with that
-// compiler and links <exe>.exe beside itself.
+// downloads the compiler kit.toml pins for this host into kit/toolchain/<host> (once), recompiles the game, compiles
+// the result with that compiler and links <exe>.exe beside itself. It runs on Windows and on Linux (the exe is for
+// Windows either way, Linux players start it with Proton).
 //
 //   Setup [--jobs N] [--keep] [--toolchain DIR] [--root DIR] [--fetch-toolchain]
 //
@@ -48,6 +49,12 @@ namespace fs = std::filesystem;
 
 namespace {
 
+#ifdef _WIN32
+constexpr const char* kHost = "windows";
+#else
+constexpr const char* kHost = "linux";
+#endif
+
 FILE* g_log = nullptr;  // setup.log beside Setup, everything printed goes there too
 
 void Say(const char* fmt, ...) {
@@ -70,7 +77,8 @@ struct Kit {
     fs::path config, xdk, recomp, cxx;
     std::vector<fs::path> include;
     std::vector<std::string> cxxflags, ldflags, libs;
-    std::string toolchain_url, toolchain_sha256;  // [toolchain]: the llvm-mingw zip Setup downloads
+    fs::path toolchain;                           // kit/toolchain/<host>, cxx is in it
+    std::string toolchain_url, toolchain_sha256;  // [toolchain.<host>]: the llvm-mingw archive Setup downloads
 };
 
 std::vector<std::string> Strings(const toml::node_view<toml::node>& n) {
@@ -96,19 +104,20 @@ bool LoadKit(const fs::path& kit_dir, Kit& k, std::string& error) {
     k.config = kit_dir / t["config"].value_or(std::string());
     k.xdk = kit_dir / t["xdk"].value_or(std::string());
     k.recomp = kit_dir / t["recomp"].value_or(std::string());
-    k.cxx = kit_dir / t["cxx"].value_or(std::string());
+    k.toolchain = kit_dir / "toolchain" / kHost;
+    k.cxx = k.toolchain / t["cxx"].value_or(std::string());
     for (auto& s : Strings(t["include"])) k.include.push_back(kit_dir / s);
     k.cxxflags = Strings(t["cxxflags"]);
     k.ldflags = Strings(t["ldflags"]);
     for (auto& s : Strings(t["libs"])) k.libs.push_back(s.rfind("-", 0) == 0 ? s : (kit_dir / s).generic_string());
-    k.toolchain_url = t["toolchain"]["url"].value_or(std::string());
-    k.toolchain_sha256 = t["toolchain"]["sha256"].value_or(std::string());
+    k.toolchain_url = t["toolchain"][kHost]["url"].value_or(std::string());
+    k.toolchain_sha256 = t["toolchain"][kHost]["sha256"].value_or(std::string());
     if (k.exe.empty() || k.xbe.empty() || k.sha1.size() != 40) {
         error = "exe, xbe and sha1 must be set";
         return false;
     }
     if (!k.toolchain_url.empty() && k.toolchain_sha256.size() != 64) {
-        error = "[toolchain] needs the sha256 of its url";
+        error = std::string("[toolchain.") + kHost + "] needs the sha256 of its url";
         return false;
     }
 #ifdef _WIN32
@@ -272,8 +281,10 @@ bool Spawn(const fs::path& exe, const std::vector<std::string>& args, const fs::
     argv.push_back(nullptr);
     posix_spawn_file_actions_t fa;
     posix_spawn_file_actions_init(&fa);
-    posix_spawn_file_actions_addopen(&fa, 1, log.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
-    posix_spawn_file_actions_adddup2(&fa, 1, 2);
+    if (!log.empty()) {  // without one, the child writes to the terminal
+        posix_spawn_file_actions_addopen(&fa, 1, log.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        posix_spawn_file_actions_adddup2(&fa, 1, 2);
+    }
     int r = posix_spawn(&c.h, exe.c_str(), &fa, nullptr, argv.data(), environ);
     posix_spawn_file_actions_destroy(&fa);
     return r == 0;
@@ -322,6 +333,10 @@ bool Run(const char* what, const fs::path& exe, const std::vector<std::string>& 
     }
     int code = 0;
     WaitAny({c}, code);
+    if (code && log.empty()) {
+        Say("%s failed (exit code %d).\n", what, code);
+        return false;
+    }
     if (code) {
         Say("%s failed (exit code %d). The end of %s:\n", what, code, log.string().c_str());
         ShowLog(log);
@@ -445,14 +460,16 @@ bool Download(const std::string& url, const fs::path& to, const fs::path&) {
     return true;
 }
 #else
-// curl, for trying a kit on Linux
-bool Download(const std::string& url, const fs::path& to, const fs::path& log) {
-    return Run("Downloading", "/usr/bin/env", {"curl", "-fL", "--retry", "3", "-sS", "-o", to.string(), url}, log);
+// curl, which every Linux desktop and SteamOS have; its progress bar goes to the terminal
+bool Download(const std::string& url, const fs::path& to, const fs::path&) {
+    return Run("Downloading", "/usr/bin/env", {"curl", "-fL", "--retry", "3", "-#", "-o", to.string(), url}, {});
 }
 #endif
 
-// the zip's files below its top folder into dest, those a Windows x86_64 build needs: the compiler and linker
-// (bin), the headers without their .idl sources, clang's headers and x86_64 builtins, the x86_64 libraries
+// what a Windows x86_64 build needs of an llvm-mingw, by path below its top folder: the compiler and linker (bin, and
+// the LLVM libraries a Linux-hosted one loads), the headers without their .idl sources (a Linux-hosted one keeps them in
+// generic-w64-mingw32), clang's headers and x86_64
+// builtins, the x86_64 libraries
 bool Wanted(const std::string& name) {
     if (name.size() > 4 && name.compare(name.size() - 4, 4, ".idl") == 0) return false;
     if (name.rfind("lib/clang/", 0) == 0) {  // lib/clang/<version>/...
@@ -460,10 +477,12 @@ bool Wanted(const std::string& name) {
         std::string sub = v == std::string::npos ? std::string() : name.substr(v + 1);
         return sub.rfind("include/", 0) == 0 || sub == "lib/windows/libclang_rt.builtins-x86_64.a";
     }
-    static const char* const kKeep[] = {"bin/", "include/", "x86_64-w64-mingw32/", "LICENSE.TXT"};
+    static const char* const kKeep[] = {"bin/",        "include/",         "x86_64-w64-mingw32/", "generic-w64-mingw32/",
+                                        "lib/libLLVM", "lib/libclang-cpp", "LICENSE.TXT"};
     return std::any_of(std::begin(kKeep), std::end(kKeep), [&](const char* k) { return name.rfind(k, 0) == 0; });
 }
 
+// the zip's wanted files below its top folder into dest
 bool Unzip(const fs::path& zip, const fs::path& dest) {
     std::ifstream in(zip, std::ios::binary);
     std::error_code ec;
@@ -515,38 +534,77 @@ bool Unzip(const fs::path& zip, const fs::path& dest) {
     return ok;
 }
 
-// kit/toolchain holds the zip kit.toml pins once it is downloaded, checked and unpacked; sha256.txt in it says which
+#ifndef _WIN32
+// the files Wanted does not keep, then the folders left empty
+void Prune(const fs::path& dir) {
+    std::error_code ec;
+    std::vector<fs::path> drop, dirs;
+    for (auto it = fs::recursive_directory_iterator(dir, ec); !ec && it != fs::recursive_directory_iterator();
+         it.increment(ec)) {
+        if (it->is_directory(ec) && !it->is_symlink(ec)) dirs.push_back(it->path());
+        else if (!Wanted(it->path().lexically_relative(dir).generic_string())) drop.push_back(it->path());
+    }
+    for (auto& f : drop) fs::remove(f, ec);
+    std::sort(dirs.begin(), dirs.end(), [](const fs::path& x, const fs::path& y) {
+        return x.native().size() > y.native().size();  // the deepest first
+    });
+    for (auto& d : dirs) fs::remove(d, ec);  // only removes it when empty
+}
+#endif
+
+// a .zip (the Windows-hosted builds) with miniz; a .tar.xz (the Linux-hosted ones) with the system tar
+bool Unpack(const fs::path& archive, const std::string& url, const fs::path& dest,
+            [[maybe_unused]] const fs::path& log) {
+    if (url.size() > 4 && url.compare(url.size() - 4, 4, ".zip") == 0) return Unzip(archive, dest);
+#ifdef _WIN32
+    Say("Cannot unpack %s: Setup on Windows reads only .zip\n", url.c_str());
+    return false;
+#else
+    std::error_code ec;
+    fs::create_directories(dest, ec);
+    if (!Run("Unpacking", "/usr/bin/env",
+             {"tar", "-xJf", archive.string(), "-C", dest.string(), "--strip-components=1"}, log))
+        return false;
+    Prune(dest);
+    return true;
+#endif
+}
+
+// kit/toolchain/<host> holds the archive kit.toml pins for this host once it is downloaded, checked and unpacked;
+// sha256.txt in it says which
 bool EnsureToolchain(const fs::path& kit_dir, const Kit& k) {
-    fs::path tc = kit_dir / "toolchain", stamp = tc / "sha256.txt";
+    fs::path tc = k.toolchain, stamp = tc / "sha256.txt";
     std::error_code ec;
     std::vector<uint8_t> have;
     if (fs::exists(k.cxx, ec) && (k.toolchain_url.empty() || (ReadFile(stamp, have) &&
                                                               std::string(have.begin(), have.end()) == k.toolchain_sha256)))
         return true;
     if (k.toolchain_url.empty()) {
-        Say("The compiler %s is missing and kit.toml names none to download. The kit is damaged.\n",
+        Say("This kit has no compiler for %s: %s is missing and kit.toml names none to download.\n", kHost,
             k.cxx.string().c_str());
         return false;
     }
-    fs::path zip = kit_dir / "toolchain.zip", fresh = kit_dir / "toolchain.new";
-    fs::remove(zip, ec);
+    fs::path archive = tc.string() + ".download", fresh = tc.string() + ".new";
+    fs::create_directories(tc.parent_path(), ec);
+    fs::remove(archive, ec);
     fs::remove_all(fresh, ec);
-    Say("Downloading the compiler (llvm-mingw, about 180 MB), once:\n  %s\n", k.toolchain_url.c_str());
-    if (!Download(k.toolchain_url, zip, kit_dir / "download.log")) {
-        fs::remove(zip, ec);
+    Say("Downloading the compiler (llvm-mingw), once:\n  %s\n", k.toolchain_url.c_str());
+    if (!Download(k.toolchain_url, archive, kit_dir / "download.log")) {
+        fs::remove(archive, ec);
         return false;
     }
-    std::string sha = Sha256File(zip);
+    std::string sha = Sha256File(archive);
     if (sha != k.toolchain_sha256) {
         Say("The download is not the compiler this kit was made with (sha256 %s, expected %s).\n"
             "Run Setup again; if this keeps happening, the address in kit/kit.toml is wrong.\n",
             sha.c_str(), k.toolchain_sha256.c_str());
-        fs::remove(zip, ec);
+        fs::remove(archive, ec);
         return false;
     }
     Say("Unpacking the compiler ...\n");
-    bool ok = Unzip(zip, fresh) && WriteFile(fresh / "sha256.txt", sha.data(), sha.size());
-    fs::remove(zip, ec);
+    bool ok = Unpack(archive, k.toolchain_url, fresh, kit_dir / "unpack.log") &&
+              WriteFile(fresh / "sha256.txt", sha.data(), sha.size());
+    fs::remove(archive, ec);
     if (ok) {
         fs::remove_all(tc, ec);
         fs::rename(fresh, tc, ec);

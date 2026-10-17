@@ -5,9 +5,9 @@
 # runtime libraries, so the version is pinned here and checked by SHA-256.
 #
 #   tools/fetch-toolchain.sh                  the Linux-hosted toolchain (builds Game.exe and the package here)
-#   tools/fetch-toolchain.sh --windows        the Windows-hosted toolchain too (the one Setup downloads for players)
-#   tools/fetch-toolchain.sh --print-windows  print the Windows-hosted zip's URL and SHA-256 (package.sh puts them
-#                                             in kit.toml), download nothing
+#   tools/fetch-toolchain.sh --windows        the Windows-hosted toolchain too (the one Setup.exe downloads)
+#   tools/fetch-toolchain.sh --print          print "<host> <url> <sha256>" for windows and linux, the archives
+#                                             Setup downloads (package.sh puts them in kit.toml), download nothing
 #
 # Installs into $LLVM_MINGW_ROOT (default: toolchain/ at the repository root):
 #   llvm-mingw-<ver>-linux/    llvm-mingw-<ver>-windows/
@@ -27,7 +27,7 @@ WINDOWS=0
 for a in "$@"; do
     case "$a" in
         --windows) WINDOWS=1 ;;
-        --print-windows) echo "$URL/$WINDOWS_ZIP $WINDOWS_SHA"; exit 0 ;;
+        --print) echo "windows $URL/$WINDOWS_ZIP $WINDOWS_SHA"; echo "linux $URL/$LINUX_ZIP $LINUX_SHA"; exit 0 ;;
         -h|--help) sed -n '2,15p' "$0"; exit 0 ;;
         *) echo "unknown option: $a" >&2; exit 2 ;;
     esac

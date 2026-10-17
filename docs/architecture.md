@@ -58,7 +58,8 @@ iso/default.xbe ──xbe_symbols──▶ game/config/game.toml  (written once,
    with the pinned llvm-mingw (`game/cmake-llvm-mingw.cmake`, fetched by `tools/fetch-toolchain.sh`).
    `run-proton.sh` builds in `game/out/build/llvm-mingw` and runs the result under GE-Proton.
 5. **Player kit.** Releases don't contain `Game.exe`. `add_xbe_player_kit` stages `Setup.exe` with the host
-   library and the recompiler; Setup downloads the pinned compiler, and players build the exe themselves. See
+   library and the recompiler (for Windows and for Linux); Setup downloads the pinned compiler for its host, and
+   players build the exe themselves. See
    [distribution.md](distribution.md).
 
 ## Execution model

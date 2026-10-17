@@ -125,16 +125,17 @@ endfunction()
 #   Setup.exe          xbe_setup: finds the game, recompiles, compiles and links <target>.exe beside itself
 #   assets/            empty, the player's game goes here
 #   kit/kit.toml       what Setup reads: the release's sha1, the commands' flags and libraries
-#   kit/bin/           xbe_recomp
+#   kit/bin/           xbe_recomp (the packaging script adds the Linux one, and setup-linux beside Setup.exe)
 #   kit/config, xdk/   the image's config and the SDK's XDK tables
 #   kit/include/       the headers the generated code includes, and image_symbols.h to check the recompile against
 #   kit/lib/           the prebuilt host (runtime, game hooks, ImGui), SDL and the xaudio2 import library
-# kit.toml's [toolchain] (where Setup downloads the Windows-hosted llvm-mingw of the version the kit was built with, and
-# its SHA-256) is added by the packaging script; Setup unpacks it into kit/toolchain on the first run.
+# kit.toml's [toolchain.windows] and [toolchain.linux] (where Setup downloads the llvm-mingw of the version the kit was
+# built with for the host it runs on, and its SHA-256) are added by the packaging script; Setup unpacks it into
+# kit/toolchain/<host> on the first run, and cxx is relative to that.
 # title is the name Setup shows.
 function(add_xbe_player_kit target title)
     if(NOT MINGW)
-        message(FATAL_ERROR "add_xbe_player_kit needs a MinGW build (llvm-mingw): its toolchain goes in the kit")
+        message(FATAL_ERROR "add_xbe_player_kit needs a MinGW build (llvm-mingw): players build with the same toolchain")
     endif()
     get_target_property(xbe ${target} XBE_FILE)
     get_target_property(sha1 ${target} XBE_SHA1)
@@ -164,7 +165,7 @@ function(add_xbe_player_kit target title)
     string(APPEND toml "title = \"${title}\"\nexe = \"${target}\"\nxbe = \"${xbe}\"\nsha1 = \"${sha1}\"\n")
     get_filename_component(config_name ${config} NAME)
     string(APPEND toml "config = \"config/${config_name}\"\nxdk = \"xdk\"\nrecomp = \"bin/xbe_recomp\"\n")
-    string(APPEND toml "cxx = \"toolchain/bin/x86_64-w64-mingw32-clang++\"\ninclude = [\"include\"]\n")
+    string(APPEND toml "cxx = \"bin/x86_64-w64-mingw32-clang++\"\ninclude = [\"include\"]\n")
     foreach(key cxxflags ldflags libs)
         set(items)
         foreach(v ${${key}})
