@@ -15,6 +15,9 @@ shares is its own work, the recompiler, the runtime and the hooks, and Setup com
 machine.
 
 1. Put your game in the `assets` folder: the disc image (`.iso`), or `default.xbe` with the game's folders beside it.
+   If you have the digital, backwards compatible release instead (`DefaultPackage` with a `DefaultPackage.data`
+   folder), copy those two into `assets` and run `unpack-store-windows.exe` (on Linux, `./unpack-store-linux`). It
+   unpacks the game's files into `assets` in a few seconds and needs about 5 GB free; afterwards the package can go.
 2. Run `setup-windows.exe` (on Linux, `./setup-linux` in a terminal opened in this folder). It checks your
    copy is the release this build supports, downloads the compiler it needs
    ([llvm-mingw](https://github.com/mstorsjo/llvm-mingw), 80 to 180 MB, the first time only), recompiles the game and

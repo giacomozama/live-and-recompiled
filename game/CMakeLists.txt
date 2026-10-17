@@ -35,6 +35,12 @@ if(NOT GAME_PARTITIONS)
     set(GAME_PARTITIONS 8)
 endif()
 
+# unpack-store: unpacks the digital, backwards compatible release of the game into the files Setup and the build read
+add_executable(unpack_store ${CMAKE_CURRENT_SOURCE_DIR}/../tools/unpack-store/unpack_store.cpp)
+target_compile_definitions(unpack_store PRIVATE _CRT_SECURE_NO_WARNINGS)
+target_link_libraries(unpack_store PRIVATE $<$<PLATFORM_ID:Windows>:shell32>)
+set_target_properties(unpack_store PROPERTIES OUTPUT_NAME unpack-store)
+
 # target name = GAME_EXE in build.bat, xbe = GAME_XBE
 add_xbe_image(Game default.xbe game.toml ${GAME_PARTITIONS} game)
 

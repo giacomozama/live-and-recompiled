@@ -1,6 +1,7 @@
 xemu/
 
 iso/
+windows_store_pack/
 *.iso
 
 toolchain/

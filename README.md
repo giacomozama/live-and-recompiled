@@ -21,14 +21,14 @@ conker-lar/
     src/common/         app::kGame and shared headers
     src/game/           Conker hooks, frame rate / aspect, keyboard, mouse, F1 menu
     generated/ out/ assets/ winrun/ prefix/    gitignored: generated C++, builds, disc links, Proton run folder
-  tools/                build.sh (Linux dev build), package.cmake + package.sh/.bat (player release),
-                        toolchains.cmake (the pinned llvm-mingw and Zig), fetch-toolchain.cmake, disassembly
-                        helpers
+  tools/                unpack-store (the digital release's package to game files), build.sh (Linux dev
+                        build), package.cmake + package.sh/.bat (player release), toolchains.cmake (the pinned
+                        llvm-mingw and Zig), fetch-toolchain.cmake, disassembly helpers
   toolchain/            gitignored: llvm-mingw, fetched on demand
 ```
 
-Not in git, kept beside the checkout: the disc image, `iso/` (its extraction), `xemu/` (hardware reference
-source), `toolchain/` (llvm-mingw, fetched on demand).
+Not in git, kept beside the checkout: the disc image or the digital release's package, `iso/` (its extraction),
+`xemu/` (hardware reference source), `toolchain/` (llvm-mingw, fetched on demand).
 
 ## Two ways to get Game.exe
 
@@ -62,7 +62,8 @@ SHA-256, and builds with exactly the version the kit was made with. No copy of i
 It also explains two limits:
 - **One release of the game.** The config, and the prebuilt runtime in a release, match one exact `default.xbe`
   by address. The supported one is the USA disc, SHA-1 `2232a1b3874d67b4bb4cf53a940420d2dab59535`. Setup refuses
-  any other copy rather than build the wrong code, and the game looks for that exact XBE in `assets/`.
+  any other copy rather than build the wrong code, and the game looks for that exact XBE in `assets/`. The digital,
+  backwards compatible release carries the same XBE and files, so it works too once unpacked (below).
 - **Nothing generated is shared.** Never post `Game.exe`, anything from `game/generated/` or `kit/work/`, crash
   dumps, or files from the disc in issues or chats.
 
@@ -70,8 +71,9 @@ It also explains two limits:
 
 ### What you need
 
-- **Your copy of the game**, the supported release above, as a disc image (`.iso`) or extracted files
-  (`default.xbe` with `dvddata/` and `media/` beside it).
+- **Your copy of the game**, the supported release above, as a disc image (`.iso`), extracted files
+  (`default.xbe` with `dvddata/` and `media/` beside it), or the digital release's package (`DefaultPackage` and its
+  `DefaultPackage.data` folder), which `tools/unpack-store` unpacks.
 - **Linux:** `clang`/`clang++`, `cmake` (3.25 or newer), `ninja`, `curl` and `zip`. Add `extract-xiso` to build from a
   disc image, and Wine or Proton to run the result. `ndisasm` is only for `tools/xbe_disasm.py`.
 - **Windows:** CMake (3.25 or newer), Ninja and Git. `build.bat` offers to install whichever is missing with
@@ -81,12 +83,13 @@ It also explains two limits:
 
 ```bash
 tools/build.sh --iso path/to/disc.iso    # first build, from a disc image: extracts it into iso/
+tools/build.sh --store path/to/package   # or from the digital release's DefaultPackage (or its folder): unpacks into iso/
 tools/build.sh --game path/to/files      # or from files you already extracted
 tools/build.sh                           # after a change: incremental
 umu-run game/out/build/llvm-mingw/Game.exe
 ```
 
-`--iso` and `--game` link `game/assets/` to the game. You only need them once, or to switch to another copy; the
+`--iso`, `--store` and `--game` link `game/assets/` to the game. You only need them once, or to switch to another copy; the
 build notices the switch and recompiles. The first run downloads the pinned llvm-mingw into `toolchain/` and checks
 its SHA-256, then recompiles the whole XBE and compiles the result, so it takes a while. Later builds redo only what
 changed.
@@ -98,7 +101,9 @@ no window or GPU, for testing.
 ### On Windows
 
 1. Put the extracted game in `game\assets\`: `default.xbe` with `dvddata\` and `media\` beside it. (`build.bat`
-   reads the files, not a disc image. `extract-xiso` has Windows builds.)
+   reads the files, not a disc image. `extract-xiso` has Windows builds.) From the digital release's package,
+   `unpack-store` does the unpacking: build it with `cmake --build game\out\build\llvm-mingw --target unpack_store`
+   after the first `build.bat`, then `game\out\build\llvm-mingw\unpack-store.exe path\to\DefaultPackage game\assets`.
 2. Run `game\build.bat`. It checks for CMake, Ninja and Git, downloads llvm-mingw into `toolchain\` on the first
    run, recompiles the XBE and builds the port. Later runs rebuild only what changed.
 3. Run `game\out\build\llvm-mingw\Game.exe`.
@@ -109,11 +114,28 @@ It's the same build as on Linux and in releases, with the same compiler and flag
 IDEs that read `game\CMakePresets.json` get the same build as the `llvm-mingw` preset, once `build.bat` has fetched
 the compiler.
 
+## The digital release's package
+
+The digital, backwards compatible release is a small `DefaultPackage` file and a `DefaultPackage.data` folder of
+`Data0000`, `Data0001`, ... It's an Xbox 360 Games-on-Demand package: the disc's file system cut into 4 KiB blocks
+with a table of hashes after every 204 of them. Nothing in it is encrypted, so `tools/unpack-store` only needs to
+leave the hash tables out and find where the files start. `unpack_store.cpp` has the layout. It writes the same 881
+files, byte for byte, as extracting the disc does, `default.xbe` included, so the supported-release rule above is
+all there is to check: Setup still compares the XBE's SHA-1.
+
+```bash
+unpack-store DefaultPackage [outdir]     # outdir defaults to assets/ beside the program
+tools/build.sh --store DefaultPackage    # builds it first, unpacks into iso/, builds the port
+```
+
+It is read only on the package, never touches keys or signatures, and takes about 5 GB of space and a few seconds.
+Releases ship it as `unpack-store-windows.exe` and `unpack-store-linux`.
+
 ## Building a release
 
-A release is `setup-windows.exe`, `setup-linux` and a kit: the recompiler, the prebuilt runtime and hooks, the config,
-the headers the generated code includes, and the pinned compiler's address and SHA-256. It contains none of the
-game.
+A release is `setup-windows.exe`, `setup-linux`, `unpack-store-windows.exe`, `unpack-store-linux` and a kit: the
+recompiler, the prebuilt runtime and hooks, the config, the headers the generated code includes, and the pinned
+compiler's address and SHA-256. It contains none of the game.
 
 ### On Linux
 
