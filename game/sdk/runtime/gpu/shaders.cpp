@@ -20,7 +20,11 @@ std::string F(const char* fmt, ...) {
     return buf;
 }
 
+// VK_LOC: a vertex input's location, its register; the Vulkan backend defines it, D3D12 leaves it empty
 const char* kCommonHead = R"(
+#ifndef VK_LOC
+#define VK_LOC(n)
+#endif
 struct VOut {
     float4 pos : SV_Position;
     float4 d0 : COLOR0;
@@ -189,7 +193,7 @@ std::string RegDest(uint32_t r) { return r == 12 ? "oPos" : F("R%u", r); }
 std::string VsInputStruct(uint16_t regs) {
     std::string s = "struct VIn {\n";
     for (int r = 0; r < 16; r++)
-        if ((regs >> r) & 1) s += F("    float4 v%d : ATTR%d;\n", r, r);
+        if ((regs >> r) & 1) s += F("    VK_LOC(%d) float4 v%d : ATTR%d;\n", r, r, r);
     if (!regs) s += "    uint id : SV_VertexID;\n";
     return s + "};\n";
 }
@@ -203,7 +207,7 @@ std::string VsInputs(uint16_t regs, uint64_t decode) {
         if (!((regs >> r) & 1)) continue;
         uint32_t d = uint32_t(decode >> (r * 4)) & 15;
         const char* type = d == kDecodeInt || d == kDecodeIntW1 ? "int4" : d == kDecodePacked ? "uint" : "float4";
-        raw += F("    %s v%d : ATTR%d;\n", type, r, r);
+        raw += F("    VK_LOC(%d) %s v%d : ATTR%d;\n", r, type, r, r);
         in += F("    float4 v%d;\n", r);
         packed |= d == kDecodePacked;
         switch (d) {
@@ -409,7 +413,7 @@ std::string TexFetch(const PixelKey& k, int i) {
         return F("float dp%d%s = dot(tc%d.xyz, %s);\n", n, coord == n ? "" : "n", coord, DotInput(map, src).c_str());
     };
     auto tex2d = [&](const std::string& uv) {
-        if (t.flags & kTexWide) return F("spreadtap(tex%d, smp%d, %s, spread[%d], %s)", i, i, uv.c_str(), i, Hooks().ReadScale(t).c_str());
+        if (t.flags & kTexWide) return F("spreadtap%d(%s, spread[%d], %s)", i, uv.c_str(), i, Hooks().ReadScale(t).c_str());
         return F("tex%d.Sample(smp%d, %s)", i, i, uv.c_str());
     };
     auto cube = [&](const std::string& dir) {
@@ -474,17 +478,7 @@ const char* kPsSbyte = R"(
 // unorm to byte b, less lo under 128 or hi from 128, over d
 float3 sbyte(float3 u, float lo, float hi, float d) { float3 b = u * 255; return (b - (b >= 128 ? hi : lo)) / d; }
 )";
-const char* kPsTail = R"(float4 spreadtap(Texture2D t, SamplerState s, float2 uv, float4 w, float m) {
-    float4 c = 0;
-    int n = (int)w.z;
-    for (int y = 0; y < n; y++)
-        for (int x = 0; x < n; x++) {
-            float4 v = t.SampleLevel(s, uv + w.xy * (float2(x, y) - (n - 1) * 0.5), 0);
-            c += float4(saturate(v.rgb * m), v.a);
-        }
-    return c / (n * n);
-}
-void alphatest(float a) {
+const char* kPsTail = R"(void alphatest(float a) {
     int f = (int)misc.y;
     int v = (int)round(a * 255), r = (int)misc.x;
     bool ok = f == 0 ? false : f == 1 ? v < r : f == 2 ? v == r : f == 3 ? v <= r : f == 4 ? v > r : f == 5 ? v != r : f == 6 ? v >= r : true;
@@ -493,6 +487,22 @@ void alphatest(float a) {
 )";
 
 std::string PsHelpers() { return kPsSbyte + Hooks().Shadow() + kPsTail; }
+
+// spreadtapN: stage N's kTexWide fetch, after its texture is declared. It reads tex N and smp N itself: a texture
+// passed to a function is not valid SPIR-V until a legalizing pass the Vulkan renderer doesn't run
+std::string SpreadTap(int i) {
+    return F(R"(float4 spreadtap%d(float2 uv, float4 w, float m) {
+    float4 c = 0;
+    int n = (int)w.z;
+    for (int y = 0; y < n; y++)
+        for (int x = 0; x < n; x++) {
+            float4 v = tex%d.SampleLevel(smp%d, uv + w.xy * (float2(x, y) - (n - 1) * 0.5), 0);
+            c += float4(saturate(v.rgb * m), v.a);
+        }
+    return c / (n * n);
+}
+)", i, i, i);
+}
 
 // fixed function texture stage arguments, D3DTA
 std::string FfArg(uint32_t a, int stage, bool alpha) {
@@ -548,11 +558,11 @@ bool PixelKey::operator==(const PixelKey& o) const { return std::memcmp(this, &o
 std::string ShaderHooks::Constants() const { return "    float4 ext;\n"; }
 
 std::string ShaderHooks::Shadow() const {
+    // a macro: a texture passed to a function is not valid SPIR-V until a legalizing pass the Vulkan renderer doesn't
+    // run (see SpreadTap)
     return R"(// the sampler compares, a linear filter blends the four results like the console does
-float4 shadow(Texture2D<float> t, SamplerComparisonState s, float2 uv, float z, int fmt, float2 px, float2 size) {
-    float mx = fmt == 2 ? 65535.0 : 16777215.0;
-    return t.SampleCmpLevelZero(s, uv, clamp(z, 0, mx) / mx).xxxx;
-}
+#define shadowmax(fmt) ((fmt) == 2 ? 65535.0 : 16777215.0)
+#define shadow(t, s, uv, z, fmt, px, size) ((t).SampleCmpLevelZero((s), (uv), clamp((z), 0, shadowmax(fmt)) / shadowmax(fmt)).xxxx)
 )";
 }
 
@@ -824,6 +834,7 @@ std::string PixelHlsl(const PixelKey& k) {
         const TexInfo& t = k.tex[i];
         const char* type = t.shadow ? "Texture2D<float>" : t.kind == kTex3D ? "Texture3D" : t.kind == kTexCube ? "TextureCube" : "Texture2D";
         s += F("%s tex%d : register(t%d);\n%s smp%d : register(s%d);\n", type, i, i, t.shadow ? "SamplerComparisonState" : "SamplerState", i, i);
+        if (t.kind == kTex2D && !t.shadow && (t.flags & kTexWide)) s += SpreadTap(i);
     }
     s += F("float4 main(VOut i, bool front : SV_IsFrontFace) : SV_Target {\n");
     s += "    float4 tc0 = i.tc0, tc1 = i.tc1, tc2 = i.tc2, tc3 = i.tc3;\n";
@@ -884,7 +895,7 @@ std::string PixelHlsl(const PixelKey& k) {
                 body += F("float4 t%d = shadow(tex%d, smp%d, (tc%d.xy / tc%d.w)%s, tc%d.z / tc%d.w, %d, i.pos.xy, texsize[%d].xy);\n", i, i,
                           i, i, i, norm.c_str(), i, i, t.shadow, i);
             else if (t.kind == kTex2D && (t.flags & kTexWide))
-                body += F("float4 t%d = spreadtap(tex%d, smp%d, %s, spread[%d], %s);\n", i, i, i, uv.c_str(), i, Hooks().ReadScale(t).c_str());
+                body += F("float4 t%d = spreadtap%d(%s, spread[%d], %s);\n", i, i, uv.c_str(), i, Hooks().ReadScale(t).c_str());
             else if (t.kind == kTex2D) body += F("float4 t%d = tex%d.Sample(smp%d, %s);\n", i, i, i, uv.c_str());
             else if (t.kind == kTexCube && !(cube = Hooks().Cube(t, i, F("tc%d.xyz", i))).empty()) body += F("float4 t%d = %s;\n", i, cube.c_str());
             else if (t.kind) body += F("float4 t%d = tex%d.Sample(smp%d, tc%d.xyz);\n", i, i, i, i);
