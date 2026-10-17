@@ -70,7 +70,7 @@ fi
 echo "      $(sha1sum "$ASSETS/default.xbe" | cut -c1-40)  default.xbe"
 
 echo "[2/4] toolchain"
-LLVM_MINGW_ROOT="$TC" "$ROOT/tools/fetch-toolchain.sh"
+"$ROOT/tools/fetch-toolchain.sh"
 
 echo "[3/4] recompiler"
 configure_rel

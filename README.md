@@ -21,8 +21,8 @@ conker-lar/
     src/common/         app::kGame and shared headers
     src/game/           Conker hooks, frame rate / aspect, keyboard, mouse, F1 menu
     generated/ out/ assets/ winrun/ prefix/    gitignored: generated C++, builds, disc links, Proton run folder
-  tools/                build.sh (dev build), package.sh (player release), fetch-toolchain.sh (pinned llvm-mingw),
-                        disassembly helpers
+  tools/                build.sh (Linux dev build), package.cmake + package.sh/.bat (player release),
+                        llvm-mingw.cmake (the pinned compiler), fetch-toolchain.cmake, disassembly helpers
   toolchain/            gitignored: llvm-mingw, fetched on demand
 ```
 
@@ -32,7 +32,7 @@ source), `toolchain/` (llvm-mingw, fetched on demand).
 ## Two ways to get Game.exe
 
 There are two ways to end up with `Game.exe`, and both start from your own copy of the game. Either way the result
-is a Windows program; on Linux and Steam Deck it runs with Proton or Wine.
+is a Windows program; on Linux it runs with Proton or Wine.
 
 | | From a release (players) | From source (developers) |
 |---|---|---|
@@ -102,7 +102,16 @@ no window or GPU, for testing.
 3. Run `game\out\build\release\Game.exe`.
 
 This is a development build with Visual Studio's Clang, not the llvm-mingw that releases use, so its code layout
-differs from a release's. For a build identical to a release, use the Linux steps under WSL2.
+differs from a release's. For a build identical to a release, use the pinned llvm-mingw from a Developer Command
+Prompt, as packaging does:
+
+```bat
+cmake -DWHAT=llvm-mingw -P tools\configure.cmake
+cmake --build game\out\build\llvm-mingw --target Game
+```
+
+The first command downloads llvm-mingw into `toolchain\` if it's missing, and the exe is
+`game\out\build\llvm-mingw\Game.exe`.
 
 ## Building a release
 
@@ -117,7 +126,8 @@ Put the supported release in `game/assets/` (any `tools/build.sh` above does tha
 tools/package.sh                         # writes game/out/release/Conker-<version>.zip
 ```
 
-It downloads the Linux-hosted llvm-mingw if it's missing. It builds the kit with that, and builds static
+It downloads the Linux-hosted llvm-mingw if it's missing (the pin is in `tools/llvm-mingw.cmake`). It builds the kit
+with that, and builds static
 `setup-linux` and `xbe_recomp` that run on any x86_64 distro. Then it tests the release as a Linux player would: the
 packaged `setup-linux` builds `Game.exe` from the game in `game/assets/`, and the test fails unless one comes out.
 `--no-test` skips the test, and `--test-download` makes it use the compiler Setup downloads.
@@ -129,5 +139,20 @@ automatic test can't run the Windows side.
 
 ### On Windows
 
-Packaging needs Linux. Under WSL2 (for example Ubuntu), clone the repository inside WSL, install the Linux tools
-above, and follow the Linux steps. Then test the zip's `Setup.exe` from Windows.
+You need CMake 3.25 or newer, Ninja and Git on `PATH`. **C++ CMake tools for Windows** puts CMake and Ninja there in
+a **Developer Command Prompt for VS 2022**; Git is from [git-scm.com](https://git-scm.com/download/win). Visual
+Studio's compiler isn't used: packaging builds with the pinned llvm-mingw, which it downloads into `toolchain\`.
+Put the supported release in `game\assets\`, then:
+
+```bat
+tools\package.bat
+```
+
+It writes `game\out\release\Conker-<version>.zip` and takes the same `--no-test`, `--test-download` and
+`-j N` options. Here the test runs the packaged `Setup.exe`.
+
+A Windows host can't build the static Linux `setup-linux` and `xbe_recomp`, so a release packaged on Windows leaves
+them out, and Linux players run its `Setup.exe` with Proton. To ship both, package on Linux.
+
+Both scripts run `tools/package.cmake`, which can also be run directly: `cmake -P tools/package.cmake`, with
+`-DTEST=OFF`, `-DTEST_DOWNLOAD=ON` or `-DJOBS=N` before `-P`.

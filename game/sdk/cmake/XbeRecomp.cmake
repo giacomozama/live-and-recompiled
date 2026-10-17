@@ -25,7 +25,8 @@ FetchContent_Declare(SDL3 GIT_REPOSITORY https://github.com/libsdl-org/SDL.git G
 FetchContent_Declare(miniz GIT_REPOSITORY https://github.com/richgel999/miniz.git GIT_TAG 3.1.2 GIT_SHALLOW TRUE)
 FetchContent_MakeAvailable(zydis tomlplusplus imgui SDL3 miniz)
 
-# When cross compiling, codegen runs on the host: set XBE_CODEGEN_TOOL to a native xbe_recomp path.
+# Codegen runs on the host. By default it is this build's own xbe_recomp, which works when the target runs here
+# (a native build, or Windows on Windows); cross compiling for another OS, set XBE_CODEGEN_TOOL to a native one's path.
 set(XBE_CODEGEN_TOOL "xbe_recomp" CACHE FILEPATH "xbe_recomp used for codegen (a host path when cross compiling)")
 
 # x86 to C++ recompiler
@@ -84,6 +85,12 @@ function(add_xbe_image target xbe config partitions game_dir)
         message(FATAL_ERROR "${xbe_file} is missing: put the game in assets/ (tools/build.sh --iso FILE)")
     endif()
     set(XBE_SHA1_FILE ${CMAKE_CURRENT_BINARY_DIR}/${target}_xbe.sha1)
+    # the build's own recompiler, by its target: CMake only puts a target's path in a command itself when not cross
+    # compiling, and a toolchain file setting CMAKE_SYSTEM_NAME counts as cross compiling even on that system
+    set(codegen ${XBE_CODEGEN_TOOL})
+    if(TARGET ${XBE_CODEGEN_TOOL})
+        set(codegen $<TARGET_FILE:${XBE_CODEGEN_TOOL}>)
+    endif()
     add_custom_target(${target}_xbe_sha1
         COMMAND ${CMAKE_COMMAND} -DMODE=stamp -DXBE=${xbe_file} -DOUT=${XBE_SHA1_FILE}
             -P ${XBE_SDK_DIR}/cmake/xbe_sha1.cmake
@@ -93,7 +100,7 @@ function(add_xbe_image target xbe config partitions game_dir)
     add_custom_command(
         OUTPUT ${GEN}/codegen.stamp
         BYPRODUCTS ${GEN_SOURCES} ${GEN}/x86_recomp_shared.h ${GEN}/image_symbols.h
-        COMMAND ${XBE_CODEGEN_TOOL} config/${config} --xdk ${XBE_SDK_DIR}/xdk
+        COMMAND ${codegen} config/${config} --xdk ${XBE_SDK_DIR}/xdk
         COMMAND ${CMAKE_COMMAND} -E touch ${GEN}/codegen.stamp
         DEPENDS ${XBE_CODEGEN_TOOL} ${configs} ${XBE_SHA1_FILE}
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
