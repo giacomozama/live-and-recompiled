@@ -1,9 +1,9 @@
-# Build the Windows port with the pinned llvm-mingw (tools/llvm-mingw.cmake), on Linux or on Windows, with that host's
+# Build the Windows port with the pinned llvm-mingw (tools/toolchains.cmake), on Linux or on Windows, with that host's
 # build of it. The player package downloads the same release, so what is built here links with what players build.
 set(CMAKE_SYSTEM_NAME Windows)
 set(CMAKE_SYSTEM_PROCESSOR x86_64)
 
-include(${CMAKE_CURRENT_LIST_DIR}/../tools/llvm-mingw.cmake)
+include(${CMAKE_CURRENT_LIST_DIR}/../tools/toolchains.cmake)
 if(NOT LLVM_MINGW)
     if(DEFINED ENV{LLVM_MINGW})
         file(TO_CMAKE_PATH "$ENV{LLVM_MINGW}" LLVM_MINGW)
@@ -14,16 +14,16 @@ endif()
 set(LLVM_MINGW ${LLVM_MINGW} CACHE PATH "llvm-mingw ${LLVM_MINGW_VERSION} for this host")
 list(APPEND CMAKE_TRY_COMPILE_PLATFORM_VARIABLES LLVM_MINGW)  # CMake's compiler checks run this file again
 set(bin ${LLVM_MINGW}/bin)
-if(NOT EXISTS ${bin}/x86_64-w64-mingw32-clang++${LLVM_MINGW_EXE})
+if(NOT EXISTS ${bin}/x86_64-w64-mingw32-clang++${HOST_EXE})
     message(FATAL_ERROR "llvm-mingw not found at ${LLVM_MINGW}: run cmake -P tools/fetch-toolchain.cmake or set "
         "LLVM_MINGW")
 endif()
 
-set(CMAKE_C_COMPILER ${bin}/x86_64-w64-mingw32-clang${LLVM_MINGW_EXE})
-set(CMAKE_CXX_COMPILER ${bin}/x86_64-w64-mingw32-clang++${LLVM_MINGW_EXE})
-set(CMAKE_RC_COMPILER ${bin}/x86_64-w64-mingw32-windres${LLVM_MINGW_EXE})
-set(CMAKE_AR ${bin}/llvm-ar${LLVM_MINGW_EXE})
-set(CMAKE_RANLIB ${bin}/llvm-ranlib${LLVM_MINGW_EXE})
+set(CMAKE_C_COMPILER ${bin}/x86_64-w64-mingw32-clang${HOST_EXE})
+set(CMAKE_CXX_COMPILER ${bin}/x86_64-w64-mingw32-clang++${HOST_EXE})
+set(CMAKE_RC_COMPILER ${bin}/x86_64-w64-mingw32-windres${HOST_EXE})
+set(CMAKE_AR ${bin}/llvm-ar${HOST_EXE})
+set(CMAKE_RANLIB ${bin}/llvm-ranlib${HOST_EXE})
 
 set(CMAKE_FIND_ROOT_PATH ${LLVM_MINGW}/x86_64-w64-mingw32)
 set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)

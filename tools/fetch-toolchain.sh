@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# fetch-toolchain.sh - download the pinned llvm-mingw into toolchain/ (tools/fetch-toolchain.cmake; the pin is in
-# tools/llvm-mingw.cmake).
+# fetch-toolchain.sh - download the pinned llvm-mingw into toolchain/ (tools/fetch-toolchain.cmake; the pins are in
+# tools/toolchains.cmake).
 #
-#   tools/fetch-toolchain.sh            this host's toolchain
+#   tools/fetch-toolchain.sh            llvm-mingw for this host
 #   tools/fetch-toolchain.sh --windows  the Windows-hosted one too
+#   tools/fetch-toolchain.sh --zig      Zig too (packaging builds setup-linux with it)
 #
 # env overrides: LLVM_MINGW_ROOT (where they go, default toolchain/)
 set -euo pipefail
@@ -11,8 +12,9 @@ set -euo pipefail
 ARGS=()
 for a in "$@"; do
     case "$a" in
-        --windows) ARGS=("-DHOSTS=linux;windows") ;;
-        -h|--help) sed -n '2,8p' "$0"; exit 0 ;;
+        --windows) ARGS+=("-DHOSTS=linux;windows") ;;
+        --zig) ARGS+=("-DTOOLS=llvm-mingw;zig") ;;
+        -h|--help) sed -n '2,9p' "$0"; exit 0 ;;
         *) echo "unknown option: $a" >&2; exit 2 ;;
     esac
 done

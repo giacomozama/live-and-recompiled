@@ -1,5 +1,5 @@
-# package.cmake - build the player release, on Linux or Windows: Setup.exe, setup-linux (Linux hosts) and a kit with
-# everything but the game's code.
+# package.cmake - build the player release, on Linux or Windows: Setup.exe, setup-linux and a kit with everything but
+# the game's code.
 #
 # Players build the game on their own machine from their own copy: Setup finds the game in assets/, downloads the
 # pinned llvm-mingw for its host, recompiles the game, compiles the result and links Game.exe. Nothing in the release
@@ -12,8 +12,8 @@
 # tools/package.sh and tools/package.bat run it with the same options as flags.
 #
 # Output: game/out/release/Conker/ and game/out/release/Conker-<version>.zip
-# A Windows host can't build the static Linux binaries, so a release packaged there has no setup-linux; Linux players
-# run its Setup.exe with Proton instead.
+# setup-linux and the Linux xbe_recomp are built with the pinned Zig, so a release is the same from either host. The
+# test runs this host's Setup: setup-linux on Linux, Setup.exe on Windows.
 cmake_minimum_required(VERSION 3.25)
 include(${CMAKE_CURRENT_LIST_DIR}/configure.cmake)
 
@@ -25,29 +25,26 @@ endif()
 if(NOT JOBS)
     cmake_host_system_information(RESULT JOBS QUERY NUMBER_OF_LOGICAL_CORES)
 endif()
-set(LINUX_PARTS ON)
-if(CMAKE_HOST_WIN32)
-    set(LINUX_PARTS OFF)
-endif()
 
 function(build dir)
     execute_process(COMMAND ${CMAKE_COMMAND} --build ${XBE_BUILDS}/${dir} --target ${ARGN} -j ${JOBS}
         COMMAND_ERROR_IS_FATAL ANY)
 endfunction()
 
-message(STATUS "[1/5] toolchain")
-llvm_mingw_fetch(${LLVM_MINGW_HOST})
+message(STATUS "[1/5] toolchains")
+toolchain_fetch(LLVM_MINGW ${TOOLCHAIN_HOST})
+toolchain_fetch(ZIG ${TOOLCHAIN_HOST})
 
 message(STATUS "[2/5] kit")
 if(NOT EXISTS ${XBE_GAME}/assets/default.xbe)
     message(FATAL_ERROR "no game in game/assets: put the supported release there first (see README.md)")
 endif()
-if(LINUX_PARTS)
-    xbe_configure(release)
+if(NOT CMAKE_HOST_WIN32)
+    xbe_configure(release)  # the Linux codegen tool; on Windows the llvm-mingw build runs its own
     build(release xbe_recomp)
-    xbe_configure(linux-kit)
-    build(linux-kit xbe_recomp xbe_setup)
 endif()
+xbe_configure(zig-linux)
+build(zig-linux xbe_recomp xbe_setup)
 xbe_configure(llvm-mingw)
 build(llvm-mingw Game_kit)
 
@@ -56,14 +53,9 @@ message(STATUS "[3/5] staging ${DEST}")
 file(REMOVE_RECURSE ${DEST})
 file(COPY ${XBE_BUILDS}/llvm-mingw/package/Game/ DESTINATION ${DEST})
 file(COPY ${XBE_GAME}/README.md DESTINATION ${DEST})
-if(LINUX_PARTS)
-    file(COPY ${XBE_BUILDS}/linux-kit/xbe_setup DESTINATION ${DEST})
-    file(RENAME ${DEST}/xbe_setup ${DEST}/setup-linux)
-    file(COPY ${XBE_BUILDS}/linux-kit/xbe_recomp DESTINATION ${DEST}/kit/bin)
-else()
-    message(WARNING "packaged on Windows: the release has no setup-linux, Linux players run Setup.exe with Proton. "
-        "Package on Linux for a release with both.")
-endif()
+file(COPY ${XBE_BUILDS}/zig-linux/xbe_setup DESTINATION ${DEST})
+file(RENAME ${DEST}/xbe_setup ${DEST}/setup-linux)
+file(COPY ${XBE_BUILDS}/zig-linux/xbe_recomp DESTINATION ${DEST}/kit/bin)
 # no compiler in the release: Setup downloads the llvm-mingw of the same release for its host on the player's machine
 set(toml "\n# the compiler (llvm-mingw ${LLVM_MINGW_VERSION}) for the host Setup runs on, downloaded into ")
 string(APPEND toml "kit/toolchain/<host> once\n")
@@ -83,7 +75,7 @@ if(TEST)
     file(MAKE_DIRECTORY ${scratch}/assets)
     file(COPY ${DEST}/kit DESTINATION ${scratch})
     file(COPY_FILE ${XBE_GAME}/assets/default.xbe ${scratch}/assets/default.xbe)
-    if(LINUX_PARTS)
+    if(NOT CMAKE_HOST_WIN32)
         file(COPY ${DEST}/setup-linux DESTINATION ${scratch})
         set(setup ${scratch}/setup-linux)
     else()

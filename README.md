@@ -22,7 +22,8 @@ conker-lar/
     src/game/           Conker hooks, frame rate / aspect, keyboard, mouse, F1 menu
     generated/ out/ assets/ winrun/ prefix/    gitignored: generated C++, builds, disc links, Proton run folder
   tools/                build.sh (Linux dev build), package.cmake + package.sh/.bat (player release),
-                        llvm-mingw.cmake (the pinned compiler), fetch-toolchain.cmake, disassembly helpers
+                        toolchains.cmake (the pinned llvm-mingw and Zig), fetch-toolchain.cmake, disassembly
+                        helpers
   toolchain/            gitignored: llvm-mingw, fetched on demand
 ```
 
@@ -121,21 +122,18 @@ Put the supported release in `game/assets/` (any `tools/build.sh` above does tha
 tools/package.sh                         # writes game/out/release/Conker-<version>.zip
 ```
 
-It downloads the Linux-hosted llvm-mingw if it's missing (the pin is in `tools/llvm-mingw.cmake`). It builds the kit
-with that, and builds static
-`setup-linux` and `xbe_recomp` that run on any x86_64 distro. Then it tests the release as a Linux player would: the
+It downloads the pinned llvm-mingw and Zig if they're missing (the pins are in `tools/toolchains.cmake`). It builds
+the kit with llvm-mingw, and `setup-linux` and the Linux `xbe_recomp` with Zig: static musl programs that run on any
+x86_64 distro. Then it tests the release as a Linux player would: the
 packaged `setup-linux` builds `Game.exe` from the game in `game/assets/`, and the test fails unless one comes out.
 `--no-test` skips the test, and `--test-download` makes it use the compiler Setup downloads.
 
 The kit only accepts the exact XBE it was packaged from, so package from the supported release.
 
-Before publishing, run `Setup.exe` from the zip once: on Windows, or with `umu-run Setup.exe` in an unpacked copy. The
-automatic test can't run the Windows side.
-
 ### On Windows
 
 You need the same CMake, Ninja and Git as for building (running `game\build.bat` once sets them up). Packaging
-builds with the pinned llvm-mingw, which it downloads into `toolchain\`. Put the supported release in
+builds with the pinned llvm-mingw and Zig, which it downloads into `toolchain\`. Put the supported release in
 `game\assets\`, then:
 
 ```bat
@@ -145,8 +143,8 @@ tools\package.bat
 It writes `game\out\release\Conker-<version>.zip` and takes the same `--no-test`, `--test-download` and
 `-j N` options. Here the test runs the packaged `Setup.exe`.
 
-A Windows host can't build the static Linux `setup-linux` and `xbe_recomp`, so a release packaged on Windows leaves
-them out, and Linux players run its `Setup.exe` with Proton. To ship both, package on Linux.
+Zig builds `setup-linux` and the Linux `xbe_recomp` on Windows too, so a release is the same whichever system
+packaged it.
 
 Both scripts run `tools/package.cmake`, which can also be run directly: `cmake -P tools/package.cmake`, with
 `-DTEST=OFF`, `-DTEST_DOWNLOAD=ON` or `-DJOBS=N` before `-P`.
