@@ -23,7 +23,22 @@ set(SDL_CAMERA OFF CACHE BOOL "" FORCE)
 FetchContent_Declare(SDL3 GIT_REPOSITORY https://github.com/libsdl-org/SDL.git GIT_TAG release-3.4.16 GIT_SHALLOW TRUE)
 # miniz for Setup, which unpacks the compiler it downloads
 FetchContent_Declare(miniz GIT_REPOSITORY https://github.com/richgel999/miniz.git GIT_TAG 3.1.2 GIT_SHALLOW TRUE)
-FetchContent_MakeAvailable(zydis tomlplusplus imgui SDL3 miniz)
+# The Vulkan renderer: the API's headers, volk (loads the Vulkan loader at run time, nothing to link), VMA for memory,
+# all three headers only and fetched without their builds (a SOURCE_SUBDIR that isn't there); glslang compiles the HLSL
+# both renderers share to SPIR-V
+FetchContent_Declare(vulkan_headers GIT_REPOSITORY https://github.com/KhronosGroup/Vulkan-Headers.git GIT_TAG v1.3.296
+    GIT_SHALLOW TRUE SOURCE_SUBDIR none)
+FetchContent_Declare(volk GIT_REPOSITORY https://github.com/zeux/volk.git GIT_TAG vulkan-sdk-1.3.296.0 GIT_SHALLOW TRUE
+    SOURCE_SUBDIR none)
+FetchContent_Declare(vma GIT_REPOSITORY https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator.git
+    GIT_TAG v3.1.0 GIT_SHALLOW TRUE SOURCE_SUBDIR none)
+foreach(option ENABLE_OPT ENABLE_GLSLANG_BINARIES ENABLE_SPVREMAPPER ENABLE_PCH GLSLANG_TESTS GLSLANG_ENABLE_INSTALL
+        BUILD_EXTERNAL)
+    set(${option} OFF CACHE BOOL "" FORCE)
+endforeach()
+set(ENABLE_HLSL ON CACHE BOOL "" FORCE)
+FetchContent_Declare(glslang GIT_REPOSITORY https://github.com/KhronosGroup/glslang.git GIT_TAG 15.0.0 GIT_SHALLOW TRUE)
+FetchContent_MakeAvailable(zydis tomlplusplus imgui SDL3 miniz vulkan_headers volk vma glslang)
 
 # Codegen runs on the host. By default it is this build's own xbe_recomp, which works when the target runs here
 # (a native build, or Windows on Windows); cross compiling for another OS, set XBE_CODEGEN_TOOL to a native one's path.
@@ -58,11 +73,21 @@ set(XBE_IMGUI_SOURCES
     ${imgui_SOURCE_DIR}/imgui_tables.cpp
     ${imgui_SOURCE_DIR}/imgui_widgets.cpp
     ${imgui_SOURCE_DIR}/backends/imgui_impl_win32.cpp
-    ${imgui_SOURCE_DIR}/backends/imgui_impl_dx12.cpp)
+    ${imgui_SOURCE_DIR}/backends/imgui_impl_dx12.cpp
+    ${imgui_SOURCE_DIR}/backends/imgui_impl_vulkan.cpp)
 
 file(GLOB XBE_RUNTIME_SOURCES CONFIGURE_DEPENDS ${XBE_SDK_DIR}/runtime/*/*.cpp)
 # SDL's headers go to the input code alone (it is linked LINK_ONLY), so the generated sources' compile line stays the same
 set_source_files_properties(${XBE_SDK_DIR}/runtime/core/input.cpp PROPERTIES INCLUDE_DIRECTORIES "${sdl3_SOURCE_DIR}/include")
+# Vulkan's and glslang's the same way, to the renderer and ImGui's backend for it; ENABLE_HLSL is glslang's own define
+set(XBE_VULKAN_INCLUDES ${vulkan_headers_SOURCE_DIR}/include ${volk_SOURCE_DIR})
+set_source_files_properties(${XBE_SDK_DIR}/runtime/gpu/vulkan.cpp PROPERTIES
+    INCLUDE_DIRECTORIES "${XBE_VULKAN_INCLUDES};${vma_SOURCE_DIR}/include;${glslang_SOURCE_DIR};${glslang_BINARY_DIR}/include"
+    COMPILE_DEFINITIONS "ENABLE_HLSL;IMGUI_IMPL_VULKAN_USE_VOLK" COMPILE_OPTIONS -Wno-nullability-completeness)
+set_source_files_properties(${imgui_SOURCE_DIR}/backends/imgui_impl_vulkan.cpp PROPERTIES
+    INCLUDE_DIRECTORIES "${XBE_VULKAN_INCLUDES}" COMPILE_DEFINITIONS IMGUI_IMPL_VULKAN_USE_VOLK)
+# glslang's libraries in the order they link
+set(XBE_GLSLANG_LIBS glslang glslang-default-resource-limits)
 
 # how the generated code is compiled, here and by a player kit's Setup
 set(XBE_GEN_COMPILE_OPTIONS -O2 -fno-strict-aliasing -Wno-unused-label -Wno-parentheses-equality -Wno-unused-variable)
@@ -131,6 +156,9 @@ function(add_xbe_image target xbe config partitions game_dir)
     target_compile_options(${target}_host PUBLIC -fno-strict-aliasing)
     target_compile_definitions(${target}_host PUBLIC ${XBE_HOST_DEFINITIONS})
     target_link_libraries(${target}_host PUBLIC tomlplusplus::tomlplusplus $<LINK_ONLY:SDL3::SDL3-static> ${XBE_HOST_SYSTEM_LIBS} xaudio2)
+    foreach(lib ${XBE_GLSLANG_LIBS})
+        target_link_libraries(${target}_host PUBLIC $<LINK_ONLY:${lib}>)
+    endforeach()
 
     add_executable(${target} WIN32 ${GEN_SOURCES})
     add_dependencies(${target} recompile_${target})
@@ -160,7 +188,7 @@ endfunction()
 #   kit/bin/           xbe_recomp (the packaging script adds the Linux one, and setup-linux beside setup-windows.exe)
 #   kit/config, xdk/   the image's config and the SDK's XDK tables
 #   kit/include/       the headers the generated code includes, and image_symbols.h to check the recompile against
-#   kit/lib/           the prebuilt host (runtime, game hooks, ImGui), SDL and the xaudio2 import library
+#   kit/lib/           the prebuilt host (runtime, game hooks, ImGui), glslang, SDL and the xaudio2 import library
 # kit.toml's [toolchain.windows] and [toolchain.linux] (where Setup downloads the llvm-mingw of the version the kit was
 # built with for the host it runs on, and its SHA-256) are added by the packaging script; Setup unpacks it into
 # kit/toolchain/<host> on the first run, and cxx is relative to that.
@@ -186,7 +214,11 @@ function(add_xbe_player_kit target title)
     # the link line: the host whole (its replacements beat the recompiled weak functions), SDL and its system
     # libraries (SDL3staticTargets.cmake), the host's, CMake's defaults for a C++ program
     separate_arguments(std_libs NATIVE_COMMAND "${CMAKE_CXX_STANDARD_LIBRARIES}")
-    set(libs -Wl,--whole-archive lib/lib${target}_host.a -Wl,--no-whole-archive lib/libSDL3.a lib/libxaudio2.a)
+    set(libs -Wl,--whole-archive lib/lib${target}_host.a -Wl,--no-whole-archive)
+    foreach(lib ${XBE_GLSLANG_LIBS})
+        list(APPEND libs lib/$<TARGET_FILE_NAME:${lib}>)
+    endforeach()
+    list(APPEND libs lib/libSDL3.a lib/libxaudio2.a)
     foreach(l m kernel32 user32 gdi32 winmm imm32 ole32 oleaut32 version uuid advapi32 setupapi shell32 dinput8
               ${XBE_HOST_SYSTEM_LIBS})
         list(APPEND libs -l${l})
@@ -218,6 +250,10 @@ function(add_xbe_player_kit target title)
     if(NOT xaudio2)
         message(FATAL_ERROR "libxaudio2_8.a not found in the toolchain")
     endif()
+    set(glslang_libs)
+    foreach(lib ${XBE_GLSLANG_LIBS})
+        list(APPEND glslang_libs $<TARGET_FILE:${lib}>)
+    endforeach()
     add_custom_target(${target}_kit
         COMMAND ${CMAKE_COMMAND} -E rm -rf ${pkg}
         COMMAND ${CMAKE_COMMAND} -E make_directory ${pkg}/assets ${kit}/bin ${kit}/config ${kit}/include/cpu ${kit}/lib
@@ -231,9 +267,10 @@ function(add_xbe_player_kit target title)
             ${kit}/include/cpu/
         COMMAND ${CMAKE_COMMAND} -E copy ${gen}/image_symbols.h ${kit}/include/
         COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:${target}_host> $<TARGET_FILE:SDL3::SDL3-static> ${kit}/lib/
+        COMMAND ${CMAKE_COMMAND} -E copy ${glslang_libs} ${kit}/lib/
         COMMAND ${CMAKE_COMMAND} -E copy ${xaudio2} ${kit}/lib/libxaudio2.a
         COMMAND ${CMAKE_COMMAND} -E copy ${XBE_SDK_DIR}/THIRD_PARTY.txt ${pkg}/
-        DEPENDS ${target}_host xbe_setup xbe_recomp SDL3::SDL3-static ${sha1_file}
+        DEPENDS ${target}_host xbe_setup xbe_recomp SDL3::SDL3-static ${XBE_GLSLANG_LIBS} ${sha1_file}
         COMMENT "Staging the player kit for ${target} in ${pkg}"
         VERBATIM)
 endfunction()

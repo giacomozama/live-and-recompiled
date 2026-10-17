@@ -52,6 +52,7 @@ void Load() {
     s.aniso = t["anisotropic_filtering"].value_or(s.aniso);
     s.msaa = t["msaa"].value_or(s.msaa);
     s.shader_warmup = t["shader_warmup"].value_or(s.shader_warmup);
+    s.renderer = t["renderer"].value_or(s.renderer);
     s.aspect = t["aspect"].value_or(s.aspect);
     s.join_ip = t["join_ip"].value_or(s.join_ip);
     for (const Option& o : kGame.options) {
@@ -74,6 +75,7 @@ toml::table Table() {
                   {"anisotropic_filtering", int64_t(s.aniso)},
                   {"msaa", int64_t(s.msaa)},
                   {"shader_warmup", s.shader_warmup},
+                  {"renderer", s.renderer},
                   {"aspect", s.aspect},
                   {"join_ip", s.join_ip}};
     for (const Option& o : kGame.options) {

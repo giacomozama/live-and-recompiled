@@ -60,6 +60,10 @@ Developers: building from source differs from Setup, see [Building from source](
   game code and can be shared: vertex programs are named in it by hash, and their code goes in `shader_programs.bin`,
   which stays on your PC. A shared `shaders.rec` alone warms everything but the vertex shaders of programs your copy
   has not run yet. `shader_warmup = false` in `settings.toml` turns the warm-up off; recording stays on.
+- **Vulkan Renderer (experimental)** - `renderer = "vulkan"` in `settings.toml` draws with Vulkan 1.3 instead of
+  Direct3D 12, from the next launch. It draws the same way, from the same shaders, and shares `shaders.rec`. Without a
+  Vulkan 1.3 GPU and driver the game starts on Direct3D 12 and says why in the log. `XBE_VULKAN_DEBUG=1` turns on the
+  validation layer, when it is installed, and writes its messages to the log.
 
 ### Controller
 Supports Xbox, PlayStation and Switch controllers, with hot plugging and rumble.
@@ -105,7 +109,7 @@ and Insert are kept for opening the menu.
 ### Minimum
 - **OS**
   - Windows 10 64-bit
-- **GPU** with support for Direct3D 12
+- **GPU** with support for Direct3D 12 (or Vulkan 1.3, for the Vulkan renderer)
 
 ## Repository layout
 

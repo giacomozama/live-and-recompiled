@@ -477,8 +477,11 @@ HLE_STDCALL(Direct3D_CreateDevice, 6) {
         g_depth = NewSurface(w, h, zf, zf == 0x30 || zf == 0x31 ? 2 : 4);  // 0x30 LIN_D16, 0x31 LIN_F16
     }
     if (!g_backend) {
-        g_backend = gpu::CreateBackend();
-        if (!g_backend->Init(w, h)) LOGE("d3d: renderer init failed");
+        g_backend = gpu::CreateBackend(w, h);
+        if (!g_backend) {
+            LOGE("d3d: renderer init failed");
+            g_backend = gpu::CreateD3D12Backend();  // as before: a backend that failed Init, never null
+        }
         if (kRenderThread) g_backend = gpu::CreateThreadedBackend(std::move(g_backend));
     }
     g_state = gpu::State{};
