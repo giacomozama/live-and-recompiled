@@ -25,7 +25,7 @@ FetchContent_Declare(SDL3 GIT_REPOSITORY https://github.com/libsdl-org/SDL.git G
 FetchContent_Declare(miniz GIT_REPOSITORY https://github.com/richgel999/miniz.git GIT_TAG 3.1.2 GIT_SHALLOW TRUE)
 # The Vulkan renderer: the API's headers, volk (loads the Vulkan loader at run time, nothing to link), VMA for memory,
 # all three headers only and fetched without their builds (a SOURCE_SUBDIR that isn't there); glslang compiles the HLSL
-# both renderers share to SPIR-V
+# the shaders are written in to SPIR-V
 FetchContent_Declare(vulkan_headers GIT_REPOSITORY https://github.com/KhronosGroup/Vulkan-Headers.git GIT_TAG v1.3.296
     GIT_SHALLOW TRUE SOURCE_SUBDIR none)
 FetchContent_Declare(volk GIT_REPOSITORY https://github.com/zeux/volk.git GIT_TAG vulkan-sdk-1.3.296.0 GIT_SHALLOW TRUE
@@ -74,18 +74,17 @@ set(XBE_IMGUI_SOURCES
     ${imgui_SOURCE_DIR}/imgui_widgets.cpp
     ${imgui_SOURCE_DIR}/backends/imgui_impl_vulkan.cpp)
 
-# The host's platform: on Windows a Win32 window, XAudio2 and D3D12 beside Vulkan; elsewhere an SDL3 window and audio
-# (XBE_SDL) and Vulkan alone. Each side's own sources are left out of the other's build.
+# The host's platform: on Windows a Win32 window and XAudio2; elsewhere an SDL3 window and audio (XBE_SDL). Vulkan draws
+# on both. Each side's own sources are left out of the other's build.
 file(GLOB XBE_RUNTIME_SOURCES CONFIGURE_DEPENDS ${XBE_SDK_DIR}/runtime/*/*.cpp)
 if(WIN32)
-    list(APPEND XBE_IMGUI_SOURCES ${imgui_SOURCE_DIR}/backends/imgui_impl_win32.cpp
-        ${imgui_SOURCE_DIR}/backends/imgui_impl_dx12.cpp)
+    list(APPEND XBE_IMGUI_SOURCES ${imgui_SOURCE_DIR}/backends/imgui_impl_win32.cpp)
     list(FILTER XBE_RUNTIME_SOURCES EXCLUDE REGEX "/(app/main_sdl|app/crash_posix|app/system_info_posix|audio/sdl_audio)\\.cpp$")
     set(XBE_SDL_SOURCES ${XBE_SDK_DIR}/runtime/core/input.cpp)
 else()
     list(APPEND XBE_IMGUI_SOURCES ${imgui_SOURCE_DIR}/backends/imgui_impl_sdl3.cpp)
     list(FILTER XBE_RUNTIME_SOURCES EXCLUDE REGEX
-        "/(app/main|app/crash|app/splash|app/handover|app/system_info|audio/xaudio2|gpu/d3d12)\\.cpp$")
+        "/(app/main|app/crash|app/splash|app/handover|app/system_info|audio/xaudio2)\\.cpp$")
     set(XBE_SDL_SOURCES ${XBE_SDK_DIR}/runtime/core/input.cpp ${XBE_SDK_DIR}/runtime/app/main_sdl.cpp
         ${XBE_SDK_DIR}/runtime/audio/sdl_audio.cpp ${imgui_SOURCE_DIR}/backends/imgui_impl_sdl3.cpp)
 endif()
@@ -107,7 +106,7 @@ set(XBE_GEN_COMPILE_OPTIONS -O2 -fno-strict-aliasing -Wno-unused-label -Wno-pare
 set(XBE_HOST_DEFINITIONS UNICODE _UNICODE _CRT_SECURE_NO_WARNINGS)
 # what the host links besides SDL; xaudio2 is the Windows SDK's name, mingw's is xaudio2_8
 if(WIN32)
-    set(XBE_HOST_SYSTEM_LIBS d3d12 dxgi dxguid d3dcompiler ole32 windowscodecs dbghelp winmm dwmapi ws2_32)
+    set(XBE_HOST_SYSTEM_LIBS dxguid ole32 windowscodecs dbghelp winmm dwmapi ws2_32)
 else()
     set(XBE_HOST_SYSTEM_LIBS ${CMAKE_DL_LIBS} pthread)
 endif()

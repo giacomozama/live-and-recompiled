@@ -1,5 +1,5 @@
-// The title's Direct3D 8 calls drawn with Vulkan: d3d12.cpp's renderer step for step, on the same HLSL, which glslang
-// compiles to SPIR-V. Resources move between layouts where D3D12 moves them between states; a render pass begins
+// The title's Direct3D 8 calls drawn with Vulkan, on HLSL which glslang compiles to SPIR-V.
+// Resources move between image layouts; a render pass begins
 // lazily on the draw or clear that needs it and ends at the next barrier or copy.
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
@@ -158,8 +158,8 @@ float depth(O i) : SV_Depth { return depthat(int2(i.p.xy)); }
 void stencilbit(O i) { if (((stencilat(int2(i.p.xy)) >> opts.x) & 1) == 0) discard; }
 )";
 
-// a D24S8 depth buffer as the console's memory holds it, read through a 32 bit colour format (d3d12.cpp's
-// kDepthBytesHlsl): R G B A take the bytes order picks
+// a D24S8 depth buffer as the console's memory holds it, read through a 32 bit colour format:
+// R G B A take the bytes order picks
 const char* kDepthBytesHlsl = R"(
 cbuffer B : register(b1) { float4 order; };
 Texture2D<float> img : register(t0);
@@ -395,7 +395,7 @@ struct DrawTextures {
     uint32_t levels[4] = {1, 1, 1, 1};
     bool rt[4] = {};            // stage samples a render target
     uint32_t sampled = 0xF;     // bit per stage the pixel shader reads: the others are bound nothing
-    float k[4] = {1, 1, 1, 1};  // texels per render scale texel, d3d12.cpp's Extension::Sample k
+    float k[4] = {1, 1, 1, 1};  // texels per render scale texel
     float wide[4] = {};         // host texels per console texel of a target read into a smaller one, 0 otherwise
 };
 

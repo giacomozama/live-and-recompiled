@@ -1,6 +1,6 @@
 // ImGui settings menu and fps readout, for GameInfo::ui and GameInfo::message (see game_info.cpp).
 //
-// The render thread draws the frame with app::UiLock held (d3d12.cpp RenderUi), and the window thread runs
+// The render thread draws the frame with app::UiLock held (vulkan.cpp RenderUi), and the window thread runs
 // Message for every message after ImGui's. Draw must never make a blocking cross-thread call: it only posts.
 // So the fps in the title is posted (kFpsTitle), and the window thread sets it.
 //

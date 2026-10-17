@@ -20,7 +20,7 @@ std::string F(const char* fmt, ...) {
     return buf;
 }
 
-// VK_LOC: a vertex input's location, its register; the Vulkan backend defines it, D3D12 leaves it empty
+// VK_LOC: a vertex input's location, its register; the Vulkan backend defines it, a backend that needs none leaves it empty
 const char* kCommonHead = R"(
 #ifndef VK_LOC
 #define VK_LOC(n)

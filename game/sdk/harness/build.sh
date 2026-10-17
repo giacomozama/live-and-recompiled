@@ -5,7 +5,7 @@
 #   -x regex of sources to leave out (repeatable)   -e extra source file (repeatable)
 #   -G folder for the generated objects (default <out>/gen), shared between builds of the same generated code
 # env: CXX (clang++), JOBS (nproc)
-# Leaves out the window, SDL input and audio, XAudio2, D3D12 and Vulkan parts of the runtime and the sources of the repo's other images
+# Leaves out the window, SDL input and audio, XAudio2 and Vulkan parts of the runtime and the sources of the repo's other images
 # (src/<name> for each other folder beside the generated one); the harness supplies their stand ins.
 set -e
 EXCL=(); EXTRA=()
@@ -31,7 +31,7 @@ ls "$GEN"/x86_recomp.*.cpp "$GEN"/x86_func_mapping.cpp | xargs -P "$JOBS" -I{} s
     $CXX $BASE -O1 -g0 -w -I"$RT" -I"$GEN" -c {} -o "$o.tmp" && mv "$o.tmp" "$o"'
 
 others=$(ls "$GEN/.." | grep -vx "$(basename "$GEN")" | paste -sd'|' -)
-SRC=$(ls "$RT"/*/*.cpp | grep -Ev "/runtime/app/|/core/input.cpp|/gpu/(d3d12|vulkan|backend).cpp|/audio/(xaudio2|sdl_audio).cpp")
+SRC=$(ls "$RT"/*/*.cpp | grep -Ev "/runtime/app/|/core/input.cpp|/gpu/(vulkan|backend).cpp|/audio/(xaudio2|sdl_audio).cpp")
 SRC="$SRC $(ls "$REPO"/src/*/*.cpp | grep -Ev "/src/(${others:-^$})/" || true)"
 SRC="$SRC $(ls "$H"/*.cpp) ${EXTRA[*]}"
 for x in "${EXCL[@]}"; do SRC=$(echo $SRC | tr ' ' '\n' | grep -Ev -- "$x"); done

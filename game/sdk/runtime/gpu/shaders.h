@@ -64,7 +64,7 @@ struct ShaderHooks {
     // the cbuffer line for DrawConstants::ext
     virtual std::string Constants() const;
     // shadow(t, s, uv, z, fmt, px, size), float4, t a Texture2D<float> and s its SamplerComparisonState: a macro, since
-    // the Vulkan renderer's SPIR-V can't take a texture as a function's argument (a D3D12 only hook may define a function)
+    // the Vulkan renderer's SPIR-V can't take a texture as a function's argument (a hook may define a function)
     virtual std::string Shadow() const;
     // what spreadtap scales a render target's colour by
     virtual std::string ReadScale(const TexInfo&) const { return "1"; }

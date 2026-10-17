@@ -2,7 +2,7 @@
 
 An unofficial native PC port of the original Xbox *Conker: Live & Reloaded*, with extended graphics options and other
 enhancements. The game's x86 `default.xbe` is translated to C++ ahead of time; the Xbox kernel and XDK libraries are
-implemented at the API level, and everything is drawn with Direct3D 12 and played through XAudio2. It's built on
+implemented at the API level, and everything is drawn with Vulkan and played through XAudio2. It's built on
 [Xbox XBE Recomp](https://github.com/TGP482/XboxXBERecomp), vendored in `game/sdk/`.
 
 > [!NOTE]
@@ -40,7 +40,7 @@ to a new release.
 
 On Linux, `./Game` is the native port: an SDL3 window (X11 or Wayland) drawn with Vulkan, which needs a Vulkan 1.3
 driver and glibc 2.31 or newer (any distro since 2020, SteamOS included). Add it to Steam as a non-Steam game to play
-it from Game Mode. It has everything `Game.exe` has but the D3D12 renderer, the boot splash and the window kept up
+it from Game Mode. It has everything `Game.exe` has but the boot splash and the window kept up
 across a relaunch. To build `Game.exe` instead, for Proton or Wine, run `./setup-linux --target windows`; it downloads
 llvm-mingw then. If `./setup-linux` says permission denied, your unzip tool dropped its executable bit:
 `chmod +x setup-linux kit/bin/xbe_recomp`. `setup-windows.exe` works under Proton too (`umu-run setup-windows.exe`).
@@ -64,10 +64,9 @@ Developers: building from source differs from Setup, see [Building from source](
   game code and can be shared: vertex programs are named in it by hash, and their code goes in `shader_programs.bin`,
   which stays on your PC. A shared `shaders.rec` alone warms everything but the vertex shaders of programs your copy
   has not run yet. `shader_warmup = false` in `settings.toml` turns the warm-up off; recording stays on.
-- **Vulkan Renderer (experimental)** - `renderer = "vulkan"` in `settings.toml` draws with Vulkan 1.3 instead of
-  Direct3D 12, from the next launch. It draws the same way, from the same shaders, and shares `shaders.rec`. Without a
-  Vulkan 1.3 GPU and driver the game starts on Direct3D 12 and says why in the log. `XBE_VULKAN_DEBUG=1` turns on the
-  validation layer, when it is installed, and writes its messages to the log.
+- **Vulkan Renderer** - The game draws with Vulkan 1.3 on Windows and Linux alike, and needs a Vulkan 1.3 GPU and
+  driver. `renderer` in `settings.toml` names the renderer (`"vulkan"`, the only one; anything else gets it too).
+  `XBE_VULKAN_DEBUG=1` turns on the validation layer, when it is installed, and writes its messages to the log.
 
 ### Controller
 Supports Xbox, PlayStation and Switch controllers, with hot plugging and rumble.
@@ -113,7 +112,7 @@ and Insert are kept for opening the menu.
 ### Minimum
 - **OS**
   - Windows 10 64-bit
-- **GPU** with support for Direct3D 12 (or Vulkan 1.3, for the Vulkan renderer)
+- **GPU** with support for Vulkan 1.3
 
 ## Repository layout
 
@@ -202,7 +201,7 @@ changed.
 
 `Game.exe` finds `game/assets/` by walking up from its own folder. It keeps `settings.toml`, its logs, shader records
 and saves beside itself, and so does the native `Game`. The native port is the same game in an SDL3 window, drawn
-with Vulkan and played through SDL3's audio; it has everything `Game.exe` has but the D3D12 renderer, the boot splash
+with Vulkan and played through SDL3's audio; it has everything `Game.exe` has but the boot splash
 and the window kept up across a relaunch. This build uses the system clang and libstdc++; a release's native `Game` is
 built with the pinned Zig instead (see [Building a release](#building-a-release)). `tools/build.sh --harness` also
 builds `game/out/harness/conker`, a headless Linux build with no window or GPU, for testing.

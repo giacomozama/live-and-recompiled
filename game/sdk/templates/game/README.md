@@ -33,7 +33,7 @@ Supports Xbox, PlayStation and Switch controllers, with hot plugging and rumble.
 ### Minimum
 - **OS**
   - Windows 10 64-bit
-- **GPU** with support for Direct3D 12
+- **GPU** with support for Vulkan 1.3
 
 ## Building
 
