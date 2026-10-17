@@ -301,6 +301,10 @@ private:
 
 }  // namespace
 
-std::unique_ptr<Backend> CreateBackend() { return std::make_unique<NullBackend>(); }
+std::unique_ptr<Backend> CreateBackend(uint32_t width, uint32_t height) {
+    auto b = std::make_unique<NullBackend>();
+    b->Init(width, height);
+    return b;
+}
 
 }  // namespace gpu

@@ -7,7 +7,7 @@
 #include <string>
 #include <utility>
 
-#include <dxgiformat.h>
+#include "gpu/dxgi_formats.h"
 
 #include "core/log.h"
 #include "kernel/kernel.h"

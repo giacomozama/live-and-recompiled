@@ -2,21 +2,13 @@
 //
 // The render thread draws the frame with app::UiLock held (d3d12.cpp RenderUi), and the window thread runs
 // Message for every message after ImGui's. Draw must never make a blocking cross-thread call: it only posts.
-// So the fps in the title is posted (kFpsTitle), and the window thread does the SetWindowTextW.
+// So the fps in the title is posted (kFpsTitle), and the window thread sets it.
 //
-// On the headless harness there is no ImGui and no real <windows.h>, so everything but the option globals
-// compiles out; keyboard.cpp can still ask Open().
+// On the headless harness there is no ImGui and no window, so everything but the option globals compiles out;
+// keyboard.cpp can still ask Open().
 #include "common/ui.h"
 
-#if __has_include(<imgui.h>) && defined(_WIN32)
-
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#include <windows.h>
+#if __has_include(<imgui.h>) && !defined(XBE_HEADLESS)
 
 #include <algorithm>
 #include <atomic>
@@ -42,7 +34,10 @@ bool g_fps_title = true;
 namespace {
 
 // the window owns the title; Draw posts this, Message (window thread) writes it
-constexpr UINT kFpsTitle = WM_APP + 0x40;
+constexpr uint32_t kFpsTitle = app::kMsgApp + 0x40;
+
+// virtual-key codes the menu reads
+constexpr int kMouse1 = 0x01, kInsert = 0x2D, kF1 = 0x70;
 
 std::atomic<bool> g_open{false};
 std::atomic<double> g_fps{0.0};
@@ -51,25 +46,9 @@ std::atomic<double> g_fps{0.0};
 app::DisplayMode pending_mode = app::DisplayMode::Borderless;
 uint32_t pending_w = 0, pending_h = 0;
 
-// enumerated once, de-duplicated by w x h and sorted largest first
+// the display's modes, asked once
 const std::vector<app::Mode>& Modes() {
-    static const std::vector<app::Mode> modes = [] {
-        std::vector<app::Mode> v;
-        DEVMODEW dm{};
-        dm.dmSize = sizeof(dm);
-        for (DWORD i = 0; EnumDisplaySettingsW(nullptr, i, &dm); i++) {
-            if (!dm.dmPelsWidth || !dm.dmPelsHeight) continue;
-            app::Mode m{dm.dmPelsWidth, dm.dmPelsHeight};
-            if (std::find_if(v.begin(), v.end(), [&](const app::Mode& e) {
-                    return e.width == m.width && e.height == m.height;
-                }) == v.end())
-                v.push_back(m);
-        }
-        std::sort(v.begin(), v.end(), [](const app::Mode& a, const app::Mode& b) {
-            return a.width != b.width ? a.width > b.width : a.height > b.height;
-        });
-        return v;
-    }();
+    static const std::vector<app::Mode> modes = app::DisplayModes();
     return modes;
 }
 
@@ -79,7 +58,7 @@ int g_rebind_slot = 0;
 // a rebind waits for every key to be up before it takes one, so the click that started it is not the key
 bool g_rebind_armed = false;
 // after a rebind, frames left until its key counts as let go: ImGui would otherwise take it as a click too (a
-// mouse button is released to ImGui a frame or so after GetAsyncKeyState says so)
+// mouse button is released to ImGui a frame or so after app::KeyDown says so)
 int g_rebind_settle = 0;
 constexpr int kSettleFrames = 3;
 
@@ -88,7 +67,7 @@ bool g_cancel_hovered = false;
 
 bool AnyDown() {
     for (int vk = 1; vk < 0x100; vk++)
-        if (keyboard::Bindable(vk) && (GetAsyncKeyState(vk) & 0x8000)) return true;
+        if (keyboard::Bindable(vk) && app::KeyDown(vk)) return true;
     return false;
 }
 
@@ -101,8 +80,8 @@ void PollRebind() {
         return;
     }
     for (int vk = 1; vk < 0x100; vk++) {
-        if (!keyboard::Bindable(vk) || !(GetAsyncKeyState(vk) & 0x8000)) continue;
-        if (vk == VK_LBUTTON && g_cancel_hovered) {
+        if (!keyboard::Bindable(vk) || !app::KeyDown(vk)) continue;
+        if (vk == kMouse1 && g_cancel_hovered) {
             g_rebind = -1;
             g_rebind_settle = kSettleFrames;
             return;
@@ -237,18 +216,18 @@ void Draw(double fps) {
     if (!open) g_rebind = -1;  // closing the menu cancels a rebind
     was_open = open;
 
-    // not from here: SetWindowTextW from the render thread could deadlock on WndProc's UiLock; post instead
+    // not from here: setting the title from the render thread could deadlock on the window thread's UiLock; post
     if (fps != last_fps || g_fps_title != last_title) {
         last_fps = fps;
         last_title = g_fps_title;
         g_fps.store(fps);
-        if (HWND w = static_cast<HWND>(app::Window())) PostMessageW(w, kFpsTitle, 0, 0);
+        app::Post(kFpsTitle);
     }
 
     // the window thread takes or lets go of the cursor
     if (mouse::g_look != last_look) {
         last_look = mouse::g_look;
-        if (HWND w = static_cast<HWND>(app::Window())) PostMessageW(w, mouse::kRefresh, 0, 0);
+        app::Post(mouse::kRefresh);
     }
 
     if (g_fps_overlay) {
@@ -414,9 +393,9 @@ void Draw(double fps) {
 
 bool Message(void* hwnd, uint32_t msg, uintptr_t wp, intptr_t lp, intptr_t* result) {
     switch (msg) {
-        case WM_KEYDOWN:
+        case app::kMsgKeyDown:
             // not on auto repeat; the menu window and the game both take the key, the menu only when open
-            if ((wp == VK_F1 || wp == VK_INSERT) && !(lp & (1 << 30))) {
+            if ((wp == kF1 || wp == kInsert) && !(lp & (1 << 30))) {
                 g_open.store(!g_open.load());
                 mouse::Refresh(hwnd);  // the cursor is free while the menu is up
                 if (result) *result = 0;
@@ -436,7 +415,7 @@ bool Message(void* hwnd, uint32_t msg, uintptr_t wp, intptr_t lp, intptr_t* resu
             } else {
                 swprintf(title, 256, L"%ls", app::kGame.title);
             }
-            SetWindowTextW(static_cast<HWND>(hwnd), title);
+            app::SetTitle(title);
             if (result) *result = 0;
             return true;
         }

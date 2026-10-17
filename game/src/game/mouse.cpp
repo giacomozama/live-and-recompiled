@@ -1,19 +1,21 @@
 // Mouse look: the mouse turns the camera as the right stick does.
 //
 // The camera's own yaw and pitch are not mapped, so the mouse drives the stick the game already reads. The window
-// thread takes raw mouse motion (WM_INPUT, unaccelerated counts) into a timestamped list; keyboard::Pad, on the
+// thread takes raw mouse motion (WM_INPUT, unaccelerated counts, or SDL's relative motion) into a timestamped list; keyboard::Pad, on the
 // guest's threads, turns the motion of the last game frame into a stick deflection, faster motion pushing it further.
 // Pad only reads the list and never drains it: the pad is polled from more than one place each frame (the device
 // scan in xapi.cpp polls every port too), and each poll sees the same motion.
 //
 // While mouse look is on, the game window has the focus and the F1 menu is shut, the cursor is hidden and held
-// inside the window. Alt-tab or F1 lets it go.
+// inside the window. Alt-tab or F1 lets it go. The SDL window (not Windows) holds it in relative mode and sends the
+// motion as app::kMsgMouseMotion instead.
 //
 // On the headless harness there is no window and no mouse, so everything but the option globals compiles out.
 #include "common/mouse.h"
 
-#if defined(_WIN32)
+#if !defined(XBE_HEADLESS)
 
+#ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
@@ -21,13 +23,16 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#endif
 
 #include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <iterator>
 #include <mutex>
 
+#include "app/app.h"
 #include "common/display.h"
 #include "common/ui.h"
 #include "core/input.h"
@@ -48,8 +53,6 @@ constexpr float kFullSpeed = 2000.0f;
 constexpr float kMinDeflection = 0.25f;
 
 std::atomic<bool> g_held{false};
-bool g_registered = false;
-bool g_hidden = false;
 
 struct Motion {
     int64_t us;
@@ -70,6 +73,18 @@ void Clear() {
     g_next = 0;
 }
 
+void Record(int32_t dx, int32_t dy) {
+    if (!dx && !dy) return;
+    std::lock_guard lock(g_lock);
+    g_motion[g_next] = {Now(), dx, dy};
+    g_next = (g_next + 1) % std::size(g_motion);
+}
+
+#ifdef _WIN32
+
+bool g_registered = false;
+bool g_hidden = false;
+
 void Hold(HWND hwnd) {
     RECT r;
     GetClientRect(hwnd, &r);
@@ -86,9 +101,16 @@ void Release() {
     if (g_hidden) ShowCursor(TRUE), g_hidden = false;
 }
 
+#else
+
+void Release() { app::HoldMouse(false); }
+
+#endif
+
 }  // namespace
 
 void Refresh(void* window) {
+#ifdef _WIN32
     HWND hwnd = static_cast<HWND>(window);
     const bool want = g_look && !ui::Open() && hwnd && GetForegroundWindow() == hwnd && !IsIconic(hwnd);
     if (want && !g_registered) {
@@ -99,6 +121,11 @@ void Refresh(void* window) {
     }
     if (want) Hold(hwnd);  // again while held: the window may have moved or changed size
     else if (g_held.load()) Release();
+#else
+    (void)window;
+    const bool want = g_look && !ui::Open() && app::Focused();
+    if (want || g_held.load()) app::HoldMouse(want);
+#endif
     if (want != g_held.exchange(want)) {
         Clear();
         LOGI("mouse: look %s", want ? "holds the cursor" : "lets the cursor go");
@@ -107,6 +134,7 @@ void Refresh(void* window) {
 
 void Message(void* hwnd, uint32_t msg, uintptr_t wp, intptr_t lp) {
     switch (msg) {
+#ifdef _WIN32
         case WM_INPUT: {
             if (!g_held.load()) break;
             RAWINPUT raw;
@@ -115,21 +143,23 @@ void Message(void* hwnd, uint32_t msg, uintptr_t wp, intptr_t lp) {
                     UINT(-1) ||
                 raw.header.dwType != RIM_TYPEMOUSE || (raw.data.mouse.usFlags & MOUSE_MOVE_ABSOLUTE))
                 break;  // absolute motion is a tablet or a remote desktop, not a mouse to look with
-            if (!raw.data.mouse.lLastX && !raw.data.mouse.lLastY) break;
-            std::lock_guard lock(g_lock);
-            g_motion[g_next] = {Now(), int32_t(raw.data.mouse.lLastX), int32_t(raw.data.mouse.lLastY)};
-            g_next = (g_next + 1) % std::size(g_motion);
+            Record(int32_t(raw.data.mouse.lLastX), int32_t(raw.data.mouse.lLastY));
             break;
         }
-        case WM_ACTIVATE:
-            if (LOWORD(wp) == WA_INACTIVE) {
+#else
+        case app::kMsgMouseMotion:
+            if (g_held.load()) Record(int32_t(wp), int32_t(lp));
+            break;
+#endif
+        case app::kMsgActivate:
+            if ((wp & 0xFFFF) == 0) {  // WA_INACTIVE
                 if (g_held.exchange(false)) Release(), Clear();
                 break;
             }
             Refresh(hwnd);
             break;
-        case WM_SIZE:
-        case WM_MOVE:
+        case app::kMsgSize:
+        case app::kMsgMove:
         case kRefresh:
             Refresh(hwnd);
             break;

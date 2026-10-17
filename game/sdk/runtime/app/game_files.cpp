@@ -1,13 +1,5 @@
 // The game in assets: its files, or a disc image (.iso) with this executable's xbe on it. The xbe must be the one
 // this executable was recompiled from; another release's would run its own data under this code.
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#include <windows.h>
-
 #include <algorithm>
 #include <cwctype>
 #include <fstream>
@@ -111,13 +103,13 @@ bool FindGame(GameFiles& game) {
     }
 
     if (other_name.empty()) {
-        MessageBoxW(nullptr, kGame.missing, kGame.short_title, MB_ICONERROR);
+        Alert(kGame.missing);
         return false;
     }
     std::wstring text = other_name.filename().wstring() +
                         L" is a different release of the game than this build was made from, and will most likely "
                         L"crash.\n\nStart it anyway?";
-    if (MessageBoxW(nullptr, text.c_str(), kGame.short_title, MB_ICONWARNING | MB_YESNO | MB_DEFBUTTON2) != IDYES) return false;
+    if (!Alert(text, true)) return false;
     game = std::move(other);
     kernel::MountDisc(std::move(other_disc));
     return true;

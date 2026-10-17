@@ -1,12 +1,4 @@
 // the settings file beside the exe
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#include <windows.h>
-
 #include <algorithm>
 #include <atomic>
 #include <cstdio>
@@ -100,17 +92,6 @@ void LogSettings() {
     LOGR("Settings:");
     for (std::string line; std::getline(lines, line);)
         if (!line.empty()) LOGR("  %s", line.c_str());
-}
-
-Mode Desktop() {
-    HMONITOR mon = MonitorFromWindow(static_cast<HWND>(Window()), MONITOR_DEFAULTTOPRIMARY);
-    MONITORINFOEXW mi{};
-    mi.cbSize = sizeof(mi);
-    DEVMODEW dm{};
-    dm.dmSize = sizeof(dm);
-    if (GetMonitorInfoW(mon, &mi) && EnumDisplaySettingsW(mi.szDevice, ENUM_REGISTRY_SETTINGS, &dm))
-        return {dm.dmPelsWidth, dm.dmPelsHeight};
-    return {uint32_t(GetSystemMetrics(SM_CXSCREEN)), uint32_t(GetSystemMetrics(SM_CYSCREEN))};
 }
 
 Mode Output() {

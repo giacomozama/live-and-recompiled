@@ -34,7 +34,7 @@
 
 namespace display {
 
-#if defined(_WIN32)
+#if !defined(XBE_HEADLESS)
 uint32_t g_frame_rate = 60;
 #else
 uint32_t g_frame_rate = 30;
@@ -65,7 +65,7 @@ float Aspect(float d) {
         return e && std::sscanf(e, "%f:%f", &w, &h) == 2 && w > 0 && h > 0 ? w / h : 0.0f;
     }();
     if (env) return env;
-#if defined(_WIN32)
+#if !defined(XBE_HEADLESS)
     return d;
 #else
     (void)d;

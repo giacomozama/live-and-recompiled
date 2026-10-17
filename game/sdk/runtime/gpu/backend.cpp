@@ -6,6 +6,8 @@
 
 namespace gpu {
 
+#ifdef _WIN32
+
 std::unique_ptr<Backend> CreateBackend(uint32_t width, uint32_t height) {
     const std::string& name = app::Get().renderer;
     if (name == "vulkan") {
@@ -16,8 +18,19 @@ std::unique_ptr<Backend> CreateBackend(uint32_t width, uint32_t height) {
         LOGW("renderer \"%s\" unknown, drawing with D3D12", name.c_str());
     }
     auto d3d = CreateD3D12Backend();
-    if (!d3d->Init(width, height)) return nullptr;
+    if (!d3d->Init(width, height)) LOGE("d3d12: can't start, nothing will be drawn");
     return d3d;
 }
+
+#else
+
+// Vulkan is the one renderer here
+std::unique_ptr<Backend> CreateBackend(uint32_t width, uint32_t height) {
+    auto vk = CreateVulkanBackend();
+    if (!vk->Init(width, height)) LOGE("vulkan: can't start, nothing will be drawn");
+    return vk;
+}
+
+#endif
 
 }  // namespace gpu

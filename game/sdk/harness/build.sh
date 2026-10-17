@@ -5,7 +5,7 @@
 #   -x regex of sources to leave out (repeatable)   -e extra source file (repeatable)
 #   -G folder for the generated objects (default <out>/gen), shared between builds of the same generated code
 # env: CXX (clang++), JOBS (nproc)
-# Leaves out the window, SDL input, XAudio2 and D3D12 parts of the runtime and the sources of the repo's other images
+# Leaves out the window, SDL input and audio, XAudio2, D3D12 and Vulkan parts of the runtime and the sources of the repo's other images
 # (src/<name> for each other folder beside the generated one); the harness supplies their stand ins.
 set -e
 EXCL=(); EXTRA=()
@@ -22,7 +22,7 @@ EXE=${EXE:-$(basename "$GEN")}; GEN_OBJ=${GEN_OBJ:-$OUT/gen}; mkdir -p "$GEN_OBJ
 H=$(dirname "$(realpath "$0")"); RT=$REPO/sdk/runtime
 CXX=${CXX:-clang++}; JOBS=${JOBS:-$(nproc)}
 BASE="-std=c++20 -march=x86-64-v2 -fno-strict-aliasing"
-HOST="$BASE -O1 -g -I$REPO/src -I$RT -I$GEN -I$H -I$H/compat -DXBE_RAW_VERTICES=0 -DXBE_RENDER_THREAD=0"
+HOST="$BASE -O1 -g -I$REPO/src -I$RT -I$GEN -I$H -I$H/compat -DXBE_HEADLESS=1 -DXBE_RAW_VERTICES=0 -DXBE_RENDER_THREAD=0"
 
 # generated code, an object rebuilt only when its partition is newer
 export CXX BASE RT GEN GEN_OBJ
@@ -31,7 +31,7 @@ ls "$GEN"/x86_recomp.*.cpp "$GEN"/x86_func_mapping.cpp | xargs -P "$JOBS" -I{} s
     $CXX $BASE -O1 -g0 -w -I"$RT" -I"$GEN" -c {} -o "$o.tmp" && mv "$o.tmp" "$o"'
 
 others=$(ls "$GEN/.." | grep -vx "$(basename "$GEN")" | paste -sd'|' -)
-SRC=$(ls "$RT"/*/*.cpp | grep -Ev "/runtime/app/|/core/input.cpp|/gpu/d3d12.cpp|/audio/xaudio2.cpp")
+SRC=$(ls "$RT"/*/*.cpp | grep -Ev "/runtime/app/|/core/input.cpp|/gpu/(d3d12|vulkan|backend).cpp|/audio/(xaudio2|sdl_audio).cpp")
 SRC="$SRC $(ls "$REPO"/src/*/*.cpp | grep -Ev "/src/(${others:-^$})/" || true)"
 SRC="$SRC $(ls "$H"/*.cpp) ${EXTRA[*]}"
 for x in "${EXCL[@]}"; do SRC=$(echo $SRC | tr ' ' '\n' | grep -Ev -- "$x"); done

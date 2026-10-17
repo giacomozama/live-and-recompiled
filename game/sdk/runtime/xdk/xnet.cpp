@@ -8,6 +8,7 @@
 // that have reached it. With one peer (co-op) a LAN address in an XNADDR, which only means something on its
 // owner's LAN, stands for the peer's public one: the join address on the client, the address its packets come
 // from on the host. Ports a NAT rewrote are answered on the port the peer's packets came from.
+#ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
@@ -16,6 +17,9 @@
 #endif
 #include <winsock2.h>
 #include <ws2tcpip.h>
+#else
+#include "xdk/winsock_posix.h"
+#endif
 
 #include <algorithm>
 #include <array>

@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <cerrno>
 #include <cstring>
 #include <cstdlib>
 #include <fstream>
@@ -205,8 +206,14 @@ void Relaunch(const char* exe) {
     ssize_t n = readlink("/proc/self/exe", self, sizeof(self) - 1);
     std::string path = std::string(self, n > 0 ? size_t(n) : 0);
     path = path.substr(0, path.find_last_of('/') + 1) + exe;
-    execl(path.c_str(), path.c_str(), nullptr);
-    std::_Exit(0);
+    // as on Windows: the instance kept, no boot splash again, the ports given back for the new process to bind
+    xnet::CloseSockets();
+    std::string instance = std::to_string(app::Instance());
+    if (app::Instance()) execl(path.c_str(), path.c_str(), "--relaunched", "--instance", instance.c_str(), nullptr);
+    else execl(path.c_str(), path.c_str(), "--relaunched", nullptr);
+    LOGE("relaunch: cannot start %s (%d)", path.c_str(), errno);
+    logx::Flush();
+    std::_Exit(1);
 #endif
 }
 

@@ -1,5 +1,5 @@
 #pragma once
-// harness only: Winsock names on POSIX sockets
+// The Winsock names xnet.cpp uses, on POSIX sockets
 #include <arpa/inet.h>
 #include <cerrno>
 #include <fcntl.h>

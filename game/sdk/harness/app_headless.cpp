@@ -51,4 +51,13 @@ std::recursive_mutex& UiLock() {
 
 void Pace(uint32_t) {}
 
+// no keyboard, window or display: the pad script drives port 0
+bool KeyDown(int) { return false; }
+void Post(uint32_t) {}
+void SetTitle(const std::wstring&) {}
+bool Focused() { return false; }
+void HoldMouse(bool) {}
+bool Alert(const std::wstring&, bool) { return false; }
+std::vector<Mode> DisplayModes() { return {Desktop()}; }
+
 }  // namespace app

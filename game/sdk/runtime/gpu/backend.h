@@ -55,9 +55,10 @@ private:
     uint32_t fence_ = 0;
 };
 
-// the renderer the settings name, initialised: Vulkan falls back to D3D12 when it fails; null when neither starts
+// the renderer the settings name, initialised: on Windows Vulkan falls back to D3D12 when it fails, elsewhere Vulkan
+// is the one there is; one that failed Init draws nothing
 std::unique_ptr<Backend> CreateBackend(uint32_t width, uint32_t height);
-std::unique_ptr<Backend> CreateD3D12Backend();
+std::unique_ptr<Backend> CreateD3D12Backend();  // Windows only
 std::unique_ptr<Backend> CreateVulkanBackend();
 // the same backend driven from a thread of its own: calls return once recorded
 std::unique_ptr<Backend> CreateThreadedBackend(std::unique_ptr<Backend> inner);

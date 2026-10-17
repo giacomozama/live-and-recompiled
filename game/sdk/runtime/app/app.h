@@ -59,7 +59,39 @@ struct GameFiles {
 };
 bool FindGame(GameFiles& game);
 int Instance();  // --instance N on the command line, 0 without: a second copy on this PC for system link tests
-void* Window();  // HWND
+void* Window();  // HWND on Windows, SDL_Window elsewhere
+
+// The platform's window as the game's hooks see it, the same on Windows and on the SDL window elsewhere.
+// GameInfo::message's numbers are Win32's; the SDL window sends these the Win32 way too: kMsgKeyDown with the
+// virtual-key code in wp and bit 30 of lp set on auto repeat, kMsgActivate with LOWORD(wp) 0 when the window loses
+// the focus, kMsgSize and kMsgMove without arguments, and messages Post sent.
+enum : uint32_t {
+    kMsgMove = 0x0003,
+    kMsgSize = 0x0005,
+    kMsgActivate = 0x0006,
+    kMsgKeyDown = 0x0100,
+    kMsgApp = 0x8000,                  // WM_APP: a game's own from here
+    kMsgMouseMotion = kMsgApp + 0x3F,  // SDL only, while HoldMouse holds it: relative motion, int32 dx in wp, dy in lp
+};
+// a key or mouse button held, by Windows virtual-key code (the codes settings.toml's key names stand for); any thread
+bool KeyDown(int vk);
+void Post(uint32_t msg);                    // any thread: msg to GameInfo::message on the window thread
+void SetTitle(const std::wstring& title);   // window thread
+bool Focused();                             // window thread: the game window has the keyboard
+void HoldMouse(bool hold);                  // window thread, SDL only: the cursor hidden, motion as kMsgMouseMotion
+// a message box over the game; ask: Yes and No, true for Yes
+bool Alert(const std::wstring& text, bool ask = false);
+// the display's modes, de-duplicated by size, largest first
+std::vector<Mode> DisplayModes();
+
+#ifndef _WIN32
+// the SDL window for the Vulkan renderer: the instance extensions it needs, its surface (VkInstance, VkSurfaceKHR*),
+// its size in pixels, and ImGui's platform frame; any thread
+std::vector<const char*> VulkanExtensions();
+bool VulkanSurface(void* instance, void* surface);
+void PixelSize(uint32_t& w, uint32_t& h);
+void UiNewFrame();
+#endif
 // boot splash: GameInfo::splash .bmp or .png beside the exe, up before the game window
 bool OpenSplash();        // window thread, at launch; false without one, and the game window opens at once
 void SplashFirstFrame();  // the game's first Swap: waits out the splash's minimum, then opens the game window

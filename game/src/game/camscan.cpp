@@ -18,15 +18,7 @@
 // stick's y and keeps a written value, but writing it does not tilt the view.
 #include "common/camscan.h"
 
-#if defined(_WIN32)
-
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#include <windows.h>
+#if !defined(XBE_HEADLESS)
 
 #include <algorithm>
 #include <atomic>
@@ -40,6 +32,7 @@
 #include <thread>
 #include <vector>
 
+#include "app/app.h"
 #include "core/input.h"
 #include "core/log.h"
 #include "kernel/memory.h"
@@ -233,7 +226,7 @@ void Run() {
 }
 
 bool Pressed(int vk, bool& was) {
-    const bool down = (GetAsyncKeyState(vk) & 0x8000) != 0;
+    const bool down = app::KeyDown(vk);
     const bool edge = down && !was;
     was = down;
     return edge;
@@ -255,9 +248,10 @@ void Tick(const input::Pad& pad) {
     g_rx = pad.rx;
     g_ry = pad.ry;
     static bool f6 = false, f7 = false, f8 = false;
-    if (Pressed(VK_F6, f6)) g_reset = true;
-    if (Pressed(VK_F7, f7)) g_dump = true;
-    if (Pressed(VK_F8, f8)) g_probe = true;
+    constexpr int kF6 = 0x75, kF7 = 0x76, kF8 = 0x77;  // virtual-key codes
+    if (Pressed(kF6, f6)) g_reset = true;
+    if (Pressed(kF7, f7)) g_dump = true;
+    if (Pressed(kF8, f8)) g_probe = true;
 }
 
 }  // namespace camscan

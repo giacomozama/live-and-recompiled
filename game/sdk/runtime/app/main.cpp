@@ -166,6 +166,47 @@ std::recursive_mutex& UiLock() {
 void ApplyDisplay() { PostMessageW(g_hwnd, kApplyDisplay, 0, 0); }
 void OpenGameWindow(bool apply) { SendMessageW(g_hwnd, kOpenWindow, apply, 0); }
 
+bool KeyDown(int vk) { return (GetAsyncKeyState(vk) & 0x8000) != 0; }
+void Post(uint32_t msg) {
+    if (g_hwnd) PostMessageW(g_hwnd, msg, 0, 0);
+}
+void SetTitle(const std::wstring& title) { SetWindowTextW(g_hwnd, title.c_str()); }
+bool Focused() { return g_hwnd && GetForegroundWindow() == g_hwnd && !IsIconic(g_hwnd); }
+void HoldMouse(bool) {}  // the game's own mouse code holds it on Windows
+
+bool Alert(const std::wstring& text, bool ask) {
+    UINT type = ask ? MB_ICONWARNING | MB_YESNO | MB_DEFBUTTON2 : MB_ICONERROR;
+    return MessageBoxW(g_hwnd, text.c_str(), kGame.short_title, type) == IDYES;
+}
+
+Mode Desktop() {
+    HMONITOR mon = MonitorFromWindow(g_hwnd, MONITOR_DEFAULTTOPRIMARY);
+    MONITORINFOEXW mi{};
+    mi.cbSize = sizeof(mi);
+    DEVMODEW dm{};
+    dm.dmSize = sizeof(dm);
+    if (GetMonitorInfoW(mon, &mi) && EnumDisplaySettingsW(mi.szDevice, ENUM_REGISTRY_SETTINGS, &dm))
+        return {dm.dmPelsWidth, dm.dmPelsHeight};
+    return {uint32_t(GetSystemMetrics(SM_CXSCREEN)), uint32_t(GetSystemMetrics(SM_CYSCREEN))};
+}
+
+std::vector<Mode> DisplayModes() {
+    std::vector<Mode> v;
+    DEVMODEW dm{};
+    dm.dmSize = sizeof(dm);
+    for (DWORD i = 0; EnumDisplaySettingsW(nullptr, i, &dm); i++) {
+        if (!dm.dmPelsWidth || !dm.dmPelsHeight) continue;
+        Mode m{dm.dmPelsWidth, dm.dmPelsHeight};
+        if (std::find_if(v.begin(), v.end(), [&](const Mode& e) { return e.width == m.width && e.height == m.height; }) ==
+            v.end())
+            v.push_back(m);
+    }
+    std::sort(v.begin(), v.end(), [](const Mode& a, const Mode& b) {
+        return a.width != b.width ? a.width > b.width : a.height > b.height;
+    });
+    return v;
+}
+
 void Pace(uint32_t vblanks) {
     using clock = std::chrono::steady_clock;
     static clock::time_point next = clock::now();

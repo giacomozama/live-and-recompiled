@@ -10,7 +10,7 @@
 #endif
 #include <windows.h>
 #endif
-#include <dxgiformat.h>
+#include "gpu/dxgi_formats.h"
 
 #include <cmath>
 #include <cstdlib>

@@ -18,7 +18,7 @@ int main(int argc, char** argv) {
     std::string game;
     for (int i = 1; i < argc; i++) {
         if (!std::strcmp(argv[i], "--instance") && i + 1 < argc) setenv("INSTANCE", argv[++i], 1);
-        else game = argv[i];
+        else if (std::strcmp(argv[i], "--relaunched")) game = argv[i];
     }
     // a relaunch into another image comes back without arguments
     if (game.empty() && std::getenv("GAME_DIR")) game = std::getenv("GAME_DIR");

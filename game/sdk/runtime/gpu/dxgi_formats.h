@@ -1,5 +1,9 @@
 #pragma once
-// harness only: the DXGI formats portable runtime files name
+// The DXGI formats the vertex assembly and the pipeline keys name, whichever API draws: <dxgiformat.h>'s on Windows,
+// the same values elsewhere
+#ifdef _WIN32
+#include <dxgiformat.h>
+#else
 enum DXGI_FORMAT : unsigned {
     DXGI_FORMAT_UNKNOWN = 0,
     DXGI_FORMAT_R32G32B32A32_FLOAT = 2,
@@ -18,3 +22,4 @@ enum DXGI_FORMAT : unsigned {
     DXGI_FORMAT_R8_UNORM = 61,
     DXGI_FORMAT_B8G8R8A8_UNORM = 87,
 };
+#endif

@@ -27,8 +27,6 @@
 #include <utility>
 #include <vector>
 
-#include <windows.h>
-
 #if __has_include(<toml++/toml.hpp>)
 #include <toml++/toml.hpp>
 #define KEYBOARD_TOML 1
@@ -37,6 +35,7 @@
 #include "common/camscan.h"
 #include "common/keyboard.h"
 #include "common/mouse.h"
+#include "app/app.h"
 #include "common/ui.h"
 #include "core/input.h"
 #include "core/log.h"
@@ -47,8 +46,8 @@ int g_keys[kActions][kSlots];
 
 namespace {
 
-// Windows virtual-key codes, spelled out rather than taken from <windows.h>: the headless harness
-// compiles this file against a small Win32 shim that declares only a few of them.
+// Windows virtual-key codes, spelled out: they name keys on every platform (app::KeyDown), and <windows.h> is
+// Windows only
 enum : int {
     kUp = 0x26, kDown = 0x28, kLeft = 0x25, kRight = 0x27,
     kSpace = 0x20, kEnter = 0x0D, kBackspace = 0x08, kLShift = 0xA0,
@@ -123,7 +122,7 @@ bool SameName(const char* a, const char* b) {
     return *a == *b;
 }
 
-bool Down(int vk) { return vk && (GetAsyncKeyState(vk) & 0x8000) != 0; }
+bool Down(int vk) { return vk && app::KeyDown(vk); }
 bool Down(Action a) {
     for (int vk : g_keys[a])
         if (Down(vk)) return true;
