@@ -28,6 +28,9 @@ FetchContent_MakeAvailable(zydis tomlplusplus imgui SDL3 miniz)
 # Codegen runs on the host. By default it is this build's own xbe_recomp, which works when the target runs here
 # (a native build, or Windows on Windows); cross compiling for another OS, set XBE_CODEGEN_TOOL to a native one's path.
 set(XBE_CODEGEN_TOOL "xbe_recomp" CACHE FILEPATH "xbe_recomp used for codegen (a host path when cross compiling)")
+# MinGW builds: CodeView debug info and <target>.pdb beside the exe, for Visual Studio or WinDbg. It is set on the
+# targets, not the compile flags, so a player kit's compile line (from CMAKE_CXX_FLAGS) stays without it.
+option(XBE_PDB "MinGW builds: write <target>.pdb (slower builds, bigger objects)" OFF)
 
 # x86 to C++ recompiler
 file(GLOB XBE_RECOMP_SOURCES CONFIGURE_DEPENDS ${XBE_SDK_DIR}/tools/recomp/*.cpp)
@@ -139,6 +142,11 @@ function(add_xbe_image target xbe config partitions game_dir)
     target_link_options(${target} PRIVATE -fuse-ld=lld -g)
     if(MINGW)
         target_link_options(${target} PRIVATE -municode)  # the host's entry is wWinMain
+        if(XBE_PDB)
+            target_compile_options(${target}_host PRIVATE -g -gcodeview)
+            target_compile_options(${target} PRIVATE -g -gcodeview)
+            target_link_options(${target} PRIVATE -Wl,--pdb=)
+        endif()
     endif()
     set_target_properties(${target} PROPERTIES XBE_FILE ${xbe} XBE_SHA1_FILE ${XBE_SHA1_FILE} XBE_CONFIG ${config}
         XBE_GEN ${GEN})

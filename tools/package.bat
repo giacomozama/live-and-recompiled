@@ -6,8 +6,9 @@ rem   tools\package.bat --no-test        skip the test (it needs the game in gam
 rem   tools\package.bat --test-download  test with the compiler Setup downloads, not the one in toolchain\
 rem   tools\package.bat -j N             parallel jobs (default: every core)
 rem
-rem Needs cmake (3.25 or newer), ninja and git on PATH, as in a Developer Command Prompt for Visual Studio. The
-rem compiler, llvm-mingw, is downloaded into toolchain\. A release made here has no setup-linux.
+rem Needs CMake 3.25 or newer, Ninja and Git on PATH (winget install --id Kitware.CMake / Ninja-build.Ninja /
+rem Git.Git, or game\build.bat offers to). The compiler, llvm-mingw, is downloaded into toolchain\. No Visual Studio.
+rem A release made here has no setup-linux.
 setlocal
 set "ARGS="
 :args
@@ -33,7 +34,11 @@ echo unknown option: %~1
 exit /b 2
 
 :run
-where cmake >nul 2>nul || (echo cmake is not on PATH: use a Developer Command Prompt for Visual Studio& exit /b 1)
-where ninja >nul 2>nul || (echo ninja is not on PATH: use a Developer Command Prompt for Visual Studio& exit /b 1)
+if exist "%ProgramFiles%\CMake\bin\cmake.exe" set "PATH=%ProgramFiles%\CMake\bin;%PATH%"
+if exist "%ProgramFiles%\Git\cmd\git.exe" set "PATH=%ProgramFiles%\Git\cmd;%PATH%"
+if exist "%LOCALAPPDATA%\Microsoft\WinGet\Links" set "PATH=%LOCALAPPDATA%\Microsoft\WinGet\Links;%PATH%"
+where cmake >nul 2>nul || (echo cmake is missing: winget install --id Kitware.CMake -e& exit /b 1)
+where ninja >nul 2>nul || (echo ninja is missing: winget install --id Ninja-build.Ninja -e& exit /b 1)
+where git >nul 2>nul || (echo git is missing: winget install --id Git.Git -e& exit /b 1)
 cmake %ARGS% -P "%~dp0package.cmake"
 exit /b %errorlevel%

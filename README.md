@@ -39,7 +39,7 @@ is a Windows program; on Linux it runs with Proton or Wine.
 | What you download | A small zip: `Setup.exe`, `setup-linux`, a kit | This repository |
 | What your machine builds | The game's recompiled code only | Everything: recompiler, runtime, hooks, game code |
 | What comes prebuilt | The runtime, hooks and recompiler | Nothing |
-| Compiler | Pinned llvm-mingw, downloaded by Setup | Linux: the same pinned llvm-mingw. Windows: Visual Studio's Clang |
+| Compiler | Pinned llvm-mingw, downloaded by Setup | The same pinned llvm-mingw, downloaded by the first build |
 | Time | A few minutes, once | Longer the first time, then incremental |
 | Can you change the port | No | Yes |
 
@@ -72,9 +72,9 @@ It also explains two limits:
 - **Your copy of the game**, the supported release above, as a disc image (`.iso`) or extracted files
   (`default.xbe` with `dvddata/` and `media/` beside it).
 - **Linux:** `clang`/`clang++`, `cmake` (3.25 or newer), `ninja`, `curl` and `zip`. Add `extract-xiso` to build from a
-  disc image, and `umu-launcher` (`umu-run`) or Wine to run the result. `ndisasm` is only for `tools/xbe_disasm.py`.
-- **Windows:** Visual Studio 2022 with **Desktop development with C++**, **C++ Clang tools for Windows** and
-  **C++ CMake tools for Windows** (`build.bat` offers to add the last two), and Git.
+  disc image, and Wine or Proton to run the result. `ndisasm` is only for `tools/xbe_disasm.py`.
+- **Windows:** CMake (3.25 or newer), Ninja and Git. `build.bat` offers to install whichever is missing with
+  `winget`. No Visual Studio: the compiler is the pinned llvm-mingw on Windows too.
 
 ### On Linux
 
@@ -98,20 +98,15 @@ no window or GPU, for testing.
 
 1. Put the extracted game in `game\assets\`: `default.xbe` with `dvddata\` and `media\` beside it. (`build.bat`
    reads the files, not a disc image. `extract-xiso` has Windows builds.)
-2. Run `game\build.bat`. It finds Visual Studio, configures, recompiles the XBE and builds the port.
-3. Run `game\out\build\release\Game.exe`.
+2. Run `game\build.bat`. It checks for CMake, Ninja and Git, downloads llvm-mingw into `toolchain\` on the first
+   run, recompiles the XBE and builds the port. Later runs rebuild only what changed.
+3. Run `game\out\build\llvm-mingw\Game.exe`.
 
-This is a development build with Visual Studio's Clang, not the llvm-mingw that releases use, so its code layout
-differs from a release's. For a build identical to a release, use the pinned llvm-mingw from a Developer Command
-Prompt, as packaging does:
-
-```bat
-cmake -DWHAT=llvm-mingw -P tools\configure.cmake
-cmake --build game\out\build\llvm-mingw --target Game
-```
-
-The first command downloads llvm-mingw into `toolchain\` if it's missing, and the exe is
-`game\out\build\llvm-mingw\Game.exe`.
+It's the same build as on Linux and in releases, with the same compiler and flags. `build.bat --pdb` also writes
+`Game.pdb`, for debugging in Visual Studio or WinDbg; it makes builds slower, and
+`cmake -DXBE_PDB=OFF game\out\build\llvm-mingw` turns it off again. (`tools/build.sh --pdb` does the same on Linux.)
+IDEs that read `game\CMakePresets.json` get the same build as the `llvm-mingw` preset, once `build.bat` has fetched
+the compiler.
 
 ## Building a release
 
@@ -139,10 +134,9 @@ automatic test can't run the Windows side.
 
 ### On Windows
 
-You need CMake 3.25 or newer, Ninja and Git on `PATH`. **C++ CMake tools for Windows** puts CMake and Ninja there in
-a **Developer Command Prompt for VS 2022**; Git is from [git-scm.com](https://git-scm.com/download/win). Visual
-Studio's compiler isn't used: packaging builds with the pinned llvm-mingw, which it downloads into `toolchain\`.
-Put the supported release in `game\assets\`, then:
+You need the same CMake, Ninja and Git as for building (running `game\build.bat` once sets them up). Packaging
+builds with the pinned llvm-mingw, which it downloads into `toolchain\`. Put the supported release in
+`game\assets\`, then:
 
 ```bat
 tools\package.bat

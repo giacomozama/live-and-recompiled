@@ -30,7 +30,7 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/config/game.toml)
     file(STRINGS config/game.toml GAME_PARTITIONS REGEX "^partitions *=")
     string(REGEX MATCH "[0-9]+" GAME_PARTITIONS "${GAME_PARTITIONS}")
 endif()
-# no config yet: build.bat writes it with xbe_symbols, the change reconfigures
+# no config yet: write it with xbe_symbols (assets/default.xbe sdk/xdk --out config/game.toml), the change reconfigures
 if(NOT GAME_PARTITIONS)
     set(GAME_PARTITIONS 8)
 endif()

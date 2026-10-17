@@ -5,6 +5,7 @@
 #   tools/build.sh --iso FILE      first extract the disc image into iso/ and link game/assets to it
 #   tools/build.sh --game DIR      first link game/assets to an extracted copy (default.xbe, dvddata/, media/)
 #   tools/build.sh --harness       also build the Linux headless harness, game/out/harness/conker
+#   tools/build.sh --pdb           also write Game.pdb (off again: cmake -DXBE_PDB=OFF game/out/build/llvm-mingw)
 #   tools/build.sh -j N            parallel jobs (default: nproc)
 #
 # The first build recompiles the XBE and compiles the result, which takes a while; later ones are incremental.
@@ -19,14 +20,16 @@ EXTRACT_XISO="${EXTRACT_XISO:-extract-xiso}"
 ISO=""
 FROM=""
 HARNESS=0
+PDB=0
 
 while [ $# -gt 0 ]; do
     case "$1" in
         --iso) ISO="${2:-}"; [ -n "$ISO" ] || { echo "--iso needs a file" >&2; exit 2; }; shift ;;
         --game) FROM="${2:-}"; [ -n "$FROM" ] || { echo "--game needs a folder" >&2; exit 2; }; shift ;;
         --harness) HARNESS=1 ;;
+        --pdb) PDB=1 ;;
         -j) JOBS="${2:-}"; [ -n "$JOBS" ] || { echo "-j needs a number" >&2; exit 2; }; shift ;;
-        -h|--help) sed -n '2,13p' "$0"; exit 0 ;;
+        -h|--help) sed -n '2,14p' "$0"; exit 0 ;;
         *) echo "unknown option: $1" >&2; exit 2 ;;
     esac
     shift
@@ -78,6 +81,7 @@ cmake --build "$REL" --target xbe_recomp -j "$JOBS"
 
 echo "[4/4] Game.exe"
 configure_mingw
+[ "$PDB" = 1 ] && cmake -DXBE_PDB=ON "$BUILD" >/dev/null
 cmake --build "$BUILD" --target Game -j "$JOBS"
 echo "      $BUILD/Game.exe"
 

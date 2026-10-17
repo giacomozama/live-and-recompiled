@@ -15,7 +15,7 @@ shares is its own work, the recompiler, the runtime and the hooks, and Setup com
 machine.
 
 1. Put your game in the `assets` folder: the disc image (`.iso`), or `default.xbe` with the game's folders beside it.
-2. Run `Setup.exe` (on Linux or Steam Deck, `./setup-linux` in a terminal opened in this folder). It checks your
+2. Run `Setup.exe` (on Linux, `./setup-linux` in a terminal opened in this folder). It checks your
    copy is the release this build supports, downloads the compiler it needs
    ([llvm-mingw](https://github.com/mstorsjo/llvm-mingw), 80 to 180 MB, the first time only), recompiles the game and
    writes `Game.exe`. This takes a few minutes. Nothing of the game is uploaded or downloaded.
@@ -24,7 +24,7 @@ machine.
 Setup keeps nothing it generated except `Game.exe` and the compiler in `kit/toolchain`. Run it again after updating
 to a new release.
 
-On Linux or Steam Deck, `Game.exe` runs through Proton or Wine: add it as a non-Steam game, or use
+On Linux, `Game.exe` runs through Proton or Wine: add it as a non-Steam game, or use
 `umu-run Game.exe`. If `./setup-linux` says permission denied, your unzip tool dropped its executable bit:
 `chmod +x setup-linux kit/bin/xbe_recomp`. `Setup.exe` works under Proton too (`umu-run Setup.exe`).
 

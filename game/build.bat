@@ -1,4 +1,11 @@
 @echo off
+rem build.bat - build Game.exe on Windows with the pinned llvm-mingw, the compiler releases use.
+rem
+rem   build.bat          configure (first run: downloads llvm-mingw into ..\toolchain), recompile, build
+rem   build.bat --pdb    also write Game.pdb, for Visual Studio or WinDbg (turn it off again with
+rem                      cmake -DXBE_PDB=OFF out\build\llvm-mingw)
+rem
+rem Needs CMake 3.25 or newer, Ninja and Git; it offers to install them with winget. No Visual Studio.
 setlocal
 set "GAME_TITLE=Conker: Live and Reloaded"
 set "GAME_XBE=default.xbe"
@@ -10,57 +17,39 @@ echo   %GAME_TITLE% - build
 echo   ================================================
 echo.
 
-set "PF86=%ProgramFiles(x86)%"
-set "VSINST=%PF86%\Microsoft Visual Studio\Installer"
-set "VSWHERE=%VSINST%\vswhere.exe"
-set "OUT=%CD%\out\build\release"
+set "OUT=%CD%\out\build\llvm-mingw"
+set "PDB="
+if /i "%~1"=="--pdb" set "PDB=1"
 
 if not exist assets\%GAME_XBE% goto :nogame
 
-rem toolchain
-echo [1/3] Toolchain
-for /f "usebackq tokens=*" %%i in (`"%VSWHERE%" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do set "VSDIR=%%i"
-if not defined VSDIR (
-    echo       Visual Studio with the C++ workload was not found.
-    echo       Install Visual Studio Community and tick "Desktop development with C++".
-    goto :fail
-)
-call :setuptools
+echo [1/3] Tools
+call :findtools
 rem CI is set on GitHub Actions: no prompts there.
 if not defined TOOLS_OK if defined CI goto :byhand
 if not defined TOOLS_OK (
-    choice /c YN /n /m "      Let Visual Studio install the missing components? [Y/N] "
+    where winget >nul 2>nul || goto :byhand
+    choice /c YN /n /m "      Install them with winget? [Y/N] "
     if errorlevel 2 goto :byhand
-    echo       Close Visual Studio if it is open, it will be shut down anyway.
-    echo       Installing. Accept the admin prompt, then wait for the installer.
-    powershell -NoProfile -Command "Start-Process -Verb RunAs -Wait -FilePath '%VSINST%\setup.exe' -ArgumentList 'modify','--installPath','%VSDIR%','--add','Microsoft.VisualStudio.Component.VC.Llvm.Clang','--add','Microsoft.VisualStudio.Component.VC.Llvm.ClangToolset','--add','Microsoft.VisualStudio.Component.VC.CMake.Project','--passive','--norestart','--force'"
-    echo       Press a key once the Visual Studio Installer window has closed.
-    pause >nul
-    call :setuptools
+    if defined NEED_CMAKE winget install --id Kitware.CMake -e --source winget
+    if defined NEED_NINJA winget install --id Ninja-build.Ninja -e --source winget
+    if defined NEED_GIT winget install --id Git.Git -e --source winget
+    call :findtools
     if not defined TOOLS_OK goto :byhand
 )
-for /f "tokens=*" %%v in ('clang++ --version ^| findstr /i version') do echo       %%v
+for /f "tokens=*" %%v in ('cmake --version ^| findstr /i version') do echo       %%v
 
-rem symbols
-echo [2/3] XDK symbols
-cmake --preset release >nul || goto :fail
-findstr /b /l /c:"[symbols]" config\game.toml >nul 2>nul && echo       config\game.toml already written && goto :game
-cmake --build out\build\release --target xbe_symbols >nul || goto :fail
-rem the configure step wrote where the SDK is
-if not exist out\build\release\sdk_dir.txt echo       out\build\release\sdk_dir.txt was not written, update the SDK. && goto :fail
-set /p SDK=<out\build\release\sdk_dir.txt
-if not exist config mkdir config
-"%OUT%\xbe_symbols.exe" assets\%GAME_XBE% "%SDK%\xdk" --out config\game.toml || goto :fail
+echo [2/3] Compiler and configure
+cmake -DWHAT=llvm-mingw -P "%~dp0..\tools\configure.cmake" || goto :fail
+if defined PDB cmake -DXBE_PDB=ON "%OUT%" >nul || goto :fail
 
-rem game
-:game
 echo [3/3] Game code
-echo       first build recompiles %GAME_XBE%, expect 30 to 90 minutes ...
-cmake --build out\build\release || goto :fail
+echo       the first build recompiles %GAME_XBE% and compiles the result, it takes a while ...
+cmake --build "%OUT%" --target %GAME_EXE% || goto :fail
 
 echo.
 echo   %GAME_TITLE% built.
-echo   out\build\release\%GAME_EXE%.exe
+echo   %OUT%\%GAME_EXE%.exe
 echo.
 if defined CI exit /b 0
 choice /c YN /n /m "  Play now? [Y/N] "
@@ -68,35 +57,36 @@ if not errorlevel 2 (start "" /d "%OUT%" "%OUT%\%GAME_EXE%.exe") else (pause)
 exit /b 0
 
 rem helpers
-:setuptools
+
+rem cmake, ninja and git on PATH, also where their installers put them (a shell opened before installing lacks them)
+:findtools
 set TOOLS_OK=
-set MISSING=
-call "%VSDIR%\Common7\Tools\VsDevCmd.bat" -arch=amd64 -host_arch=amd64 >nul
-set "VSCMAKE=%VSDIR%\Common7\IDE\CommonExtensions\Microsoft\CMake"
-set "PATH=%VSCMAKE%\CMake\bin;%VSCMAKE%\Ninja;%VSDIR%\VC\Tools\Llvm\x64\bin;%PATH%"
-if exist "%ProgramFiles%\LLVM\bin\clang++.exe" set "PATH=%ProgramFiles%\LLVM\bin;%PATH%"
-where clang++ >nul 2>nul || set MISSING=%MISSING% clang++
-where cmake   >nul 2>nul || set MISSING=%MISSING% cmake
-where ninja   >nul 2>nul || set MISSING=%MISSING% ninja
-where git     >nul 2>nul || set MISSING=%MISSING% git
-if defined MISSING (
-    echo       missing:%MISSING%
-    exit /b 0
-)
-set TOOLS_OK=1
+set NEED_CMAKE=
+set NEED_NINJA=
+set NEED_GIT=
+if exist "%ProgramFiles%\CMake\bin\cmake.exe" set "PATH=%ProgramFiles%\CMake\bin;%PATH%"
+if exist "%ProgramFiles%\Git\cmd\git.exe" set "PATH=%ProgramFiles%\Git\cmd;%PATH%"
+if exist "%LOCALAPPDATA%\Microsoft\WinGet\Links" set "PATH=%LOCALAPPDATA%\Microsoft\WinGet\Links;%PATH%"
+where cmake >nul 2>nul || set NEED_CMAKE=1
+where ninja >nul 2>nul || set NEED_NINJA=1
+where git   >nul 2>nul || set NEED_GIT=1
+if defined NEED_CMAKE echo       missing: cmake
+if defined NEED_NINJA echo       missing: ninja
+if defined NEED_GIT echo       missing: git
+if not defined NEED_CMAKE if not defined NEED_NINJA if not defined NEED_GIT set TOOLS_OK=1
 exit /b 0
 
 :byhand
 echo.
 echo       Install by hand, then run this again:
-echo         clang++ / cmake / ninja  -  Visual Studio Installer, Modify, Individual
-echo                                     components: "C++ Clang tools for Windows"
-echo                                     and "C++ CMake tools for Windows"
-echo         git                      -  https://git-scm.com/download/win
+echo         winget install --id Kitware.CMake -e
+echo         winget install --id Ninja-build.Ninja -e
+echo         winget install --id Git.Git -e
+echo       or from cmake.org, github.com/ninja-build/ninja/releases and git-scm.com.
 goto :fail
 
 :nogame
-echo   Put the full game files in the assets folder first:
+echo   Put the extracted game in the assets folder first:
 echo     %CD%\assets
 echo   It needs %GAME_XBE% with the game's folders beside it.
 goto :fail
