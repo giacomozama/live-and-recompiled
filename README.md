@@ -1,23 +1,35 @@
 # Conker: Live & Reloaded — static recompilation
 
 An unofficial native PC port of the original Xbox *Conker: Live & Reloaded*, with extended graphics options and other
-enhancements. The game's x86 `default.xbe` is translated to C++ ahead of time; the Xbox kernel and XDK libraries are
-implemented at the API level, and everything is drawn with Vulkan and played through XAudio2. It's built on
+enhancements. It's built on a heavily modified version of
 [Xbox XBE Recomp](https://github.com/TGP482/XboxXBERecomp), vendored in `game/sdk/`.
 
 > [!NOTE]
 > This project does not include any game assets. You must provide the files from your own legally acquired copy of
-> the game to install or build.
+> the game to install or build. The game [can currently be purchased from the Windows Store](https://www.xbox.com/games/store/conker-live-and-reloaded/bvfb8cbs75r6). The Windows Store version is fully compatible with this project.
 
-The game boots, plays through the frontend, cutscenes and levels, and adds 60/120 FPS, any aspect ratio, MSAA,
-shader warm-up, keyboard and mouse controls, and skippable cutscenes.
+> [!WARNING]
+> **AI usage in this project**
+>
+> First-party code in this repo was not written with LLM *assistance*. It was, in fact, *entirely* written by LLMs (if you're wondering which ones, it was about $4 worth of Deepseek 4.1 tokens to write the initial boilerplate, and Opus 5.5 on a single $20 Claude sub to do the rest). This is, as it is called nowadays, a **slopcomp**. The human in the loop has only provided initial prompting, minimal hints about known game internals (to save on reasoning, mostly), and extensive high level debugging in the form of taking screenshots and dumps for the LLM to figure out. The only human-made things in this repo are the very notice you're reading and some parts of this README.
+>
+> Yes, it IS AI slop according to most definitions, it is entirely vibecoded. Not even the "good kind" of vibecoded. Code itself was NOT reviewed at all and bugs are found by manually testing the game. I have no reason to believe it will do any harm to your PC or do anything more destructive than leaking memory, crashing or having visual or gameplay glitches.
+>
+> If you don't like generative AI and won't try this because of it, I understand and sincerely respect your decision. I myself believe gen-AI is detrimental to most creative fields, but I also believe that for a static recomp like this, little creative work is lost by delegating the task to LLMs. There is a reason recomps were so rare before LLMs could do them in an afternoon: they are largely menial, repetitive, mind-numbing, derivative, uninspiring work that doesn't create new knowledge for anybody. It's mostly equivalent to creating a very optimized emulator that only works for a single game: most people just don't care enough and would rather put their effort towards the more general solution or towards human-readable source decompilation for specific, high-profile games. It's hard to envision circumstances in which a project like this would be significantly improved by extensive human coding contributions.
+>
+> I despise the idea of a handful of companies monopolizing all professional applications of human intelligence. I miss the time when not everything was about doing things as fast as possible in spite of quality. I miss writing code by hand every day. But we told ourselves we'd use the best tool for the job. And for this job (and unfortunately many others), this was the right tool.
+
+## Implementation Status / Known Bugs
+
+- Single player is theoretically implemented, but no one has played it start to finish yet. Playtesting is very appreciated: you are encouraged to play through the game and report bugs, crashes and glitches.
+- Still in the process of recording shaders encountered during gameplay. These can then be rebuilt at startup time so future players never encounter stutters even during their first gameplay. Sharing these is also appreciated (`shaders.rec`)
+- Loading screens currently don't show.
+- Mouse looking currently works very poorly.
+- Minor depth of field quirks.
+- Bugs with above-30 FPS settings (especially 120fps).
+- No effort has been made to implement multiplayer yet, it's not a priority since deep down everyone knows no one will actually play it more than once.
 
 ## Installation
-
-The release contains no game code: the game is built on your PC from your own copy, once. The recompiled game is a
-translation of the original program, so sharing it would mean sharing the rights holders' code. What this project
-shares is its own work, the recompiler, the runtime and the hooks, and Setup combines them with your copy on your
-machine.
 
 1. Put your game in the `assets` folder: the disc image (`.iso`), or `default.xbe` with the game's folders beside it.
    If you have the digital, backwards compatible release instead (`DefaultPackage` with a `DefaultPackage.data`
