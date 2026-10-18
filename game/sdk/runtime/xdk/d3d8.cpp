@@ -485,7 +485,7 @@ HLE_STDCALL(Direct3D_CreateDevice, 6) {
     SetDev(kDevRenderTarget, g_buffers[1]);
     SetDev(kDevDepth, g_depth);
     SetDev(kDevBackBuffer, g_buffers[1]);
-    SetDev(kDevFrontBuffer, g_buffers[1]);
+    SetDev(kDevFrontBuffer, g_buffers[0]);  // the surface on screen, as GetBackBuffer2(-1) returns it
     float one = 1.0f, zs = g_depth && (R32(g_depth + 12) >> 8 & 0xFF) == 0x30 ? 65535.0f : 16777215.0f;
     std::memcpy(HostPtr(kDevice + kDevSuperX), &one, 4);
     std::memcpy(HostPtr(kDevice + kDevSuperY), &one, 4);
@@ -651,6 +651,21 @@ HLE_STDCALL(D3DDevice_SetGammaRamp, 2) {
 
 // targets and presentation
 
+namespace {
+// What a title draws into the front buffer is on screen at once on the console, with no Swap: Conker's loading
+// screen (0x2ACA70) sets the front buffer as its target, draws the picture, text and progress bar, puts the old
+// target back and returns to loading on the same thread. The window here only changes at a Present, so leaving the
+// front buffer presents it. At most one per blank, in case a loader updates its bar after every file.
+void ShowFront() {
+    using clock = std::chrono::steady_clock;
+    static clock::time_point last;
+    auto now = clock::now();
+    if (!g_backend || now - last < std::chrono::microseconds(16667)) return;
+    last = now;
+    g_backend->Present(SurfaceOf(g_buffers[0]));
+}
+}  // namespace
+
 HLE_STDCALL(D3DDevice_SetRenderTarget, 2) {
     std::lock_guard<std::recursive_mutex> lock(g_lock);
     Walk(Dev(kDevPush));  // state set around a raw push must not reach the pending commands first
@@ -665,6 +680,7 @@ HLE_STDCALL(D3DDevice_SetRenderTarget, 2) {
     uint32_t rt = a[0] ? a[0] : Dev(kDevRenderTarget), zs = a[1];
     AddRef(ctx, rt);
     uint32_t old_rt = Dev(kDevRenderTarget), old_zs = Dev(kDevDepth);
+    if (old_rt == g_buffers[0] && rt != old_rt) ShowFront();
     SetDev(kDevRenderTarget, rt);
     SetDev(kDevDepth, zs);
     AddRef(ctx, zs);

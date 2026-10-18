@@ -23,7 +23,6 @@ enhancements. It's built on a heavily modified version of
 
 - Single player is theoretically implemented, but no one has played it start to finish yet. Playtesting is very appreciated: you are encouraged to play through the game and report bugs, crashes and glitches.
 - Still in the process of recording shaders encountered during gameplay. These can then be rebuilt at startup time so future players never encounter stutters even during their first gameplay. Sharing these is also appreciated (`shaders.rec`)
-- Loading screens currently don't show.
 - Mouse looking currently works very poorly.
 - Minor depth of field quirks.
 - Bugs with above-30 FPS settings (especially 120fps).
