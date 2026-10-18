@@ -31,31 +31,50 @@ enhancements. It's built on a heavily modified version of
 
 ## Installation
 
-1. Put your game in the `assets` folder: the disc image (`.iso`), or `default.xbe` with the game's folders beside it.
-   If you have the digital, backwards compatible release instead (`DefaultPackage` with a `DefaultPackage.data`
-   folder), copy those two into `assets` and run `unpack-store-windows.exe` (on Linux, `./unpack-store-linux`). It
-   unpacks the game's files into `assets` in a few seconds and needs about 5 GB free; afterwards the package can go.
-   On Windows you can skip this step: if the Microsoft Store version is installed in its default place
-   (`C:\XboxGames\Conker- Live and Reloaded\Content\Game`, not encrypted) and `assets` has no game, Setup finds it and
-   asks whether to use it, then unpacks it for you. On Linux, if you bought the game on the Microsoft Store, you can
-   download its package manually with the [Xodus project](https://github.com/xodus-gaming/xodus); put the
-   `DefaultPackage` and `DefaultPackage.data` it gives you in `assets` and run `./unpack-store-linux`.
-2. Run `setup-windows.exe` (on Linux, `./setup-linux` in a terminal opened in this folder). It checks your
-   copy is the release this build supports, downloads the compiler it needs the first time only
-   ([llvm-mingw](https://github.com/mstorsjo/llvm-mingw), 80 to 180 MB, on Windows; [Zig](https://ziglang.org), about
-   50 MB, on Linux), recompiles the game and writes `Game.exe` (on Linux, the native `Game`). This takes a few
-   minutes. Nothing of the game is uploaded or downloaded.
-3. Run `Game.exe` (on Linux, `./Game`). Settings are in `settings.toml` beside it, and in the F1 menu.
+Setup builds the game on your PC from your own copy, once. It is three steps on both systems: put the game in
+`assets`, run Setup, run the game. Pick your system:
+
+### Windows
+
+1. **Put your game in the `assets` folder.** What you have decides how:
+   - **A disc image (`.iso`)**, or **extracted files** (`default.xbe` with the game's folders beside it): put it in
+     `assets` as it is.
+   - **The digital, XBOX Backwards Compatibility release** (`DefaultPackage` with a `DefaultPackage.data` folder):
+     - **Installed from the Microsoft Store in its default place** (`C:\XboxGames\Conker- Live and Reloaded\Content\Game`,
+       not encrypted): leave `assets` empty. Setup finds it, asks whether to use it, and unpacks it for you.
+     - **Anything else:** copy `DefaultPackage` and `DefaultPackage.data` into `assets` and run
+       `unpack-store-windows.exe`. It unpacks the game's files into `assets` in a few seconds and needs about 5 GB
+       free; afterwards the package can go.
+2. **Run `setup-windows.exe`.** It checks your copy is the release this build supports, downloads
+   [llvm-mingw](https://github.com/mstorsjo/llvm-mingw) (80 to 180 MB, the first time only), recompiles the game
+   and writes `Game.exe`. This takes a few minutes.
+3. **Run `Game.exe`.** Settings are in `settings.toml` beside it, and in the F1 menu.
+
+### Linux
+
+1. **Put your game in the `assets` folder.** What you have decides how:
+   - **A disc image (`.iso`)**, or **extracted files** (`default.xbe` with the game's folders beside it): put it in
+     `assets` as it is.
+   - **The digital, backwards compatible release** (`DefaultPackage` with a `DefaultPackage.data` folder): if you
+     bought the game on the Microsoft Store, download its package with the
+     [Xodus project](https://github.com/xodus-gaming/xodus), copy `DefaultPackage` and `DefaultPackage.data` into
+     `assets` and run `./unpack-store-linux`. It unpacks the game's files into `assets` in a few seconds and needs
+     about 5 GB free; afterwards the package can go.
+2. **Run `./setup-linux`** in a terminal opened in this folder. It checks your copy is the release this build
+   supports, downloads [Zig](https://ziglang.org) (about 50 MB, the first time only), recompiles the game and
+   writes the native `Game`. This takes a few minutes. Nothing of the game is uploaded or downloaded. If it says
+   permission denied, your unzip tool dropped the executable bit:
+   `chmod +x setup-linux unpack-store-linux kit/bin/xbe_recomp`.
+3. **Run `./Game`.** Settings are in `settings.toml` beside it, and in the F1 menu.
+
+`./Game` is the native port: an SDL3 window (X11 or Wayland) drawn with Vulkan, which needs a Vulkan 1.3 driver and
+glibc 2.31 or newer (any distro since 2020, SteamOS included). Add it to Steam as a non-Steam game to play it from
+Game Mode. It has everything `Game.exe` has but the boot splash and the window kept up across a relaunch. To build
+`Game.exe` instead, for Proton or Wine, run `./setup-linux --target windows`; it downloads llvm-mingw then.
+`setup-windows.exe` works under Proton too (`umu-run setup-windows.exe`).
 
 Setup keeps nothing it generated except the game and the compiler in `kit/toolchain`. Run it again after updating
 to a new release.
-
-On Linux, `./Game` is the native port: an SDL3 window (X11 or Wayland) drawn with Vulkan, which needs a Vulkan 1.3
-driver and glibc 2.31 or newer (any distro since 2020, SteamOS included). Add it to Steam as a non-Steam game to play
-it from Game Mode. It has everything `Game.exe` has but the boot splash and the window kept up
-across a relaunch. To build `Game.exe` instead, for Proton or Wine, run `./setup-linux --target windows`; it downloads
-llvm-mingw then. If `./setup-linux` says permission denied, your unzip tool dropped its executable bit:
-`chmod +x setup-linux kit/bin/xbe_recomp`. `setup-windows.exe` works under Proton too (`umu-run setup-windows.exe`).
 
 Developers: building from source differs from Setup, see [Building from source](#building-from-source).
 
@@ -66,7 +85,6 @@ Developers: building from source differs from Setup, see [Building from source](
   `settings.toml`. The game's timers follow real time at any rate. The FPS cap and V-Sync still apply.
 - **Any Aspect Ratio** - The 3D view widens to the display's shape (`aspect = "auto"`), or to any `W:H` such as
   `"21:9"`; `"4:3"` keeps the original view. The HUD stretches with the frame. Raise Render % to sharpen wide frames.
-
 
 ### Graphics
 - **MSAA** - 2x, 4x or 8x multisample anti-aliasing of the 3D view, from the F1 menu or `msaa` in `settings.toml`. It
@@ -81,69 +99,22 @@ Developers: building from source differs from Setup, see [Building from source](
   `XBE_VULKAN_DEBUG=1` turns on the validation layer, when it is installed, and writes its messages to the log.
 
 ### Controller
-Supports Xbox, PlayStation and Switch controllers, with hot plugging and rumble.
-
-A gamepad is not required: the keyboard drives player 1 as well, and the two can be used at
-the same time.
-
-| Action | Key |
-|---|---|
-| Move (left stick) | `W` `A` `S` `D` |
-| D-pad | arrow keys |
-| Camera (right stick) | `I` `J` `K` `L` |
-| A / B / X / Y | `Space` / `Left Shift` / `E` / `Q` |
-| LB (white) / RB (black) | `1` / `2` |
-| LT / RT | `3` / `4` |
-| Start / Back | `Enter` / `Backspace` |
-| Left / right stick click | `C` / `V` |
-
-These are the defaults: every action can have up to two keys or mouse buttons, rebound under **Controls → Keyboard**
-in the F1 menu (click a key, press the new one; right click unbinds, **Reset** brings back that action's default) and
-saved with the menu's **Save**. They live in the `[keys]` table of `settings.toml`, by key name, so they can be edited
-there too:
-
-```toml
-[keys]
-move_up = 'W'
-a = ['Space', 'Mouse 1']
-lt = 'none'
-```
-
-The names are the ones the menu shows (`Space`, `Left Shift`, `Escape`, `Numpad 0`, `Mouse 4`, `F5`, `;` ...). F1
-and Insert are kept for opening the menu.
+Supports Xbox, PlayStation and Switch controllers, with hot plugging and rumble. A gamepad is not required: the
+keyboard and mouse drive player 1 as well, and both can be used at the same time. Every action can be rebound under
+**Controls** in the F1 menu.
 
 ### General
 - **Skippable Cutscenes** - LT skips any in-engine cutscene, not only the ones already seen this playthrough. Turn it on
   in the F1 menu or with `skippable_cutscenes = true` in `settings.toml`.
 
-### Miscellaneous
-- **Boot Splash** - Place a `splash.png` (or `.bmp`) beside the exe to display a splash screen at launch.
-
 ## System Requirements
 
 ### Minimum
 - **OS**
-  - Windows 10 64-bit
+  - Windows 10 64-bit, or
+  - Linux x86-64 with glibc 2.31 or newer
 - **GPU** with support for Vulkan 1.3
-
-## Repository layout
-
-```
-conker-lar/
-  game/                 the port (CMake project)
-    sdk/                the SDK, a git subtree of TGP482/XboxXBERecomp
-    config/game.toml    recompiler config for Conker (hand-maintained)
-    src/common/         app::kGame and shared headers
-    src/game/           Conker hooks, frame rate / aspect, keyboard, mouse, F1 menu
-    generated/ out/ assets/ winrun/ prefix/    gitignored: generated C++, builds, disc links, Proton run folder
-  tools/                unpack-store (the digital release's package to game files), build.sh (Linux dev
-                        build), package.cmake + package.sh/.bat (player release), toolchains.cmake (the pinned
-                        llvm-mingw and Zig), fetch-toolchain.cmake, disassembly helpers
-  toolchain/            gitignored: llvm-mingw and Zig, fetched on demand
-```
-
-The config keys beyond the basics (`[[hook]]`, `[[function]]`, `[[switch]]`, `data_ranges`) are described at the top of
-`game/sdk/tools/recomp/main.cpp`, and `game/sdk/tools/symbols/xbe2pe.py` makes a Ghidra-loadable PE of the image.
+- **Disk** about 5 GB free to unpack the digital release, if you have that one
 
 ## Two ways to get the game
 
