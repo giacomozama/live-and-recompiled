@@ -75,9 +75,9 @@ size_t At(const State& s, const void* p) { return size_t(static_cast<const uint8
 std::vector<Range> StateRanges() {
     static const State s;
     return {
-        {At(s, &s.rs), At(s, &s.textures) - At(s, &s.rs)},  // simple goes by its dirty blocks (SendState)
+        // simple, rs, tss, vsc and psc go by their dirty blocks (SendTracked)
         {At(s, &s.index_buffer), At(s, &s.vs) - At(s, &s.index_buffer)},
-        {At(s, &s.vsc), At(s, &s.rt) - At(s, &s.vsc)},
+        {At(s, &s.viewport), At(s, &s.rt) - At(s, &s.viewport)},
         {At(s, &s.scissor_count), At(s, &s.transforms) - At(s, &s.scissor_count)},
         {At(s, &s.transforms[2]), 2 * sizeof(s.transforms[0])},
         {At(s, &s.transforms[16]), 4 * sizeof(s.transforms[0])},
@@ -121,7 +121,7 @@ std::vector<uint8_t> WordKinds() {
     mark(&s.index_buffer, sizeof(s.index_buffer), kWordVertex);
     mark(&s.index_data, sizeof(s.index_data), kWordVertex);
     mark(&s.base_vertex, sizeof(s.base_vertex), kWordVertex);
-    mark(&s.vsc, sizeof(s.vsc), kWordConstant);
+    mark(&s.vsc.v, sizeof(s.vsc.v), kWordConstant);
     return k;
 }
 
@@ -361,6 +361,19 @@ private:
     }
 
     // what changed since the last command, in 64 byte pieces
+    // a Tracked array of s: its changed blocks compared with what was sent, in pieces of up to 64 bytes
+    template <typename A>
+    void SendTracked(const State& s, const A& a, const uint8_t* sent, const uint8_t* now) {
+        const size_t base = At(s, a.data());
+        constexpr size_t kBytes = sizeof(a.v), kBlockBytes = A::kBlock * sizeof(a.v[0]);
+        for (uint64_t dirty = std::exchange(a.dirty, 0) & A::kAll; dirty; dirty &= dirty - 1) {
+            size_t lo = base + size_t(__builtin_ctzll(dirty)) * kBlockBytes;
+            size_t hi = std::min(lo + kBlockBytes, base + kBytes);
+            if (Same(sent + lo, now + lo, hi - lo)) continue;
+            for (size_t off = lo; off < hi; off += 64) Delta(sent + off, now + off, std::min<size_t>(64, hi - off));
+        }
+    }
+
     // tsc: XBE_PERF's cycle stamps, after the plain state and after the headers
     void SendState(const State& s, uint64_t* tsc = nullptr) {
         const uint8_t* now = reinterpret_cast<const uint8_t*>(&s);
@@ -368,14 +381,12 @@ private:
         size_t first = cur_->bytes.size();
         // blocks of eight pieces compared at once: most of the state is the same draw to draw
         const uint8_t* sent = reinterpret_cast<const uint8_t*>(&sent_);
-        // the simple states only where they were written since: most of the 8 KB is never touched draw to draw
-        const size_t simple = At(s, s.simple.v.data());
-        constexpr size_t kSimpleBlock = SimpleStates::kBlock * sizeof(uint32_t);
-        for (uint32_t dirty = std::exchange(s.simple.dirty, uint16_t(0)); dirty; dirty &= dirty - 1) {
-            size_t block = simple + size_t(__builtin_ctz(dirty)) * kSimpleBlock;
-            if (Same(sent + block, now + block, kSimpleBlock)) continue;
-            for (size_t off = block; off < block + kSimpleBlock; off += 64) Delta(sent + off, now + off, 64);
-        }
+        // the tracked arrays only where they changed since: most of them is never touched draw to draw
+        SendTracked(s, s.simple, sent, now);
+        SendTracked(s, s.rs, sent, now);
+        SendTracked(s, s.tss, sent, now);
+        SendTracked(s, s.vsc, sent, now);
+        SendTracked(s, s.psc, sent, now);
         for (const Range& r : ranges_)
             for (size_t block = r.off, end = r.off + r.len; block < end; block += 512) {
                 size_t block_end = std::min<size_t>(block + 512, end);

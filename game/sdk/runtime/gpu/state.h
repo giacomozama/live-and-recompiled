@@ -1,7 +1,9 @@
 #pragma once
 #include <array>
+#include <cstring>
 #include <cstdint>
 #include <memory>
+#include <type_traits>
 #include <vector>
 
 // Everything the title handed to the XDK Direct3D API, as the API defines it. The renderer translates
@@ -159,25 +161,42 @@ struct Surface {
     uint32_t data = 0, format = 0, size = 0;
 };
 
-// the simple render states indexed by method / 4. Written only through set, which marks the 512 byte block it
-// writes: the render thread compares those blocks alone (render_thread.cpp SendState)
-struct SimpleStates {
-    static constexpr size_t kBlock = 128;  // entries a dirty bit stands for
-    std::array<uint32_t, 0x800> v{};
-    mutable uint16_t dirty = 0xFFFF;  // block written since the render thread last compared it
-    uint32_t operator[](size_t i) const { return v[i]; }
-    void set(size_t i, uint32_t x) {
+// An array of State written only through set, which marks the block of Block entries a change lands in: the render
+// thread compares those blocks alone (render_thread.cpp SendState). Reads are an array's. A value written over with
+// itself marks nothing, so a state the title rewrites every draw (SyncDeferred) costs nothing until it changes.
+template <typename T, size_t N, size_t Block>
+struct Tracked {
+    static constexpr size_t kBlock = Block;  // entries a dirty bit stands for
+    static constexpr size_t kBlocks = (N + Block - 1) / Block;
+    static_assert(kBlocks <= 64, "a dirty bit per block");
+    static constexpr uint64_t kAll = kBlocks == 64 ? ~0ull : (1ull << kBlocks) - 1;  // a bit for each block there is
+    std::array<T, N> v{};
+    mutable uint64_t dirty = kAll;  // block changed since the render thread last compared it
+    const T& operator[](size_t i) const { return v[i]; }
+    void set(size_t i, const T& x) {
+        if (std::memcmp(&v[i], &x, sizeof(T)) == 0) return;
         v[i] = x;
-        dirty |= uint16_t(1u << (i / kBlock));
+        dirty |= 1ull << (i / Block);
     }
-    static constexpr size_t size() { return 0x800; }
+    // entry i's element k, for entries that are arrays themselves
+    template <typename U>
+    void set(size_t i, size_t k, const U& x) {
+        const auto e = static_cast<std::remove_cvref_t<decltype(v[i][k])>>(x);  // compared as the element it becomes
+        if (std::memcmp(&v[i][k], &e, sizeof(e)) == 0) return;
+        v[i][k] = e;
+        dirty |= 1ull << (i / Block);
+    }
+    static constexpr size_t size() { return N; }
+    const T* data() const { return v.data(); }
 };
-static_assert(SimpleStates::size() / SimpleStates::kBlock == 16, "a dirty bit per block");
+
+// simple render states indexed by method / 4, a dirty bit per 512 bytes
+using SimpleStates = Tracked<uint32_t, 0x800, 128>;
 
 struct State {
     SimpleStates simple;
-    std::array<uint32_t, kRsMax> rs{};     // deferred and complex render states by D3DRS
-    std::array<std::array<uint32_t, kTssCount>, 4> tss{};
+    Tracked<uint32_t, kRsMax, 16> rs;  // deferred and complex render states by D3DRS
+    Tracked<std::array<uint32_t, kTssCount>, 4, 1> tss;
     std::array<uint32_t, 4> textures{};    // guest D3DBaseTexture pointers
     std::array<uint32_t, 4> palettes{};    // guest D3DPalette pointers, the colours of the stage's P8 texture
     struct Stream {
@@ -191,8 +210,8 @@ struct State {
     uint32_t vs_handle = 0;  // programmable when bit 0 set, otherwise an FVF
     std::shared_ptr<VertexShader> vs;
     std::shared_ptr<PixelShader> ps;
-    std::array<std::array<float, 4>, 192> vsc{};  // hardware order: D3D register + 96
-    std::array<std::array<float, 4>, 16> psc{};
+    Tracked<std::array<float, 4>, 192, 4> vsc;  // hardware order: D3D register + 96
+    Tracked<std::array<float, 4>, 16, 4> psc;
     Viewport viewport;
     Surface rt, zs;
     uint32_t scissor_count = 0;

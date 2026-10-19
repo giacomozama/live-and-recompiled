@@ -547,7 +547,7 @@ void CaptureConstantChanges(FILE* f, const State& s, std::array<std::array<float
             fprintf(f, " c%d-c%d", r - kVsConstantBias, e - kVsConstantBias);
         r = e + 1;
     }
-    prev = s.vsc;
+    prev = s.vsc.v;
 }
 
 void CaptureDrawLine(FILE* f, uint32_t index, uint32_t ds_data, const State& s, uint32_t prim, uint32_t count,
@@ -657,7 +657,7 @@ void SpriteStage(State& s) {
     for (uint32_t i : {kTssAddressU, kTssAddressV, kTssAddressW, kTssMagFilter, kTssMinFilter, kTssMipFilter,
                        kTssMipLodBias, kTssMaxMipLevel, kTssMaxAnisotropy, kTssColorKeyOp, kTssColorSign,
                        kTssAlphaKill, kTssBorderColor, kTssColorKeyColor})
-        s.tss[0][i] = s.tss[3][i];
+        s.tss.set(0, i, s.tss[3][i]);
 }
 
 namespace {

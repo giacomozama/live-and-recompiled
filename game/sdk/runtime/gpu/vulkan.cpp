@@ -3089,9 +3089,9 @@ void VulkanBackend::UploadConstants(const State& s, const DrawShaders& sh, const
     for (size_t i = 0; same_vc && i < kConstRegs; i++)
         same_vc = !sh.reads[i] || std::memcmp(&s.vsc[i], &last_vsc_[i], sizeof(s.vsc[i])) == 0;
     if (!same_vc) {
-        last_vc_ = Upload(sizeof(s.vsc));
-        std::memcpy(last_vc_.cpu, s.vsc.data(), sizeof(s.vsc));
-        last_vsc_ = s.vsc;
+        last_vc_ = Upload(sizeof(s.vsc.v));
+        std::memcpy(last_vc_.cpu, s.vsc.data(), sizeof(s.vsc.v));
+        last_vsc_ = s.vsc.v;
         last_vc_ok_ = true;
     }
     FillSurfaceConstants(s, size, c);
@@ -3114,7 +3114,7 @@ void VulkanBackend::UploadConstants(const State& s, const DrawShaders& sh, const
         last_c_ = c;
         last_dc_ok_ = true;
     }
-    b.cb[0] = {last_vc_.buf, last_vc_.off, sizeof(s.vsc)};
+    b.cb[0] = {last_vc_.buf, last_vc_.off, sizeof(s.vsc.v)};
     b.cb[1] = {last_dc_.buf, last_dc_.off, sizeof(DrawConstants)};
 }
 

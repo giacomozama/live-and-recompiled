@@ -151,7 +151,11 @@ uint32_t g_vs_const_reg = 0;
 void LoadConstants(uint32_t reg, uint32_t src, uint32_t count) {
     std::lock_guard<std::recursive_mutex> lock(g_lock);
     Walk(Dev(kDevPush));
-    for (uint32_t i = 0; i < count && reg + i < 192; i++) std::memcpy(g_state.vsc[reg + i].data(), HostPtr(src + i * 16), 16);
+    for (uint32_t i = 0; i < count && reg + i < 192; i++) {
+        std::array<float, 4> c;
+        std::memcpy(c.data(), HostPtr(src + i * 16), 16);
+        g_state.vsc.set(reg + i, c);
+    }
     g_vs_const_reg = reg + count;
 }
 
@@ -202,8 +206,8 @@ uint32_t g_spec_value = 0;
 void SyncDeferred() {
     // deferred states live in the title's memory, the inline SetRenderState and SetTextureStageState write them
     // a D3D fog state only marks the fog dirty: the fog unit changes when the library's flush pushes it (ApplyFlush)
-    for (uint32_t i = gpu::kRsDeferredFirst; i < gpu::kRsComplexFirst; i++) g_state.rs[i] = R32(kRenderState + i * 4);
-    if (g_spec_raw) g_state.rs[gpu::kRsSpecularEnable] = g_spec_value;
+    for (uint32_t i = gpu::kRsDeferredFirst; i < gpu::kRsComplexFirst; i++) g_state.rs.set(i, R32(kRenderState + i * 4));
+    if (g_spec_raw) g_state.rs.set(gpu::kRsSpecularEnable, g_spec_value);
     // the whole [4][32] table is authoritative for a title that inlines the D3D8 library (its state never
     // reaches an API HLE), so read all of it. A title that does call the API has its dedicated SetTextureState_*
     // HLEs write g_state directly, and those do not write the table, so leave their fields alone.
@@ -212,7 +216,7 @@ void SyncDeferred() {
             if (HAS_D3DDevice_SetTextureState_BumpEnv && i >= gpu::kTssBumpEnvMat00 && i <= gpu::kTssBumpEnvLOffset) continue;
             if (HAS_D3DDevice_SetTextureState_BorderColor && i == gpu::kTssBorderColor) continue;
             if (HAS_D3DDevice_SetTextureState_ColorKeyColor && i == gpu::kTssColorKeyColor) continue;
-            g_state.tss[s][i] = R32(kTextureState + (s * kStageStates + i) * 4);
+            g_state.tss.set(s, i, R32(kTextureState + (s * kStageStates + i) * 4));
         }
 }
 
@@ -229,8 +233,8 @@ void UpdateViewportConstants() {
     g_state.zscale = ZScale(g_state.zs);
     float hw = v.w * 0.5f, hh = v.h * 0.5f;
     if (!g_own_constants) {
-        g_state.vsc[58] = {hw, -hh, (v.max_z - v.min_z) * g_state.zscale, 0};
-        g_state.vsc[59] = {v.x + g_state.ss_offset_x + hw, v.y + g_state.ss_offset_y + hh, v.min_z * g_state.zscale, 0};
+        g_state.vsc.set(58, {hw, -hh, (v.max_z - v.min_z) * g_state.zscale, 0});
+        g_state.vsc.set(59, {v.x + g_state.ss_offset_x + hw, v.y + g_state.ss_offset_y + hh, v.min_z * g_state.zscale, 0});
     }
     // the viewport as the library's SetViewport stores it, for inlined readers
     if (XDK_CDevice_Viewport != xdk::kUnknown) {
@@ -245,7 +249,7 @@ void UpdateViewportConstants() {
 }
 
 void SetComplex(uint32_t rs, uint32_t v) {
-    g_state.rs[rs] = v;
+    g_state.rs.set(rs, v);
     if (rs == gpu::kRsTextureFactor) g_state.chip_tfactor = 0;
     W32(kRenderState + rs * 4, v);
 }
@@ -260,8 +264,8 @@ void ChipCull() {
     uint32_t front = g_state.simple[kMFrontFace >> 2] ? g_state.simple[kMFrontFace >> 2] : kCw;
     uint32_t face = g_state.simple[kMCullFace >> 2] ? g_state.simple[kMCullFace >> 2] : kGlBack;
     uint32_t culled = face == kGlFront ? front : front ^ 1;  // 0x900 CW, 0x901 CCW
-    g_state.rs[gpu::kRsFrontFace] = front;
-    g_state.rs[gpu::kRsCullMode] = g_state.simple[kMCullEnable >> 2] ? culled : 0;
+    g_state.rs.set(gpu::kRsFrontFace, front);
+    g_state.rs.set(gpu::kRsCullMode, g_state.simple[kMCullEnable >> 2] ? culled : 0);
 }
 
 // what the library's CullMode pushes, so a later raw write to one of the three combines with it
@@ -288,7 +292,7 @@ void ApplyDefaultStates(X86Context& ctx) {
     g_state.simple.set(gpu::kMStencilFunc >> 2, kAlways);
     g_state.simple.set(gpu::kMStencilMask >> 2, 0xFF);
     g_state.simple.set(gpu::kMStencilWriteMask >> 2, 0xFF);
-    g_state.rs[gpu::kRsStencilFail] = kKeep;
+    g_state.rs.set(gpu::kRsStencilFail, kKeep);
 #endif
 }
 
@@ -898,26 +902,26 @@ COMPLEX_STATE(RopZRead, gpu::kRsRopZRead)
 COMPLEX_STATE(DoNotCullUncompressed, gpu::kRsDoNotCullUncompressed)
 
 HLE_STDCALL(D3DDevice_SetTextureState_TexCoordIndex, 2) {
-    g_state.tss[a[0] & 3][gpu::kTssTexCoordIndex] = a[1];
+    g_state.tss.set(a[0] & 3, gpu::kTssTexCoordIndex, a[1]);
     W32(kTextureState + ((a[0] & 3) * kStageStates + gpu::kTssTexCoordIndex) * 4, a[1]);
     return 0;
 }
 HLE_STDCALL(D3DDevice_SetTextureState_BumpEnv, 3) {
-    if (a[1] >= gpu::kTssBumpEnvMat00 && a[1] <= gpu::kTssBumpEnvLOffset) g_state.tss[a[0] & 3][a[1]] = a[2];
+    if (a[1] >= gpu::kTssBumpEnvMat00 && a[1] <= gpu::kTssBumpEnvLOffset) g_state.tss.set(a[0] & 3, a[1], a[2]);
     return 0;
 }
 HLE_STDCALL(D3DDevice_SetTextureState_BorderColor, 2) {
-    g_state.tss[a[0] & 3][gpu::kTssBorderColor] = a[1];
+    g_state.tss.set(a[0] & 3, gpu::kTssBorderColor, a[1]);
     return 0;
 }
 HLE_STDCALL(D3DDevice_SetTextureState_ColorKeyColor, 2) {
-    g_state.tss[a[0] & 3][gpu::kTssColorKeyColor] = a[1];
+    g_state.tss.set(a[0] & 3, gpu::kTssColorKeyColor, a[1]);
     return 0;
 }
 HLE_STDCALL(D3DDevice_SetTextureStageStateNotInline, 3) {
     uint32_t stage = a[0] & 3, type = a[1], v = a[2];
     if (type < gpu::kTssCount) {
-        g_state.tss[stage][type] = v;
+        g_state.tss.set(stage, type, v);
         W32(kTextureState + (stage * kStageStates + type) * 4, v);
     }
     return 0;
@@ -1100,7 +1104,7 @@ HLE_STDCALL(D3DDevice_SetVertexShader, 1) {
             g_state.vs = it->second;
             // constants declared with the shader load when it is selected
             for (auto& [reg, v] : it->second->constants)
-                if (reg < 192) g_state.vsc[reg] = v;
+                if (reg < 192) g_state.vsc.set(reg, v);
         } else {
             LOG_FIRST(8, "d3d: SetVertexShader with unknown handle %08X", h);
         }
@@ -1153,7 +1157,7 @@ HLE_STDCALL(D3DDevice_SelectVertexShader, 2) {
         g_state.vs_handle = a[0];
         g_state.vs = it->second;
         for (auto& [reg, v] : it->second->constants)
-            if (reg < 192) g_state.vsc[reg] = v;
+            if (reg < 192) g_state.vsc.set(reg, v);
     } else if (a[0] & 1) {
         LOG_FIRST(4, "d3d: SelectVertexShader with unknown handle %08X at %u", a[0], a[1]);
     }
@@ -1248,7 +1252,11 @@ HLE_STDCALL(D3DDevice_SetPixelShader, 1) {
 HLE_STDCALL(D3DDevice_SetPixelShaderConstant, 3) {
     std::lock_guard<std::recursive_mutex> lock(g_lock);
     uint32_t reg = a[0], src = a[1], n = a[2];
-    for (uint32_t i = 0; i < n && reg + i < 16; i++) std::memcpy(g_state.psc[reg + i].data(), HostPtr(src + i * 16), 16);
+    for (uint32_t i = 0; i < n && reg + i < 16; i++) {
+        std::array<float, 4> c;
+        std::memcpy(c.data(), HostPtr(src + i * 16), 16);
+        g_state.psc.set(reg + i, c);
+    }
     gpu::ApplyPixelConstants(g_state, reg, n);
     return 0;
 }
@@ -1633,7 +1641,7 @@ uint32_t InlineTexture(uint32_t offset, uint32_t format) {
 // overwrite each other in the order the title issued them - the same last-writer rule the chip has.
 void RawTextureState(uint32_t stage, uint32_t sub, uint32_t v) {
     auto put = [&](uint32_t field, uint32_t value) {
-        g_state.tss[stage][field] = value;
+        g_state.tss.set(stage, field, value);
         W32(kTextureState + (stage * kStageStates + field) * 4, value);
     };
     auto putf = [&](uint32_t field, float f) {
@@ -1978,7 +1986,7 @@ void Walk(uint32_t end) {
                 // SET_TRANSFORM_CONSTANT: one float per method, the load pointer advances after a register's fourth
                 // (xemu pgraph.c), so a long upload continues across packets
                 uint32_t slot = (m - 0xB80) / 4;
-                if (g_vs_const_reg < 192) g_state.vsc[g_vs_const_reg][slot & 3] = f;
+                if (g_vs_const_reg < 192) g_state.vsc.set(g_vs_const_reg, slot & 3, f);
                 if ((slot & 3) == 3) g_vs_const_reg++;
                 continue;
             } else if (m >= 0xB00 && m < 0xB80) {
@@ -2030,20 +2038,20 @@ void Walk(uint32_t end) {
                 // reads them by method number out of simple[]
                 NoteRawMethod(m, v);
                 g_state.simple.set(m >> 2, v);
-                if (m == 0x1E70) g_state.rs[gpu::kRsPsTextureModes] = v;  // NV097_SET_SHADER_STAGE_PROGRAM
+                if (m == 0x1E70) g_state.rs.set(gpu::kRsPsTextureModes, v);  // NV097_SET_SHADER_STAGE_PROGRAM
                 if (m == gpu::kMPsConstant0) g_state.chip_tfactor = 1;     // NV097_SET_COMBINER_FACTOR0, stage 0
                 if (m == 0x3B8) {  // NV097_SET_SPECULAR_ENABLE
                     g_spec_raw = true;
                     g_spec_value = v;
-                    g_state.rs[gpu::kRsSpecularEnable] = v;
+                    g_state.rs.set(gpu::kRsSpecularEnable, v);
                 }
                 // NV097_SET_STENCIL_TEST_ENABLE / _OP_FAIL: the renderers take these two from the render states, and
                 // the title's material blocks set them raw (Conker's glow marks its surfaces in the stencil)
                 if (m == gpu::kMStencilTestEnable) {
-                    g_state.rs[gpu::kRsStencilEnable] = v;
+                    g_state.rs.set(gpu::kRsStencilEnable, v);
                     NoteStencil("raw at", v, p);
                 }
-                if (m == gpu::kMStencilFail) g_state.rs[gpu::kRsStencilFail] = v;
+                if (m == gpu::kMStencilFail) g_state.rs.set(gpu::kRsStencilFail, v);
                 if (m == kMCullEnable || m == kMCullFace || m == kMFrontFace) ChipCull();
                 // NV097_SET_FOG_ENABLE / _MODE / _PARAMS: the title runs the fog unit itself
                 if (m == 0x2A4 || m == 0x29C || m == 0x9C0 || m == 0x9C4) {
