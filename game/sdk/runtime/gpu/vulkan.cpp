@@ -822,6 +822,9 @@ private:
     void SetViewportScissor(const State& s, uint32_t gw);
     void SetBlendFactorStencilRef(const State& s);
     void DrawGeometry(const Assembled& a);
+    void BindGeometry(const Assembled& a);
+    void IssueGeometry(const Assembled& a);
+    bool DrawBetweenShells(const State& s, const Assembled& a, uint32_t shading, const Bindings& b);
     void UploadVertexBuffers(const Assembled& a);
     // visibility tests
     bool EnsureQueries();
@@ -3253,6 +3256,11 @@ void VulkanBackend::UploadVertexBuffers(const Assembled& a) {
 }
 
 void VulkanBackend::DrawGeometry(const Assembled& a) {
+    BindGeometry(a);
+    IssueGeometry(a);
+}
+
+void VulkanBackend::BindGeometry(const Assembled& a) {
     UploadVertexBuffers(a);
     if (int topo = int(PrimitiveTopology(a)); topo != drawn_.topo) {
         vkCmdSetPrimitiveTopology(cmd_, VkPrimitiveTopology(topo));
@@ -3263,10 +3271,36 @@ void VulkanBackend::DrawGeometry(const Assembled& a) {
         Alloc ib = Upload(ibytes, 4);
         std::memcpy(ib.cpu, a.index_src, ibytes);
         vkCmdBindIndexBuffer(cmd_, ib.buf, ib.off, a.index16 ? VK_INDEX_TYPE_UINT16 : VK_INDEX_TYPE_UINT32);
-        vkCmdDrawIndexed(cmd_, a.index_count, 1, 0, a.base_vertex, 0);
-    } else {
-        vkCmdDraw(cmd_, a.draw_count, 1, 0, 0);
     }
+}
+
+// the bound geometry drawn again
+void VulkanBackend::IssueGeometry(const Assembled& a) {
+    if (a.index_count)
+        vkCmdDrawIndexed(cmd_, a.index_count, 1, 0, a.base_vertex, 0);
+    else
+        vkCmdDraw(cmd_, a.draw_count, 1, 0, 0);
+}
+
+// ProgramShading::between: the shells between the draw before in the run and this one, its geometry bound and drawn
+// with vertex constants of their own, then the draw's own bindings pushed back; false, nothing done, without any
+bool VulkanBackend::DrawBetweenShells(const State& s, const Assembled& a, uint32_t shading, const Bindings& b) {
+    const ProgramShading& ps = g_program_shading[shading - 1];
+    float from = ShadingBefore(shading), to = s.vsc[size_t(ps.top)][0];
+    if (ps.between <= 0 || from < 0 || to <= from) return false;
+    BindGeometry(a);
+    Bindings eb = b;
+    for (int j = 1; j <= ps.between; j++) {
+        Alloc vc = Upload(sizeof(s.vsc.v));
+        std::memcpy(vc.cpu, s.vsc.data(), sizeof(s.vsc.v));
+        float x = from + (to - from) * float(j) / float(ps.between + 1);
+        std::memcpy(vc.cpu + size_t(ps.top) * sizeof(s.vsc[0]), &x, sizeof(x));
+        eb.cb[0] = {vc.buf, vc.off, sizeof(s.vsc.v)};
+        PushRaw(eb);
+        IssueGeometry(a);
+    }
+    PushRaw(b);  // drawn_.b still holds it
+    return true;
 }
 
 // Assemble, timed and counted
@@ -3579,9 +3613,13 @@ void VulkanBackend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t
     SetViewportScissor(s, size.w);
     SetBlendFactorStencilRef(s);
 
-    // geometry, counted while the title runs a visibility test
+    // geometry, counted while the title runs a visibility test; a shading's shells between go first, uncounted
+    bool bound = sh.shading && DrawBetweenShells(s, a, sh.shading, b);
     uint32_t query = BeginCountedDraw(s);
-    DrawGeometry(a);
+    if (bound)
+        IssueGeometry(a);
+    else
+        DrawGeometry(a);
     EndCountedDraw(query);
     if (!sh.shading && &s != &sprite_) KeepDraw(a, sh, stages, pso, b, size);
     g_perf.d_record += PerfLap(lap);

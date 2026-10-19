@@ -169,9 +169,12 @@ uint32_t DrawShading(const State& s, const ShaderChoice& sh) {
 
 namespace {
 
-// per g_program_shading entry: the largest top this frame and last frame
+// per g_program_shading entry: the largest top of each run of its draws (a draw whose top is 0 starts the next) this
+// frame and last frame, by the runs' order in the frame
 struct ShadingTop {
-    float frame = 0, last = 0;
+    std::vector<float> frame, last;
+    float x = 0;          // the latest draw's top
+    float before = -1;    // the top of the draw before it in its run, -1 when it began one
 };
 std::vector<ShadingTop> g_shading_tops;
 
@@ -182,15 +185,25 @@ void FillShadingConstants(const State& s, uint32_t shading, DrawConstants& c) {
     if (top < 0 || top >= int(s.vsc.size())) return;
     if (g_shading_tops.size() < g_program_shading.size()) g_shading_tops.resize(g_program_shading.size());
     ShadingTop& t = g_shading_tops[shading - 1];
-    t.frame = std::max(t.frame, s.vsc[size_t(top)][0]);
-    float most = std::max(t.frame, t.last);
+    float x = s.vsc[size_t(top)][0];
+    bool begins = t.frame.empty() || x <= 0;
+    t.before = begins ? -1 : t.x;
+    t.x = x;
+    if (begins) t.frame.push_back(0);
+    size_t run = t.frame.size() - 1;
+    t.frame[run] = std::max(t.frame[run], x);
+    float most = std::max(t.frame[run], run < t.last.size() ? t.last[run] : 0.0f);
     c.xc[0] = most > 0 ? 1 / most : 0;
+}
+
+float ShadingBefore(uint32_t shading) {
+    return shading - 1 < g_shading_tops.size() ? g_shading_tops[shading - 1].before : -1;
 }
 
 void EndShadingFrame() {
     for (ShadingTop& t : g_shading_tops) {
-        t.last = t.frame;
-        t.frame = 0;
+        t.last.swap(t.frame);
+        t.frame.clear();
     }
 }
 

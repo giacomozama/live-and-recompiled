@@ -42,7 +42,10 @@ struct PixelKey {
 // the vertex shader, after o is filled from the program's registers, and sets o.x0 and o.x1; ps runs in a
 // programmable pixel shader after the combiner stages, before the final combiner, and may change r0 (t0..t3, v0, v1,
 // i.x0, i.x1 and xc are there too). xc.x is 1 over the largest x the frame and the one before it set in vertex
-// constant top (hardware order) for the entry's draws, 0 before one did. soft spreads a greater (or equal) alpha
+// constant top (hardware order) for the draw's run of the entry's draws, 0 before one did: a draw whose x is 0
+// starts the next run, and runs pair up with last frame's by their order. between more draws go before each draw
+// whose x in top is above the one before it in its run, with x stepped evenly from there to the draw's, the rest of
+// its state the same: more shells for the fur. soft spreads a greater (or equal) alpha
 // test's edge over a pixel: for alpha blended draws, whose cut out edges then blend in instead of stepping.
 struct ProgramShading {
     const char* match = "";
@@ -50,6 +53,7 @@ struct ProgramShading {
     const char* vs = "";
     const char* ps = "";
     int top = -1;
+    int between = 0;
     bool soft = false;
 };
 inline std::vector<ProgramShading> g_program_shading;  // filled before the title boots, unchanged after

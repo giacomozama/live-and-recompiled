@@ -315,9 +315,12 @@ void FillCombinerConstants(const State& s, DrawConstants& c);
 void FillTextureConstants(const State& s, const bool rt[4], const bool exact[4], const float k[4],
                           const float wide[4], DrawConstants& c);
 void FillTransformConstants(const State& s, GuestExtent size, DrawConstants& c);
-// DrawConstants::xc for the draw's g_program_shading entry, after taking its top constant into the frame's largest
+// DrawConstants::xc for the draw's g_program_shading entry, after taking its top constant into its run's largest
 void FillShadingConstants(const State& s, uint32_t shading, DrawConstants& c);
-// each present: the frame's largest tops become the last frame's
+// the top of the draw before the latest of the entry's in its run, -1 when the latest began one: after
+// FillShadingConstants
+float ShadingBefore(uint32_t shading);
+// each present: the frame's runs' largest tops become the last frame's
 void EndShadingFrame();
 // the same clip w for every vertex: an orthographic projection, or vertices already on the screen (text, menus, full
 // screen passes); pos_w is a vertex program's PositionWSource
