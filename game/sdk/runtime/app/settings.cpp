@@ -25,6 +25,9 @@ Settings& Get() {
     return s;
 }
 
+// the text the file last had from Load or Save, for SaveChanged
+static std::string g_written;
+
 void Load() {
     Settings& s = Get();
     toml::table t;
@@ -52,6 +55,7 @@ void Load() {
         else *o.value = t[o.key].value_or(*o.value);
     }
     if (kGame.load) kGame.load(&t);
+    g_written = SettingsText();  // what this file holds, as far as the settings go
 }
 
 namespace {
@@ -80,9 +84,22 @@ toml::table Table() {
 
 }  // namespace
 
+std::string SettingsText() {
+    std::ostringstream text;
+    text << Table() << "\n";
+    return text.str();
+}
+
 void Save() {
+    g_written = SettingsText();
     std::ofstream f(File());
-    f << Table() << "\n";
+    f << g_written;
+}
+
+bool SaveChanged() {
+    if (SettingsText() == g_written) return false;
+    Save();
+    return true;
 }
 
 void LogSettings() {

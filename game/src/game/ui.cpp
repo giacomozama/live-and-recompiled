@@ -67,6 +67,9 @@ constexpr int kSettleFrames = 3;
 // a rebind is waiting, for the window thread: Escape then cancels it instead of shutting the menu
 std::atomic<bool> g_rebinding{false};
 
+// how long the menu's settings hold still before it saves them
+constexpr double kSaveDelay = 0.5;
+
 // the waiting row's Cancel was under the mouse last frame: a left click there cancels instead of binding Mouse 1
 bool g_cancel_hovered = false;
 
@@ -314,6 +317,19 @@ void Draw(double fps) {
         pending_h = app::Get().height;
     }
     if (!open) g_rebind = -1;  // closing the menu cancels a rebind
+
+    // the menu saves itself: once its settings have held still for kSaveDelay (not every frame of a slider's drag),
+    // and as it shuts
+    static std::string seen;
+    static double seen_at = 0.0;
+    if (open) {
+        std::string now = app::SettingsText();
+        const double t = ImGui::GetTime();
+        if (now != seen) seen = std::move(now), seen_at = t;
+        else if (t - seen_at >= kSaveDelay) app::SaveChanged();
+    } else if (was_open) {
+        app::SaveChanged();
+    }
     was_open = open;
 
     // not from here: setting the title from the render thread could deadlock on the window thread's UiLock; post
@@ -351,12 +367,12 @@ void Draw(double fps) {
                       std::min(std::max(display.y * 0.65f, 640.0f), display.y));
     ImGui::SetNextWindowSize(size, ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowPos(ImVec2(display.x * 0.5f, display.y * 0.5f), ImGuiCond_FirstUseEver, ImVec2(0.5f, 0.5f));
-    if (ImGui::Begin("Settings")) {
+    bool keep_open = true;
+    if (ImGui::Begin("Settings", &keep_open)) {
         bool keys_shown = false;
         if (ImGui::BeginTabBar("##tabs")) {
-            // each tab scrolls on its own above the Save / Close row
-            const float footer = ImGui::GetFrameHeightWithSpacing() + ImGui::GetTextLineHeightWithSpacing() +
-                                 ImGui::GetStyle().ItemSpacing.y * 2.0f;
+            // each tab scrolls on its own above the footer line
+            const float footer = ImGui::GetTextLineHeightWithSpacing() + ImGui::GetStyle().ItemSpacing.y * 2.0f;
             auto tab = [&](const char* name) {
                 if (!ImGui::BeginTabItem(name)) return false;
                 ImGui::BeginChild("##page", ImVec2(0, -footer));
@@ -486,12 +502,10 @@ void Draw(double fps) {
         if (!keys_shown) g_rebind = -1;  // leaving the Controls tab cancels a rebind
 
         ImGui::Separator();
-        if (ImGui::Button("Save")) app::Save();
-        ImGui::SameLine();
-        if (ImGui::Button("Close")) g_open.store(false);
-        ImGui::TextDisabled("Esc toggles this menu");
+        ImGui::TextDisabled("Esc toggles this menu; changes save as they are made");
     }
     ImGui::End();
+    if (!keep_open) g_open.store(false);  // the window's X
 }
 
 bool Message(void* hwnd, uint32_t msg, uintptr_t wp, intptr_t lp, intptr_t* result) {

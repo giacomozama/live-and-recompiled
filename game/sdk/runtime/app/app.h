@@ -32,6 +32,9 @@ struct Settings {
 Settings& Get();
 void Load();
 void Save();
+// Save, when the settings differ from what the file had at Load or last Save; true when it wrote
+bool SaveChanged();
+std::string SettingsText();  // the settings as Save writes them
 void LogSettings();  // every setting, as the settings file has them
 void LogSystem();    // the machine and the settings, at a run's start
 void InstallCrashHandler();          // crash.cpp: unhandled exceptions, aborts and terminate write a report to the log
