@@ -865,6 +865,7 @@ private:
     uint32_t cap_rt_ = 0;
     std::unordered_set<uint32_t> cap_seen_;
     std::unordered_set<uint64_t> cap_sh_;
+    std::array<std::array<float, 4>, 192> cap_vsc_{};  // the vertex constants at the last captured draw
     struct CapTex {
         ImageRef res;
         VkImageView view;
@@ -3107,6 +3108,7 @@ void VulkanBackend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t
             fprintf(cap_, "\n     s%d filter %u %u %u addr %u %u lod %g..%g bias %g aniso %u mips %u", i, sd.min,
                     sd.mag, sd.mip, sd.u, sd.v, sd.min_lod, sd.max_lod, sd.bias, sd.aniso, stages.levels[i]);
         }
+        CaptureConstantChanges(cap_, s, cap_vsc_);
         // a program's first draw also lists its constants
         if (count > kQuadVertices && !cap_sh_.count(sh.vkey)) CaptureInputs(cap_, s, a, c);
         EndDrawCapture(s, a, count, c);
@@ -3341,11 +3343,16 @@ void VulkanBackend::StartCapture() {
     snprintf(stamp, sizeof(stamp), "%02d%02d%02d_%u", tm.tm_hour, tm.tm_min, tm.tm_sec, cap_seq_);
     std::error_code ec;
     cap_dir_ = std::filesystem::weakly_canonical(app::ExeDir() / diag::CaptureDir() / stamp, ec);
+    // two presses in one second: the second gets its own folder
+    for (int n = 2; std::filesystem::exists(cap_dir_, ec); n++)
+        cap_dir_ = std::filesystem::weakly_canonical(
+            app::ExeDir() / diag::CaptureDir() / (std::string(stamp) + "-" + std::to_string(n)), ec);
     std::filesystem::create_directories(cap_dir_, ec);
     cap_ = OpenFile(cap_dir_ / "frame.txt", "w");
     cap_i_ = cap_rt_ = 0;
     cap_seen_.clear();
     cap_sh_.clear();
+    cap_vsc_ = {};
 }
 
 // ramp_ holds the red, green and blue ramps, 256 entries each

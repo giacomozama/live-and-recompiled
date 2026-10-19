@@ -461,7 +461,7 @@ void CaptureInputs(FILE* f, const State& s, const Assembled& a, const DrawConsta
     fprintf(f, "\n     verts");
     uint32_t n = 0;
     for (int r = 0; r < 16; r++) n += (a.regs >> r) & 1;
-    for (size_t v = 0; v < std::min<size_t>(4, n ? a.vertices.size() / (n * 4) : 0); v++) {
+    for (size_t v = 0; v < std::min<size_t>(16, n ? a.vertices.size() / (n * 4) : 0); v++) {
         fprintf(f, " [");
         for (uint32_t k = 0; k < n * 4; k++) fprintf(f, " %g", a.vertices[v * n * 4 + k]);
         fprintf(f, " ]");
@@ -476,6 +476,24 @@ void CaptureInputs(FILE* f, const State& s, const Assembled& a, const DrawConsta
     for (size_t r = 0; r < std::size(c.pc); r++) {
         fprintf(f, " (%.3f %.3f %.3f %.3f)", c.pc[r][0], c.pc[r][1], c.pc[r][2], c.pc[r][3]);
     }
+}
+
+void CaptureConstantChanges(FILE* f, const State& s, std::array<std::array<float, 4>, 192>& prev) {
+    fprintf(f, "\n     cset");
+    for (int r = 0; r < kVsConstants;) {
+        if (s.vsc[size_t(r)] == prev[size_t(r)]) {
+            r++;
+            continue;
+        }
+        int e = r;
+        while (e + 1 < kVsConstants && s.vsc[size_t(e + 1)] != prev[size_t(e + 1)]) e++;
+        if (e == r)
+            fprintf(f, " c%d", r - kVsConstantBias);
+        else
+            fprintf(f, " c%d-c%d", r - kVsConstantBias, e - kVsConstantBias);
+        r = e + 1;
+    }
+    prev = s.vsc;
 }
 
 void CaptureDrawLine(FILE* f, uint32_t index, uint32_t ds_data, const State& s, uint32_t prim, uint32_t count,

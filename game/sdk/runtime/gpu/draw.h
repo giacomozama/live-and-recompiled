@@ -303,6 +303,8 @@ void FillLightConstants(const State& s, const FixedKey& fk, DrawConstants& c);
 void CaptureDrawLine(FILE* f, uint32_t index, uint32_t ds_data, const State& s, uint32_t prim, uint32_t count,
                      const PsoKey& k, const DrawConstants& c);
 void CaptureInputs(FILE* f, const State& s, const Assembled& a, const DrawConstants& c);
+// the vertex constants that differ from prev (the last captured draw's), which it then takes
+void CaptureConstantChanges(FILE* f, const State& s, std::array<std::array<float, 4>, 192>& prev);
 FILE* OpenFile(const std::filesystem::path& p, const char* mode);
 // a top down 32 bit BMP of w x h BGRA pixels
 void WriteBmp(const std::filesystem::path& p, const std::vector<uint8_t>& px, uint32_t w, uint32_t h);
