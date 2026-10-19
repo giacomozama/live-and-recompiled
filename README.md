@@ -25,7 +25,7 @@ enhancements. It's built on a heavily modified version of
 - Still in the process of recording shaders encountered during gameplay. These can then be rebuilt at startup time so future players never encounter stutters even during their first gameplay. Sharing these is also appreciated (`shaders.rec`)
 - Mouse looking currently works very poorly.
 - Minor depth of field quirks.
-- Bugs with above-30 FPS settings (especially 120fps).
+- Bugs with the 60 FPS setting.
 - No effort has been made to implement multiplayer yet, it's not a priority since deep down everyone knows no one will actually play it more than once.
 
 ## Installation
@@ -80,9 +80,9 @@ Developers: building from source differs from Setup, see [Building from source](
 ## Features
 
 ### Display
-- **Frame Rate** - 30 (the original), 60 or 120 (experimental) FPS, from the Esc menu or `frame_rate` in
-  `settings.toml`. The game's timers follow real time at any rate, and the frame rate is also the FPS limit. V-Sync
-  still applies.
+- **Frame Rate** - 30 (the original) or 60 FPS, from the Esc menu or `frame_rate` in `settings.toml`. The game's
+  timers follow real time at either rate, and the frame rate is also the FPS limit. V-Sync still applies. There is no
+  120: the game's clock counts 60ths of a second, so half the frames would advance none and play would jitter.
 - **Any Aspect Ratio** - The 3D view widens to the display's shape (`aspect = "auto"`), or to any `W:H` such as
   `"21:9"`; `"4:3"` keeps the original view. The HUD stretches with the frame. Raise Render % to sharpen wide frames.
 

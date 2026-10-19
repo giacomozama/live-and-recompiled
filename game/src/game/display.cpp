@@ -11,8 +11,9 @@
 //     (0x2A8020, D3DSWAPDATA.MissedVBlanks) reports missed, at most 60
 // About 400 places step by ticks (counters, fades, integer motion), so the XBE patch's interval ONE (60 FPS) is one
 // tick a frame. Here ticks come from the time the frame took instead, rounded with the remainder carried, so they
-// stay right at any frame rate: two a frame at 30, one at 60, alternately one and none at 120. Nothing divides by
-// them. Fixed step mode measures time in ticks alone, so it never gets a frame without one and runs at most 60.
+// stay right when a frame runs long, at least one a frame. Nothing runs above 60: the ticks would alternate one and
+// none, and what steps by them (Conker's jump and fall, weapon mode's walk, the pad's presses) would move or read
+// only on every second frame, so jitter and drop half the presses.
 //
 // Aspect. 0x64468 builds a camera's projection from its aspect ([camera+0x260], 4:3) and vertical field of view
 // ([camera+0x264]). The widescreen patch multiplied the aspect by 4/3 there for a 16:9 TV; scaling it by the display
@@ -44,24 +45,24 @@ uint32_t g_frame_rate = 30;
 
 namespace {
 
-constexpr uint32_t kFixedStep = 0x7819D5;          // byte: dt is ticks / 60 (multiplayer)
 constexpr uint32_t kPresentInterval = 0x549BF4;    // D3DRS_PRESENTATIONINTERVAL in the render state shadow
 constexpr uint32_t kIntervalImmediate = 0x80000000u;
 
-// what the setting asks for: 30 (the console's), 60 or 120
+uint32_t Clamp(uint32_t r) { return r <= 30 ? 30 : 60; }
+
+// what the setting asks for: 30 (the console's) or 60
 uint32_t Rate() {
     static const uint32_t env = [] {
         const char* e = std::getenv("XBE_FRAME_RATE");
         return e ? uint32_t(std::atoi(e)) : 0u;
     }();
-    uint32_t r = env ? env : g_frame_rate;
-    return r <= 30 ? 30 : r <= 60 ? 60 : 120;
+    return Clamp(env ? env : g_frame_rate);
 }
 
 }  // namespace
 
 void SetFrameRate(uint32_t rate) {
-    g_frame_rate = rate;
+    g_frame_rate = Clamp(rate);  // a settings.toml from when 120 was offered runs, and saves, 60
     app::Get().fps_cap = Rate();
 }
 
@@ -98,7 +99,6 @@ X86_FUNC(sub_002A7B60) {
     static uint32_t shown = 0;
     static clock::time_point next = clock::now();
     uint32_t rate = Rate();
-    if (rate > 30 && base[display::kFixedStep] && rate > 60) rate = 60;  // fixed step: every frame a tick
     if (rate != shown) {
         LOGR("display: %u FPS%s", rate, rate > 30 ? ", ticks from the frame time" : " (the console's)");
         shown = rate;
@@ -122,6 +122,7 @@ X86_FUNC(sub_002A7B60) {
 
 // [[hook]] before 0x2A7CBC in the frame timer: ecx holds the frame's ticks, [esp+0x10] the microseconds it took
 void ConkerFrameTicks(X86Context& ctx, uint8_t* base) {
+    (void)base;
     static double carry = 0;
     if (Rate() <= 30) {
         carry = 0;
@@ -129,31 +130,13 @@ void ConkerFrameTicks(X86Context& ctx, uint8_t* base) {
     }
     uint64_t us = uint64_t(kernel::R32(ctx.esp + 0x10)) | uint64_t(kernel::R32(ctx.esp + 0x14)) << 32;
     double t = carry + double(int64_t(us)) * 60e-6;
-    int32_t ticks = int32_t(std::min(std::max(t + 0.5, 0.0), 60.0));
-    // fixed step, or 60 FPS and below: a frame is a tick at least. The console never sees a frame of none, and a
-    // short frame after a long one rounded to none (carry -0.5 + 0.9) made the step 0x2D37F4 stores zero and divided by it
-    if ((base[display::kFixedStep] || Rate() <= 60) && ticks < 1) ticks = 1;
+    // a frame is a tick at least: the console never sees a frame of none, and a short frame after a long one rounded
+    // to none (carry -0.5 + 0.9) made the step 0x2D37F4 stores zero, which 0x2DA316 divides by
+    int32_t ticks = int32_t(std::min(std::max(t + 0.5, 1.0), 60.0));
     carry = std::clamp(t - ticks, -0.5, 0.5);
     static const bool trace = std::getenv("XBE_TRACE_TICKS") != nullptr;
     if (trace) LOGR("display: frame %llu us, %d ticks (console's %u), carry %.2f", (unsigned long long)us, ticks, ctx.ecx, carry);
     ctx.ecx = uint32_t(ticks);
-}
-
-// [[hook]] before 0x2D37F4: cx holds the frame's step, int(speed [edi+0x11C] * [0x7F9F54] * dt [0x7FA24C] * 100), which
-// 0x2DA316 and others divide by. Above 60 FPS a frame may be no tick at all, dt 0 and the step with it, which the console
-// never has: such a frame takes one tick's step (dt 0.5), at least 1.
-void ConkerFrameStep(X86Context& ctx, uint8_t* base) {
-    (void)base;
-    if (uint16_t(ctx.ecx)) return;
-    auto f32 = [](uint32_t va) {
-        uint32_t v = kernel::R32(va);
-        float f;
-        std::memcpy(&f, &v, 4);
-        return f;
-    };
-    if (f32(0x7FA24C) != 0.0f) return;  // a step the game made zero itself stays
-    int32_t step = int32_t(f32(ctx.edi + 0x11C) * f32(0x7F9F54) * 0.5f * 100.0f);
-    ctx.ecx = (ctx.ecx & 0xFFFF0000u) | uint16_t(std::clamp(step, 1, 0x7FFF));
 }
 
 // [[hook]] before 0x64468 in the camera projection: xmm1 holds the camera's aspect

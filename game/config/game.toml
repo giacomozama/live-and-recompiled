@@ -342,9 +342,5 @@ at = 0x2A7CBC  # frame timer: the frame's ticks from the time it took, above 30 
 call = "ConkerFrameTicks"
 
 [[hook]]
-at = 0x2D37F4  # the frame's step, a divisor (0x2DA316): never zero on a frame of no ticks
-call = "ConkerFrameStep"
-
-[[hook]]
 at = 0x64468   # camera projection: its aspect widened to the display's (Hor+)
 call = "ConkerCameraAspect"

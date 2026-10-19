@@ -437,11 +437,11 @@ void Draw(double fps) {
                 Slider("Render %", &s.render_percent, 25, 400, app::Settings{}.render_percent);
                 ImGui::Checkbox("V-Sync", &s.vsync);
 
-                constexpr uint32_t kRates[] = {30, 60, 120};
+                constexpr uint32_t kRates[] = {30, 60};
                 int rate = 0;
-                for (int i = 0; i < 3; i++)
+                for (int i = 0; i < 2; i++)
                     if (kRates[i] == display::g_frame_rate) rate = i;
-                if (ImGui::Combo("Frame rate", &rate, "30 (original)\0 60\0 120 (experimental)\0"))
+                if (ImGui::Combo("Frame rate", &rate, "30 (original)\0 60\0"))
                     display::SetFrameRate(kRates[rate]);
 
                 ImGui::SeparatorText("Quality");
