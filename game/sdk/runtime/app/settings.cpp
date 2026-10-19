@@ -46,6 +46,9 @@ void Load() {
     s.vsync = t["vsync"].value_or(s.vsync);
     s.aniso = t["anisotropic_filtering"].value_or(s.aniso);
     s.msaa = t["msaa"].value_or(s.msaa);
+    s.smaa = t["smaa"].value_or(s.smaa);
+    s.film_grain = t["film_grain"].value_or(s.film_grain);
+    s.chromatic_aberration = t["chromatic_aberration"].value_or(s.chromatic_aberration);
     s.shader_warmup = t["shader_warmup"].value_or(s.shader_warmup);
     s.renderer = t["renderer"].value_or(s.renderer);
     s.aspect = t["aspect"].value_or(s.aspect);
@@ -70,6 +73,9 @@ toml::table Table() {
                   {"vsync", s.vsync},
                   {"anisotropic_filtering", int64_t(s.aniso)},
                   {"msaa", int64_t(s.msaa)},
+                  {"smaa", s.smaa},
+                  {"film_grain", int64_t(s.film_grain)},
+                  {"chromatic_aberration", int64_t(s.chromatic_aberration)},
                   {"shader_warmup", s.shader_warmup},
                   {"renderer", s.renderer},
                   {"aspect", s.aspect},

@@ -297,6 +297,9 @@ void FillCombinerConstants(const State& s, DrawConstants& c);
 void FillTextureConstants(const State& s, const bool rt[4], const bool exact[4], const float k[4],
                           const float wide[4], DrawConstants& c);
 void FillTransformConstants(const State& s, GuestExtent size, DrawConstants& c);
+// the same clip w for every vertex: an orthographic projection, or vertices already on the screen (text, menus, full
+// screen passes); pos_w is a vertex program's PositionWSource
+bool ScreenSpace(const State& s, const Assembled& a, int pos_w);
 void FillLightConstants(const State& s, const FixedKey& fk, DrawConstants& c);
 
 // frame captures: a draw's line without its textures, and a small draw's inputs and constants

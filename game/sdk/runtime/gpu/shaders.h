@@ -43,6 +43,11 @@ PixelKey MakePixelKey(const State& s, const TexInfo tex[4]);
 // vertex program microcode to HLSL, regs is the bit mask of v registers the draw supplies
 // decode: VertexDecode per register, 4 bits each, for elements the input assembler hands over raw
 std::string VertexProgramHlsl(const std::vector<uint32_t>& program, uint16_t regs, uint64_t decode = 0);
+// where a vertex program's clip w comes from: the constant register (hardware order) a dp4 or dph into oPos.w reads,
+// kPosWInput when it is moved from an input (vertices already on the screen), kPosWUnknown otherwise
+constexpr int kPosWInput = -1;
+constexpr int kPosWUnknown = -2;
+int PositionWSource(const std::vector<uint32_t>& program);
 // fixed function vertex state a shader is built for
 struct FixedKey {
     uint32_t light = 0;    // bit 0 lighting, 1 specular, 2 local viewer, 3 normalize, then D3DMCS 2 bits each from bit 8:

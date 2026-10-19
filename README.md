@@ -88,6 +88,8 @@ Developers: building from source differs from Setup, see [Building from source](
 ### Graphics
 - **MSAA** - 2x, 4x or 8x multisample anti-aliasing of the 3D view, from the Esc menu or `msaa` in `settings.toml`. It
   applies at once. Alpha-tested edges such as foliage and fur are not smoothed.
+- **Effects** - SMAA, film grain and chromatic aberration over the 3D picture, under the menus, text and speech
+  bubbles drawn over it, from the Esc menu or `smaa`, `film_grain` and `chromatic_aberration` in `settings.toml`.
 - **Shader Warm-up** - The shaders and pipelines a run builds are listed in `shaders.rec` beside the exe, and the next
   launch builds them in the background while the game boots, before the frames that need them. `shaders.rec` holds no
   game code and can be shared: vertex programs are named in it by hash, and their code goes in `shader_programs.bin`,
@@ -274,6 +276,7 @@ Both scripts run `tools/package.cmake`, which can also be run directly: `cmake -
 - [Xbox XBE Recomp](https://github.com/TGP482/XboxXBE-Recomp), the recompiler and runtime this is built on.
 - [XenonRecomp](https://github.com/hedge-dev/XenonRecomp) for the overridable function layout and instruction hooks.
 - [xemu](https://github.com/xemu-project/xemu) and [Cxbx-Reloaded](https://github.com/Cxbx-Reloaded/Cxbx-Reloaded) as references for the Xbox's hardware and API behaviour. This project does not use emulation or any emulator code.
+- [SMAA](http://www.iryoku.com/smaa/) by Jorge Jimenez, Jose I. Echevarria, Belen Masia, Fernando Navarro and Diego Gutierrez (MIT), for the anti-aliasing effect.
 - [Zydis](https://github.com/zyantific/zydis) for decoding x86 instructions, [toml++](https://github.com/marzer/tomlplusplus) for the configs, [Dear ImGui](https://github.com/ocornut/imgui) for the settings overlay and [SDL](https://github.com/libsdl-org/SDL) for the window, input and controllers.
 - [llvm-mingw](https://github.com/mstorsjo/llvm-mingw) (Clang, LLD, mingw-w64, libc++), the compiler `setup-windows.exe` builds the game with.
 - [Zig](https://ziglang.org) (`zig c++`: Clang, LLD, glibc stubs, libc++), the compiler `setup-linux` builds the native game with.

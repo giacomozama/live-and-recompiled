@@ -23,6 +23,10 @@ struct Settings {
     bool vsync = true;
     uint32_t aniso = 0;              // 0 as the game asks
     uint32_t msaa = 1;               // samples per pixel of the frame-sized targets: 1 (off), 2, 4 or 8
+    // effects over the 3D picture, before the title's 2D draws: SMAA, then film grain and chromatic aberration in %
+    bool smaa = false;
+    uint32_t film_grain = 0;
+    uint32_t chromatic_aberration = 0;
     bool shader_warmup = true;       // make the shaders shaders.rec lists while the title boots
     std::string renderer = "vulkan";  // which gpu::Backend draws, read at launch (gpu/backend.cpp)
     std::string aspect = "auto";     // "W:H" ("4:3", "16:9", "21:9", ...), or "auto": the output's own shape

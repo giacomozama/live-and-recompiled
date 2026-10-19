@@ -691,6 +691,40 @@ std::string VertexProgramHlsl(const std::vector<uint32_t>& prog, uint16_t regs, 
     return s;
 }
 
+int PositionWSource(const std::vector<uint32_t>& prog) {
+    // what each temporary's w lane holds, R12 being oPos
+    int w[13];
+    std::fill(std::begin(w), std::end(w), kPosWUnknown);
+    for (size_t n = 0; n + 4 <= prog.size(); n += 4) {
+        Tok k{&prog[n]};
+        uint32_t mac = k.f(1, 21, 4), ilu = k.f(1, 25, 3);
+        if (mac || ilu) {
+            // the MAC result's w: dp4 or dph with the constant operand, or a mov of an input or a temporary's w
+            int mw = kPosWUnknown;
+            uint32_t a_mux = k.f(2, 26, 2), b_mux = k.f(2, 11, 2), a_reg = k.f(2, 28, 4);
+            if ((mac == 6 || mac == 7) && !k.f(3, 1, 1) && (a_mux == 3 || b_mux == 3)) mw = int(k.f(1, 13, 8));
+            else if (mac == 1 && a_mux == 2) mw = kPosWInput;
+            else if (mac == 1 && a_mux == 1 && k.f(1, 0, 2) == 3 && a_reg <= 12) mw = w[a_reg];
+            uint32_t r = k.f(3, 20, 4);
+            if (mac && mac != 13) {
+                uint32_t m = k.f(3, 24, 4);
+                if (ilu && r == 1) m = 0;
+                if ((m & 1) && r <= 12) w[r] = mw;
+            }
+            if (ilu) {
+                uint32_t m = k.f(3, 16, 4), ir = mac ? 1 : r;
+                if ((m & 1) && ir <= 12) w[ir] = kPosWUnknown;
+            }
+            bool use_ilu = k.f(3, 2, 1) == 1;
+            if ((k.f(3, 12, 4) & 1) && k.f(3, 11, 1) && (k.f(3, 3, 8) & 0xF) == 0 &&
+                ((use_ilu && ilu) || (!use_ilu && mac && mac != 13)))
+                w[12] = use_ilu ? kPosWUnknown : mw;
+        }
+        if (k.f(3, 0, 1)) break;  // last instruction
+    }
+    return w[12];
+}
+
 FixedKey MakeFixedKey(const State& s) {
     FixedKey f;
     if (s.rs[kRsLighting]) {

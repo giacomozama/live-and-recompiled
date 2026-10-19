@@ -59,6 +59,8 @@
 #include "gpu/draw.h"
 #include "gpu/shader_record.h"
 #include "gpu/shaders.h"
+#include "gpu/smaa_hlsl.h"
+#include "gpu/smaa_tex.h"
 #include "gpu/texture.h"
 #include "gpu/vertex.h"
 #include "kernel/kernel.h"
@@ -130,6 +132,118 @@ O vs(uint id : SV_VertexID) {
 }
 float psmain(O i) : SV_Depth { return img.SampleLevel(ps, i.uv, 0); }
 )";
+
+// the effects over the frame's 3D picture (app::Settings) past SMAA (kSmaaHeadHlsl): grade's chromatic aberration and
+// film grain. px: 1 / size, size; opts: aberration, grain (0 to 1), the frame's grain seed
+const char* kPostHlsl = R"(
+cbuffer B : register(b1) { float4 px; float4 opts; };
+Texture2D img : register(t0);
+SamplerState ls : register(s0);
+struct O { float4 p : SV_Position; float2 uv : TEXCOORD0; };
+O vs(uint id : SV_VertexID) {
+    O o;
+    o.uv = float2((id << 1) & 2, id & 2);
+    o.p = float4(o.uv * float2(2, -2) + float2(-1, 1), 0, 1);
+    return o;
+}
+float hash(float2 p) {
+    float3 p3 = frac(p.xyx * 0.1031);
+    p3 += dot(p3, p3.yzx + 33.33);
+    return frac((p3.x + p3.y) * p3.z);
+}
+float4 grade(O i) : SV_Target {
+    float4 c = img.SampleLevel(ls, i.uv, 0);
+    // red and blue pulled apart along the radius, up to 0.6% of the frame at the corners
+    float2 d = (i.uv - 0.5) * opts.x * 0.012;
+    c.r = img.SampleLevel(ls, i.uv + d, 0).r;
+    c.b = img.SampleLevel(ls, i.uv - d, 0).b;
+    // grain: noise per pixel, two hashes summed so it gathers around 0, new each frame, strongest in the shadows
+    float2 g = floor(i.p.xy) + opts.z * float2(37.13, 17.71);
+    float n = 0.5 * (hash(g) + hash(g + float2(113.7, 271.3)));
+    float l = dot(c.rgb, float3(0.299, 0.587, 0.114));
+    c.rgb = saturate(c.rgb + (n - 0.5) * opts.y * 0.3 * (1 - 0.6 * l));
+    return c;
+}
+)";
+
+// SMAA (gpu/smaa_hlsl.h) in its custom shading language mode, a source per pass (SmaaHlsl). No texture is handed to a
+// function: SMAA's texture arguments become unused uints and its sampling macros read the global of the argument's
+// name, which the pass declares.
+const char* kSmaaHeadHlsl = R"(
+cbuffer B : register(b1) { float4 px; float4 opts; };
+SamplerState ls : register(s0);
+SamplerState ps : register(s1);
+#define SMAA_CUSTOM_SL
+#define SMAA_PRESET_HIGH
+#define SMAA_RT_METRICS px
+#define SMAATexture2D(tex) uint tex##_unused
+#define SMAATexturePass2D(tex) 0u
+#define SMAASampleLevelZero(tex, coord) tex.SampleLevel(ls, coord, 0)
+#define SMAASampleLevelZeroPoint(tex, coord) tex.SampleLevel(ps, coord, 0)
+#define SMAASampleLevelZeroOffset(tex, coord, offset) tex.SampleLevel(ls, coord, 0, offset)
+#define SMAASample(tex, coord) tex.SampleLevel(ls, coord, 0)
+#define SMAASamplePoint(tex, coord) tex.SampleLevel(ps, coord, 0)
+#define SMAASampleOffset(tex, coord, offset) tex.SampleLevel(ls, coord, 0, offset)
+#define SMAA_FLATTEN [flatten]
+#define SMAA_BRANCH [branch]
+)";
+
+// the passes, each computing the offsets SMAA's vertex shaders would hand it
+const char* kSmaaTailHlsl = R"(
+struct O { float4 p : SV_Position; float2 uv : TEXCOORD0; };
+O vs(uint id : SV_VertexID) {
+    O o;
+    o.uv = float2((id << 1) & 2, id & 2);
+    o.p = float4(o.uv * float2(2, -2) + float2(-1, 1), 0, 1);
+    return o;
+}
+#ifdef SMAA_EDGES
+float4 edges(O i) : SV_Target {
+    float4 off[3];
+    SMAAEdgeDetectionVS(i.uv, off);
+    return float4(SMAALumaEdgeDetectionPS(i.uv, off, 0u), 0, 0);
+}
+#endif
+#ifdef SMAA_WEIGHTS
+float4 weights(O i) : SV_Target {
+    float4 off[3];
+    float2 pix;
+    SMAABlendingWeightCalculationVS(i.uv, pix, off);
+    return SMAABlendingWeightCalculationPS(i.uv, pix, off, 0u, 0u, 0u, float4(0, 0, 0, 0));
+}
+#endif
+#ifdef SMAA_BLEND
+float4 blend(O i) : SV_Target {
+    float4 off;
+    SMAANeighborhoodBlendingVS(i.uv, off);
+    return SMAANeighborhoodBlendingPS(i.uv, off, 0u, 0u);
+}
+#endif
+)";
+
+// SMAA's pass 0 edges (colorTex at t0), 1 blending weights (edgesTex, areaTex, searchTex at t0 to t2), 2 neighbourhood
+// blending (colorTex, blendTex at t0 and t1); the names a pass doesn't read, its functions' all the same, sit at t3
+const char* SmaaHlsl(int pass) {
+    static const std::array<std::string, 3> src = [] {
+        const char* names[] = {"colorTex", "edgesTex", "areaTex", "searchTex", "blendTex", "tex", "predicationTex",
+                               "depthTex", "velocityTex", "currentColorTex", "previousColorTex"};
+        const std::vector<std::string> used[3] = {{"colorTex"}, {"edgesTex", "areaTex", "searchTex"},
+                                                  {"colorTex", "blendTex"}};
+        const char* defines[3] = {"#define SMAA_EDGES\n", "#define SMAA_WEIGHTS\n", "#define SMAA_BLEND\n"};
+        std::array<std::string, 3> out;
+        for (size_t p = 0; p < 3; p++) {
+            std::string g = defines[p];
+            for (const char* n : names) {
+                auto at = std::find(used[p].begin(), used[p].end(), n);
+                size_t reg = at == used[p].end() ? 3 : size_t(at - used[p].begin());
+                g += "Texture2D " + std::string(n) + " : register(t" + std::to_string(reg) + ");\n";
+            }
+            out[p] = g + kSmaaHeadHlsl + kSmaaHlsl + kSmaaTailHlsl;
+        }
+        return out;
+    }();
+    return src[size_t(pass)].c_str();
+}
 
 // a depth buffer's depth and stencil read pixel for pixel, the first sample of each when MS is defined: depth writes
 // the depth, stencilbit keeps the pixels whose stencil has bit opts.x. A stencil view reads the stencil in its first
@@ -630,6 +744,14 @@ private:
     void Pass(const char* hlsl, const char* entry, VkFormat rtv, Image& target, uint32_t w, uint32_t h,
               const VkImageView src[3], const float p[8], float blend);
     VkPipeline EnsurePassPipeline(const char* hlsl, const char* entry, VkFormat rtv, float blend);
+    // the effects over the 3D picture (kPostHlsl): once a frame, at the first screen space draw onto the frame-sized
+    // target after a 3D one, else at Present
+    bool PostWanted() const;
+    bool ScreenSpaceDraw(const State& s, const Assembled& a);
+    bool ReadsTarget(const State& s);
+    void TrackPost(const State& s, bool flat);
+    void ApplyPost(Target& t);
+    bool EnsureSmaaTextures();
     // Draw, in call order, each callee right after its caller
     bool DepthCopy(const State& s);
     VkPipeline EnsureDepthCopyPipeline();
@@ -920,6 +1042,13 @@ private:
     std::vector<Query> counted_;  // since the last ClearReport
     std::deque<Report> reports_;
     uint32_t frame_draws_ = 0, frame_opaque_ = 0, frame_counted_ = 0;  // for the optional per-frame summary
+    // the effects over the 3D picture: the frame-sized target 3D was drawn to this frame (0 for none), whether they
+    // were drawn, the copies they read, and each vertex program's PositionWSource by hash
+    uint32_t post_rt_ = 0;
+    bool post_done_ = false;
+    ImageRef post_tmp_[4];
+    ImageRef smaa_area_, smaa_search_;  // SMAA's lookups (gpu/smaa_tex.h)
+    std::unordered_map<uint64_t, int> pos_w_;
     uint64_t presents_ = 0;
     uint64_t draw_serial_ = 0;  // draws so far, Target::fb_draw
     State sprite_;              // a fixed function point sprite's state as the console draws it (SpriteStage)
@@ -3037,6 +3166,119 @@ void VulkanBackend::DeliverReports() {
     }
 }
 
+bool VulkanBackend::PostWanted() const {
+    const app::Settings& set = app::Get();
+    return set.smaa || set.film_grain || set.chromatic_aberration;
+}
+
+bool VulkanBackend::ScreenSpaceDraw(const State& s, const Assembled& a) {
+    int pos_w = kPosWUnknown;
+    if ((s.vs_handle & 1) && s.vs && !s.vs->program.empty()) {
+        EnsureProgramHash(s);
+        auto [it, fresh] = pos_w_.try_emplace(s.vs->hash, kPosWUnknown);
+        if (fresh) it->second = PositionWSource(s.vs->program);
+        pos_w = it->second;
+    }
+    return ScreenSpace(s, a, pos_w);
+}
+
+// stage 0 samples a target: the title's own passes over the frame (bloom, depth of field), which stay under the effects
+bool VulkanBackend::ReadsTarget(const State& s) {
+    TextureDesc d;
+    if (!s.textures[0] || !Describe(s.textures[0], d)) return false;
+    return targets_.count(SizedTargetKey(d.data, Format(d.format).depth, d.width, d.height)) != 0;
+}
+
+// a 3D draw onto the frame-sized target marks it; the first screen space one after that draws the effects under it
+void VulkanBackend::TrackPost(const State& s, bool flat) {
+    if (post_done_ || !PostWanted()) return;
+    Target* rt = FindTarget(s.rt, false);
+    if (!rt || rt->gw != guest_w_ || rt->gh != guest_h_) return;
+    if (!flat) {
+        post_rt_ = s.rt.data;
+        return;
+    }
+    if (post_rt_ != s.rt.data || ReadsTarget(s)) return;
+    ApplyPost(*rt);
+}
+
+// SMAA's lookups as BGRA textures, made the first time SMAA runs
+bool VulkanBackend::EnsureSmaaTextures() {
+    if (!smaa_area_) {
+        std::vector<uint8_t> px(size_t(kSmaaAreaW) * kSmaaAreaH * 4, 0xFF);
+        for (size_t i = 0; i < size_t(kSmaaAreaW) * kSmaaAreaH; i++) {
+            px[i * 4 + 0] = 0;
+            px[i * 4 + 1] = kSmaaArea[i * 2 + 1];
+            px[i * 4 + 2] = kSmaaArea[i * 2];
+        }
+        smaa_area_ = CreatePixelTexture(px, kSmaaAreaW * 4, kSmaaAreaW, kSmaaAreaH);
+    }
+    if (!smaa_search_) {
+        std::vector<uint8_t> px(size_t(kSmaaSearchW) * kSmaaSearchH * 4, 0xFF);
+        for (size_t i = 0; i < size_t(kSmaaSearchW) * kSmaaSearchH; i++) {
+            px[i * 4 + 0] = px[i * 4 + 1] = 0;
+            px[i * 4 + 2] = kSmaaSearch[i];
+        }
+        smaa_search_ = CreatePixelTexture(px, kSmaaSearchW * 4, kSmaaSearchW, kSmaaSearchH);
+    }
+    return smaa_area_ && smaa_search_;
+}
+
+// the target's picture through SMAA and grade, each pass reading what the one before wrote and the last
+// writing the target
+void VulkanBackend::ApplyPost(Target& t) {
+    post_done_ = true;
+    const app::Settings& set = app::Get();
+    bool grade = set.film_grain || set.chromatic_aberration;
+    bool smaa = set.smaa;
+    if (smaa && !EnsureSmaaTextures()) return;
+    // the picture's copy, SMAA's result when grade follows, then its edges and blending weights
+    for (size_t i = 0; i < (smaa ? 4u : 1u); i++) {
+        ImageRef& im = post_tmp_[i];
+        if (im && im->w == t.w && im->h == t.h && im->format == t.fmt) continue;
+        if (im) Retire(im);
+        im = NewImage({.fmt = t.fmt, .w = t.w, .h = t.h,
+                       .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+                                VK_IMAGE_USAGE_TRANSFER_DST_BIT});
+        if (!im) return;
+    }
+    if (cap_) fprintf(cap_, "     note effects over the 3D picture of %08X\n", t.data);
+    ResolveSamples(t);
+    Transition(*t.res, kSrc);
+    Transition(*post_tmp_[0], kDst);
+    Barrier();
+    VkImageCopy r{};
+    r.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    r.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    r.extent = {t.w, t.h, 1};
+    vkCmdCopyImage(cmd_, t.res->image, kSrc, post_tmp_[0]->image, kDst, 1, &r);
+    WriteRes(t, true);
+    t.drawn = true;
+    float p[8] = {1.0f / t.w, 1.0f / t.h, float(t.w), float(t.h),
+                  set.chromatic_aberration / 100.0f, set.film_grain / 100.0f, float(presents_ % 1024), 0};
+    auto run = [&](const char* hlsl, const char* entry, Image& dst, std::initializer_list<Image*> in) {
+        VkImageView views[3] = {};
+        size_t i = 0;
+        for (Image* im : in) {
+            Transition(*im, kRead);
+            views[i++] = im->view;
+        }
+        Pass(hlsl, entry, t.fmt, dst, t.w, t.h, views, p, -1);
+    };
+    Image* src = post_tmp_[0].get();
+    if (smaa) {
+        Image& dst = grade ? *post_tmp_[1] : *t.res;
+        Image& edges = *post_tmp_[2];
+        Image& weights = *post_tmp_[3];
+        ClearWhole(edges);  // the edge pass discards where it finds none
+        run(SmaaHlsl(0), "edges", edges, {src});
+        run(SmaaHlsl(1), "weights", weights, {&edges, smaa_area_.get(), smaa_search_.get()});
+        run(SmaaHlsl(2), "blend", dst, {src, &weights});
+        src = &dst;
+    }
+    if (grade) run(kPostHlsl, "grade", *t.res, {src});
+}
+
 void VulkanBackend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t count, const uint8_t* indices) {
     if (&s != &sprite_ && FixedSprite(s, prim)) {
         sprite_ = s;
@@ -3055,6 +3297,8 @@ void VulkanBackend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t
     if (DepthCopy(s)) return CountedSkip(s, "depth copy");
     Assembled& a = asm_;
     if (!AssembleDraw(s, prim, start, count, indices, a)) return CountedSkip(s, "assemble");
+    bool flat = (cap_ || PostWanted()) && ScreenSpaceDraw(s, a);
+    TrackPost(s, flat);
     // past the ring every upload is a buffer of its own: seconds lost on a frame that draws a whole level once
     if (CurrentFrame().used > kUploadSize - kUploadReserve) Submit(true);
     if (!BindTargets(s)) return CountedSkip(s, "targets");
@@ -3090,7 +3334,8 @@ void VulkanBackend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t
 
     if (cap_) {
         CaptureDraw(s, prim, count, k, c, stages);
-        fprintf(cap_, " pkey %016llX%s", (unsigned long long)sh.pkey, DescribeInputs(s, start, indices, 2).c_str());
+        fprintf(cap_, " pkey %016llX%s%s", (unsigned long long)sh.pkey, flat ? " screen" : "",
+                DescribeInputs(s, start, indices, 2).c_str());
         fprintf(cap_, "\n     fog chip %u en %u mode %X params %g %g rs en %u table %u | fogp %g %g %g %g color %08X | final %08X %08X",
                 s.chip_fog, s.fog_enable, s.fog_mode, s.fog_param[0], s.fog_param[1], s.rs[kRsFogEnable],
                 s.rs[kRsFogTableMode], c.fog[0], c.fog[1], c.fog[2], c.fog[3], s.rs[kRsFogColor],
@@ -3512,6 +3757,9 @@ void VulkanBackend::Present(const Surface& front) {
     ResizeSwap();
     Target* t = EnsureTarget(front, false);
     if (t && LatchCpuWrite(*t)) UploadTarget(*t, front);
+    if (t && !post_done_ && post_rt_ == front.data && PostWanted()) ApplyPost(*t);
+    post_rt_ = 0;
+    post_done_ = false;
     if (t) {
         ResolveSamples(*t);
         Transition(*t->res, kRead);

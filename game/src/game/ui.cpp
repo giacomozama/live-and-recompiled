@@ -466,6 +466,12 @@ void Draw(double fps) {
                     if (kMsaa[i] == s.msaa) msaa = i;
                 if (ImGui::Combo("MSAA", &msaa, "Off\0 2x\0 4x\0 8x\0")) s.msaa = kMsaa[msaa];
 
+                ImGui::SeparatorText("Effects");
+                ImGui::TextDisabled("over the 3D picture, not the menus and text drawn over it");
+                ImGui::Checkbox("SMAA", &s.smaa);
+                Slider("Film grain %", &s.film_grain, 0, 100, app::Settings{}.film_grain);
+                Slider("Chromatic aberration %", &s.chromatic_aberration, 0, 100, app::Settings{}.chromatic_aberration);
+
                 ImGui::Checkbox("Wind on distant grass", &grass::g_wind);
                 ImGui::SameLine();
                 ImGui::TextDisabled("the console keeps it still");

@@ -394,6 +394,20 @@ void FillTransformConstants(const State& s, GuestExtent size, DrawConstants& c) 
     for (int t = 0; t < 4; t++) Transpose(s.transforms[kTsTexture0 + size_t(t)].data(), c.tm[t]);
 }
 
+bool ScreenSpace(const State& s, const Assembled& a, int pos_w) {
+    auto flat = [](float x, float y, float z) { return std::fabs(x) < 1e-6f && std::fabs(y) < 1e-6f && std::fabs(z) < 1e-6f; };
+    if (a.pretransformed) return true;
+    // the fixed function's w is the projection's last column, world and view being affine
+    if (!((s.vs_handle & 1) && s.vs && !s.vs->program.empty())) {
+        const float* m = s.transforms[kTsProjection].data();
+        return flat(m[3], m[7], m[11]);
+    }
+    if (pos_w == kPosWInput) return true;
+    if (pos_w < 0 || size_t(pos_w) >= s.vsc.size()) return false;
+    const auto& c = s.vsc[size_t(pos_w)];
+    return flat(c[0], c[1], c[2]);
+}
+
 namespace {
 
 // D3DLIGHT8 as floats: Type, Diffuse[4], Specular[4], Ambient[4], Position[3], Direction[3], Range, Falloff,
