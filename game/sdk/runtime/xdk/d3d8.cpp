@@ -1663,10 +1663,10 @@ void RawTextureState(uint32_t stage, uint32_t sub, uint32_t v) {
             break;
         }
         case 0x24: put(gpu::kTssBorderColor, v); break;
-        case 0x28: put(gpu::kTssBumpEnvMat00, v); break;  // xemu: the matrix is 00 01 10 11
+        case 0x28: put(gpu::kTssBumpEnvMat00, v); break;  // the method's words are 00 01 11 10 (xemu), D3DTSS order
         case 0x2C: put(gpu::kTssBumpEnvMat01, v); break;
-        case 0x30: put(gpu::kTssBumpEnvMat10, v); break;
-        case 0x34: put(gpu::kTssBumpEnvMat11, v); break;
+        case 0x30: put(gpu::kTssBumpEnvMat11, v); break;
+        case 0x34: put(gpu::kTssBumpEnvMat10, v); break;
         case 0x38: put(gpu::kTssBumpEnvLScale, v); break;
         case 0x3C: put(gpu::kTssBumpEnvLOffset, v); break;
         default: break;
