@@ -108,15 +108,6 @@ bool SaveChanged() {
     return true;
 }
 
-void LogSettings() {
-    std::ostringstream text;
-    text << Table();
-    std::istringstream lines(text.str());
-    LOGR("Settings:");
-    for (std::string line; std::getline(lines, line);)
-        if (!line.empty()) LOGR("  %s", line.c_str());
-}
-
 Mode Output() {
     const Settings& s = Get();
     if (s.width && s.height) return {s.width, s.height};

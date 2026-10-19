@@ -59,7 +59,6 @@ void LogSystem() {
     LOGR("RAM: %.1f GB", double(sysconf(_SC_PHYS_PAGES)) * double(sysconf(_SC_PAGE_SIZE)) / 1073741824.0);
     Mode desk = Desktop();
     LOGR("Desktop: %ux%u", desk.width, desk.height);
-    LogSettings();
 }
 
 }  // namespace app

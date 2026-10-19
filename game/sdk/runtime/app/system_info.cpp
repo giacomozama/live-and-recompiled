@@ -94,7 +94,6 @@ void LogSystem() {
     }
     Mode desk = Desktop();
     LOGR("Desktop: %ux%u", desk.width, desk.height);
-    LogSettings();
 }
 
 }  // namespace app
