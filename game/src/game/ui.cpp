@@ -12,6 +12,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cctype>
 #include <cstdio>
 #include <cwchar>
 #include <string>
@@ -25,6 +26,7 @@
 #include "common/grass.h"
 #include "common/keyboard.h"
 #include "common/mouse.h"
+#include "common/warp.h"
 
 namespace ui {
 
@@ -197,6 +199,93 @@ void DrawKeys() {
         keyboard::ResetKeys();
         g_rebind = -1;
     }
+}
+
+// the Debug tab: warps to a checkpoint, a level or a cutscene (warp.cpp runs them on the main thread)
+void DrawWarp() {
+    static char filter[64] = "";
+    static int checkpoint = -1;
+    static int level = 0, spawn = 0, cut_level = 0, cut_index = 0;
+
+    const int current = warp::CurrentLevel();
+    const char* current_name = warp::LevelName(current);
+    ImGui::Text("Level: %d %s", current, current_name ? current_name : "");
+    const std::string status = warp::Status();
+    if (!status.empty()) ImGui::TextDisabled("%s", status.c_str());
+    ImGui::TextDisabled("A checkpoint or level starts a new game: save after it only to a slot you can lose");
+
+    ImGui::SeparatorText("Checkpoints");
+    ImGui::InputTextWithHint("##filter", "filter by name or level", filter, sizeof filter);
+    const std::vector<warp::Checkpoint>& list = warp::Checkpoints();
+    auto matches = [](const std::string& s) {
+        std::string a = s, b = filter;
+        for (char& c : a) c = char(std::tolower(uint8_t(c)));
+        for (char& c : b) c = char(std::tolower(uint8_t(c)));
+        return a.find(b) != std::string::npos;
+    };
+    if (ImGui::BeginListBox("##checkpoints", ImVec2(-FLT_MIN, ImGui::GetTextLineHeightWithSpacing() * 10))) {
+        for (int i = 0; i < int(list.size()); i++) {
+            const warp::Checkpoint& c = list[size_t(i)];
+            const char* ln = warp::LevelName(c.level);
+            if (!ln) continue;  // the multiplayer ones, whose levels are another table's
+            char row[192];
+            std::snprintf(row, sizeof row, "%3d  %-20s spawn %-3d %s", i, ln, c.spawn, c.name.c_str());
+            if (filter[0] && !matches(row)) continue;
+            if (ImGui::Selectable(row, checkpoint == i, ImGuiSelectableFlags_AllowDoubleClick)) {
+                checkpoint = i;
+                if (ImGui::IsMouseDoubleClicked(0)) warp::GoCheckpoint(i);
+            }
+        }
+        ImGui::EndListBox();
+    }
+    ImGui::BeginDisabled(checkpoint < 0);
+    if (ImGui::Button("Start at checkpoint")) warp::GoCheckpoint(checkpoint);
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    ImGui::TextDisabled("or double-click; earlier checkpoints count as done");
+
+    // the levels that exist, for the combos
+    std::string items;
+    std::vector<int> ids;
+    for (int i = 0; i < warp::kLevels; i++)
+        if (const char* n = warp::LevelName(i)) {
+            items += std::to_string(i) + " " + n + '\0';
+            ids.push_back(i);
+        }
+    items += '\0';
+    auto level_combo = [&](const char* label, int* v) {
+        int idx = int(std::find(ids.begin(), ids.end(), *v) - ids.begin());
+        if (idx == int(ids.size())) idx = 0;
+        ImGui::Combo(label, &idx, items.c_str());
+        *v = ids[size_t(idx)];
+    };
+
+    ImGui::SeparatorText("Level");
+    level_combo("Level##level", &level);
+    ImGui::InputInt("Spawn", &spawn);
+    spawn = std::clamp(spawn, 0, 255);
+    if (ImGui::Button("Load level")) warp::GoLevel(level, spawn);
+    ImGui::SameLine();
+    ImGui::TextDisabled("a fresh game, nothing done");
+
+    ImGui::SeparatorText("Cutscenes");
+    int found_level = -1;
+    const std::vector<int> found = warp::Cutscenes(&found_level);
+    if (found_level >= 0) {
+        const char* fn = warp::LevelName(found_level);
+        ImGui::Text("In %s:", fn ? fn : "this level");
+        if (found.empty()) ImGui::TextDisabled("none");
+        for (size_t i = 0; i < found.size(); i++) {
+            if (i % 10) ImGui::SameLine();
+            if (ImGui::Button(std::to_string(found[i]).c_str())) warp::PlayCutscene(found_level, found[i]);
+        }
+    }
+    level_combo("Level##cut", &cut_level);
+    ImGui::InputInt("Cutscene", &cut_index);
+    cut_index = std::clamp(cut_index, 0, 255);
+    if (ImGui::Button("Play cutscene")) warp::PlayCutscene(cut_level, cut_index);
+    ImGui::SameLine();
+    ImGui::TextDisabled("loads its level first; one it lacks is refused there");
 }
 
 }  // namespace
@@ -376,6 +465,11 @@ void Draw(double fps) {
 
                 DrawKeys();
                 keys_shown = true;
+                end_tab();
+            }
+
+            if (tab("Debug")) {
+                DrawWarp();
                 end_tab();
             }
             ImGui::EndTabBar();

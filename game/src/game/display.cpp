@@ -32,6 +32,8 @@
 #include "cpu/x86_ops.h"
 #include "xdk/hle.h"
 
+#include "common/warp.h"
+
 namespace display {
 
 #if !defined(XBE_HEADLESS)
@@ -83,6 +85,7 @@ using display::Rate;
 // as the blank wait was on the console.
 X86_EXTERN_FUNC(__imp__sub_002A7B60);
 X86_FUNC(sub_002A7B60) {
+    warp::Poll(ctx);  // a frame of the level loop: the Debug tab's warps can run
     using clock = std::chrono::steady_clock;
     static bool owned = false;
     static uint32_t shown = 0;
