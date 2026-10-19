@@ -25,7 +25,7 @@ inline bool DumpMethods() {
     return on;
 }
 
-// XBE_CAPTURE_DIR: where F3 saves a frame, empty: F3 does not capture
+// XBE_CAPTURE_DIR: where F3 saves a frame, beside the exe; cap unless set
 inline const std::filesystem::path& CaptureDir() {
     static const std::filesystem::path dir = [] {
 #ifdef _WIN32
@@ -33,7 +33,7 @@ inline const std::filesystem::path& CaptureDir() {
 #else
         const char* v = std::getenv("XBE_CAPTURE_DIR");
 #endif
-        return v ? std::filesystem::path(v) : std::filesystem::path();
+        return v && *v ? std::filesystem::path(v) : std::filesystem::path("cap");
     }();
     return dir;
 }

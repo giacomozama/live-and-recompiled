@@ -24,10 +24,7 @@
 
 namespace gpu {
 
-bool CaptureOn() {
-    if (diag::CaptureDir().empty()) LOG_FIRST(1, "capture: set XBE_CAPTURE_DIR");
-    return !diag::CaptureDir().empty();
-}
+bool CaptureOn() { return !diag::CaptureDir().empty(); }
 
 void DepthByteOrder(uint32_t format, float order[4]) {
     static const float argb[4] = {2, 1, 0, 3}, abgr[4] = {0, 1, 2, 3}, bgra[4] = {1, 2, 3, 0}, rgba[4] = {3, 2, 1, 0};
