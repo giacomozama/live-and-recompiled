@@ -22,8 +22,8 @@ const app::GameInfo app::kGame = {
                 {"skippable_cutscenes", &cutscenes::g_skippable, nullptr},  // LT skips any cutscene (hooks.cpp)
                 {"grass_wind", &grass::g_wind, nullptr},  // distant grass sways too (hooks.cpp)
                 {"mouse_look", &mouse::g_look, nullptr},  // the mouse turns the camera (src/game/mouse.cpp)
-                {"mouse_sensitivity", nullptr, &mouse::g_sensitivity},  // percent
-                {"mouse_sensitivity_y", nullptr, &mouse::g_sensitivity_y},  // percent of it, vertical only
+                {"mouse_sensitivity", nullptr, &mouse::g_sensitivity},  // percent, horizontal
+                {"mouse_sensitivity_y", nullptr, &mouse::g_sensitivity_y},  // percent, vertical
                 {"mouse_invert_y", &mouse::g_invert_y, nullptr}},
     .load = keyboard::Load,               // the [keys] table: keyboard bindings (src/game/keyboard.cpp)
     .save = keyboard::Save,               // writes it

@@ -47,7 +47,7 @@ Setup builds the game on your PC from your own copy, once. It is three steps on 
 2. **Run `setup-windows.exe`.** It checks your copy is the release this build supports, downloads
    [llvm-mingw](https://github.com/mstorsjo/llvm-mingw) (80 to 180 MB, the first time only), recompiles the game
    and writes `Game.exe`. This takes a few minutes.
-3. **Run `Game.exe`.** Settings are in `settings.toml` beside it, and in the F1 menu.
+3. **Run `Game.exe`.** Settings are in `settings.toml` beside it, and in the Esc menu.
 
 ### Linux
 
@@ -64,7 +64,7 @@ Setup builds the game on your PC from your own copy, once. It is three steps on 
    writes the native `Game`. This takes a few minutes. Nothing of the game is uploaded or downloaded. If it says
    permission denied, your unzip tool dropped the executable bit:
    `chmod +x setup-linux unpack-store-linux kit/bin/xbe_recomp`.
-3. **Run `./Game`.** Settings are in `settings.toml` beside it, and in the F1 menu.
+3. **Run `./Game`.** Settings are in `settings.toml` beside it, and in the Esc menu.
 
 `./Game` is the native port: an SDL3 window (X11 or Wayland) drawn with Vulkan, which needs a Vulkan 1.3 driver and
 glibc 2.31 or newer (any distro since 2020, SteamOS included). Add it to Steam as a non-Steam game to play it from
@@ -80,13 +80,13 @@ Developers: building from source differs from Setup, see [Building from source](
 ## Features
 
 ### Display
-- **Frame Rate** - 30 (the original), 60 or 120 (experimental) FPS, from the F1 menu or `frame_rate` in
+- **Frame Rate** - 30 (the original), 60 or 120 (experimental) FPS, from the Esc menu or `frame_rate` in
   `settings.toml`. The game's timers follow real time at any rate. The FPS cap and V-Sync still apply.
 - **Any Aspect Ratio** - The 3D view widens to the display's shape (`aspect = "auto"`), or to any `W:H` such as
   `"21:9"`; `"4:3"` keeps the original view. The HUD stretches with the frame. Raise Render % to sharpen wide frames.
 
 ### Graphics
-- **MSAA** - 2x, 4x or 8x multisample anti-aliasing of the 3D view, from the F1 menu or `msaa` in `settings.toml`. It
+- **MSAA** - 2x, 4x or 8x multisample anti-aliasing of the 3D view, from the Esc menu or `msaa` in `settings.toml`. It
   applies at once. Alpha-tested edges such as foliage and fur are not smoothed.
 - **Shader Warm-up** - The shaders and pipelines a run builds are listed in `shaders.rec` beside the exe, and the next
   launch builds them in the background while the game boots, before the frames that need them. `shaders.rec` holds no
@@ -100,11 +100,11 @@ Developers: building from source differs from Setup, see [Building from source](
 ### Controller
 Supports Xbox, PlayStation and Switch controllers, with hot plugging and rumble. A gamepad is not required: the
 keyboard and mouse drive player 1 as well, and both can be used at the same time. Every action can be rebound under
-**Controls** in the F1 menu.
+**Controls** in the Esc menu.
 
 ### General
 - **Skippable Cutscenes** - LT skips any in-engine cutscene, not only the ones already seen this playthrough. Turn it on
-  in the F1 menu or with `skippable_cutscenes = true` in `settings.toml`.
+  in the Esc menu or with `skippable_cutscenes = true` in `settings.toml`.
 
 ## System Requirements
 

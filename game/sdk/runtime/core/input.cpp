@@ -90,6 +90,8 @@ void HandleEvent(const void* sdl_event) {
     else RemovePad(e.gdevice.which);
 }
 
+thread_local bool t_presence = false;
+
 Pad Poll(int port) {
     Pad p;
     {

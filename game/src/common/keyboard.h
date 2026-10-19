@@ -1,5 +1,7 @@
 #pragma once
 
+#include <string>
+
 namespace input {
 struct Pad;
 }
@@ -26,9 +28,9 @@ constexpr int kSlots = 2;
 extern int g_keys[kActions][kSlots];
 
 const char* ActionLabel(int action);  // for the F1 menu, "Move up"
-const char* ActionDefault(int action);  // its default key's name
+std::string ActionDefault(int action);  // its default keys' names, "E, Mouse 2"
 const char* KeyName(int vk);          // "W", "Space", "Mouse 4"; "-" for 0, null for a key that cannot be bound
-bool Bindable(int vk);                // not F1 / Insert, which open the menu
+bool Bindable(int vk);                // not Escape / Insert, which open the menu
 void ResetKeys();                     // the default layout
 void ResetKey(int action);            // one action's default: its key in the first slot, the second empty
 bool IsDefault(int action);

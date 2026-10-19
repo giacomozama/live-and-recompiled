@@ -39,7 +39,7 @@ namespace {
 constexpr uint32_t kFpsTitle = app::kMsgApp + 0x40;
 
 // virtual-key codes the menu reads
-constexpr int kMouse1 = 0x01, kInsert = 0x2D, kF1 = 0x70;
+constexpr int kMouse1 = 0x01, kInsert = 0x2D, kEscape = 0x1B;
 
 std::atomic<bool> g_open{false};
 std::atomic<double> g_fps{0.0};
@@ -64,6 +64,9 @@ bool g_rebind_armed = false;
 int g_rebind_settle = 0;
 constexpr int kSettleFrames = 3;
 
+// a rebind is waiting, for the window thread: Escape then cancels it instead of shutting the menu
+std::atomic<bool> g_rebinding{false};
+
 // the waiting row's Cancel was under the mouse last frame: a left click there cancels instead of binding Mouse 1
 bool g_cancel_hovered = false;
 
@@ -75,8 +78,16 @@ bool AnyDown() {
 
 // the menu is up and an action is waiting: the first key or button pressed is its new one
 void PollRebind() {
+    struct Mirror {
+        ~Mirror() { g_rebinding.store(g_rebind >= 0); }
+    } mirror;
     g_rebind_settle = AnyDown() ? (g_rebind_settle ? kSettleFrames : 0) : std::max(g_rebind_settle - 1, 0);
     if (g_rebind < 0) return;
+    if (app::KeyDown(kEscape)) {
+        g_rebind = -1;
+        g_rebind_settle = kSettleFrames;
+        return;
+    }
     if (!g_rebind_armed) {
         g_rebind_armed = !AnyDown();
         return;
@@ -187,7 +198,7 @@ void DrawKeys() {
                 if (ImGui::Button("Reset", ImVec2(reset, 0))) ResetKey(r.action);
                 ImGui::EndDisabled();
                 if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-                    ImGui::SetTooltip("default: %s", ActionDefault(r.action));
+                    ImGui::SetTooltip("default: %s", ActionDefault(r.action).c_str());
             }
             ImGui::PopID();
         }
@@ -456,11 +467,9 @@ void Draw(double fps) {
                 ImGui::SeparatorText("Mouse");
                 ImGui::Checkbox("Mouse look", &mouse::g_look);
                 ImGui::SameLine();
-                ImGui::TextDisabled("turns the camera; F1 or alt-tab frees the cursor");
-                Slider("Sensitivity %", &mouse::g_sensitivity, 10, 500, mouse::kDefaultSensitivity);
+                ImGui::TextDisabled("turns the camera; Esc or alt-tab frees the cursor");
+                Slider("Horizontal %", &mouse::g_sensitivity, 10, 500, mouse::kDefaultSensitivity);
                 Slider("Vertical %", &mouse::g_sensitivity_y, 10, 500, mouse::kDefaultSensitivity);
-                ImGui::SameLine();
-                ImGui::TextDisabled("of the above");
                 ImGui::Checkbox("Invert Y", &mouse::g_invert_y);
 
                 DrawKeys();
@@ -480,7 +489,7 @@ void Draw(double fps) {
         if (ImGui::Button("Save")) app::Save();
         ImGui::SameLine();
         if (ImGui::Button("Close")) g_open.store(false);
-        ImGui::TextDisabled("F1 toggles this menu");
+        ImGui::TextDisabled("Esc toggles this menu");
     }
     ImGui::End();
 }
@@ -489,7 +498,8 @@ bool Message(void* hwnd, uint32_t msg, uintptr_t wp, intptr_t lp, intptr_t* resu
     switch (msg) {
         case app::kMsgKeyDown:
             // not on auto repeat; the menu window and the game both take the key, the menu only when open
-            if ((wp == kF1 || wp == kInsert) && !(lp & (1 << 30))) {
+            // Escape cancels a rebind waiting for its key instead (PollRebind)
+            if ((wp == kEscape || wp == kInsert) && !(lp & (1 << 30)) && !(wp == kEscape && g_rebinding.load())) {
                 g_open.store(!g_open.load());
                 mouse::Refresh(hwnd);  // the cursor is free while the menu is up
                 if (result) *result = 0;

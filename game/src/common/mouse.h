@@ -10,7 +10,7 @@ struct Pad;
 // mouse motion and holds the cursor in the window; keyboard::Pad hands the motion to the game as right stick.
 namespace mouse {
 
-// settings.toml mouse_look, mouse_sensitivity (percent), mouse_sensitivity_y (percent of that, vertical only) and
+// settings.toml mouse_look, mouse_sensitivity (percent, horizontal), mouse_sensitivity_y (percent, vertical) and
 // mouse_invert_y; read live, so the F1 menu applies them
 extern bool g_look;
 extern uint32_t g_sensitivity;

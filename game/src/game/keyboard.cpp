@@ -6,15 +6,16 @@
 // in. A real gamepad on port 0 keeps working: the keyboard only overrides the axes and buttons it
 // is actually driving.
 //
-// The default layout (movement on the left, camera and face buttons on the right):
+// The default layout, around WASD and the mouse (mouse look is on by default):
 //
-//   left stick   W A S D          camera (right stick)   I J K L
-//   d-pad        arrow keys       A / B / X / Y          space / left shift / E / Q
-//   LB / RB      1 / 2            LT / RT                3 / 4
+//   left stick   W A S D          camera (right stick)   arrow keys, and the mouse
+//   d-pad        1 / 2 / 3 / 4 (up / right / down / left)
+//   A / B        space / E or right mouse                X / Y   R / tab
+//   LB / RB      T (white) / K (black)                   LT / RT Q or middle mouse / left ctrl or left mouse
 //   start        enter            back                   backspace
-//   stick clicks C (left)         V (right)
+//   stick clicks left shift (left) / left alt (right)
 //
-// Every action can be rebound, to up to two keys or mouse buttons: in the F1 menu, or in settings.toml's [keys]
+// Every action can be rebound, to up to two keys or mouse buttons: in the menu (Esc), or in settings.toml's [keys]
 // table by key name (move_up = 'W', a = ['Space', 'Mouse 1'], 'none' unbinds).
 //
 // With mouse look on (src/game/mouse.cpp) the mouse also turns the camera, over the camera keys while it moves.
@@ -36,6 +37,7 @@
 #include "common/keyboard.h"
 #include "common/mouse.h"
 #include "app/app.h"
+#include "common/stickwatch.h"
 #include "common/ui.h"
 #include "core/input.h"
 #include "core/log.h"
@@ -50,8 +52,9 @@ namespace {
 // Windows only
 enum : int {
     kUp = 0x26, kDown = 0x28, kLeft = 0x25, kRight = 0x27,
-    kSpace = 0x20, kEnter = 0x0D, kBackspace = 0x08, kLShift = 0xA0,
-    kF1 = 0x70, kInsert = 0x2D,
+    kSpace = 0x20, kEnter = 0x0D, kBackspace = 0x08, kTab = 0x09, kEscape = 0x1B, kInsert = 0x2D,
+    kLShift = 0xA0, kLCtrl = 0xA2, kLAlt = 0xA4,
+    kMouse1 = 0x01, kMouse2 = 0x02, kMouse3 = 0x04,
 };
 
 // the console controller's button bit (see input::Pad)
@@ -65,22 +68,22 @@ constexpr int16_t kFull = 32767;
 
 struct ActionInfo {
     const char* key;    // settings.toml [keys]
-    const char* label;  // F1 menu
-    int vk;             // default
+    const char* label;  // the menu
+    int vk, vk2 = 0;    // defaults
 };
 constexpr ActionInfo kInfo[kActions] = {
-    {"move_up", "Move up", 'W'},          {"move_down", "Move down", 'S'},
-    {"move_left", "Move left", 'A'},      {"move_right", "Move right", 'D'},
-    {"camera_up", "Camera up", 'I'},      {"camera_down", "Camera down", 'K'},
-    {"camera_left", "Camera left", 'J'},  {"camera_right", "Camera right", 'L'},
-    {"dpad_up", "D-pad up", kUp},         {"dpad_down", "D-pad down", kDown},
-    {"dpad_left", "D-pad left", kLeft},   {"dpad_right", "D-pad right", kRight},
-    {"a", "A", kSpace},                   {"b", "B", kLShift},
-    {"x", "X", 'E'},                      {"y", "Y", 'Q'},
-    {"lb", "LB (white)", '1'},            {"rb", "RB (black)", '2'},
-    {"lt", "LT", '3'},                    {"rt", "RT", '4'},
-    {"start", "Start", kEnter},           {"back", "Back", kBackspace},
-    {"ls", "Left stick click", 'C'},      {"rs", "Right stick click", 'V'},
+    {"move_up", "Move up", 'W'},             {"move_down", "Move down", 'S'},
+    {"move_left", "Move left", 'A'},         {"move_right", "Move right", 'D'},
+    {"camera_up", "Camera up", kUp},         {"camera_down", "Camera down", kDown},
+    {"camera_left", "Camera left", kLeft},   {"camera_right", "Camera right", kRight},
+    {"dpad_up", "D-pad up", '1'},            {"dpad_down", "D-pad down", '3'},
+    {"dpad_left", "D-pad left", '4'},        {"dpad_right", "D-pad right", '2'},
+    {"a", "A", kSpace},                      {"b", "B", 'E', kMouse2},
+    {"x", "X", 'R'},                         {"y", "Y", kTab},
+    {"lb", "LB (white)", 'T'},               {"rb", "RB (black)", 'K'},
+    {"lt", "LT", 'Q', kMouse3},              {"rt", "RT", kLCtrl, kMouse1},
+    {"start", "Start", kEnter},              {"back", "Back", kBackspace},
+    {"ls", "Left stick click", kLShift},     {"rs", "Right stick click", kLAlt},
 };
 
 // the keys that have a name, so they can be bound; null for the rest
@@ -150,16 +153,21 @@ int16_t Axis(bool negative, bool positive) {
 
 const char* ActionLabel(int action) { return action >= 0 && action < kActions ? kInfo[action].label : ""; }
 
-const char* ActionDefault(int action) { return action >= 0 && action < kActions ? KeyName(kInfo[action].vk) : ""; }
+std::string ActionDefault(int action) {
+    if (action < 0 || action >= kActions) return "";
+    std::string s = KeyName(kInfo[action].vk);
+    if (kInfo[action].vk2) s = s + ", " + KeyName(kInfo[action].vk2);
+    return s;
+}
 
 const char* KeyName(int vk) { return vk ? Named(vk) : "-"; }
 
-bool Bindable(int vk) { return vk > 0 && vk < 0x100 && vk != kF1 && vk != kInsert && Named(vk); }
+bool Bindable(int vk) { return vk > 0 && vk < 0x100 && vk != kEscape && vk != kInsert && Named(vk); }
 
 void ResetKey(int action) {
     if (action < 0 || action >= kActions) return;
     g_keys[action][0] = kInfo[action].vk;
-    for (int s = 1; s < kSlots; s++) g_keys[action][s] = 0;
+    g_keys[action][1] = kInfo[action].vk2;
 }
 
 void ResetKeys() {
@@ -167,10 +175,8 @@ void ResetKeys() {
 }
 
 bool IsDefault(int action) {
-    if (action < 0 || action >= kActions || g_keys[action][0] != kInfo[action].vk) return false;
-    for (int s = 1; s < kSlots; s++)
-        if (g_keys[action][s]) return false;
-    return true;
+    return action >= 0 && action < kActions && g_keys[action][0] == kInfo[action].vk &&
+           g_keys[action][1] == kInfo[action].vk2;
 }
 
 #ifdef KEYBOARD_TOML
@@ -274,6 +280,7 @@ void Pad(int port, input::Pad& pad) {
 
     mouse::Pad(pad);  // the mouse, while it looks, takes the right stick
     camscan::Tick(pad);  // XBE_CAMSCAN: the camera angle search watches the stick the game gets
+    stickwatch::Tick();  // XBE_STICK_WATCH: F11 finds the code that reads the right stick
 
     // the first key of each: the rest are in the settings log
     auto key = [](Action a) { return KeyName(g_keys[a][0]); };

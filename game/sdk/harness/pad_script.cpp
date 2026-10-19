@@ -65,6 +65,8 @@ void Apply(const std::string& s, Pad& p) {
 
 }  // namespace
 
+thread_local bool t_presence = false;
+
 Pad Poll(int port) {
     static const std::vector<Press> script = LoadScript();
     static Press live{-1, "", 0};

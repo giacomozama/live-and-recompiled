@@ -16,6 +16,8 @@ void Init();  // window thread, before boot
 void HandleEvent(const void* sdl_event);
 // the controller on that port, then GameInfo::pad
 Pad Poll(int port);
+// set on the device scan's polls (xapi.cpp), which only ask what is plugged in; the title's own reads leave it clear
+extern thread_local bool t_presence;
 void Rumble(int port, uint16_t left, uint16_t right);
 
 }  // namespace input
