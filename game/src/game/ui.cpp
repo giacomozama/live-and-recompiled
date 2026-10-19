@@ -26,6 +26,7 @@
 #include "common/fur.h"
 #include "common/grass.h"
 #include "common/keyboard.h"
+#include "common/metal.h"
 #include "common/mouse.h"
 #include "common/warp.h"
 #include "common/water.h"
@@ -475,6 +476,9 @@ void Draw(double fps) {
                 ImGui::Checkbox("Dynamic water", &water::g_dynamic);
                 ImGui::SameLine();
                 ImGui::TextDisabled("currents, ripples and wakes");
+                ImGui::Checkbox("Metal shading", &metal::g_shading);
+                ImGui::SameLine();
+                ImGui::TextDisabled("armour catches highlights and reflections");
                 end_tab();
             }
 
