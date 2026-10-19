@@ -69,6 +69,8 @@ std::unique_ptr<Backend> CreateThreadedBackend(std::unique_ptr<Backend> inner);
 inline std::atomic<uint64_t> g_perf_capture_ns{0}, g_perf_wait_ns{0}, g_perf_waits{0};
 inline std::atomic<uint64_t> g_perf_wait_kind_ns[6];  // read-back, resource, fence, flush, copy, next frame
 inline std::atomic<uint64_t> g_perf_sync_late{0}, g_perf_sync_block{0};  // read-backs the title waited for, by cause
+// XBE_PERF: the title thread's draw recording in TSC cycles: state compared, headers copied, command, uses, handover
+inline std::atomic<uint64_t> g_perf_rec_cycles[5];
 
 // F3: save the next frame, every draw and target, under diag::CaptureDir
 inline std::atomic<bool> g_capture{false};

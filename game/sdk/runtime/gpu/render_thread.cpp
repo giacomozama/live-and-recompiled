@@ -14,6 +14,7 @@
 #include <pthread.h>
 #endif
 #include <smmintrin.h>
+#include <x86intrin.h>
 
 #include <algorithm>
 #include <chrono>
@@ -24,6 +25,7 @@
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 #include "core/diag.h"
@@ -73,7 +75,7 @@ size_t At(const State& s, const void* p) { return size_t(static_cast<const uint8
 std::vector<Range> StateRanges() {
     static const State s;
     return {
-        {At(s, &s.simple), At(s, &s.textures) - At(s, &s.simple)},
+        {At(s, &s.rs), At(s, &s.textures) - At(s, &s.rs)},  // simple goes by its dirty blocks (SendState)
         {At(s, &s.index_buffer), At(s, &s.vs) - At(s, &s.index_buffer)},
         {At(s, &s.vsc), At(s, &s.rt) - At(s, &s.vsc)},
         {At(s, &s.scissor_count), At(s, &s.transforms) - At(s, &s.scissor_count)},
@@ -114,7 +116,7 @@ std::vector<uint8_t> WordKinds() {
     auto mark = [&](const void* p, size_t n, uint8_t kind) {
         for (size_t w = At(s, p) / 4, e = (At(s, p) + n) / 4; w < e; w++) k[w] = kind;
     };
-    for (auto [lo, hi] : kVertexMethods) mark(&s.simple[lo >> 2], hi - lo, kWordVertex);
+    for (auto [lo, hi] : kVertexMethods) mark(&s.simple.v[lo >> 2], hi - lo, kWordVertex);
     mark(&s.streams, sizeof(s.streams), kWordVertex);
     mark(&s.index_buffer, sizeof(s.index_buffer), kWordVertex);
     mark(&s.index_data, sizeof(s.index_data), kWordVertex);
@@ -149,7 +151,10 @@ public:
 
     void Draw(const State& s, uint32_t prim, uint32_t start, uint32_t count, const uint8_t* indices) override {
         auto t = Clock::now();
-        SendState(s);
+        static const bool perf = diag::Perf();
+        uint64_t tsc[6];
+        if (perf) tsc[0] = __rdtsc();
+        SendState(s, perf ? &tsc[1] : nullptr);
         Cmd c{Op::Draw};
         c.a = prim;
         c.b = start;
@@ -159,13 +164,19 @@ public:
             c.data = Put(indices, size_t(count) * 2);
         }
         cur_->cmds.push_back(c);
+        if (perf) tsc[3] = __rdtsc();
         for (uint32_t tex : s.textures) Use(tex);
         for (uint32_t pal : s.palettes) Use(pal);
         for (const auto& st : s.streams) Use(st.vb);
         Use(s.rt.header);
         Use(s.zs.header);
         Written(s.rt);
+        if (perf) tsc[4] = __rdtsc();
         if (cur_->cmds.size() >= kBatchCommands) Submit();
+        if (perf) {
+            tsc[5] = __rdtsc();
+            for (int i = 0; i < 5; i++) g_perf_rec_cycles[i].fetch_add(tsc[i + 1] - tsc[i], std::memory_order_relaxed);
+        }
         g_perf_capture_ns += Ns(t);
     }
 
@@ -350,12 +361,21 @@ private:
     }
 
     // what changed since the last command, in 64 byte pieces
-    void SendState(const State& s) {
+    // tsc: XBE_PERF's cycle stamps, after the plain state and after the headers
+    void SendState(const State& s, uint64_t* tsc = nullptr) {
         const uint8_t* now = reinterpret_cast<const uint8_t*>(&s);
         Cmd c{Op::State};
         size_t first = cur_->bytes.size();
         // blocks of eight pieces compared at once: most of the state is the same draw to draw
         const uint8_t* sent = reinterpret_cast<const uint8_t*>(&sent_);
+        // the simple states only where they were written since: most of the 8 KB is never touched draw to draw
+        const size_t simple = At(s, s.simple.v.data());
+        constexpr size_t kSimpleBlock = SimpleStates::kBlock * sizeof(uint32_t);
+        for (uint32_t dirty = std::exchange(s.simple.dirty, uint16_t(0)); dirty; dirty &= dirty - 1) {
+            size_t block = simple + size_t(__builtin_ctz(dirty)) * kSimpleBlock;
+            if (Same(sent + block, now + block, kSimpleBlock)) continue;
+            for (size_t off = block; off < block + kSimpleBlock; off += 64) Delta(sent + off, now + off, 64);
+        }
         for (const Range& r : ranges_)
             for (size_t block = r.off, end = r.off + r.len; block < end; block += 512) {
                 size_t block_end = std::min<size_t>(block + 512, end);
@@ -363,6 +383,7 @@ private:
                 for (size_t off = block; off < block_end; off += 64)
                     Delta(sent + off, now + off, std::min<size_t>(64, block_end - off));
             }
+        if (tsc) tsc[0] = __rdtsc();
         std::array<uint32_t, 4> textures;
         for (size_t i = 0; i < 4; i++) textures[i] = Header(s.textures[i]);
         Delta(&sent_.textures, &textures, sizeof(textures));
@@ -377,6 +398,7 @@ private:
         zs.header = Header(zs.header);
         Delta(&sent_.rt, &rt, sizeof(rt));
         Delta(&sent_.zs, &zs, sizeof(zs));
+        if (tsc) tsc[1] = __rdtsc();
         if (s.vs.get() != sent_.vs.get()) {
             sent_.vs = s.vs;
             c.vs = int32_t(cur_->vs.size());

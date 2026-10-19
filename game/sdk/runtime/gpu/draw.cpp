@@ -726,6 +726,14 @@ void LogPerf() {
              "draws in the state before",
              p.d_setup / n, p.d_vs / n, p.d_ps / n, p.d_pso / n, p.d_consts / n, p.d_record / n, p.fast / n,
              p.draws / n);
+        {
+            uint64_t cyc[5], all = 0;
+            for (int i = 0; i < 5; i++) all += cyc[i] = g_perf_rec_cycles[i].exchange(0);
+            auto pct = [&](int i) { return all ? 100.0 * double(cyc[i]) / double(all) : 0.0; };
+            LOGI("perf: title thread recording draws: state %.0f%% headers %.0f%% command %.0f%% uses %.0f%% "
+                 "handover %.0f%%",
+                 pct(0), pct(1), pct(2), pct(3), pct(4));
+        }
         LOGI("perf: title thread per frame: recording %.2f ms, waiting %.2f ms (%.1f waits: read-back %.2f "
              "resource %.2f fence %.2f flush %.2f copy %.2f, next frame %.2f) | read-backs waited for: %.1f lock, "
              "%.1f NOOVERWRITE",

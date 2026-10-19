@@ -267,9 +267,9 @@ void ChipCull() {
 // what the library's CullMode pushes, so a later raw write to one of the three combines with it
 void CullPush(uint32_t cull) {
     uint32_t front = g_state.rs[gpu::kRsFrontFace] ? g_state.rs[gpu::kRsFrontFace] : kCw;
-    g_state.simple[kMFrontFace >> 2] = front;
-    g_state.simple[kMCullEnable >> 2] = cull != 0;
-    if (cull) g_state.simple[kMCullFace >> 2] = cull == front ? kGlFront : kGlBack;
+    g_state.simple.set(kMFrontFace >> 2, front);
+    g_state.simple.set(kMCullEnable >> 2, cull != 0);
+    if (cull) g_state.simple.set(kMCullFace >> 2, cull == front ? kGlFront : kGlBack);
 }
 
 // The library's default render and texture stage states; its pushes land in the scratch buffer
@@ -282,12 +282,12 @@ void ApplyDefaultStates(X86Context& ctx) {
     // the stencil ones at least: the chip resets them to 0, and 0 is GL_ZERO. Conker never sets the depth fail op, so
     // its sky, drawn last and failing depth behind the castle, zeroed the stencil that marks the window for the glow.
     constexpr uint32_t kKeep = 0x1E00, kAlways = 0x207;
-    g_state.simple[gpu::kMStencilFail >> 2] = kKeep;
-    g_state.simple[gpu::kMStencilZFail >> 2] = kKeep;
-    g_state.simple[gpu::kMStencilPass >> 2] = kKeep;
-    g_state.simple[gpu::kMStencilFunc >> 2] = kAlways;
-    g_state.simple[gpu::kMStencilMask >> 2] = 0xFF;
-    g_state.simple[gpu::kMStencilWriteMask >> 2] = 0xFF;
+    g_state.simple.set(gpu::kMStencilFail >> 2, kKeep);
+    g_state.simple.set(gpu::kMStencilZFail >> 2, kKeep);
+    g_state.simple.set(gpu::kMStencilPass >> 2, kKeep);
+    g_state.simple.set(gpu::kMStencilFunc >> 2, kAlways);
+    g_state.simple.set(gpu::kMStencilMask >> 2, 0xFF);
+    g_state.simple.set(gpu::kMStencilWriteMask >> 2, 0xFF);
     g_state.rs[gpu::kRsStencilFail] = kKeep;
 #endif
 }
@@ -395,9 +395,9 @@ void ApplyFlush(uint32_t dirty) {
             // fog factor the other way round (Conker: fog.a * fog + (1 - fog.a) * R0) gets the plain one back
             bool fog = R32(kRenderState + gpu::kRsFogEnable * 4) != 0;
             bool spec = R32(kRenderState + gpu::kRsSpecularEnable * 4) != 0;
-            g_state.simple[gpu::kMPsFinalAbcd >> 2] =
-                fog ? kFinalFogged | (spec ? kFinalSpecular : 0) : kFinalPlain | (spec ? 2 : 0);
-            g_state.simple[gpu::kMPsFinalEfgh >> 2] = kFinalEfgh;
+            g_state.simple.set(gpu::kMPsFinalAbcd >> 2,
+                               fog ? kFinalFogged | (spec ? kFinalSpecular : 0) : kFinalPlain | (spec ? 2 : 0));
+            g_state.simple.set(gpu::kMPsFinalEfgh >> 2, kFinalEfgh);
         }
     }
     if (dirty & kDirtyLights) g_spec_raw = false;  // and SPECULAR_ENABLE from D3DRS_SPECULARENABLE
@@ -821,7 +821,7 @@ HLE_FASTCALL(D3DDevice_SetRenderState_Simple, 0) {
     std::lock_guard<std::recursive_mutex> lock(g_lock);
     Walk(Dev(kDevPush));  // state set around a raw push must not reach the pending commands first
     uint32_t method = a[0] & 0x1FFC, value = a[1];
-    g_state.simple[method >> 2] = value;
+    g_state.simple.set(method >> 2, value);
     return 0;
 }
 
@@ -831,7 +831,7 @@ HLE_STDCALL(D3DDevice_SetRenderStateNotInline, 2) {
     uint32_t rs = a[0], v = a[1];
     if (rs < gpu::kRsDeferredFirst) {
         uint32_t method = R32(kSimpleEncode + rs * 4) & 0x1FFC;
-        g_state.simple[method >> 2] = v;
+        g_state.simple.set(method >> 2, v);
         W32(kRenderState + rs * 4, v);  // titles read their states back from the library's table
     } else if (rs < gpu::kRsMax) {
         SetComplex(rs, v);
@@ -1220,7 +1220,7 @@ HLE_STDCALL(D3DDevice_SetPixelShader, 1) {
     }
     // the definition loads the combiner state like the XDK pushes it
     const uint32_t* d = g_state.ps->def;
-    auto put = [&](uint32_t method, uint32_t v) { g_state.simple[method >> 2] = v; };
+    auto put = [&](uint32_t method, uint32_t v) { g_state.simple.set(method >> 2, v); };
     g_state.chip_tfactor = 0;  // the factors are the shader's constants now, not a texture factor
     for (int i = 0; i < 8; i++) {
         put(gpu::kMPsAlphaInputs + i * 4, d[0 + i]);
@@ -1558,7 +1558,7 @@ std::array<uint32_t, 16> g_vb_header{};  // synthetic vertex buffer headers for 
 // at a physical address in the first 16 MB
 void ApplyVisibilityMethod(uint32_t m, uint32_t v) {
     constexpr uint32_t kReportAddressMask = 0xFFFFFF;
-    if (m == gpu::kMCountEnable) g_state.simple[gpu::kMCountEnable >> 2] = v;
+    if (m == gpu::kMCountEnable) g_state.simple.set(gpu::kMCountEnable >> 2, v);
     if (!g_backend) return;
     if (m == gpu::kMClearReport) g_backend->ClearReport();
     if (m == gpu::kMGetReport) g_backend->GetReport(mem::VirtualFromPhysical(v & kReportAddressMask));
@@ -2015,7 +2015,7 @@ void Walk(uint32_t end) {
                 // NV097_SET_TEXTURE_*: 0x40 bytes a stage. Offset (sub 0) and format (sub 4) are rebinds the
                 // renderers have to see, so route them through a D3DPixelContainer; the rest stays plain state.
                 NoteRawMethod(m, v);
-                g_state.simple[m >> 2] = v;
+                g_state.simple.set(m >> 2, v);
                 uint32_t stage = (m - 0x1B00) / 0x40, sub = (m - 0x1B00) % 0x40;
                 if (sub == 0 || sub == 4) {
                     static uint32_t off[4] = {}, fmt[4] = {};
@@ -2029,7 +2029,7 @@ void Walk(uint32_t end) {
                 // the engine pushes most state as raw NV2A methods (the d3d api is inlined away); the backend
                 // reads them by method number out of simple[]
                 NoteRawMethod(m, v);
-                g_state.simple[m >> 2] = v;
+                g_state.simple.set(m >> 2, v);
                 if (m == 0x1E70) g_state.rs[gpu::kRsPsTextureModes] = v;  // NV097_SET_SHADER_STAGE_PROGRAM
                 if (m == gpu::kMPsConstant0) g_state.chip_tfactor = 1;     // NV097_SET_COMBINER_FACTOR0, stage 0
                 if (m == 0x3B8) {  // NV097_SET_SPECULAR_ENABLE
@@ -2156,7 +2156,7 @@ HLE_STDCALL(D3DDevice_EndPush, 1) {
                     }
                 }
             } else if (m != kBeginEnd) {
-                if (m >> 2 < g_state.simple.size()) g_state.simple[m >> 2] = v;
+                if (m >> 2 < g_state.simple.size()) g_state.simple.set(m >> 2, v);
             } else if (v) {
                 prim = v;
                 vertices.clear();

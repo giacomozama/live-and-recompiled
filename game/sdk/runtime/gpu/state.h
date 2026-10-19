@@ -159,8 +159,23 @@ struct Surface {
     uint32_t data = 0, format = 0, size = 0;
 };
 
+// the simple render states indexed by method / 4. Written only through set, which marks the 512 byte block it
+// writes: the render thread compares those blocks alone (render_thread.cpp SendState)
+struct SimpleStates {
+    static constexpr size_t kBlock = 128;  // entries a dirty bit stands for
+    std::array<uint32_t, 0x800> v{};
+    mutable uint16_t dirty = 0xFFFF;  // block written since the render thread last compared it
+    uint32_t operator[](size_t i) const { return v[i]; }
+    void set(size_t i, uint32_t x) {
+        v[i] = x;
+        dirty |= uint16_t(1u << (i / kBlock));
+    }
+    static constexpr size_t size() { return 0x800; }
+};
+static_assert(SimpleStates::size() / SimpleStates::kBlock == 16, "a dirty bit per block");
+
 struct State {
-    std::array<uint32_t, 0x800> simple{};  // simple render states indexed by method / 4
+    SimpleStates simple;
     std::array<uint32_t, kRsMax> rs{};     // deferred and complex render states by D3DRS
     std::array<std::array<uint32_t, kTssCount>, 4> tss{};
     std::array<uint32_t, 4> textures{};    // guest D3DBaseTexture pointers
