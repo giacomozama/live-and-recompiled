@@ -1483,6 +1483,63 @@ uint32_t VertexBytes() {
     return fvf.stream_stride[0];
 }
 
+// An inline array (NV097_INLINE_ARRAY) has no streams: the chip packs a vertex's attributes in register order, each
+// at a multiple of its component size (xemu pgraph/vk/draw.c), so a FLOAT2 after a PBYTE2 starts on the next dword.
+// The declaration's offsets run unaligned: Conker's suit sprites (FLOAT3, D3DCOLOR, SHORT2, PBYTE2, FLOAT2) are 32
+// bytes on the chip and 30 by the declaration, which read them as long streaks across the screen.
+uint32_t ComponentBytes(uint32_t type) {
+    switch (type & 15) {
+        case 0: case 4: return 1;  // D3DCOLOR, PBYTE
+        case 1: case 5: return 2;  // NORMSHORT, SHORT
+        default: return 4;         // FLOAT, NORMPACKED3
+    }
+}
+
+// the bound shader's layout as the chip packs an inline array, its stride in stream_stride[0]; the FVF's are all
+// dwords and need none
+std::shared_ptr<gpu::VertexShader> InlineArrayLayout() {
+    if (!(g_state.vs_handle & 1) || !g_state.vs) return nullptr;
+    struct Made {
+        std::shared_ptr<gpu::VertexShader> from, vs;
+    };
+    // the render thread tells shaders apart by pointer: one object per bound shader, which is kept alive
+    static std::map<gpu::VertexShader*, Made> made;
+    Made& m = made[g_state.vs.get()];
+    if (!m.vs) {
+        constexpr uint32_t kFloat2H = 0x72, kNone = 0x02;
+        m.from = g_state.vs;
+        m.vs = std::make_shared<gpu::VertexShader>(*g_state.vs);
+        uint32_t off = 0;
+        for (auto& in : m.vs->inputs) {
+            if (in.stream < 0 || !in.type || in.type == kNone) continue;
+            uint32_t size = ComponentBytes(in.type), count = in.type == kFloat2H ? 3 : (in.type >> 4) & 15;
+            off = (off + size - 1) / size * size;
+            in = {0, off, in.type};
+            off += size * count;
+            off = (off + size - 1) / size * size;
+        }
+        m.vs->stream_stride.fill(0);
+        m.vs->stream_stride[0] = off;
+    }
+    return m.vs;
+}
+
+// draws an inline array of the bound format, false when its size is no whole number of vertices
+bool DrawInlineArray(uint32_t prim, const void* data, uint32_t bytes) {
+    auto layout = InlineArrayLayout();
+    uint32_t stride = layout ? layout->stream_stride[0] : VertexBytes();
+    if (!stride || bytes % stride) return false;
+    if (!layout) {
+        DrawUp(prim, bytes / stride, data, stride);
+        return true;
+    }
+    auto bound = g_state.vs;
+    g_state.vs = layout;
+    DrawUp(prim, bytes / stride, data, stride);
+    g_state.vs = bound;
+    return true;
+}
+
 uint32_t g_push_begin = 0;
 }  // namespace
 
@@ -1817,10 +1874,9 @@ void Walk(uint32_t end) {
                     }
                     g_im_ranges.clear();
                 } else if (!g_im_raw.empty()) {
-                    uint32_t bytes = uint32_t(g_im_raw.size()) * 4, stride = VertexBytes();
-                    if (stride && bytes % stride == 0) {
-                        DrawUp(g_im_prim, bytes / stride, g_im_raw.data(), stride);
-                    } else if (g_state.vs && bytes % 28 == 0) {
+                    uint32_t bytes = uint32_t(g_im_raw.size()) * 4;
+                    bool drawn = DrawInlineArray(g_im_prim, g_im_raw.data(), bytes);
+                    if (!drawn && g_state.vs && bytes % 28 == 0) {
                         // the title pushes whole vertex arrays through the inline array method in a fixed 7 dword
                         // layout (position xyzw, D3DCOLOR, texcoord xy). Its program's declaration reads the same
                         // stride with an XYZ position, so give the draw the layout the array really has.
@@ -1839,8 +1895,9 @@ void Walk(uint32_t end) {
                         g_state.vs_handle |= 1;
                         DrawUp(g_im_prim, bytes / 28, g_im_raw.data(), 28);
                         g_state.vs = bound;
-                    } else {
-                        LOG_FIRST(4, "d3d: inline array primitive %u dropped, %u bytes of vertices of %u", g_im_prim, bytes, stride);
+                    } else if (!drawn) {
+                        LOG_FIRST(4, "d3d: inline array primitive %u dropped, %u bytes of vertices of %u", g_im_prim, bytes,
+                                  VertexBytes());
                     }
                     g_im_prim = 0;
                     g_im_raw.clear();
@@ -2112,9 +2169,10 @@ HLE_STDCALL(D3DDevice_EndPush, 1) {
                         BackendDraw(prim, 0, uint32_t(indices.size()), reinterpret_cast<const uint8_t*>(indices.data()));
                     }
                 } else {
-                    uint32_t stride = VertexBytes(), bytes = uint32_t(vertices.size()) * 4;
-                    if (stride && bytes % stride == 0) DrawUp(prim, bytes / stride, vertices.data(), stride);
-                    else LOG_FIRST(8, "d3d: EndPush primitive %u dropped, %u bytes of vertices of %u", prim, bytes, stride);
+                    uint32_t bytes = uint32_t(vertices.size()) * 4;
+                    if (!DrawInlineArray(prim, vertices.data(), bytes))
+                        LOG_FIRST(8, "d3d: EndPush primitive %u dropped, %u bytes of vertices of %u", prim, bytes,
+                                  VertexBytes());
                 }
                 prim = 0;
                 indices.clear();
