@@ -33,8 +33,26 @@ struct PixelKey {
     uint32_t flat = 0, two_sided = 0;
     uint32_t proj = 0;       // fixed function: bit per stage sampled at coordinates divided by w
     uint32_t quad = 0;       // a screen quad: QuadHlsl
+    uint32_t shading = 0;    // g_program_shading's entry for the draw's vertex program, 1 based, 0 none
     bool operator==(const PixelKey& o) const;
 };
+
+// A game's own shading over vertex programs of the title's, while *on holds: its HLSL goes into the shaders of the
+// draws that run one. A program takes the first entry whose match its translation contains. vs runs at the end of
+// the vertex shader, after o is filled from the program's registers, and sets o.x0 and o.x1; ps runs in a
+// programmable pixel shader after the combiner stages, before the final combiner, and may change r0 (t0..t3, v0, v1,
+// i.x0, i.x1 and xc are there too). xc.x is 1 over the largest x the frame and the one before it set in vertex
+// constant top (hardware order) for the entry's draws, 0 before one did. soft spreads a greater (or equal) alpha
+// test's edge over a pixel: for alpha blended draws, whose cut out edges then blend in instead of stepping.
+struct ProgramShading {
+    const char* match = "";
+    const bool* on = nullptr;
+    const char* vs = "";
+    const char* ps = "";
+    int top = -1;
+    bool soft = false;
+};
+inline std::vector<ProgramShading> g_program_shading;  // filled before the title boots, unchanged after
 
 uint64_t Hash(const void* p, size_t n, uint64_t h = 1469598103934665603ull);
 
@@ -42,7 +60,11 @@ PixelKey MakePixelKey(const State& s, const TexInfo tex[4]);
 
 // vertex program microcode to HLSL, regs is the bit mask of v registers the draw supplies
 // decode: VertexDecode per register, 4 bits each, for elements the input assembler hands over raw
-std::string VertexProgramHlsl(const std::vector<uint32_t>& program, uint16_t regs, uint64_t decode = 0);
+// shading: a g_program_shading entry, 1 based, 0 none
+std::string VertexProgramHlsl(const std::vector<uint32_t>& program, uint16_t regs, uint64_t decode = 0,
+                              uint32_t shading = 0);
+// the g_program_shading entry a program matches, 1 based, 0 none, whether it is on or not
+uint32_t MatchProgramShading(const std::vector<uint32_t>& program);
 // where a vertex program's clip w comes from: the constant register (hardware order) a dp4 or dph into oPos.w reads,
 // kPosWInput when it is moved from an input (vertices already on the screen), kPosWUnknown otherwise
 constexpr int kPosWInput = -1;
@@ -106,6 +128,7 @@ struct DrawConstants {
     // points: fixed function size, viewport height when scaled by distance (else 0), smallest and largest size
     float pts[4];
     float ptsk[4];       // the distance scale's A, B, C, then 1 for point sprites
+    float xc[4];         // a ProgramShading's, declared only in its shaders
 };
 
 }  // namespace gpu

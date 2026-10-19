@@ -23,6 +23,7 @@
 #include "app/app.h"
 #include "common/cutscenes.h"
 #include "common/display.h"
+#include "common/fur.h"
 #include "common/grass.h"
 #include "common/keyboard.h"
 #include "common/mouse.h"
@@ -467,6 +468,9 @@ void Draw(double fps) {
                 ImGui::Checkbox("Wind on distant grass", &grass::g_wind);
                 ImGui::SameLine();
                 ImGui::TextDisabled("the console keeps it still");
+                ImGui::Checkbox("Fur shading", &fur::g_shading);
+                ImGui::SameLine();
+                ImGui::TextDisabled("soft strand edges, shadowed roots, sheen");
                 end_tab();
             }
 

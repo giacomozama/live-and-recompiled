@@ -2956,6 +2956,7 @@ void VulkanBackend::UploadConstants(const State& s, const DrawShaders& sh, const
         FillTransformConstants(s, size, c);
         FillLightConstants(s, sh.fk, c);
     }
+    if (sh.shading) FillShadingConstants(s, sh.shading, c);
     std::memcpy(dc.cpu, &c, sizeof(c));
     b.cb[0] = {vc.buf, vc.off, sizeof(s.vsc)};
     b.cb[1] = {dc.buf, dc.off, sizeof(DrawConstants)};
@@ -3307,6 +3308,7 @@ void VulkanBackend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t
     DrawShaders sh;
     ClassifyShaders(s, a, count, sh);
     if (sh.prog) EnsureProgramHash(s);
+    sh.shading = DrawShading(s, sh);
     sh.vkey = VertexKey(s, a, sh);
     EnsureVertexShader(s, a, sh);
 
@@ -3315,6 +3317,7 @@ void VulkanBackend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t
     if (!BindStageTexturesAndTargets(s, stages)) return CountedSkip(s, "textures");
     PixelKey pk = MakePixelKey(s, stages.info);
     pk.quad = sh.quad;
+    pk.shading = sh.shading;
     sh.pkey = Hash(&pk, sizeof(pk));
     EnsurePixelShader(pk, sh);
     if (!sh.vs_code || !sh.ps_code) return CountedSkip(s, "shaders");
@@ -3789,6 +3792,7 @@ void VulkanBackend::Present(const Surface& front) {
         LOGI("frame %llu: %u draws, %u opaque, %u counted, %zu reports left", (unsigned long long)presents_,
              frame_draws_, frame_opaque_, frame_counted_, reports_.size());
     frame_draws_ = frame_opaque_ = frame_counted_ = 0;
+    EndShadingFrame();
     ReleaseOldTextures();
     ResetFrame();
     CountFps();

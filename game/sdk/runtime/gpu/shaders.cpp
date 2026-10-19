@@ -37,7 +37,8 @@ struct VOut {
     float4 tc3 : TEXCOORD3;
     float fogamt : TEXCOORD4;
     float psize : TEXCOORD6;  // a point's size in console pixels, PointHlsl reads it
-};
+)";
+const char* kCommonMid = R"(};
 cbuffer VC : register(b0) { float4 c[192]; };
 cbuffer DC : register(b1) {
     float4 surf;
@@ -60,7 +61,6 @@ const char* kCommonTail = R"(    float4 spread[4];
     float4 lt[56];
     float4 pts;
     float4 ptsk;
-};
 )";
 
 const ShaderHooks& Hooks() {
@@ -68,7 +68,16 @@ const ShaderHooks& Hooks() {
     return g_shader_hooks ? *g_shader_hooks : plain;
 }
 
-std::string Common() { return kCommonHead + Hooks().Constants() + kCommonTail; }
+// a ProgramShading's shaders (shading set) hand on two more values and take DrawConstants::xc
+std::string Common(uint32_t shading = 0) {
+    std::string s = kCommonHead;
+    if (shading) s += "    float4 x0 : TEXCOORD5;\n    float4 x1 : TEXCOORD7;\n";
+    s += kCommonMid + Hooks().Constants() + kCommonTail;
+    if (shading) s += "    float4 xc;\n";
+    return s + "};\n";
+}
+
+const ProgramShading& Shading(uint32_t shading) { return g_program_shading[shading - 1]; }
 
 // vertex programs
 
@@ -254,9 +263,8 @@ const char* kVsEpilogue = R"(
     o.tc3 = oT3;
     o.fogamt = fogfactor(oFog.x);
     o.psize = oPts.x;
-    return o;
-}
 )";
+const char* kVsReturn = "    return o;\n}\n";
 
 const char* kVsPrologue = R"(
     int a0 = 0;
@@ -486,6 +494,20 @@ const char* kPsTail = R"(void alphatest(float a) {
 }
 )";
 
+// ProgramShading::soft: a greater (or equal) test passes in full past half a pixel's change of alpha above the
+// reference, fails in full as far below, and in between scales the alpha the draw blends with
+const char* kPsSoftAlphaTest = R"(float softalphatest(float a) {
+    int f = (int)misc.y;
+    if (f != 4 && f != 6) {
+        alphatest(a);
+        return a;
+    }
+    float edge = saturate((a - misc.x / 255) / max(fwidth(a), 1.0 / 255) + 0.5);
+    if (edge == 0) discard;
+    return a * edge;
+}
+)";
+
 std::string PsHelpers() { return kPsSbyte + Hooks().Shadow() + kPsTail; }
 
 // spreadtapN: stage N's kTexWide fetch, after its texture is declared. It reads tex N and smp N itself: a texture
@@ -649,8 +671,8 @@ PixelKey MakePixelKey(const State& s, const TexInfo tex[4]) {
     return k;
 }
 
-std::string VertexProgramHlsl(const std::vector<uint32_t>& prog, uint16_t regs, uint64_t decode) {
-    std::string s = Common();
+std::string VertexProgramHlsl(const std::vector<uint32_t>& prog, uint16_t regs, uint64_t decode, uint32_t shading) {
+    std::string s = Common(shading);
     s += kVsHelpers;
     s += VsInputs(regs, decode);
     s += kVsPrologue;
@@ -688,7 +710,16 @@ std::string VertexProgramHlsl(const std::vector<uint32_t>& prog, uint16_t regs, 
         if (k.f(3, 0, 1)) break;  // last instruction
     }
     s += kVsEpilogue;
-    return s;
+    if (shading) s += std::string(Shading(shading).vs) + "\n";
+    return s + kVsReturn;
+}
+
+uint32_t MatchProgramShading(const std::vector<uint32_t>& prog) {
+    if (g_program_shading.empty()) return 0;
+    std::string s = VertexProgramHlsl(prog, 0xFFFF);
+    for (size_t i = 0; i < g_program_shading.size(); i++)
+        if (s.find(g_program_shading[i].match) != std::string::npos) return uint32_t(i + 1);
+    return 0;
 }
 
 int PositionWSource(const std::vector<uint32_t>& prog) {
@@ -835,7 +866,7 @@ std::string FixedVertexHlsl(uint16_t regs, bool pretransformed, uint64_t decode,
     }
     s += "    oFog = " + v(5, "float4(0,0,0,0)") + ";\n";
     // D3DRS_POINTSIZE, scaled by the eye distance under D3DRS_POINTSCALEENABLE: Vh * size * sqrt(1 / (A + B d + C d^2))
-    if (pretransformed) return s + "    oPts.x = pts.x;\n" + kVsEpilogue;
+    if (pretransformed) return s + "    oPts.x = pts.x;\n" + kVsEpilogue + kVsReturn;
     s += "    float de = length(vp);\n";
     s += "    oPts.x = pts.y ? pts.x * pts.y * rsqrt(max(ptsk.x + ptsk.y * de + ptsk.z * de * de, 1e-20)) : pts.x;\n";
     s += R"(
@@ -862,8 +893,10 @@ std::string FixedVertexHlsl(uint16_t regs, bool pretransformed, uint64_t decode,
 }
 
 std::string PixelHlsl(const PixelKey& k) {
-    std::string s = Common();
+    std::string s = Common(k.shading);
     s += PsHelpers();
+    bool soft = k.shading && Shading(k.shading).soft;
+    if (soft) s += kPsSoftAlphaTest;
     for (int i = 0; i < 4; i++) {
         const TexInfo& t = k.tex[i];
         const char* type = t.shadow ? "Texture2D<float>" : t.kind == kTex3D ? "Texture3D" : t.kind == kTexCube ? "TextureCube" : "Texture2D";
@@ -899,6 +932,7 @@ std::string PixelHlsl(const PixelKey& k) {
             ps.code += wc + wa + "}\n";
         }
         body += ps.code;
+        if (k.shading) body += std::string(Shading(k.shading).ps) + "\n";
         if (k.final_abcd || k.final_efg) {
             ps.stage = 8;
             uint32_t fl = k.final_efg & 0xFF;
@@ -947,7 +981,7 @@ std::string PixelHlsl(const PixelKey& k) {
         body += "cur.rgb = saturate(cur.rgb + v1.rgb);\n";
         body += "float4 outc = float4(lerp(fogin.rgb, cur.rgb, fogin.a), cur.a);\n";
     }
-    body += "alphatest(outc.a);\n" + Hooks().Output() + "return outc;\n}\n";
+    body += (soft ? "outc.a = softalphatest(outc.a);\n" : "alphatest(outc.a);\n") + Hooks().Output() + "return outc;\n}\n";
     s += body;
     return k.quad ? QuadHlsl(std::move(s)) : s;
 }

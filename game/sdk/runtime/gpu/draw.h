@@ -196,6 +196,7 @@ struct ShaderChoice {
     uint64_t ph = 0;
     uint64_t vid = 0;  // shader_record ids
     uint64_t pid = 0;
+    uint32_t shading = 0;  // g_program_shading's entry, 1 based: DrawShading
 };
 
 // the render target's console size in pixels, or the depth buffer's without one
@@ -271,6 +272,8 @@ uint64_t VertexKey(const State& s, const Assembled& a, const ShaderChoice& sh);
 shader_record::VertexEntry MakeVertexEntry(const State& s, const Assembled& a, const ShaderChoice& sh);
 // the draw's vertex program, empty for the fixed function pipeline
 const std::vector<uint32_t>& DrawProgram(const State& s, const ShaderChoice& sh);
+// the g_program_shading entry the draw's vertex program takes, 1 based, 0 none or off; after EnsureProgramHash
+uint32_t DrawShading(const State& s, const ShaderChoice& sh);
 
 // the stages the pixel shader reads: a combiner's by their texture modes (as MakePixelKey takes them), the fixed
 // function's up to the first disabled one
@@ -297,6 +300,10 @@ void FillCombinerConstants(const State& s, DrawConstants& c);
 void FillTextureConstants(const State& s, const bool rt[4], const bool exact[4], const float k[4],
                           const float wide[4], DrawConstants& c);
 void FillTransformConstants(const State& s, GuestExtent size, DrawConstants& c);
+// DrawConstants::xc for the draw's g_program_shading entry, after taking its top constant into the frame's largest
+void FillShadingConstants(const State& s, uint32_t shading, DrawConstants& c);
+// each present: the frame's largest tops become the last frame's
+void EndShadingFrame();
 // the same clip w for every vertex: an orthographic projection, or vertices already on the screen (text, menus, full
 // screen passes); pos_w is a vertex program's PositionWSource
 bool ScreenSpace(const State& s, const Assembled& a, int pos_w);

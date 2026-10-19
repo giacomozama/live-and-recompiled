@@ -135,6 +135,7 @@ uint64_t VertexKey(const State& s, const Assembled& a, const ShaderChoice& sh) {
     if (!sh.prog && a.pretransformed) vkey ^= kPretransformedSalt;
     if (sh.quad) vkey ^= kQuadSalt;
     if (!sh.prog) vkey = Hash(&sh.fk, sizeof(sh.fk), vkey);
+    if (sh.shading) vkey = Hash(&sh.shading, sizeof(sh.shading), vkey);
     return vkey;
 }
 
@@ -143,6 +144,7 @@ shader_record::VertexEntry MakeVertexEntry(const State& s, const Assembled& a, c
     v.program = sh.prog ? s.vs->hash : 0;
     v.decode = a.decode;
     if (!sh.prog) v.fixed = sh.fk;
+    v.shading = uint8_t(sh.shading);
     v.regs = a.regs;
     v.pretransformed = !sh.prog && a.pretransformed;
     v.quad = sh.quad;
@@ -154,8 +156,46 @@ const std::vector<uint32_t>& DrawProgram(const State& s, const ShaderChoice& sh)
     return sh.prog ? s.vs->program : none;
 }
 
+uint32_t DrawShading(const State& s, const ShaderChoice& sh) {
+    if (!sh.prog || g_program_shading.empty()) return 0;
+    // translating a program to match it is slow: once per program
+    static std::unordered_map<uint64_t, uint32_t> matched;
+    auto [it, fresh] = matched.try_emplace(s.vs->hash, 0);
+    if (fresh) it->second = MatchProgramShading(s.vs->program);
+    uint32_t i = it->second;
+    const bool* on = i ? g_program_shading[i - 1].on : nullptr;
+    return on && *on ? i : 0;
+}
+
+namespace {
+
+// per g_program_shading entry: the largest top this frame and last frame
+struct ShadingTop {
+    float frame = 0, last = 0;
+};
+std::vector<ShadingTop> g_shading_tops;
+
+}  // namespace
+
+void FillShadingConstants(const State& s, uint32_t shading, DrawConstants& c) {
+    int top = g_program_shading[shading - 1].top;
+    if (top < 0 || top >= int(s.vsc.size())) return;
+    if (g_shading_tops.size() < g_program_shading.size()) g_shading_tops.resize(g_program_shading.size());
+    ShadingTop& t = g_shading_tops[shading - 1];
+    t.frame = std::max(t.frame, s.vsc[size_t(top)][0]);
+    float most = std::max(t.frame, t.last);
+    c.xc[0] = most > 0 ? 1 / most : 0;
+}
+
+void EndShadingFrame() {
+    for (ShadingTop& t : g_shading_tops) {
+        t.last = t.frame;
+        t.frame = 0;
+    }
+}
+
 std::string VertexHlsl(const shader_record::VertexEntry& v, const std::vector<uint32_t>& program) {
-    std::string src = v.program ? VertexProgramHlsl(program, v.regs, v.decode)
+    std::string src = v.program ? VertexProgramHlsl(program, v.regs, v.decode, v.shading)
                                 : FixedVertexHlsl(v.regs, v.pretransformed, v.decode, v.fixed);
     return v.quad ? QuadHlsl(std::move(src)) : src;
 }

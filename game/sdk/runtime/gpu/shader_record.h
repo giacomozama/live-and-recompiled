@@ -23,7 +23,8 @@ struct VertexEntry {
     uint16_t regs = 0;
     uint8_t pretransformed = 0;
     uint8_t quad = 0;      // QuadHlsl
-    uint32_t pad = 0;
+    uint8_t shading = 0;   // g_program_shading's entry, 1 based, 0 none
+    uint8_t pad[3] = {};
 };
 static_assert(sizeof(VertexEntry) == 48, "no implicit padding: the bytes are hashed and stored");
 
