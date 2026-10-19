@@ -40,6 +40,13 @@ struct Perf {
     double wait = 0;
     double swap = 0;
     double sync = 0;
+    // inside draw: the steps Draw takes past assembling and binding textures
+    double d_setup = 0;   // depth copy check, post effects, ring check, targets
+    double d_vs = 0;      // classify, vertex key and shader
+    double d_ps = 0;      // pixel key and shader
+    double d_pso = 0;     // pipeline key and pipeline
+    double d_consts = 0;  // constants filled and uploaded
+    double d_record = 0;  // render pass, pipeline, descriptors, viewport, geometry
     // counts and bytes
     uint64_t draws = 0;
     uint64_t verts = 0;
@@ -58,8 +65,16 @@ struct Perf {
     uint64_t shaders = 0;
     uint64_t raw = 0;
     uint64_t lates = 0;
+    uint64_t fast = 0;  // draws that took the kept draw's state up again (FastDraw)
 };
 inline Perf g_perf;
+// the milliseconds since t, then t is now
+inline double PerfLap(PerfClock::time_point& t) {
+    auto now = PerfClock::now();
+    double ms = std::chrono::duration<double, std::milli>(now - t).count();
+    t = now;
+    return ms;
+}
 struct PerfScope {
     double& acc;
     PerfClock::time_point t = PerfClock::now();

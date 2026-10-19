@@ -29,6 +29,8 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <bitset>
+#include <cctype>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -517,11 +519,30 @@ struct DrawTextures {
 using Spirv = std::vector<uint32_t>;
 using SpirvRef = std::shared_ptr<const Spirv>;
 
+constexpr size_t kConstRegs = 192;  // State::vsc, the cbuffer c
+using ConstReads = std::bitset<kConstRegs>;
+
 // a draw's shaders, and the SPIR-V Compile returned
 struct DrawShaders : ShaderChoice {
     const Spirv* vs_code = nullptr;
     const Spirv* ps_code = nullptr;
+    ConstReads reads;  // the registers of c the two read
 };
+
+// the registers of c an HLSL source reads: every one when it indexes c by anything but a number
+ConstReads ReadsOf(const std::string& src) {
+    ConstReads r;
+    for (size_t p = src.find("c["); p != std::string::npos; p = src.find("c[", p + 2)) {
+        if (p > 0 && (std::isalnum(static_cast<unsigned char>(src[p - 1])) || src[p - 1] == '_')) continue;  // pc[, tc[
+        size_t q = p + 2;
+        size_t n = 0;
+        while (q < src.size() && std::isdigit(static_cast<unsigned char>(src[q])) && n < kConstRegs)
+            n = n * 10 + size_t(src[q++] - '0');
+        if (q == p + 2 || q >= src.size() || src[q] != ']') return r.set();
+        if (n < kConstRegs) r.set(n);  // the declaration's c[192] is no read
+    }
+    return r;
+}
 
 // a full screen pass's pipeline past its shaders
 struct FullScreenDesc {
@@ -668,6 +689,7 @@ public:
     void Clear(const State& s, uint32_t count, const uint8_t* rects, uint32_t flags, uint32_t color, float z,
                uint32_t stencil) override;
     void Draw(const State& s, uint32_t prim, uint32_t start, uint32_t count, const uint8_t* indices) override;
+    void Changed(bool any) override { same_state_ = !any; }
     void Copy(const Surface& src, const Surface& dst, uint32_t count, uint32_t src_rects, uint32_t dst_points) override;
     void Present(const Surface& front) override;
     void Sync(uint32_t data, uint32_t size) override;
@@ -731,6 +753,10 @@ private:
     void SetFullViewport(uint32_t w, uint32_t h);
     void SetBlitTarget(Image& im, uint32_t w, uint32_t h);
     void Push(const Bindings& b);
+    void PushRaw(const Bindings& b);
+    bool FastDraw(const State& s, uint32_t prim, uint32_t start, uint32_t count, const uint8_t* indices);
+    void KeepDraw(const Assembled& a, const DrawShaders& sh, const DrawTextures& stages, VkPipeline pso,
+                  const Bindings& b, GuestExtent size);
     void BeginCommands(VkCommandBuffer cmd);
     void Begin();
     // the recorded commands to the GPU; wait: until they ran, then recording goes on in the same frame
@@ -774,6 +800,7 @@ private:
     void EnsurePixelShader(const PixelKey& pk, DrawShaders& sh);
     void BuildPipelineKey(const State& s, const Assembled& a, uint64_t vh, uint64_t ph, PsoKey& k);
     VkPipeline EnsurePipeline(const PsoKey& k, const DrawShaders& sh);
+    VkPipeline FindPipeline(const PsoKey& k, const DrawShaders& sh);
     // any thread: a draw's pipeline, a point list's expanded by gs
     VkPipeline CreateDrawPipeline(const PsoKey& k, const Spirv& vs, const Spirv& ps, const Spirv* gs) const;
     VkPipeline CreateFullScreenPipeline(const Spirv& vs, const Spirv& ps, const FullScreenDesc& d) const;
@@ -790,6 +817,7 @@ private:
     void CaptureShader(const char* kind, uint64_t key, const std::string& src);
     void SetTextureViewsAndSamplers(const State& s, const Assembled& a, const DrawTextures& stages, Bindings& b);
     VkSampler EnsureSampler(const SamplerDesc& sd);
+    VkSampler FindSampler(const SamplerDesc& sd);
     VkSampler MakeSampler(const SamplerDesc& sd);
     void SetViewportScissor(const State& s, uint32_t gw);
     void SetBlendFactorStencilRef(const State& s);
@@ -957,8 +985,65 @@ private:
     struct ShaderSource {
         uint64_t hash;  // the source's, blobs_'s key
         uint64_t id;    // shader_record's
+        ConstReads reads;
     };
     std::unordered_map<uint64_t, ShaderSource> shader_src_;  // vertex and pixel program keys
+    // the constants last uploaded, and where; good until Begin
+    std::array<std::array<float, 4>, kConstRegs> last_vsc_{};
+    DrawConstants last_c_{};
+    Alloc last_vc_{}, last_dc_{};
+    bool last_vc_ok_ = false, last_dc_ok_ = false;
+    // what Draw last set on cmd_, which a draw setting the same leaves as it is; anything else that sets these
+    // forgets it (ForgetDrawCmd)
+    struct DrawCmd {
+        VkPipeline pso = VK_NULL_HANDLE;
+        bool bound = false;
+        Bindings b;
+        bool view = false;
+        VkViewport vp{};
+        VkRect2D sc{};
+        bool fixed = false;
+        float bf[4] = {};
+        uint32_t sref = 0;
+        int topo = -1;
+    };
+    DrawCmd drawn_;
+    // the lookups the draws before made, which a run of draws in one state repeats thousands of times a frame; the
+    // maps they front never drop an entry (samplers_ does, and forgets these)
+    struct LastShader {
+        uint64_t key = 0;
+        const ShaderSource* src = nullptr;
+        const Spirv* code = nullptr;
+    };
+    LastShader last_vs_, last_ps_;
+    PsoKey last_pso_key_{};
+    VkPipeline last_pso_ = VK_NULL_HANDLE;
+    bool last_pso_ok_ = false;
+    struct LastSampler {
+        SamplerDesc sd;
+        VkSampler smp = VK_NULL_HANDLE;
+    };
+    std::array<LastSampler, 4> last_smp_{};
+    uint32_t last_smp_next_ = 0;
+    void ForgetDrawCmd() { drawn_ = {}; }
+    // the last draw that went the whole way, which a draw in the same state (Changed) takes up again: its shaders,
+    // textures, pipeline and constants, past the vertices it assembles itself
+    struct KeptDraw {
+        bool ok = false;
+        ConstReads reads;
+        bool quad = false;
+        DrawTextures stages{};
+        VkPipeline pso = VK_NULL_HANDLE;
+        Bindings b;
+        GuestExtent size{};
+        uint16_t regs = 0;
+        uint64_t decode = 0;
+        Topology topology = Topology::Triangles;
+        bool strip = false, pretransformed = false;
+        std::array<VertexElement, 16> elements{};
+    };
+    KeptDraw kept_;
+    bool same_state_ = false;  // Changed: nothing the kept draw drew with has changed since
     std::unordered_map<uint64_t, VkPipeline> psos_;
     shader_record::Recorder record_;
     // WarmUp's results by source hash and pipeline key, taken by Compile and EnsurePipeline as they first need them
@@ -1631,6 +1716,7 @@ BufferRef VulkanBackend::NewBuffer(VkDeviceSize size, VkBufferUsageFlags usage, 
 
 void VulkanBackend::BeginCommands(VkCommandBuffer cmd) {
     cmd_ = cmd;
+    ForgetDrawCmd();
     VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
     bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     vkBeginCommandBuffer(cmd_, &bi);
@@ -1638,6 +1724,9 @@ void VulkanBackend::BeginCommands(VkCommandBuffer cmd) {
 
 // a new command buffer's state: nothing bound, the dynamic states a pipeline may read set
 void VulkanBackend::Begin() {
+    // a new command buffer: the ring may have started over
+    last_vc_ok_ = last_dc_ok_ = false;
+    ForgetDrawCmd();
     float zero[4] = {};
     vkCmdSetBlendConstants(cmd_, zero);
     vkCmdSetStencilReference(cmd_, VK_STENCIL_FACE_FRONT_AND_BACK, 0);
@@ -1698,11 +1787,13 @@ uint64_t VulkanBackend::Completed() const {
 
 // the viewport D3D12 would have: y down, the bottom edge first and the height negative
 void VulkanBackend::SetViewport(float x, float y, float w, float h) {
+    ForgetDrawCmd();
     VkViewport vp{x, y + h, w, -h, 0, 1};
     vkCmdSetViewport(cmd_, 0, 1, &vp);
 }
 
 void VulkanBackend::SetScissor(int32_t x0, int32_t y0, int32_t x1, int32_t y1) {
+    ForgetDrawCmd();
     x0 = std::max(x0, 0);
     y0 = std::max(y0, 0);
     VkRect2D r{{x0, y0}, {uint32_t(std::max(x1 - x0, 0)), uint32_t(std::max(y1 - y0, 0))}};
@@ -1836,6 +1927,11 @@ void VulkanBackend::EndRendering() {
 }
 
 void VulkanBackend::Push(const Bindings& b) {
+    ForgetDrawCmd();
+    PushRaw(b);
+}
+
+void VulkanBackend::PushRaw(const Bindings& b) {
     VkDescriptorImageInfo ii[4];
     VkDescriptorImageInfo si[4];
     VkWriteDescriptorSet w[kBindings] = {};
@@ -2095,6 +2191,7 @@ void VulkanBackend::CopyDepthStencil(Image& src, bool from_ms, Image& dst, uint3
     VkClearRect cr{{{0, 0}, {dst.w, dst.h}}, 0, 1};
     vkCmdClearAttachments(cmd_, 1, &ca, 1, &cr);
     DrawFullScreen(depth, Upload(kPassCbBytes), views);
+    ForgetDrawCmd();
     vkCmdSetStencilReference(cmd_, VK_STENCIL_FACE_FRONT_AND_BACK, 0xFF);
     for (int bit = 0; bit < kStencilBits; bit++) {
         VkPipeline pso = EnsureDepthStencilCopyPipeline(from_ms, samples, bit);
@@ -2174,6 +2271,7 @@ void VulkanBackend::UploadTarget(Target& t, const Surface& s) {
 void VulkanBackend::DrawFullScreen(VkPipeline pso, const Alloc& cb, std::array<VkImageView, 4> views) {
     if (!pso) return;
     EnsureRendering();
+    ForgetDrawCmd();
     vkCmdBindPipeline(cmd_, VK_PIPELINE_BIND_POINT_GRAPHICS, pso);
     Bindings b;
     b.cb[0] = b.cb[1] = {cb.buf, cb.off, kPassCbBytes};
@@ -2355,6 +2453,7 @@ void VulkanBackend::Pass(const char* hlsl, const char* entry, VkFormat rtv, Imag
     SetFullViewport(w, h);
     if (blend >= 0) {
         float f[4] = {blend, blend, blend, blend};
+        ForgetDrawCmd();
         vkCmdSetBlendConstants(cmd_, f);
     }
     DrawFullScreen(pso, cb, {src[0], src[1], src[2], VK_NULL_HANDLE});
@@ -2491,6 +2590,14 @@ float VulkanBackend::PointScale() const {
 }
 
 VkPipeline VulkanBackend::EnsurePipeline(const PsoKey& k, const DrawShaders& sh) {
+    if (last_pso_ok_ && std::memcmp(&k, &last_pso_key_, sizeof(k)) == 0) return last_pso_;
+    last_pso_ = FindPipeline(k, sh);
+    last_pso_key_ = k;
+    last_pso_ok_ = true;
+    return last_pso_;
+}
+
+VkPipeline VulkanBackend::FindPipeline(const PsoKey& k, const DrawShaders& sh) {
     uint64_t h = Hash(&k, sizeof(k));
     auto it = psos_.find(h);
     if (it != psos_.end()) return it->second;
@@ -2852,6 +2959,14 @@ VkSampler VulkanBackend::MakeSampler(const SamplerDesc& sd) {
 }
 
 VkSampler VulkanBackend::EnsureSampler(const SamplerDesc& sd) {
+    for (const LastSampler& l : last_smp_)
+        if (l.smp && std::memcmp(&l.sd, &sd, sizeof(sd)) == 0) return l.smp;
+    VkSampler smp = FindSampler(sd);
+    last_smp_[last_smp_next_++ % last_smp_.size()] = {sd, smp};
+    return smp;
+}
+
+VkSampler VulkanBackend::FindSampler(const SamplerDesc& sd) {
     uint64_t key = Hash(&sd, sizeof(sd));
     auto it = samplers_.find(key);
     if (it != samplers_.end()) return it->second;
@@ -2865,6 +2980,7 @@ VkSampler VulkanBackend::EnsureSampler(const SamplerDesc& sd) {
         };
         Retire(std::move(release));
         samplers_.clear();
+        last_smp_ = {};
         custom_borders_ = 0;
     }
     VkSampler s = MakeSampler(sd);
@@ -2885,17 +3001,29 @@ bool VulkanBackend::BindStageTexturesAndTargets(const State& s, DrawTextures& st
 
 // sets sh.vh, sh.vid and sh.vs_code, compiling the shader on a cache miss
 void VulkanBackend::EnsureVertexShader(const State& s, const Assembled& a, DrawShaders& sh) {
+    if (last_vs_.src && last_vs_.key == sh.vkey) {
+        sh.vs_code = last_vs_.code;
+        sh.vh = last_vs_.src->hash;
+        sh.vid = last_vs_.src->id;
+        sh.reads |= last_vs_.src->reads;
+        return;
+    }
     auto vit = shader_src_.find(sh.vkey);
     if (vit != shader_src_.end()) {
         sh.vs_code = blobs_[vit->second.hash].get();
         sh.vh = vit->second.hash;
         sh.vid = vit->second.id;
+        sh.reads |= vit->second.reads;
+        last_vs_ = {sh.vkey, &vit->second, sh.vs_code};
         return;
     }
     shader_record::VertexEntry v = MakeVertexEntry(s, a, sh);
-    sh.vs_code = Compile(VertexHlsl(v, DrawProgram(s, sh)), "main", "vs_5_0", sh.vh);
+    std::string src = VertexHlsl(v, DrawProgram(s, sh));
+    sh.vs_code = Compile(src, "main", "vs_5_0", sh.vh);
     sh.vid = shader_record::Id(shader_record::kVertex, &v, sizeof(v));
-    shader_src_[sh.vkey] = {sh.vh, sh.vid};
+    ConstReads reads = ReadsOf(src);
+    sh.reads |= reads;
+    shader_src_[sh.vkey] = {sh.vh, sh.vid, reads};
     if (!sh.vs_code) return;
     record_.Add(shader_record::kVertex, &v, sizeof(v));
     if (sh.prog) record_.AddProgram(s.vs->hash, s.vs->program);
@@ -2904,16 +3032,28 @@ void VulkanBackend::EnsureVertexShader(const State& s, const Assembled& a, DrawS
 // sets sh.ph, sh.pid and sh.ps_code, compiling the shader on a cache miss
 void VulkanBackend::EnsurePixelShader(const PixelKey& pk, DrawShaders& sh) {
     // pixel shaders share the map with vertex shaders, the salt keeps their keys apart
+    if (last_ps_.src && last_ps_.key == sh.pkey) {
+        sh.ps_code = last_ps_.code;
+        sh.ph = last_ps_.src->hash;
+        sh.pid = last_ps_.src->id;
+        sh.reads |= last_ps_.src->reads;
+        return;
+    }
     auto pit = shader_src_.find(sh.pkey ^ kPixelKeySalt);
     if (pit != shader_src_.end()) {
         sh.ps_code = blobs_[pit->second.hash].get();
         sh.ph = pit->second.hash;
         sh.pid = pit->second.id;
+        sh.reads |= pit->second.reads;
+        last_ps_ = {sh.pkey, &pit->second, sh.ps_code};
         return;
     }
-    sh.ps_code = Compile(PixelHlsl(pk), "main", "ps_5_0", sh.ph);
+    std::string src = PixelHlsl(pk);
+    sh.ps_code = Compile(src, "main", "ps_5_0", sh.ph);
     sh.pid = shader_record::Id(shader_record::kPixel, &pk, sizeof(pk));
-    shader_src_[sh.pkey ^ kPixelKeySalt] = {sh.ph, sh.pid};
+    ConstReads reads = ReadsOf(src);
+    sh.reads |= reads;
+    shader_src_[sh.pkey ^ kPixelKeySalt] = {sh.ph, sh.pid, reads};
     if (sh.ps_code) record_.Add(shader_record::kPixel, &pk, sizeof(pk));
 }
 
@@ -2940,9 +3080,17 @@ void VulkanBackend::BuildPipelineKey(const State& s, const Assembled& a, uint64_
 
 void VulkanBackend::UploadConstants(const State& s, const DrawShaders& sh, const PsoKey& k,
                                     const DrawTextures& stages, GuestExtent size, DrawConstants& c, Bindings& b) {
-    Alloc vc = Upload(sizeof(s.vsc));
-    std::memcpy(vc.cpu, s.vsc.data(), sizeof(s.vsc));
-    Alloc dc = Upload(sizeof(DrawConstants));
+    // the last draw's constants again when this one reads the same: a level drawn in thousands of small draws
+    // changing a register they don't read would otherwise fill the ring and wait for the GPU every frame
+    bool same_vc = last_vc_ok_;
+    for (size_t i = 0; same_vc && i < kConstRegs; i++)
+        same_vc = !sh.reads[i] || std::memcmp(&s.vsc[i], &last_vsc_[i], sizeof(s.vsc[i])) == 0;
+    if (!same_vc) {
+        last_vc_ = Upload(sizeof(s.vsc));
+        std::memcpy(last_vc_.cpu, s.vsc.data(), sizeof(s.vsc));
+        last_vsc_ = s.vsc;
+        last_vc_ok_ = true;
+    }
     FillSurfaceConstants(s, size, c);
     // points: host pixels per console pixel, also keeps them off the far edge pull out of screen passes
     if (k.topo == uint32_t(Topology::Points)) {
@@ -2957,9 +3105,14 @@ void VulkanBackend::UploadConstants(const State& s, const DrawShaders& sh, const
         FillLightConstants(s, sh.fk, c);
     }
     if (sh.shading) FillShadingConstants(s, sh.shading, c);
-    std::memcpy(dc.cpu, &c, sizeof(c));
-    b.cb[0] = {vc.buf, vc.off, sizeof(s.vsc)};
-    b.cb[1] = {dc.buf, dc.off, sizeof(DrawConstants)};
+    if (!last_dc_ok_ || std::memcmp(&c, &last_c_, sizeof(c)) != 0) {
+        last_dc_ = Upload(sizeof(DrawConstants));
+        std::memcpy(last_dc_.cpu, &c, sizeof(c));
+        last_c_ = c;
+        last_dc_ok_ = true;
+    }
+    b.cb[0] = {last_vc_.buf, last_vc_.off, sizeof(s.vsc)};
+    b.cb[1] = {last_dc_.buf, last_dc_.off, sizeof(DrawConstants)};
 }
 
 void VulkanBackend::CaptureTextures(const State& s, const DrawTextures& stages) {
@@ -3023,14 +3176,16 @@ void VulkanBackend::SetTextureViewsAndSamplers(const State& s, const Assembled& 
         b.view[i] = v;
         b.smp[i] = EnsureSampler(StageSampler(s, i, stages, clamp, aniso));
     }
-    Push(b);
+    if (drawn_.bound && std::memcmp(&b, &drawn_.b, sizeof(b)) == 0) return;
+    PushRaw(b);
+    drawn_.b = b;
+    drawn_.bound = true;
 }
 
 // viewport covers the target, the guest viewport is in the shader; scissor clips to it
 void VulkanBackend::SetViewportScissor(const State& s, uint32_t gw) {
     float W = float(bound_rt_ ? bound_rt_->w : bound_ds_->w);
     float H = float(bound_rt_ ? bound_rt_->h : bound_ds_->h);
-    SetViewport(0, 0, W, H);
     float sc = W / gw;
     int32_t x0 = int32_t(s.viewport.x * sc);
     int32_t y0 = int32_t(s.viewport.y * sc);
@@ -3042,15 +3197,32 @@ void VulkanBackend::SetViewportScissor(const State& s, uint32_t gw) {
         x1 = std::min(x1, int32_t(s.scissors[2] * sc));
         y1 = std::min(y1, int32_t(s.scissors[3] * sc));
     }
-    SetScissor(std::clamp<int32_t>(x0, 0, int32_t(W)), std::clamp<int32_t>(y0, 0, int32_t(H)),
-               std::clamp<int32_t>(x1, 0, int32_t(W)), std::clamp<int32_t>(y1, 0, int32_t(H)));
+    x0 = std::clamp<int32_t>(x0, 0, int32_t(W));
+    y0 = std::clamp<int32_t>(y0, 0, int32_t(H));
+    x1 = std::clamp<int32_t>(x1, 0, int32_t(W));
+    y1 = std::clamp<int32_t>(y1, 0, int32_t(H));
+    // as SetViewport and SetScissor make them
+    VkViewport vp{0, H, W, -H, 0, 1};
+    VkRect2D r{{x0, y0}, {uint32_t(std::max(x1 - x0, 0)), uint32_t(std::max(y1 - y0, 0))}};
+    if (drawn_.view && std::memcmp(&vp, &drawn_.vp, sizeof(vp)) == 0 && std::memcmp(&r, &drawn_.sc, sizeof(r)) == 0)
+        return;
+    vkCmdSetViewport(cmd_, 0, 1, &vp);
+    vkCmdSetScissor(cmd_, 0, 1, &r);
+    drawn_.vp = vp;
+    drawn_.sc = r;
+    drawn_.view = true;
 }
 
 void VulkanBackend::SetBlendFactorStencilRef(const State& s) {
     float bf[4];
     Color(SimpleState(s, kMBlendColor), bf);
+    uint32_t ref = SimpleState(s, kMStencilRef) & 0xFF;
+    if (drawn_.fixed && std::memcmp(bf, drawn_.bf, sizeof(bf)) == 0 && ref == drawn_.sref) return;
     vkCmdSetBlendConstants(cmd_, bf);
-    vkCmdSetStencilReference(cmd_, VK_STENCIL_FACE_FRONT_AND_BACK, SimpleState(s, kMStencilRef) & 0xFF);
+    vkCmdSetStencilReference(cmd_, VK_STENCIL_FACE_FRONT_AND_BACK, ref);
+    std::memcpy(drawn_.bf, bf, sizeof(bf));
+    drawn_.sref = ref;
+    drawn_.fixed = true;
 }
 
 // none without vertex inputs: that pipeline takes no strides (CreateDrawPipeline)
@@ -3075,7 +3247,10 @@ void VulkanBackend::UploadVertexBuffers(const Assembled& a) {
 
 void VulkanBackend::DrawGeometry(const Assembled& a) {
     UploadVertexBuffers(a);
-    vkCmdSetPrimitiveTopology(cmd_, PrimitiveTopology(a));
+    if (int topo = int(PrimitiveTopology(a)); topo != drawn_.topo) {
+        vkCmdSetPrimitiveTopology(cmd_, VkPrimitiveTopology(topo));
+        drawn_.topo = topo;
+    }
     if (a.index_count) {
         uint32_t ibytes = a.index_count * (a.index16 ? 2 : 4);
         Alloc ib = Upload(ibytes, 4);
@@ -3295,14 +3470,24 @@ void VulkanBackend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t
         CapStep(s.rt);
         CapAround(s);
     }
+    bool same = std::exchange(same_state_, false) && &s != &sprite_;
+    if (same && kept_.ok && !cap_ && !PostWanted() && FastDraw(s, prim, start, count, indices)) {
+        g_perf.fast++;
+        return;
+    }
+    kept_.ok = false;
+    auto lap = PerfClock::now();
     if (DepthCopy(s)) return CountedSkip(s, "depth copy");
     Assembled& a = asm_;
+    g_perf.d_setup += PerfLap(lap);
     if (!AssembleDraw(s, prim, start, count, indices, a)) return CountedSkip(s, "assemble");
+    lap = PerfClock::now();
     bool flat = (cap_ || PostWanted()) && ScreenSpaceDraw(s, a);
     TrackPost(s, flat);
     // past the ring every upload is a buffer of its own: seconds lost on a frame that draws a whole level once
     if (CurrentFrame().used > kUploadSize - kUploadReserve) Submit(true);
     if (!BindTargets(s)) return CountedSkip(s, "targets");
+    g_perf.d_setup += PerfLap(lap);
 
     // vertex shader
     DrawShaders sh;
@@ -3311,22 +3496,26 @@ void VulkanBackend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t
     sh.shading = DrawShading(s, sh);
     sh.vkey = VertexKey(s, a, sh);
     EnsureVertexShader(s, a, sh);
+    g_perf.d_vs += PerfLap(lap);
 
     // stage textures, then the pixel shader made for them
-    DrawTextures stages;
+    DrawTextures stages{};  // zeroed: KeptDraw compares it whole
     if (!BindStageTexturesAndTargets(s, stages)) return CountedSkip(s, "textures");
+    lap = PerfClock::now();  // bind times itself
     PixelKey pk = MakePixelKey(s, stages.info);
     pk.quad = sh.quad;
     pk.shading = sh.shading;
     sh.pkey = Hash(&pk, sizeof(pk));
     EnsurePixelShader(pk, sh);
     if (!sh.vs_code || !sh.ps_code) return CountedSkip(s, "shaders");
+    g_perf.d_ps += PerfLap(lap);
 
     // pipeline
     PsoKey k;
     BuildPipelineKey(s, a, sh.vh, sh.ph, k);
     VkPipeline pso = EnsurePipeline(k, sh);
     if (!pso) return CountedSkip(s, "pipeline");
+    g_perf.d_pso += PerfLap(lap);
 
     // constants
     GuestExtent size;
@@ -3334,6 +3523,7 @@ void VulkanBackend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t
     DrawConstants c{};
     Bindings b;
     UploadConstants(s, sh, k, stages, size, c, b);
+    g_perf.d_consts += PerfLap(lap);
 
     if (cap_) {
         CaptureDraw(s, prim, count, k, c, stages);
@@ -3345,6 +3535,13 @@ void VulkanBackend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t
                 s.simple[0x288 >> 2], s.simple[0x28C >> 2]);
         // the stages as the pixel shader reads them: texture modes (5 bits per stage) or the fixed function's
         fprintf(cap_, "\n     stages modes %05X sampled %X", s.ps ? s.rs[kRsPsTextureModes] : 0, stages.sampled);
+        // bump env map stages (modes 6, 7): the matrix 00 01 10 11, then luminance scale and offset
+        for (int i = 1; i < 4; i++) {
+            uint32_t mode = ((s.ps ? s.rs[kRsPsTextureModes] : 0) >> (i * 5)) & 0x1F;
+            if (mode == 6 || mode == 7)
+                fprintf(cap_, " | bump%d %g %g %g %g l %g %g", i, c.bump[i][0], c.bump[i][1], c.bump[i][2],
+                        c.bump[i][3], c.bumpl[i][0], c.bumpl[i][1]);
+        }
         // points: the render states the renderer draws by, then what the title pushed raw for the same registers
         // (NV097_SET_POINT_PARAMS_ENABLE 0x318, _POINT_SMOOTH_ENABLE 0x31C, _POINT_SIZE 0x43C)
         if (k.topo == uint32_t(Topology::Points))
@@ -3361,12 +3558,16 @@ void VulkanBackend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t
         if (count > kQuadVertices && !cap_sh_.count(sh.vkey)) CaptureInputs(cap_, s, a, c);
         EndDrawCapture(s, a, count, c);
         CaptureShaders(s, a, sh, pk);
+        lap = PerfClock::now();
     }
 
     // the render pass, the pipeline, texture views and samplers, viewport and scissor, blend factor and stencil
     // reference; nothing after this ends the pass before the draw
     EnsureRendering();
-    vkCmdBindPipeline(cmd_, VK_PIPELINE_BIND_POINT_GRAPHICS, pso);
+    if (pso != drawn_.pso) {
+        vkCmdBindPipeline(cmd_, VK_PIPELINE_BIND_POINT_GRAPHICS, pso);
+        drawn_.pso = pso;
+    }
     SetTextureViewsAndSamplers(s, a, stages, b);
     SetViewportScissor(s, size.w);
     SetBlendFactorStencilRef(s);
@@ -3375,6 +3576,81 @@ void VulkanBackend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t
     uint32_t query = BeginCountedDraw(s);
     DrawGeometry(a);
     EndCountedDraw(query);
+    if (!sh.shading && &s != &sprite_) KeepDraw(a, sh, stages, pso, b, size);
+    g_perf.d_record += PerfLap(lap);
+}
+
+void VulkanBackend::KeepDraw(const Assembled& a, const DrawShaders& sh, const DrawTextures& stages, VkPipeline pso,
+                             const Bindings& b, GuestExtent size) {
+    kept_.ok = true;
+    kept_.reads = sh.reads;
+    kept_.quad = sh.quad;
+    kept_.stages = stages;
+    kept_.pso = pso;
+    kept_.b = b;
+    kept_.size = size;
+    kept_.regs = a.regs;
+    kept_.decode = a.decode;
+    kept_.topology = a.topology;
+    kept_.strip = a.strip;
+    kept_.pretransformed = a.pretransformed;
+    kept_.elements = a.elements;
+}
+
+// a draw whose state is the kept draw's but for its vertices and constants: false, nothing recorded, when anything it
+// would draw with differs after all, and the whole way decides. Shading programs (fur) are never kept, their constants
+// follow the frame
+bool VulkanBackend::FastDraw(const State& s, uint32_t prim, uint32_t start, uint32_t count, const uint8_t* indices) {
+    if (DepthCopy(s)) {
+        CountedSkip(s, "depth copy");
+        return true;
+    }
+    Assembled& a = asm_;
+    if (!AssembleDraw(s, prim, start, count, indices, a)) {
+        CountedSkip(s, "assemble");
+        return true;
+    }
+    auto lap = PerfClock::now();
+    // the inputs the shaders and pipeline were made for
+    if (a.regs != kept_.regs || a.decode != kept_.decode || a.topology != kept_.topology || a.strip != kept_.strip ||
+        a.pretransformed != kept_.pretransformed)
+        return false;
+    for (int r = 0; r < 16; r++) {
+        if (!(a.regs >> r & 1)) continue;
+        const VertexElement &x = a.elements[size_t(r)], &y = kept_.elements[size_t(r)];
+        if (x.format != y.format || x.buffer != y.buffer || x.offset != y.offset) return false;
+    }
+    bool quad = count <= kQuadVertices && !s.rs[kRsZEnable] && a.topology != Topology::Points;
+    if (quad != kept_.quad) return false;
+    // the constants still in the ring, holding what the shaders read
+    if (!last_vc_ok_ || !last_dc_ok_ || kept_.b.cb[0].buffer != last_vc_.buf || kept_.b.cb[0].offset != last_vc_.off ||
+        kept_.b.cb[1].buffer != last_dc_.buf || kept_.b.cb[1].offset != last_dc_.off)
+        return false;
+    for (size_t i = 0; i < kConstRegs; i++)
+        if (kept_.reads[i] && std::memcmp(&s.vsc[i], &last_vsc_[i], sizeof(s.vsc[i])) != 0) return false;
+    if (CurrentFrame().used > kUploadSize - kUploadReserve) return false;
+    if (!BindTargets(s)) return false;
+    g_perf.d_setup += PerfLap(lap);
+    // the textures as bound now, which may have been uploaded again
+    DrawTextures stages{};
+    if (!BindStageTexturesAndTargets(s, stages)) return false;
+    lap = PerfClock::now();
+    if (std::memcmp(&stages, &kept_.stages, sizeof(stages)) != 0) return false;
+
+    EnsureRendering();
+    if (kept_.pso != drawn_.pso) {
+        vkCmdBindPipeline(cmd_, VK_PIPELINE_BIND_POINT_GRAPHICS, kept_.pso);
+        drawn_.pso = kept_.pso;
+    }
+    Bindings b = kept_.b;
+    SetTextureViewsAndSamplers(s, a, stages, b);
+    SetViewportScissor(s, kept_.size.w);
+    SetBlendFactorStencilRef(s);
+    uint32_t query = BeginCountedDraw(s);
+    DrawGeometry(a);
+    EndCountedDraw(query);
+    g_perf.d_record += PerfLap(lap);
+    return true;
 }
 
 // a guest rect scaled to the target and clamped to it, empty ones left out
@@ -3670,6 +3946,7 @@ void VulkanBackend::RenderUi() {
     if (app::kGame.ui) app::kGame.ui(fps_);
     ImGui::Render();
     ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), cmd_);
+    ForgetDrawCmd();
 }
 
 // the frame's target, already readable, into the swap chain image bi, the overlay over it

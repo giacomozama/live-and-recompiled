@@ -43,6 +43,9 @@ public:
     virtual void GetReport(uint32_t /*report*/) {}
     // a line for the frame capture, in order with the draws (state the draws alone don't show, e.g. who set it)
     virtual void Note(const char* /*text*/) {}
+    // before a Draw: whether anything changed since the Draw before it besides vertex sources (streams, indices, the
+    // raw vertex array and constant upload methods) and vertex program constants. Never called: every draw is new
+    virtual void Changed(bool /*any*/) {}
 
     // the XDK's fences and busy checks against the render thread; a backend that draws at once is never behind
     virtual uint32_t Fence() { return ++fence_; }

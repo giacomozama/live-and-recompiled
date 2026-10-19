@@ -722,6 +722,10 @@ void LogPerf() {
              n * 1000.0 / el, el / n, host / n, p.draw / n, p.assemble / n, p.bind / n, p.sig / n, p.texup / n,
              p.compile / n, p.clear / n, p.copy / n, p.sync / n, p.present / n, p.swap / n, p.wait / n,
              (el - host) / n);
+        LOGI("perf: draw steps per frame: setup %.2f vs %.2f ps %.2f pso %.2f consts %.2f record %.2f | %.0f of %.0f "
+             "draws in the state before",
+             p.d_setup / n, p.d_vs / n, p.d_ps / n, p.d_pso / n, p.d_consts / n, p.d_record / n, p.fast / n,
+             p.draws / n);
         LOGI("perf: title thread per frame: recording %.2f ms, waiting %.2f ms (%.1f waits: read-back %.2f "
              "resource %.2f fence %.2f flush %.2f copy %.2f, next frame %.2f) | read-backs waited for: %.1f lock, "
              "%.1f NOOVERWRITE",

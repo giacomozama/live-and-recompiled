@@ -95,12 +95,41 @@ bool Same(const uint8_t* a, const uint8_t* b, size_t n) {
     return i == n || !std::memcmp(a + i, b + i, n - i);
 }
 
+// what a 32 bit word of State is to Backend::Changed: anything else, a vertex source, a vertex program constant
+enum : uint8_t { kWordState, kWordVertex, kWordConstant };
+
+// the methods in simple the renderer never reads: vertex data and where it comes from, and constant uploads, which
+// it takes from vsc
+constexpr std::pair<uint32_t, uint32_t> kVertexMethods[] = {
+    {0x0B80, 0x0C00},  // NV097_SET_TRANSFORM_CONSTANT
+    {0x1720, 0x17A0},  // NV097_SET_VERTEX_DATA_ARRAY_OFFSET, _FORMAT
+    {0x17FC, 0x1800},  // NV097_SET_BEGIN_END
+    {0x1800, 0x1B00},  // NV097_ARRAY_ELEMENT16 to the inline vertex data
+    {0x1EA4, 0x1EA8},  // NV097_SET_TRANSFORM_CONSTANT_LOAD
+};
+
+std::vector<uint8_t> WordKinds() {
+    static const State s;
+    std::vector<uint8_t> k(sizeof(State) / 4, kWordState);
+    auto mark = [&](const void* p, size_t n, uint8_t kind) {
+        for (size_t w = At(s, p) / 4, e = (At(s, p) + n) / 4; w < e; w++) k[w] = kind;
+    };
+    for (auto [lo, hi] : kVertexMethods) mark(&s.simple[lo >> 2], hi - lo, kWordVertex);
+    mark(&s.streams, sizeof(s.streams), kWordVertex);
+    mark(&s.index_buffer, sizeof(s.index_buffer), kWordVertex);
+    mark(&s.index_data, sizeof(s.index_data), kWordVertex);
+    mark(&s.base_vertex, sizeof(s.base_vertex), kWordVertex);
+    mark(&s.vsc, sizeof(s.vsc), kWordConstant);
+    return k;
+}
+
 using Clock = std::chrono::steady_clock;
 uint64_t Ns(Clock::time_point t) { return uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - t).count()); }
 
 class Threaded final : public Backend {
 public:
-    explicit Threaded(std::unique_ptr<Backend> inner) : inner_(std::move(inner)), ranges_(StateRanges()) {
+    explicit Threaded(std::unique_ptr<Backend> inner)
+        : inner_(std::move(inner)), ranges_(StateRanges()), word_kinds_(WordKinds()) {
         ring_ = mem::AllocSystem(kHeaderRing, 64);
         cur_ = NewBatch();
         std::thread([this] { Run(); }).detach();
@@ -432,22 +461,40 @@ private:
         done_cv_.notify_all();
     }
 
+    // a piece about to overwrite old at State offset off: true when a word other than a vertex source or constant differs
+    bool ChangesState(const uint8_t* old, const uint8_t* now, size_t off, size_t n) const {
+        if (off % 4 || n % 4) return true;
+        for (size_t i = 0; i < n; i += 4) {
+            if (std::memcmp(old + i, now + i, 4) == 0) continue;
+            if (word_kinds_[(off + i) / 4] == kWordState) return true;
+        }
+        return false;
+    }
+
     void Execute(const Batch& b, const Cmd& c) {
         const uint8_t* data = b.bytes.data() + c.data;
+        // anything but state and draws may change what the backend holds (targets, frames): the next draw is new
+        if (c.op != Op::State && c.op != Op::Draw) changed_ = true;
         switch (c.op) {
             case Op::State: {
                 uint8_t* s = reinterpret_cast<uint8_t*>(&state_);
                 for (const uint8_t* p = data; p < data + c.size;) {
                     uint32_t head[2];
                     std::memcpy(head, p, 8);
+                    if (!changed_) changed_ = ChangesState(s + head[0], p + 8, head[0], head[1]);
                     std::memcpy(s + head[0], p + 8, head[1]);
                     p += 8 + head[1];
                 }
                 if (c.vs >= 0) state_.vs = b.vs[size_t(c.vs)];
                 if (c.ps >= 0) state_.ps = b.ps[size_t(c.ps)];
+                if (c.vs >= 0 || c.ps >= 0) changed_ = true;
                 break;
             }
-            case Op::Draw: inner_->Draw(state_, c.a, c.b, c.c, c.d ? data : nullptr); break;
+            case Op::Draw:
+                inner_->Changed(changed_);
+                changed_ = false;
+                inner_->Draw(state_, c.a, c.b, c.c, c.d ? data : nullptr);
+                break;
             case Op::Clear: inner_->Clear(state_, c.a, c.size ? data : nullptr, c.b, c.c, c.f, c.d); break;
             case Op::Copy: inner_->Copy(c.s1, c.s2, c.a, c.b, c.c); break;
             case Op::Present: inner_->Present(c.s1); break;
@@ -463,6 +510,8 @@ private:
 
     std::unique_ptr<Backend> inner_;
     std::vector<Range> ranges_;
+    std::vector<uint8_t> word_kinds_;  // per State word, WordKinds
+    bool changed_ = true;              // render thread: state changed since the last Draw (Backend::Changed)
 
     // the title's thread
     struct HeaderCopy {

@@ -255,6 +255,11 @@ const VertexShader* PickLayout(const State& s, VertexShader& fvf_layout) {
         key[i * 2 + 1] = s.streams[i].stride;
     }
     static std::map<std::pair<const void*, std::array<uint32_t, 32>>, std::shared_ptr<VertexShader>> made;
+    // the draw before's layout again, the common case, without the map's compares
+    static const void* last_vs = nullptr;
+    static std::array<uint32_t, 32> last_key{};
+    static VertexShader* last = nullptr;
+    if (last && last_vs == s.vs.get() && last_key == key) return last;
     auto& vs = made[{s.vs.get(), key}];
     if (!vs) {
         vs = std::make_shared<VertexShader>();
@@ -268,6 +273,9 @@ const VertexShader* PickLayout(const State& s, VertexShader& fvf_layout) {
         for (uint32_t w : key) h = (h ^ w) * 1099511628211ull;
         vs->hash = h;
     }
+    last_vs = s.vs.get();
+    last_key = key;
+    last = vs.get();
     return vs.get();
 }
 
@@ -431,7 +439,8 @@ constexpr uint64_t kRangedSpanSlack = 64;
 bool AssembleConverted(const State& s, const Inputs& inputs, const DrawRange& d, Assembled& out) {
     using namespace kernel;
     int nregs = inputs.nregs;
-    std::vector<uint32_t> seq(d.count);
+    static thread_local std::vector<uint32_t> seq;  // kept: a draw allocating its own was a heap call per draw
+    seq.resize(d.count);
     for (uint32_t i = 0; i < d.count; i++) seq[i] = DrawVertex(s, d, i);
     bool ranged = uint64_t(d.span) <= uint64_t(d.count) * kRangedSpanPerVertex + kRangedSpanSlack;
     uint32_t n = ranged ? d.span : d.count;
