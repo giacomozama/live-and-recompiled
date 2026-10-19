@@ -1036,6 +1036,9 @@ private:
         VkPipeline pso = VK_NULL_HANDLE;
         Bindings b;
         GuestExtent size{};
+        Target* rt = nullptr;  // bound as it drew
+        Target* ds = nullptr;
+        bool ms = false;
         uint16_t regs = 0;
         uint64_t decode = 0;
         Topology topology = Topology::Triangles;
@@ -3232,11 +3235,15 @@ void VulkanBackend::UploadVertexBuffers(const Assembled& a) {
     VkDeviceSize offs[16];
     VkDeviceSize sizes[16];
     VkDeviceSize strides[16];
+    // past the vertices, zeros: a three component element is read as four (SHORT3, NORMSHORT3, PBYTE3), and the last
+    // vertex's reads past its end
+    constexpr uint64_t kSlack = 8;
     for (uint32_t i = 0; i < a.buffer_count; i++) {
         const VertexBuffer& b = a.buffers[i];
-        uint64_t bytes = std::max<uint64_t>(b.bytes, 16);  // a binding is never empty
+        uint64_t bytes = std::max<uint64_t>(b.bytes, 16) + kSlack;  // a binding is never empty
         Alloc vb = Upload(bytes, 16);
         if (b.bytes) std::memcpy(vb.cpu, b.src, b.bytes);
+        std::memset(vb.cpu + b.bytes, 0, bytes - b.bytes);
         bufs[i] = vb.buf;
         offs[i] = vb.off;
         sizes[i] = bytes;
@@ -3589,6 +3596,9 @@ void VulkanBackend::KeepDraw(const Assembled& a, const DrawShaders& sh, const Dr
     kept_.pso = pso;
     kept_.b = b;
     kept_.size = size;
+    kept_.rt = bound_rt_;
+    kept_.ds = bound_ds_;
+    kept_.ms = bound_ms_;
     kept_.regs = a.regs;
     kept_.decode = a.decode;
     kept_.topology = a.topology;
@@ -3599,12 +3609,10 @@ void VulkanBackend::KeepDraw(const Assembled& a, const DrawShaders& sh, const Dr
 
 // a draw whose state is the kept draw's but for its vertices and constants: false, nothing recorded, when anything it
 // would draw with differs after all, and the whole way decides. Shading programs (fur) are never kept, their constants
-// follow the frame
+// follow the frame. Its targets, textures and depth copy are the kept draw's: in one state nothing but another
+// command (Changed) changes them, a guest texture is checked for writes once a frame anyway, and a kept draw was no
+// depth copy
 bool VulkanBackend::FastDraw(const State& s, uint32_t prim, uint32_t start, uint32_t count, const uint8_t* indices) {
-    if (DepthCopy(s)) {
-        CountedSkip(s, "depth copy");
-        return true;
-    }
     Assembled& a = asm_;
     if (!AssembleDraw(s, prim, start, count, indices, a)) {
         CountedSkip(s, "assemble");
@@ -3629,13 +3637,10 @@ bool VulkanBackend::FastDraw(const State& s, uint32_t prim, uint32_t start, uint
     for (size_t i = 0; i < kConstRegs; i++)
         if (kept_.reads[i] && std::memcmp(&s.vsc[i], &last_vsc_[i], sizeof(s.vsc[i])) != 0) return false;
     if (CurrentFrame().used > kUploadSize - kUploadReserve) return false;
-    if (!BindTargets(s)) return false;
+    if (bound_rt_ != kept_.rt || bound_ds_ != kept_.ds || bound_ms_ != kept_.ms || (!bound_rt_ && !bound_ds_))
+        return false;
+    const DrawTextures& stages = kept_.stages;
     g_perf.d_setup += PerfLap(lap);
-    // the textures as bound now, which may have been uploaded again
-    DrawTextures stages{};
-    if (!BindStageTexturesAndTargets(s, stages)) return false;
-    lap = PerfClock::now();
-    if (std::memcmp(&stages, &kept_.stages, sizeof(stages)) != 0) return false;
 
     EnsureRendering();
     if (kept_.pso != drawn_.pso) {

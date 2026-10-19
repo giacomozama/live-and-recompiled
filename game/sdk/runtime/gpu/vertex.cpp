@@ -323,16 +323,26 @@ uint32_t StrideOf(const State& s, const VertexShader& layout, const VertexShader
     return st.stride ? st.stride : layout.stream_stride[size_t(in.stream)];
 }
 
-constexpr uint32_t kStrideAlign = 4;            // the input assembler reads strides in dwords
 constexpr uint32_t kElementOffsetEnd = 0x10000;  // the element offset is stored as uint16_t
+
+// the bytes of one component of a D3DVSDT type, which Vulkan wants every element's address a multiple of (a packed
+// format's whole size): a SHORT3 position 6 bytes a vertex is read where it lies
+uint32_t ComponentBytes(uint32_t type) {
+    switch (type & 15) {
+        case 0: case 4: return 1;  // D3DCOLOR, PBYTE
+        case 1: case 5: return 2;  // NORMSHORT, SHORT
+        default: return 4;         // FLOAT, FLOAT2H, NORMPACKED3
+    }
+}
 
 bool RawReadable(const State& s, const Inputs& inputs) {
     for (int k = 0; k < inputs.nregs; k++) {
         const auto& in = inputs.layout.inputs[size_t(inputs.regs[k])];
         HostElement he = HostFormat(in.type);
         uint32_t stride = StrideOf(s, inputs.layout, in);
-        bool readable = he.format && stride && stride % kStrideAlign == 0 && in.offset < kElementOffsetEnd &&
-                        in.offset % std::min<uint32_t>(he.bytes, 4) == 0;
+        uint32_t align = ComponentBytes(in.type);
+        bool readable = he.format && stride && stride % align == 0 && in.offset < kElementOffsetEnd &&
+                        in.offset % align == 0;
         if (!readable) {
             LOG_FIRST(32, "vertex: converted on the CPU: v%d type %02X offset %u stride %u", inputs.regs[k], in.type,
                       in.offset, stride);

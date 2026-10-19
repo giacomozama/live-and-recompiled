@@ -298,6 +298,7 @@ private:
 
     void ReadBack(uint32_t data, bool late) {
         // only surfaces the GPU wrote since the last read-back hold anything newer than guest memory
+        last_written_ = 0;  // the set may lose it: the next draw inserts again
         if (!written_.erase(data)) return;
         (late ? g_perf_sync_late : g_perf_sync_block)++;
         if (diag::Perf() && logged_.insert(uint64_t(data) << 1 | (late ? 1 : 0)).second)
@@ -353,9 +354,15 @@ private:
         const uint8_t* now = reinterpret_cast<const uint8_t*>(&s);
         Cmd c{Op::State};
         size_t first = cur_->bytes.size();
+        // blocks of eight pieces compared at once: most of the state is the same draw to draw
+        const uint8_t* sent = reinterpret_cast<const uint8_t*>(&sent_);
         for (const Range& r : ranges_)
-            for (size_t off = r.off, end = r.off + r.len; off < end; off += 64)
-                Delta(reinterpret_cast<const uint8_t*>(&sent_) + off, now + off, std::min<size_t>(64, end - off));
+            for (size_t block = r.off, end = r.off + r.len; block < end; block += 512) {
+                size_t block_end = std::min<size_t>(block + 512, end);
+                if (Same(sent + block, now + block, block_end - block)) continue;
+                for (size_t off = block; off < block_end; off += 64)
+                    Delta(sent + off, now + off, std::min<size_t>(64, block_end - off));
+            }
         std::array<uint32_t, 4> textures;
         for (size_t i = 0; i < 4; i++) textures[i] = Header(s.textures[i]);
         Delta(&sent_.textures, &textures, sizeof(textures));
@@ -394,7 +401,12 @@ private:
         *r.value = cur_->id;
     }
     void Written(const Surface& s) {
-        if (s.header) written_.insert(mem::VirtualFromPhysical(s.data));
+        if (!s.header) return;
+        // a run of draws into one target inserts it once
+        uint32_t data = mem::VirtualFromPhysical(s.data);
+        if (data == last_written_) return;
+        written_.insert(data);
+        last_written_ = data;
     }
 
     uint64_t Submit() {
@@ -534,6 +546,7 @@ private:
     State sent_;  // the state as the render thread will have it
     std::unordered_map<uint32_t, uint64_t> last_use_;
     std::unordered_set<uint32_t> written_;  // surfaces drawn since their last read-back, by data address
+    uint32_t last_written_ = 0;             // in written_ since Written put it there, 0 for none
     std::unordered_set<uint64_t> logged_;   // perf diagnostic: read-backs named once, by address and kind
     uint64_t next_id_ = 0, last_present_ = 0;
 
