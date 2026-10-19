@@ -437,20 +437,12 @@ void Draw(double fps) {
                 Slider("Render %", &s.render_percent, 25, 400, app::Settings{}.render_percent);
                 ImGui::Checkbox("V-Sync", &s.vsync);
 
-                constexpr uint32_t kCaps[] = {0, 30, 60, 120, 144, 240};
-                int cap = 0;
-                for (int i = 0; i < 6; i++)
-                    if (kCaps[i] == s.fps_cap) cap = i;
-                if (ImGui::Combo("FPS cap", &cap, "Unlimited\0 30\0 60\0 120\0 144\0 240\0")) s.fps_cap = kCaps[cap];
-
                 constexpr uint32_t kRates[] = {30, 60, 120};
                 int rate = 0;
                 for (int i = 0; i < 3; i++)
                     if (kRates[i] == display::g_frame_rate) rate = i;
                 if (ImGui::Combo("Frame rate", &rate, "30 (original)\0 60\0 120 (experimental)\0"))
-                    display::g_frame_rate = kRates[rate];
-                if (display::g_frame_rate > 30 && s.fps_cap && s.fps_cap < display::g_frame_rate)
-                    ImGui::TextDisabled("held to %u by the FPS cap", s.fps_cap);
+                    display::SetFrameRate(kRates[rate]);
 
                 ImGui::SeparatorText("Quality");
                 constexpr uint32_t kAniso[] = {0, 2, 4, 8, 16};

@@ -81,7 +81,8 @@ Developers: building from source differs from Setup, see [Building from source](
 
 ### Display
 - **Frame Rate** - 30 (the original), 60 or 120 (experimental) FPS, from the Esc menu or `frame_rate` in
-  `settings.toml`. The game's timers follow real time at any rate. The FPS cap and V-Sync still apply.
+  `settings.toml`. The game's timers follow real time at any rate, and the frame rate is also the FPS limit. V-Sync
+  still applies.
 - **Any Aspect Ratio** - The 3D view widens to the display's shape (`aspect = "auto"`), or to any `W:H` such as
   `"21:9"`; `"4:3"` keeps the original view. The HUD stretches with the frame. Raise Render % to sharpen wide frames.
 

@@ -60,6 +60,13 @@ uint32_t Rate() {
 
 }  // namespace
 
+void SetFrameRate(uint32_t rate) {
+    g_frame_rate = rate;
+    app::Get().fps_cap = Rate();
+}
+
+void Init() { SetFrameRate(g_frame_rate); }
+
 float Aspect(float d) {
     static const float env = [] {
         float w = 0, h = 0;

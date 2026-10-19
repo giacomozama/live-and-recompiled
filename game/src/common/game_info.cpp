@@ -27,7 +27,7 @@ const app::GameInfo app::kGame = {
                 {"mouse_invert_y", &mouse::g_invert_y, nullptr}},
     .load = keyboard::Load,               // the [keys] table: keyboard bindings (src/game/keyboard.cpp)
     .save = keyboard::Save,               // writes it
-    .init = nullptr,                      // after the settings load, before the window and boot
+    .init = display::Init,                // after the settings load: the fps cap follows frame_rate
     .loaded = nullptr,                    // image in memory, before its entry point runs
     .window = nullptr,                    // the game window is up
     .message = ui::Message,               // window messages first; true takes one
