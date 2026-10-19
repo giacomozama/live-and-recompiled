@@ -332,7 +332,20 @@ void DecodeLevel(const TextureDesc& d, uint32_t level, uint32_t face, const uint
     if (f.compressed) {
         uint32_t bw = std::max(1u, (w + 3) / 4), bh = std::max(1u, (h + 3) / 4);
         row_pitch = bw * f.bits;
-        out.assign(src, src + size_t(row_pitch) * bh * z);
+        if (z == 1) {
+            out.assign(src, src + size_t(row_pitch) * bh);
+            return;
+        }
+        // a volume's blocks go by groups of four slices, each 4x4 tile's blocks for the group's slices together
+        // (xemu s3tc_decompress_3d); the host wants them slice by slice
+        out.resize(size_t(row_pitch) * bh * z);
+        for (uint32_t k0 = 0; k0 < z; k0 += 4) {
+            uint32_t n = std::min(4u, z - k0);
+            for (uint32_t j = 0; j < bh; j++)
+                for (uint32_t i = 0; i < bw; i++)
+                    for (uint32_t s = 0; s < n; s++, src += f.bits)
+                        std::memcpy(&out[((size_t(k0 + s) * bh + j) * bw + i) * f.bits], src, f.bits);
+        }
         return;
     }
     if (f.host == Host::R32F) {
