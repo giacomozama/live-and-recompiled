@@ -397,6 +397,7 @@ struct DrawTextures {
     uint32_t sampled = 0xF;     // bit per stage the pixel shader reads: the others are bound nothing
     float k[4] = {1, 1, 1, 1};  // texels per render scale texel
     float wide[4] = {};         // host texels per console texel of a target read into a smaller one, 0 otherwise
+    bool exact[4] = {};         // stage samples a target where it lies, without the half texel back
 };
 
 using Spirv = std::vector<uint32_t>;
@@ -2490,15 +2491,18 @@ Image* VulkanBackend::BindTargetTexture(const State& s, int stage, const Texture
     TexInfo& info = stages.info[stage];
     if (&t == draw_ds_) return nullptr;
     bool feedback = &t == draw_rt_;
-    stages.rt[stage] = true;
     if (!t.depth && LatchCpuWrite(t)) {
         Surface su;
         su.header = s.textures[size_t(stage)];
         UploadTarget(t, su);
     }
     info.kind = kTex2D;
-    // a pass shrinking it averages each tap over a console texel, else upscaled taps skip texels and ghost
+    stages.rt[stage] = true;
     Target* rt = FindTarget(s.rt, false);
+    // half a texel back only for a target read at its own size: a pass resizing it (Conker's depth of field shrinks
+    // the frame twice and stretches it back) lines up as drawn, half a texel per pass leaving the blur pixels off
+    stages.exact[stage] = rt && (t.gw != rt->gw || t.gh != rt->gh);
+    // a pass shrinking it averages each tap over a console texel, else upscaled taps skip texels and ghost
     float k = float(t.w) / (t.gw * stages.k[stage]);
     if (!t.depth && k > kUpscaledMin && rt && rt != &t && (t.gw > rt->gw || t.gh > rt->gh)) {
         stages.wide[stage] = k;
@@ -2643,6 +2647,7 @@ Image* VulkanBackend::BindTexture(const State& s, int stage, DrawTextures& stage
     stages.rt[stage] = false;
     stages.k[stage] = 1;
     stages.wide[stage] = 0;
+    stages.exact[stage] = false;
     TextureDesc d;
     if (!s.textures[size_t(stage)] || !Describe(s.textures[size_t(stage)], d)) return nullptr;
     const FormatInfo& fi = Format(d.format);
@@ -2658,7 +2663,10 @@ Image* VulkanBackend::BindTexture(const State& s, int stage, DrawTextures& stage
     if (tit == targets_.end() && !fi.depth && !fi.compressed && fi.bits == 32 && !d.cube && d.depth == 1) {
         auto zit = targets_.find(SizedTargetKey(d.data, true, d.width, d.height));
         if (zit != targets_.end() && zit->second.res) {
+            // depth is data, not a picture: half a texel back reads the neighbour's depth, and Conker's depth of
+            // field left a sharp line of background along the right edges of what it keeps in focus
             stages.rt[stage] = true;
+            stages.exact[stage] = true;
             info.kind = kTex2D;
             if (!((stages.sampled >> stage) & 1)) return nullptr;
             if (Image* r = DepthBytes(zit->second, d.format)) {
@@ -2813,7 +2821,7 @@ void VulkanBackend::UploadConstants(const State& s, const DrawShaders& sh, const
     }
     FillFogConstants(s, sh.prog, c);
     FillCombinerConstants(s, c);
-    FillTextureConstants(s, stages.rt, stages.k, stages.wide, c);
+    FillTextureConstants(s, stages.rt, stages.exact, stages.k, stages.wide, c);
     if (sh.fixed_transform) {
         FillTransformConstants(s, size, c);
         FillLightConstants(s, sh.fk, c);

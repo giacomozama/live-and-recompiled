@@ -292,9 +292,10 @@ void FillSurfaceConstants(const State& s, GuestExtent size, DrawConstants& c);
 // stage0: the sprite's coordinates go to stage 0 (FixedSprite), else to stage 3
 void FillPointConstants(const State& s, bool vertex_program, bool stage0, DrawConstants& c);
 void FillCombinerConstants(const State& s, DrawConstants& c);
-// per stage: rt it samples a render target, k Extension::Sample's, wide host texels per console texel of a target
-// read into a smaller one (0 otherwise)
-void FillTextureConstants(const State& s, const bool rt[4], const float k[4], const float wide[4], DrawConstants& c);
+// per stage: rt it samples a render target, exact one read where it lies (no half texel back), k Extension::Sample's,
+// wide host texels per console texel of a target read into a smaller one (0 otherwise)
+void FillTextureConstants(const State& s, const bool rt[4], const bool exact[4], const float k[4],
+                          const float wide[4], DrawConstants& c);
 void FillTransformConstants(const State& s, GuestExtent size, DrawConstants& c);
 void FillLightConstants(const State& s, const FixedKey& fk, DrawConstants& c);
 

@@ -294,14 +294,16 @@ namespace {
 
 constexpr float kGlowBoxTexels = 3.0f;  // console texels across the box each wide tap averages
 
-void FillTexelConstants(int i, const TextureDesc& d, bool rt, float k, float wide, DrawConstants& c) {
+void FillTexelConstants(int i, const TextureDesc& d, bool rt, bool exact, float k, float wide, DrawConstants& c) {
     c.texsize[i][0] = float(d.width);
     c.texsize[i][1] = float(d.height);
     // the console samples pixels at integer positions, D3D12 and Vulkan half a pixel on: targets are read half a
-    // texel back
+    // texel back, but for those the draw reads exactly where they lie
     if (!rt) return;
-    c.texsize[i][2] = -0.5f / (float(d.width) * k);
-    c.texsize[i][3] = -0.5f / (float(d.height) * k);
+    if (!exact) {
+        c.texsize[i][2] = -0.5f / (float(d.width) * k);
+        c.texsize[i][3] = -0.5f / (float(d.height) * k);
+    }
     // a 3 console texel box per tap keeps the console chain's glow width and brightness
     if (wide > 0) {
         float n = std::ceil(kGlowBoxTexels * wide * 0.5f);
@@ -313,10 +315,12 @@ void FillTexelConstants(int i, const TextureDesc& d, bool rt, float k, float wid
 
 }  // namespace
 
-void FillTextureConstants(const State& s, const bool rt[4], const float k[4], const float wide[4], DrawConstants& c) {
+void FillTextureConstants(const State& s, const bool rt[4], const bool exact[4], const float k[4],
+                          const float wide[4], DrawConstants& c) {
     for (int i = 0; i < 4; i++) {
         TextureDesc d;
-        if (s.textures[size_t(i)] && Describe(s.textures[size_t(i)], d)) FillTexelConstants(i, d, rt[i], k[i], wide[i], c);
+        if (s.textures[size_t(i)] && Describe(s.textures[size_t(i)], d))
+            FillTexelConstants(i, d, rt[i], exact[i], k[i], wide[i], c);
         const auto& t = s.tss[size_t(i)];
         c.bump[i][0] = Bits(t[kTssBumpEnvMat00]);
         c.bump[i][1] = Bits(t[kTssBumpEnvMat01]);
