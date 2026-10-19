@@ -8,7 +8,8 @@
 
 namespace gpu {
 
-enum class Topology : uint8_t { Points, Lines, Triangles };
+// Patches: triangles as patches of three, tessellated (ProgramShading::tess)
+enum class Topology : uint8_t { Points, Lines, Triangles, Patches };
 
 // how the vertex shader finishes an element the input assembler reads raw, 4 bits per register in Assembled::decode
 enum VertexDecode : uint8_t {
@@ -58,9 +59,13 @@ void FvfInputs(uint32_t fvf, VertexShader& out);
 
 // false when there is nothing to draw
 // indices: the title's 16 bit indices, null for an unindexed draw
-bool Assemble(const State& s, uint32_t prim, uint32_t start, uint32_t count, const uint8_t* indices, Assembled& out);
+// patches: triangles of any kind as a list of Topology::Patches
+bool Assemble(const State& s, uint32_t prim, uint32_t start, uint32_t count, const uint8_t* indices, Assembled& out,
+              bool patches = false);
 
 // the draw's input registers (stream, type, stride, offset) and their first vertices decoded, for frame captures
 std::string DescribeInputs(const State& s, uint32_t start, const uint8_t* indices, uint32_t vertices);
+// input register reg of the draw's first vertices, decoded; false when the draw has none or its stream is unbound
+bool ReadInput(const State& s, int reg, uint32_t start, const uint8_t* indices, uint32_t vertices, float (*out)[4]);
 
 }  // namespace gpu

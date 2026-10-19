@@ -202,6 +202,7 @@ struct DrawRange {
     uint32_t first = 0;         // lowest index
     uint32_t first_vertex = 0;  // first vertex read, base vertex applied
     uint32_t span = 0;
+    bool patches = false;       // a strip goes to a list too
 };
 
 // the input registers fed by a bound stream and the layout they come from
@@ -435,7 +436,7 @@ bool AssembleRaw(const State& s, const Inputs& inputs, const DrawRange& d, Assem
         out.decode |= uint64_t(he.decode) << (reg * 4);
     }
     out.vertex_count = dense ? d.span : d.count;
-    if (NativePrimitive(d.prim)) return DrawNative(d, dense, out);
+    if (NativePrimitive(d.prim) && !(d.patches && d.prim == 6)) return DrawNative(d, dense, out);
     auto local = [&](uint32_t i) { return dense ? DrawVertex(s, d, i) - d.first_vertex : i; };
     ListIndices(d.prim, d.count, local, out.indices, out.topology);
     return UseIndexList(out);
@@ -509,7 +510,8 @@ void FvfInputs(uint32_t fvf, VertexShader& vs) {
     vs.stream_stride[0] = off;
 }
 
-bool Assemble(const State& s, uint32_t prim, uint32_t start, uint32_t count, const uint8_t* ip, Assembled& out) {
+bool Assemble(const State& s, uint32_t prim, uint32_t start, uint32_t count, const uint8_t* ip, Assembled& out,
+              bool patches) {
     ResetAssembled(out);
     if (!count || prim < 1 || prim > 10) return false;
 
@@ -529,6 +531,7 @@ bool Assemble(const State& s, uint32_t prim, uint32_t start, uint32_t count, con
     d.first = bounds.first;
     d.first_vertex = ip ? bounds.first + s.base_vertex : start;
     d.span = bounds.last - bounds.first + 1;
+    d.patches = patches;
 
     int regs[16];
     int nregs = CollectRegs(s, *layout, regs, out);
@@ -537,42 +540,68 @@ bool Assemble(const State& s, uint32_t prim, uint32_t start, uint32_t count, con
 
     // the guest's own vertices when the input assembler can read every element of them
     bool raw = kRawVertices && RawReadable(s, inputs);
-    if (raw) return AssembleRaw(s, inputs, d, out);
-    return AssembleConverted(s, inputs, d, out);
+    bool ok = raw ? AssembleRaw(s, inputs, d, out) : AssembleConverted(s, inputs, d, out);
+    if (ok && patches && out.topology == Topology::Triangles && !out.strip) out.topology = Topology::Patches;
+    return ok;
 }
 
-std::string DescribeInputs(const State& s, uint32_t start, const uint8_t* ip, uint32_t vertices) {
+namespace {
+
+// input register r's element of vertices draw order vertices from start (or ip's 16 bit indices) as floats, false
+// when its stream is unbound
+bool ReadElement(const State& s, const VertexShader::Input& in, uint32_t stride, uint32_t start, const uint8_t* ip,
+                 uint32_t vertices, float (*out)[4]) {
     using namespace kernel;
+    const auto& st = s.streams[size_t(in.stream)];
+    if (!st.vb) return false;
+    const uint8_t* src =
+        static_cast<const uint8_t*>(HostPtr(mem::VirtualFromPhysical(R32(st.vb + kResData)) + in.offset));
+    for (uint32_t i = 0; i < vertices; i++) {
+        uint32_t id = start + i;
+        if (ip) {
+            uint16_t v;
+            std::memcpy(&v, ip + i * 2, 2);
+            id = v + s.base_vertex;
+        }
+        Convert(in.type, src + size_t(id) * stride, out[i]);
+    }
+    return true;
+}
+
+}  // namespace
+
+std::string DescribeInputs(const State& s, uint32_t start, const uint8_t* ip, uint32_t vertices) {
     VertexShader fvf_layout;
     const VertexShader* layout = PickLayout(s, fvf_layout);
     if (!layout) return {};
     std::string o;
     char b[96];
+    std::vector<float> fv(size_t(vertices) * 4);
+    auto f = reinterpret_cast<float (*)[4]>(fv.data());
     for (int r = 0; r < 16; r++) {
         const auto& in = layout->inputs[size_t(r)];
         if (in.stream < 0 || !in.type || in.type == kTypeNone) continue;
-        const auto& st = s.streams[size_t(in.stream)];
         uint32_t stride = StrideOf(s, *layout, in);
+        bool bound = ReadElement(s, in, stride, start, ip, vertices, f);
         snprintf(b, sizeof(b), "\n     v%d s%d type %02X stride %u off %u%s", r, in.stream, in.type, stride, in.offset,
-                 st.vb ? "" : " unbound");
+                 bound ? "" : " unbound");
         o += b;
-        if (!st.vb) continue;
-        const uint8_t* src = static_cast<const uint8_t*>(
-            HostPtr(mem::VirtualFromPhysical(R32(st.vb + kResData)) + in.offset));
+        if (!bound) continue;
         for (uint32_t i = 0; i < vertices; i++) {
-            uint32_t id = start + i;
-            if (ip) {
-                uint16_t v;
-                std::memcpy(&v, ip + i * 2, 2);
-                id = v + s.base_vertex;
-            }
-            float f[4];
-            Convert(in.type, src + size_t(id) * stride, f);
-            snprintf(b, sizeof(b), " [%g %g %g %g]", f[0], f[1], f[2], f[3]);
+            snprintf(b, sizeof(b), " [%g %g %g %g]", f[i][0], f[i][1], f[i][2], f[i][3]);
             o += b;
         }
     }
     return o;
+}
+
+bool ReadInput(const State& s, int reg, uint32_t start, const uint8_t* ip, uint32_t vertices, float (*out)[4]) {
+    VertexShader fvf_layout;
+    const VertexShader* layout = PickLayout(s, fvf_layout);
+    if (!layout) return false;
+    const auto& in = layout->inputs[size_t(reg)];
+    if (in.stream < 0 || !in.type || in.type == kTypeNone) return false;
+    return ReadElement(s, in, StrideOf(s, *layout, in), start, ip, vertices, out);
 }
 
 }  // namespace gpu

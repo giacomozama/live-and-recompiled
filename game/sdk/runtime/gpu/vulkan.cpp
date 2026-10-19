@@ -83,12 +83,13 @@ constexpr uint32_t kQueries = 8192;  // occlusion queries in flight, several fra
 constexpr uint32_t kNoQuery = ~0u;
 constexpr size_t kSamplersKept = 2048;  // distinct stage samplers before the cache starts over
 
-// the descriptor set every pipeline takes, pushed per draw: HLSL's b0 b1, t0 to t3 and s0 to s3 (CompileSpirv shifts
-// the registers to these)
+// the descriptor set every pipeline takes, pushed per draw: HLSL's b0 b1, t0 to t4 and s0 to s4 (CompileSpirv shifts
+// the registers to these); t4 and s4 are a ProgramShading's field, the dummy elsewhere
 constexpr uint32_t kBindCb = 0;
 constexpr uint32_t kBindTex = 2;
-constexpr uint32_t kBindSampler = 6;
-constexpr uint32_t kBindings = 10;
+constexpr uint32_t kBindSampler = 7;
+constexpr uint32_t kBindViews = kBindSampler - kBindTex;
+constexpr uint32_t kBindings = 12;
 
 // layouts by use, a depth image's attachment layout aside
 constexpr VkImageLayout kRead = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
@@ -558,6 +559,8 @@ EShLanguage StageOf(const char* profile) {
     switch (profile[0]) {
         case 'v': return EShLangVertex;
         case 'g': return EShLangGeometry;
+        case 'h': return EShLangTessControl;
+        case 'd': return EShLangTessEvaluation;
         default: return EShLangFragment;
     }
 }
@@ -626,6 +629,7 @@ VkExtent2D WindowExtent() {
 VkPrimitiveTopology PrimitiveTopology(const Assembled& a) {
     if (a.topology == Topology::Points) return VK_PRIMITIVE_TOPOLOGY_POINT_LIST;
     if (a.topology == Topology::Lines) return a.strip ? VK_PRIMITIVE_TOPOLOGY_LINE_STRIP : VK_PRIMITIVE_TOPOLOGY_LINE_LIST;
+    if (a.topology == Topology::Patches) return VK_PRIMITIVE_TOPOLOGY_PATCH_LIST;
     return a.strip ? VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP : VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
 }
 
@@ -634,6 +638,7 @@ VkPrimitiveTopology TopologyClass(uint32_t topo) {
     switch (topo) {
         case 0: return VK_PRIMITIVE_TOPOLOGY_POINT_LIST;
         case 1: return VK_PRIMITIVE_TOPOLOGY_LINE_LIST;
+        case uint32_t(Topology::Patches): return VK_PRIMITIVE_TOPOLOGY_PATCH_LIST;
         default: return VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
     }
 }
@@ -730,8 +735,8 @@ private:
     // what a draw's descriptors hold: b0 and b1, t0 to t3, s0 to s3
     struct Bindings {
         VkDescriptorBufferInfo cb[2] = {};
-        VkImageView view[4] = {};
-        VkSampler smp[4] = {};
+        VkImageView view[kBindViews] = {};  // left null: the dummy 2D image, and blit_[0]
+        VkSampler smp[kBindViews] = {};
     };
 
     Alloc Upload(uint64_t size, uint64_t align = kCbAlign);
@@ -754,7 +759,7 @@ private:
     void SetBlitTarget(Image& im, uint32_t w, uint32_t h);
     void Push(const Bindings& b);
     void PushRaw(const Bindings& b);
-    bool FastDraw(const State& s, uint32_t prim, uint32_t start, uint32_t count, const uint8_t* indices);
+    bool FastDraw(const State& s, uint32_t prim, uint32_t start, uint32_t count, const uint8_t* indices, bool patches);
     void KeepDraw(const Assembled& a, const DrawShaders& sh, const DrawTextures& stages, VkPipeline pso,
                   const Bindings& b, GuestExtent size);
     void BeginCommands(VkCommandBuffer cmd);
@@ -786,7 +791,7 @@ private:
     VkPipeline EnsureDepthStencilCopyPipeline(bool from_ms, uint32_t samples, int bit);
     void CopyDepthStencil(Image& src, bool from_ms, Image& dst, uint32_t samples);
     bool AssembleDraw(const State& s, uint32_t prim, uint32_t start, uint32_t count, const uint8_t* indices,
-                      Assembled& a);
+                      Assembled& a, bool patches);
     bool BindTargets(const State& s);
     void EnsureVertexShader(const State& s, const Assembled& a, DrawShaders& sh);
     bool BindStageTexturesAndTargets(const State& s, DrawTextures& stages);
@@ -801,11 +806,12 @@ private:
     void BuildPipelineKey(const State& s, const Assembled& a, uint64_t vh, uint64_t ph, PsoKey& k);
     VkPipeline EnsurePipeline(const PsoKey& k, const DrawShaders& sh);
     VkPipeline FindPipeline(const PsoKey& k, const DrawShaders& sh);
-    // any thread: a draw's pipeline, a point list's expanded by gs
-    VkPipeline CreateDrawPipeline(const PsoKey& k, const Spirv& vs, const Spirv& ps, const Spirv* gs) const;
+    // any thread: a draw's pipeline, a point list's expanded by gs, patches tessellated by hs and ds
+    VkPipeline CreateDrawPipeline(const PsoKey& k, const Spirv& vs, const Spirv& ps, const Spirv* gs,
+                                  const Spirv* hs = nullptr, const Spirv* dms = nullptr) const;
     VkPipeline CreateFullScreenPipeline(const Spirv& vs, const Spirv& ps, const FullScreenDesc& d) const;
-    VkPipeline CreatePipeline(VkGraphicsPipelineCreateInfo& ci, const Spirv* const code[3],
-                              const VkShaderStageFlagBits stages[3], uint32_t n) const;
+    VkPipeline CreatePipeline(VkGraphicsPipelineCreateInfo& ci, const Spirv* const code[],
+                              const VkShaderStageFlagBits stages[], uint32_t n) const;
     float PointScale() const;  // host pixels per console pixel of the bound target
     void UploadConstants(const State& s, const DrawShaders& sh, const PsoKey& k, const DrawTextures& stages,
                          GuestExtent size, DrawConstants& c, Bindings& b);
@@ -958,6 +964,7 @@ private:
     // device features past the required ones
     bool aniso_ = false;
     bool non_solid_ = false;
+    bool tess_ = false;  // ProgramShading::tess
     bool precise_ = false;
     bool custom_border_ = false;
     bool dynamic_rendering_ext_ = false;
@@ -1068,6 +1075,13 @@ private:
     std::unordered_map<uint64_t, VkPipeline> blit_psos_;
     // stages with nothing bound read these, by kind
     ImageRef dummy_2d_, dummy_3d_, dummy_cube_, dummy_depth_;
+    // ProgramShading::field's image per g_program_shading entry, and the version of the field it holds
+    struct FieldImage {
+        ImageRef im;
+        uint64_t version = 0;
+    };
+    std::vector<FieldImage> fields_;
+    VkImageView FieldView(uint32_t shading);
     // one frame capture: every draw in a text file, each target as the frame leaves it, the textures it read
     FILE* cap_ = nullptr;
     std::filesystem::path cap_dir_;
@@ -1343,6 +1357,7 @@ bool VulkanBackend::PickDevice() {
         qfam_ = uint32_t(family);
         aniso_ = f.features.samplerAnisotropy;
         non_solid_ = f.features.fillModeNonSolid;
+        tess_ = f.features.tessellationShader;
         precise_ = f.features.occlusionQueryPrecise;
         custom_border_ = HasExtension(exts, VK_EXT_CUSTOM_BORDER_COLOR_EXTENSION_NAME);
         dynamic_rendering_ext_ = HasExtension(exts, VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME);
@@ -1399,6 +1414,7 @@ bool VulkanBackend::CreateDevice() {
     f.features.textureCompressionBC = VK_TRUE;
     f.features.samplerAnisotropy = aniso_;
     f.features.fillModeNonSolid = non_solid_;
+    f.features.tessellationShader = tess_;
     f.features.occlusionQueryPrecise = precise_;
     std::vector<const char*> exts = {VK_KHR_SWAPCHAIN_EXTENSION_NAME, VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME};
     if (custom_border_) exts.push_back(VK_EXT_CUSTOM_BORDER_COLOR_EXTENSION_NAME);
@@ -1530,7 +1546,7 @@ bool VulkanBackend::CreateSwapChain() {
     return true;
 }
 
-// one push descriptor set for every pipeline: b0 b1, t0 to t3, s0 to s3
+// one push descriptor set for every pipeline: b0 b1, t0 to t4, s0 to s4
 bool VulkanBackend::CreateLayout() {
     VkDescriptorSetLayoutBinding b[kBindings] = {};
     for (uint32_t i = 0; i < kBindings; i++) {
@@ -1938,8 +1954,8 @@ void VulkanBackend::Push(const Bindings& b) {
 }
 
 void VulkanBackend::PushRaw(const Bindings& b) {
-    VkDescriptorImageInfo ii[4];
-    VkDescriptorImageInfo si[4];
+    VkDescriptorImageInfo ii[kBindViews];
+    VkDescriptorImageInfo si[kBindViews];
     VkWriteDescriptorSet w[kBindings] = {};
     for (uint32_t i = 0; i < kBindings; i++) {
         w[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
@@ -1950,11 +1966,11 @@ void VulkanBackend::PushRaw(const Bindings& b) {
         w[kBindCb + i].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
         w[kBindCb + i].pBufferInfo = &b.cb[i];
     }
-    for (uint32_t i = 0; i < 4; i++) {
-        ii[i] = {VK_NULL_HANDLE, b.view[i], kRead};
+    for (uint32_t i = 0; i < kBindViews; i++) {
+        ii[i] = {VK_NULL_HANDLE, b.view[i] ? b.view[i] : dummy_2d_->view, kRead};
         w[kBindTex + i].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
         w[kBindTex + i].pImageInfo = &ii[i];
-        si[i] = {b.smp[i], VK_NULL_HANDLE, VK_IMAGE_LAYOUT_UNDEFINED};
+        si[i] = {b.smp[i] ? b.smp[i] : blit_[0], VK_NULL_HANDLE, VK_IMAGE_LAYOUT_UNDEFINED};
         w[kBindSampler + i].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
         w[kBindSampler + i].pImageInfo = &si[i];
     }
@@ -2329,10 +2345,10 @@ const Spirv* VulkanBackend::Compile(const std::string& src, const char* entry, c
     return ref.get();
 }
 
-VkPipeline VulkanBackend::CreatePipeline(VkGraphicsPipelineCreateInfo& ci, const Spirv* const code[3],
-                                         const VkShaderStageFlagBits stages[3], uint32_t n) const {
-    VkShaderModule modules[3] = {};
-    VkPipelineShaderStageCreateInfo si[3] = {};
+VkPipeline VulkanBackend::CreatePipeline(VkGraphicsPipelineCreateInfo& ci, const Spirv* const code[],
+                                         const VkShaderStageFlagBits stages[], uint32_t n) const {
+    VkShaderModule modules[4] = {};
+    VkPipelineShaderStageCreateInfo si[4] = {};
     bool made = true;
     for (uint32_t i = 0; i < n; i++) {
         VkShaderModuleCreateInfo mi{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
@@ -2504,7 +2520,8 @@ Image* VulkanBackend::Feedback(Target& t) {
     return t.fb.get();
 }
 
-VkPipeline VulkanBackend::CreateDrawPipeline(const PsoKey& k, const Spirv& vs, const Spirv& ps, const Spirv* gs) const {
+VkPipeline VulkanBackend::CreateDrawPipeline(const PsoKey& k, const Spirv& vs, const Spirv& ps, const Spirv* gs,
+                                             const Spirv* hs, const Spirv* dms) const {
     // vertex attributes at their registers' locations, each buffer's stride set as it is bound
     VkVertexInputAttributeDescription attr[16];
     VkVertexInputBindingDescription bind[16];
@@ -2583,6 +2600,18 @@ VkPipeline VulkanBackend::CreateDrawPipeline(const PsoKey& k, const Spirv& vs, c
     ci.pDepthStencilState = &ds;
     ci.pColorBlendState = &cb;
     ci.pDynamicState = &dy;
+    bool patches = k.topo == uint32_t(Topology::Patches);
+    VkPipelineTessellationStateCreateInfo ts{VK_STRUCTURE_TYPE_PIPELINE_TESSELLATION_STATE_CREATE_INFO};
+    ts.patchControlPoints = 3;
+    if (patches) {
+        if (!hs || !dms) return VK_NULL_HANDLE;
+        ci.pTessellationState = &ts;
+        const Spirv* code[4] = {&vs, &ps, hs, dms};
+        const VkShaderStageFlagBits stages[4] = {VK_SHADER_STAGE_VERTEX_BIT, VK_SHADER_STAGE_FRAGMENT_BIT,
+                                                 VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT,
+                                                 VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT};
+        return CreatePipeline(ci, code, stages, 4);
+    }
     const Spirv* code[3] = {&vs, &ps, gs};
     const VkShaderStageFlagBits stages[3] = {VK_SHADER_STAGE_VERTEX_BIT, VK_SHADER_STAGE_FRAGMENT_BIT,
                                              VK_SHADER_STAGE_GEOMETRY_BIT};
@@ -2626,9 +2655,15 @@ VkPipeline VulkanBackend::FindPipeline(const PsoKey& k, const DrawShaders& sh) {
             psos_[h] = VK_NULL_HANDLE;
             return VK_NULL_HANDLE;
         }
+        const Spirv *hs = nullptr, *ds = nullptr;
+        if (k.topo == uint32_t(Topology::Patches)) {
+            std::string tess = TessHlsl(sh.shading);
+            hs = Compile(tess, "hs", "hs_5_0", gh);
+            ds = Compile(tess, "ds", "ds_5_0", gh);
+        }
         g_perf.psos++;
         auto t = PerfClock::now();
-        pso = CreateDrawPipeline(k, *sh.vs_code, *sh.ps_code, gs);
+        pso = CreateDrawPipeline(k, *sh.vs_code, *sh.ps_code, gs, hs, ds);
         if (!pso) LOGE("vulkan: pipeline creation failed");
         if (double ms = PerfMs(t); ms > 20) LOGR("vulkan: pipeline creation took %.0f ms", ms);
     }
@@ -2717,6 +2752,7 @@ size_t VulkanBackend::WarmPipelines(const std::vector<const shader_record::Entry
         k.ps = ps->second.hash;
         bool points = k.topo == uint32_t(Topology::Points);
         if (points && !have_gs) return;
+        if (k.topo == uint32_t(Topology::Patches)) return;  // made as drawn: the record keeps no shading entry
         VkPipeline pso = CreateDrawPipeline(k, *vs->second.code, *ps->second.code, points ? &gs : nullptr);
         if (!pso) return;
         std::lock_guard<std::mutex> lock(warm_.lock);
@@ -3111,6 +3147,7 @@ void VulkanBackend::UploadConstants(const State& s, const DrawShaders& sh, const
         FillLightConstants(s, sh.fk, c);
     }
     if (sh.shading) FillShadingConstants(s, sh.shading, c);
+    if (sh.shading && g_program_shading[sh.shading - 1].field) b.view[4] = FieldView(sh.shading);
     if (!last_dc_ok_ || std::memcmp(&c, &last_c_, sizeof(c)) != 0) {
         last_dc_ = Upload(sizeof(DrawConstants));
         std::memcpy(last_dc_.cpu, &c, sizeof(c));
@@ -3305,9 +3342,9 @@ bool VulkanBackend::DrawBetweenShells(const State& s, const Assembled& a, uint32
 
 // Assemble, timed and counted
 bool VulkanBackend::AssembleDraw(const State& s, uint32_t prim, uint32_t start, uint32_t count,
-                                 const uint8_t* indices, Assembled& a) {
+                                 const uint8_t* indices, Assembled& a, bool patches) {
     auto perf_t = PerfClock::now();
-    bool assembled = Assemble(s, prim, start, count, indices, a);
+    bool assembled = Assemble(s, prim, start, count, indices, a, patches);
     g_perf.assemble += PerfMs(perf_t);
     g_perf.verts += a.vertex_count;
     g_perf.raw += a.vertices.empty();
@@ -3502,6 +3539,7 @@ void VulkanBackend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t
         SpriteStage(sprite_);
         return Draw(sprite_, prim, start, count, indices);
     }
+    WatchDraw(s, start, count, indices);
     PerfScope perf_draw{g_perf.draw};
     g_perf.draws++;
     frame_draws_++;
@@ -3512,7 +3550,8 @@ void VulkanBackend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t
         CapAround(s);
     }
     bool same = std::exchange(same_state_, false) && &s != &sprite_;
-    if (same && kept_.ok && !cap_ && !PostWanted() && FastDraw(s, prim, start, count, indices)) {
+    bool patches = tess_ && TessellatedDraw(s, prim);
+    if (same && kept_.ok && !cap_ && !PostWanted() && FastDraw(s, prim, start, count, indices, patches)) {
         g_perf.fast++;
         return;
     }
@@ -3521,7 +3560,7 @@ void VulkanBackend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t
     if (DepthCopy(s)) return CountedSkip(s, "depth copy");
     Assembled& a = asm_;
     g_perf.d_setup += PerfLap(lap);
-    if (!AssembleDraw(s, prim, start, count, indices, a)) return CountedSkip(s, "assemble");
+    if (!AssembleDraw(s, prim, start, count, indices, a, patches)) return CountedSkip(s, "assemble");
     lap = PerfClock::now();
     bool flat = (cap_ || PostWanted()) && ScreenSpaceDraw(s, a);
     TrackPost(s, flat);
@@ -3650,9 +3689,10 @@ void VulkanBackend::KeepDraw(const Assembled& a, const DrawShaders& sh, const Dr
 // follow the frame. Its targets, textures and depth copy are the kept draw's: in one state nothing but another
 // command (Changed) changes them, a guest texture is checked for writes once a frame anyway, and a kept draw was no
 // depth copy
-bool VulkanBackend::FastDraw(const State& s, uint32_t prim, uint32_t start, uint32_t count, const uint8_t* indices) {
+bool VulkanBackend::FastDraw(const State& s, uint32_t prim, uint32_t start, uint32_t count, const uint8_t* indices,
+                             bool patches) {
     Assembled& a = asm_;
-    if (!AssembleDraw(s, prim, start, count, indices, a)) {
+    if (!AssembleDraw(s, prim, start, count, indices, a, patches)) {
         CountedSkip(s, "assemble");
         return true;
     }
@@ -3926,6 +3966,34 @@ void VulkanBackend::StartCapture() {
 constexpr int kRampRed = 0;
 constexpr int kRampGreen = 256;
 constexpr int kRampBlue = 512;
+
+// the entry's field, uploaded when its version moved on; null for the dummy when it has none yet
+VkImageView VulkanBackend::FieldView(uint32_t shading) {
+    ShadingField f = g_program_shading[shading - 1].field();
+    if (!f.data || !f.w || !f.h) return VK_NULL_HANDLE;
+    if (fields_.size() < g_program_shading.size()) fields_.resize(g_program_shading.size());
+    FieldImage& fi = fields_[shading - 1];
+    if (!fi.im || fi.im->w != f.w || fi.im->h != f.h) {
+        if (fi.im) Retire(fi.im);
+        fi.im = NewImage({.fmt = VK_FORMAT_R32_SFLOAT, .w = f.w, .h = f.h});
+        fi.version = f.version - 1;
+        if (!fi.im) return VK_NULL_HANDLE;
+    }
+    if (fi.version != f.version) {
+        fi.version = f.version;
+        uint32_t bytes = f.w * f.h * 4;
+        Alloc a = Upload(bytes, 16);
+        std::memcpy(a.cpu, f.data, bytes);
+        Transition(*fi.im, kDst);
+        VkBufferImageCopy r{};
+        r.bufferOffset = a.off;
+        r.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+        r.imageExtent = {f.w, f.h, 1};
+        vkCmdCopyBufferToImage(cmd_, a.buf, fi.im->image, kDst, 1, &r);
+        Transition(*fi.im, kRead);
+    }
+    return fi.im->view;
+}
 
 void VulkanBackend::UploadGammaRamp() {
     constexpr uint32_t kRampBytes = 256 * 4;  // one BGRA texel per ramp entry

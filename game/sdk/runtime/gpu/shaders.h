@@ -1,4 +1,5 @@
 #pragma once
+#include <array>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -43,10 +44,24 @@ struct PixelKey {
 // programmable pixel shader after the combiner stages, before the final combiner, and may change r0 (t0..t3, v0, v1,
 // i.x0, i.x1 and xc are there too). xc.x is 1 over the largest x the frame and the one before it set in vertex
 // constant top (hardware order) for the draw's run of the entry's draws, 0 before one did: a draw whose x is 0
-// starts the next run, and runs pair up with last frame's by their order. between more draws go before each draw
+// starts the next run, and runs pair up with last frame's by their order. xc.y is the seconds the renderer has run, as of the frame's
+// start, for shading that moves. between more draws go before each draw
 // whose x in top is above the one before it in its run, with x stepped evenly from there to the draw's, the rest of
 // its state the same: more shells for the fur. soft spreads a greater (or equal) alpha
-// test's edge over a pixel: for alpha blended draws, whose cut out edges then blend in instead of stepping.
+// test's edge over a pixel: for alpha blended draws, whose cut out edges then blend in instead of stepping. fill, when
+// set, writes xs (16 float4, declared only in its shaders) for each of its draws. tess, when set and the GPU
+// tessellates, draws the entry's triangles as patches (TessHlsl), each edge split in pieces some 6 console pixels long
+// on the screen, up to 16: the domain shader fills o with what the vertex shader handed on, interpolated across the
+// triangle, then runs tess, which sets o.pos (and anything else that is no straight blend of the corners'); p holds
+// the corners, and the draw's stages are there as Texture2D tex0..tex3 with smp0..smp3. field,
+// when set, hands a grid of floats its shaders read as Texture2D<float> xfield (t4) with SamplerState xfield_smp (s4),
+// linear and clamped; it is uploaded again when its version moves on. functions is HLSL at the top of its shaders,
+// after the constants, for vs, ps and tess to call.
+struct ShadingField {
+    const float* data = nullptr;  // w x h, rows of w
+    uint32_t w = 0, h = 0;
+    uint64_t version = 0;
+};
 struct ProgramShading {
     const char* match = "";
     const bool* on = nullptr;
@@ -55,8 +70,33 @@ struct ProgramShading {
     int top = -1;
     int between = 0;
     bool soft = false;
+    void (*fill)(float (*xs)[4]) = nullptr;
+    const char* tess = "";
+    ShadingField (*field)() = nullptr;
+    const char* functions = "";
 };
 inline std::vector<ProgramShading> g_program_shading;  // filled before the title boots, unchanged after
+
+// A game's look at the draws of a vertex program of the title's, on the render thread: seen gets each draw whose
+// program's translation contains match, before the draw is made (one in the state of the draw before too), with the
+// input registers regs names of its first vertices, or of vertices spread evenly over it; frame runs at each present.
+struct WatchedDraw {
+    const float (*v[16])[4] = {};  // per input register asked for and supplied: its value at each vertex, else null
+    uint32_t vertices = 0;         // up to the watch's
+    uint32_t tex_modes = 0;        // PS_TEXTUREMODES, 5 bits per stage, 0 without a pixel shader
+    const std::array<float, 4>* c = nullptr;  // the 192 vertex constants, hardware order
+    uint64_t program = 0;                     // the program's hash
+    const std::string* hlsl = nullptr;        // its translation, the one match was found in
+};
+struct ProgramWatch {
+    const char* match = "";
+    void (*seen)(const WatchedDraw&) = nullptr;
+    void (*frame)() = nullptr;
+    uint16_t regs = 1;       // bit per input register, v0 alone by default
+    bool spread = false;     // vertices spread over the draw rather than its first
+    uint32_t vertices = 16;  // at most
+};
+inline std::vector<ProgramWatch> g_program_watch;  // filled before the title boots, unchanged after
 
 uint64_t Hash(const void* p, size_t n, uint64_t h = 1469598103934665603ull);
 
@@ -69,6 +109,8 @@ std::string VertexProgramHlsl(const std::vector<uint32_t>& program, uint16_t reg
                               uint32_t shading = 0);
 // the g_program_shading entry a program matches, 1 based, 0 none, whether it is on or not
 uint32_t MatchProgramShading(const std::vector<uint32_t>& program);
+// the g_program_watch entry a program matches, 1 based, 0 none
+uint32_t MatchProgramWatch(const std::vector<uint32_t>& program);
 // where a vertex program's clip w comes from: the constant register (hardware order) a dp4 or dph into oPos.w reads,
 // kPosWInput when it is moved from an input (vertices already on the screen), kPosWUnknown otherwise
 constexpr int kPosWInput = -1;
@@ -88,6 +130,8 @@ std::string PixelHlsl(const PixelKey& k);
 std::string QuadHlsl(std::string s);
 // the geometry shader that draws a point as a square of its size, a point sprite with stage 3 spanning it
 std::string PointHlsl();
+// a g_program_shading entry's tessellation: the hull shader (entry hs) and domain shader (ds)
+std::string TessHlsl(uint32_t shading);
 
 // HLSL a backend extension adds; the defaults write the console path
 struct ShaderHooks {
@@ -133,6 +177,7 @@ struct DrawConstants {
     float pts[4];
     float ptsk[4];       // the distance scale's A, B, C, then 1 for point sprites
     float xc[4];         // a ProgramShading's, declared only in its shaders
+    float xs[16][4];     // a ProgramShading's fill, declared only in its shaders
 };
 
 }  // namespace gpu

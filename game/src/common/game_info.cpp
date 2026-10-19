@@ -6,13 +6,15 @@
 #include "common/keyboard.h"
 #include "common/mouse.h"
 #include "common/ui.h"
+#include "common/water.h"
 
 namespace {
 
-// after the settings load: the fps cap follows frame_rate, the fur programs get their shading
+// after the settings load: the fps cap follows frame_rate, the fur and water programs get their shading
 void Init() {
     display::Init();
     fur::Init();
+    water::Init();
 }
 
 }  // namespace
@@ -33,13 +35,14 @@ const app::GameInfo app::kGame = {
                 {"skippable_cutscenes", &cutscenes::g_skippable, nullptr},  // LT skips any cutscene (hooks.cpp)
                 {"grass_wind", &grass::g_wind, nullptr},  // distant grass sways too (hooks.cpp)
                 {"fur_shading", &fur::g_shading, nullptr},  // lit, soft edged fur shells (src/common/fur.cpp)
+                {"dynamic_water", &water::g_dynamic, nullptr},  // flowing, rippling water (src/common/water.cpp)
                 {"mouse_look", &mouse::g_look, nullptr},  // the mouse turns the camera (src/game/mouse.cpp)
                 {"mouse_sensitivity", nullptr, &mouse::g_sensitivity},  // percent, horizontal
                 {"mouse_sensitivity_y", nullptr, &mouse::g_sensitivity_y},  // percent, vertical
                 {"mouse_invert_y", &mouse::g_invert_y, nullptr}},
     .load = keyboard::Load,               // the [keys] table: keyboard bindings (src/game/keyboard.cpp)
     .save = keyboard::Save,               // writes it
-    .init = Init,                         // after the settings load: the fps cap, the fur shading
+    .init = Init,                         // after the settings load: the fps cap, the fur shading, the waves
     .loaded = nullptr,                    // image in memory, before its entry point runs
     .window = nullptr,                    // the game window is up
     .message = ui::Message,               // window messages first; true takes one

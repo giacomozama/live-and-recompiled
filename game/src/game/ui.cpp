@@ -28,6 +28,7 @@
 #include "common/keyboard.h"
 #include "common/mouse.h"
 #include "common/warp.h"
+#include "common/water.h"
 
 namespace ui {
 
@@ -471,6 +472,9 @@ void Draw(double fps) {
                 ImGui::Checkbox("Fur shading", &fur::g_shading);
                 ImGui::SameLine();
                 ImGui::TextDisabled("soft strand edges, shadowed roots, sheen");
+                ImGui::Checkbox("Dynamic water", &water::g_dynamic);
+                ImGui::SameLine();
+                ImGui::TextDisabled("currents, ripples and wakes");
                 end_tab();
             }
 

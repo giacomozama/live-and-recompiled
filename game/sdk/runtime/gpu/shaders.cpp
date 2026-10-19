@@ -68,16 +68,19 @@ const ShaderHooks& Hooks() {
     return g_shader_hooks ? *g_shader_hooks : plain;
 }
 
-// a ProgramShading's shaders (shading set) hand on two more values and take DrawConstants::xc
+const ProgramShading& Shading(uint32_t shading) { return g_program_shading[shading - 1]; }
+
+// a ProgramShading's shaders (shading set) hand on two more values and take DrawConstants::xc and xs
 std::string Common(uint32_t shading = 0) {
     std::string s = kCommonHead;
     if (shading) s += "    float4 x0 : TEXCOORD5;\n    float4 x1 : TEXCOORD7;\n";
     s += kCommonMid + Hooks().Constants() + kCommonTail;
-    if (shading) s += "    float4 xc;\n";
-    return s + "};\n";
+    if (shading) s += "    float4 xc;\n    float4 xs[16];\n";
+    s += "};\n";
+    if (shading && Shading(shading).field) s += "Texture2D<float> xfield : register(t4);\nSamplerState xfield_smp : register(s4);\n";
+    if (shading) s += Shading(shading).functions;
+    return s;
 }
-
-const ProgramShading& Shading(uint32_t shading) { return g_program_shading[shading - 1]; }
 
 // vertex programs
 
@@ -722,6 +725,14 @@ uint32_t MatchProgramShading(const std::vector<uint32_t>& prog) {
     return 0;
 }
 
+uint32_t MatchProgramWatch(const std::vector<uint32_t>& prog) {
+    if (g_program_watch.empty()) return 0;
+    std::string s = VertexProgramHlsl(prog, 0xFFFF);
+    for (size_t i = 0; i < g_program_watch.size(); i++)
+        if (s.find(g_program_watch[i].match) != std::string::npos) return uint32_t(i + 1);
+    return 0;
+}
+
 int PositionWSource(const std::vector<uint32_t>& prog) {
     // what each temporary's w lane holds, R12 being oPos
     int w[13];
@@ -1027,6 +1038,60 @@ void main(point VOut v[1], inout TriangleStream<VOut> strip) {
     }
 }
 )";
+}
+
+// The edge factors depend on an edge's two ends alone, so triangles sharing one split it alike and leave no cracks; an
+// edge reaching behind the eye takes the most. fractional_odd partitioning grows the pieces smoothly as an edge nears.
+// A triangle wholly off one side of the screen, a quarter of it past the edge, is dropped, and one with two corners
+// alike, the turns that join a strip's rows: its points lie on a line, which tess may bend into a curve, and the
+// pieces between them would stand up from it as a sliver. The winding of what the tessellator makes is its own:
+// KeyRasterizer culls no patches.
+std::string TessHlsl(uint32_t shading) {
+    std::string s = Common(shading) + kVsHelpers + R"(
+Texture2D tex0 : register(t0);
+SamplerState smp0 : register(s0);
+Texture2D tex1 : register(t1);
+SamplerState smp1 : register(s1);
+Texture2D tex2 : register(t2);
+SamplerState smp2 : register(s2);
+Texture2D tex3 : register(t3);
+SamplerState smp3 : register(s3);
+struct Factors {
+    float edge[3] : SV_TessFactor;
+    float inside : SV_InsideTessFactor;
+};
+float EdgeFactor(float4 a, float4 b) {
+    if (a.w <= 1e-3 || b.w <= 1e-3) return 16;
+    return clamp(length((a.xy / a.w - b.xy / b.w) * surf.xy * 0.5) / 6, 1, 16);
+}
+Factors factors(InputPatch<VOut, 3> p) {
+    Factors f;
+    float3 x = float3(p[0].pos.x, p[1].pos.x, p[2].pos.x), y = float3(p[0].pos.y, p[1].pos.y, p[2].pos.y);
+    float3 w = float3(p[0].pos.w, p[1].pos.w, p[2].pos.w) * 1.25;
+    bool off = all(w > 0) && (all(x > w) || all(x < -w) || all(y > w) || all(y < -w));
+    off = off || all(p[0].pos == p[1].pos) || all(p[1].pos == p[2].pos) || all(p[2].pos == p[0].pos);
+    f.edge[0] = off ? 0 : EdgeFactor(p[1].pos, p[2].pos);
+    f.edge[1] = off ? 0 : EdgeFactor(p[2].pos, p[0].pos);
+    f.edge[2] = off ? 0 : EdgeFactor(p[0].pos, p[1].pos);
+    f.inside = max(f.edge[0], max(f.edge[1], f.edge[2]));
+    return f;
+}
+[domain("tri")]
+[partitioning("fractional_odd")]
+[outputtopology("triangle_cw")]
+[outputcontrolpoints(3)]
+[patchconstantfunc("factors")]
+VOut hs(InputPatch<VOut, 3> p, uint i : SV_OutputControlPointID) { return p[i]; }
+
+[domain("tri")]
+VOut ds(Factors f, float3 b : SV_DomainLocation, const OutputPatch<VOut, 3> p) {
+    VOut o;
+#define BLEND(n) o.n = p[0].n * b.x + p[1].n * b.y + p[2].n * b.z;
+    BLEND(pos) BLEND(d0) BLEND(d1) BLEND(b0) BLEND(b1) BLEND(tc0) BLEND(tc1) BLEND(tc2) BLEND(tc3) BLEND(fogamt)
+    BLEND(psize) BLEND(x0) BLEND(x1)
+)";
+    if (shading) s += std::string(Shading(shading).tess) + "\n";
+    return s + "    return o;\n}\n";
 }
 
 }  // namespace gpu

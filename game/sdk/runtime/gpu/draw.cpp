@@ -12,6 +12,7 @@
 #endif
 #include "gpu/dxgi_formats.h"
 
+#include <chrono>
 #include <cmath>
 #include <cstdlib>
 #include <unordered_map>
@@ -167,6 +168,55 @@ uint32_t DrawShading(const State& s, const ShaderChoice& sh) {
     return on && *on ? i : 0;
 }
 
+void WatchDraw(const State& s, uint32_t start, uint32_t count, const uint8_t* indices) {
+    if (g_program_watch.empty() || !((s.vs_handle & 1) && s.vs && !s.vs->program.empty())) return;
+    EnsureProgramHash(s);
+    struct Match {
+        uint32_t watch = 0;
+        std::string hlsl;
+    };
+    static std::unordered_map<uint64_t, Match> matched;  // as DrawShading's
+    auto [it, fresh] = matched.try_emplace(s.vs->hash);
+    if (fresh) {
+        it->second.watch = MatchProgramWatch(s.vs->program);
+        if (it->second.watch) it->second.hlsl = VertexProgramHlsl(s.vs->program, 0xFFFF);
+    }
+    if (!it->second.watch) return;
+    const ProgramWatch& w = g_program_watch[it->second.watch - 1];
+    static std::vector<float> in[16];  // kept: a watched draw allocating its own was a heap call per draw
+    WatchedDraw d;
+    d.vertices = std::min(count, w.vertices);
+    for (int r = 0; r < 16; r++) {
+        if (!((w.regs >> r) & 1)) continue;
+        in[r].resize(size_t(d.vertices) * 4);
+        auto out = reinterpret_cast<float (*)[4]>(in[r].data());
+        bool read = true;
+        for (uint32_t k = 0; read && k < (w.spread ? d.vertices : 1); k++) {
+            uint32_t at = w.spread ? uint32_t(uint64_t(k) * count / d.vertices) : 0;
+            read = ReadInput(s, r, start + at, indices ? indices + size_t(at) * 2 : nullptr,
+                             w.spread ? 1 : d.vertices, out + k);
+        }
+        if (read) d.v[r] = out;
+    }
+    d.tex_modes = s.ps ? s.rs[kRsPsTextureModes] : 0;
+    d.c = s.vsc.data();
+    d.program = s.vs->hash;
+    d.hlsl = &it->second.hlsl;
+    w.seen(d);
+}
+
+bool TessellatedDraw(const State& s, uint32_t prim) {
+    static const bool any = std::any_of(g_program_shading.begin(), g_program_shading.end(),
+                                        [](const ProgramShading& p) { return *p.tess; });
+    if (!any || prim < 5) return false;  // triangles, strips, fans, quads, polygons
+    ShaderChoice sh;
+    sh.prog = (s.vs_handle & 1) && s.vs && !s.vs->program.empty();
+    if (!sh.prog) return false;
+    EnsureProgramHash(s);
+    uint32_t i = DrawShading(s, sh);
+    return i && *g_program_shading[i - 1].tess;
+}
+
 namespace {
 
 // per g_program_shading entry: the largest top of each run of its draws (a draw whose top is 0 starts the next) this
@@ -177,11 +227,15 @@ struct ShadingTop {
     float before = -1;    // the top of the draw before it in its run, -1 when it began one
 };
 std::vector<ShadingTop> g_shading_tops;
+float g_shading_clock = 0;  // xc.y: seconds from the first frame's end to this frame's start
 
 }  // namespace
 
 void FillShadingConstants(const State& s, uint32_t shading, DrawConstants& c) {
-    int top = g_program_shading[shading - 1].top;
+    const ProgramShading& ps = g_program_shading[shading - 1];
+    c.xc[1] = g_shading_clock;
+    if (ps.fill) ps.fill(c.xs);
+    int top = ps.top;
     if (top < 0 || top >= int(s.vsc.size())) return;
     if (g_shading_tops.size() < g_program_shading.size()) g_shading_tops.resize(g_program_shading.size());
     ShadingTop& t = g_shading_tops[shading - 1];
@@ -201,6 +255,10 @@ float ShadingBefore(uint32_t shading) {
 }
 
 void EndShadingFrame() {
+    static const auto start = std::chrono::steady_clock::now();
+    g_shading_clock = std::chrono::duration<float>(std::chrono::steady_clock::now() - start).count();
+    for (const ProgramWatch& w : g_program_watch)
+        if (w.frame) w.frame();
     for (ShadingTop& t : g_shading_tops) {
         t.last.swap(t.frame);
         t.frame.clear();
@@ -256,7 +314,7 @@ void KeyDepthStencil(const State& s, const Assembled& a, float ds_scale, PsoKey&
     }
     // polygon offset: bias in depth buffer units, the target is always 24 bit; the slope is per console pixel,
     // and an upscaled target's pixels are smaller
-    if (a.topology == Topology::Triangles && SimpleState(s, kMSolidOffsetEnable)) {
+    if ((a.topology == Topology::Triangles || a.topology == Topology::Patches) && SimpleState(s, kMSolidOffsetEnable)) {
         k.zbias = int32_t(std::lround(Bits(SimpleState(s, kMDepthOffset)) * kDepth24Max / s.zscale));
         k.zslope = Bits(SimpleState(s, kMSlopeScale)) * ds_scale;
     }
@@ -264,7 +322,7 @@ void KeyDepthStencil(const State& s, const Assembled& a, float ds_scale, PsoKey&
 
 void KeyRasterizer(const State& s, const Assembled& a, PsoKey& k) {
     uint32_t cull = s.rs[kRsCullMode];
-    k.cull = cull != 0 && a.topology == Topology::Triangles;
+    k.cull = cull != 0 && a.topology == Topology::Triangles;  // not patches: their winding is the tessellator's
     k.ccw = cull == kCullCw;  // culling clockwise leaves counter clockwise as the front
     k.fill = s.rs[kRsFillMode];
 }
