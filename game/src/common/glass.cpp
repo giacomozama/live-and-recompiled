@@ -26,6 +26,17 @@ constexpr const char* kMatchSkinned = R"(dot(((R2).xyzw), ((c[163]).xyzw)).xxxx;
     {
         precise float4 mr = dot(((R2).xyzw), ((c[181]).xyzw)))";
 
+// The tavern's pints are props of the lightmapped program that also reflects a map along the view (t0, oT0 from
+// c108..c110) and looks the lighting map up by the normal (oT3 from c117/c118, R10 the normal, w its v1.w): t1 the
+// painted pint, t2 the room's lightmap; the pixel shader adds the reflection, the colour times the lightmap and the
+// lighting map. Much of the bar is drawn by it, so only the pints' textures take it: the lager (empty glass at the top,
+// the foam a white band in the middle, the beer below) and the stout (its head at the top, the one by the Grim Reaper
+// too). The textures are the menu's, at the same addresses each run.
+constexpr const char* kMatchPint = R"(dot(((R10).xyzw), ((c[117]).xyzw)).xxxx;
+        oT3.x)";
+constexpr uint32_t kLager[] = {0x81940580, 0};
+constexpr uint32_t kStout[] = {0x8193DA80, 0};
+
 // the room's light arriving from d, as the program's oD0 lights a normal d, in the final colour's scale; GlassMap,
 // the lighting map's coordinates for a direction d, w the normal's
 #define GLASS_ROOM R"(
@@ -43,6 +54,10 @@ float2 GlassMap(float3 d, float w) { return float2(dot(float4(d, w), c[112]), do
 constexpr const char* kFunctionsSkinned = GLASS_ROOM R"(
 float2 GlassMap(float3 d, float w) { return float2(dot(float4(d, w), c[181]), dot(float4(d, w), c[182])); }
 )";
+constexpr const char* kFunctionsPint = R"(
+float2 GlassMap(float3 d, float w) { return float2(dot(float4(d, w), c[117]), dot(float4(d, w), c[118])); }
+)";
+
 #undef GLASS_ROOM
 
 // x0: the normal, and the w the lighting map's lookup takes; x1: the position
@@ -93,6 +108,52 @@ constexpr const char* kPs = R"({
     r0.rgb = lerp(r0.rgb, behind * absorb * (1 - f) + room * f + spec, glass);
 })";
 
+// The painted pint as the game lit it, where see is above 0 seen through: what was drawn behind, bent as by a
+// cylinder of glass and liquid, clear where the glass is empty and through the beer where there is beer, beer the
+// colour that leaves it. Over it all a layer of glass: Fresnel weighted, the lighting map's lights along the reflected
+// view, and a sharp highlight from a light above the glass and off to one side of the viewer, which on a pint is the
+// bright streak down its side; the glass's up is the model's, its y through the view matrix c96..c98
+#define GLASS_PINT(liquid, see, beer) R"({
+    float3 paint = t1.rgb;
+    float hi = max(paint.r, max(paint.g, paint.b)), lo = min(paint.r, min(paint.g, paint.b));
+    float sat = (hi - lo) / max(hi, 1e-3);
+    float foam = smoothstep(0.86, 0.94, hi) * (1 - smoothstep(0.1, 0.2, sat));
+    float liquid = )" liquid R"(;
+    float see = )" see R"(;
+    float3 tint = saturate(paint / max(hi, 1e-3));
+
+    float3 n = normalize(i.x0.xyz), v = normalize(-i.x1.xyz);
+    float3 nx = ddx(n), ny = ddy(n);
+    float nv = max(dot(n, v), 1e-3);
+    float3 up = normalize(float3(c[96].y, c[97].y, c[98].y)), side = normalize(cross(up, v) + 1e-4);
+    float3 l = normalize(up + 0.6 * v + 0.5 * side), r = reflect(-v, n);
+
+    float2 size;
+    xscreen.GetDimensions(size.x, size.y);
+    float2 bent = i.pos.xy + float2(-n.x, n.y) * 0.03 * size.y;
+    float3 behind = xscreen.SampleLevel(xscreen_smp, bent / size, 0).rgb;
+    float3 beer = )" beer R"(;
+    float3 body = lerp(r0.rgb, lerp(behind * 0.95, beer, liquid), see);
+
+    float a2 = min(0.0006 + 2 * max(dot(nx, nx), dot(ny, ny)), 0.2);
+    float3 h = normalize(l + v);
+    float nl = saturate(dot(n, l)), nh = saturate(dot(n, h)), vh = saturate(dot(v, h));
+    float dd = nh * nh * (a2 - 1) + 1, k = sqrt(a2) * 0.5;
+    float vis = 0.25 / ((nl * (1 - k) + k) * (nv * (1 - k) + k));
+    float spec = min(a2 / (3.14159 * dd * dd) * vis, 64) * (0.04 + 0.96 * pow(1 - vh, 5)) * nl;
+
+    float f = 0.04 + 0.96 * pow(1 - nv, 5);
+    float3 shine = tex3.Sample(smp3, GlassMap(r, i.x0.w) + texsize[3].zw).rgb * 8;
+    r0.rgb = body * (1 - f) + shine * f + spec * 0.6;
+})"
+// the lager: beer where the hue is saturated, the empty glass above the foam all but clear, the beer nearly so, in
+// its own hue; the stout: beer all below the head, what is behind dimmed to a dark ruby, as stout held to the light
+constexpr const char* kPsLager = GLASS_PINT("smoothstep(0.35, 0.6, sat)", "(1 - foam) * lerp(0.93, 0.88, liquid)",
+                                            "behind * pow(tint, 0.4 + 0.5 / (0.3 + nv)) * hi + r0.rgb * 0.15");
+constexpr const char* kPsStout = GLASS_PINT("1 - foam", "(1 - foam) * 0.7",
+                                            "behind * float3(0.45, 0.2, 0.08) + r0.rgb * 0.3");
+#undef GLASS_PINT
+
 }  // namespace
 
 void glass::Init() {
@@ -100,4 +161,10 @@ void glass::Init() {
                                       .functions = kFunctionsRigid, .screen = true});
     gpu::g_program_shading.push_back({.match = kMatchSkinned, .on = &g_shading, .vs = kVsSkinned, .ps = kPs,
                                       .functions = kFunctionsSkinned, .screen = true});
+    gpu::g_program_shading.push_back({.match = kMatchPint, .on = &g_shading, .vs = kVsRigid, .ps = kPsLager,
+                                      .functions = kFunctionsPint, .screen = true, .textures = kLager,
+                                      .texture_stage = 1});
+    gpu::g_program_shading.push_back({.match = kMatchPint, .on = &g_shading, .vs = kVsRigid, .ps = kPsStout,
+                                      .functions = kFunctionsPint, .screen = true, .textures = kStout,
+                                      .texture_stage = 1});
 }

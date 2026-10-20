@@ -12,6 +12,7 @@
 #endif
 #include "gpu/dxgi_formats.h"
 
+#include <bit>
 #include <chrono>
 #include <cmath>
 #include <cstdlib>
@@ -160,12 +161,23 @@ const std::vector<uint32_t>& DrawProgram(const State& s, const ShaderChoice& sh)
 uint32_t DrawShading(const State& s, const ShaderChoice& sh) {
     if (!sh.prog || g_program_shading.empty()) return 0;
     // translating a program to match it is slow: once per program
-    static std::unordered_map<uint64_t, uint32_t> matched;
+    static std::unordered_map<uint64_t, uint64_t> matched;
     auto [it, fresh] = matched.try_emplace(s.vs->hash, 0);
     if (fresh) it->second = MatchProgramShading(s.vs->program);
-    uint32_t i = it->second;
-    const bool* on = i ? g_program_shading[i - 1].on : nullptr;
-    return on && *on ? i : 0;
+    // the first entry the program matches that is on and, with textures, takes the draw's
+    for (uint64_t m = it->second; m; m &= m - 1) {
+        const ProgramShading& e = g_program_shading[size_t(std::countr_zero(m))];
+        if (!e.on || !*e.on) continue;
+        if (const uint32_t* t = e.textures) {
+            TextureDesc d;
+            uint32_t header = s.textures[size_t(e.texture_stage)];
+            if (!header || !Describe(header, d)) continue;
+            while (*t && *t != d.data) t++;
+            if (!*t) continue;
+        }
+        return uint32_t(std::countr_zero(m)) + 1;
+    }
+    return 0;
 }
 
 void WatchDraw(const State& s, uint32_t start, uint32_t count, const uint8_t* indices) {

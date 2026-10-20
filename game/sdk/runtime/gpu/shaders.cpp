@@ -718,12 +718,13 @@ std::string VertexProgramHlsl(const std::vector<uint32_t>& prog, uint16_t regs, 
     return s + kVsReturn;
 }
 
-uint32_t MatchProgramShading(const std::vector<uint32_t>& prog) {
+uint64_t MatchProgramShading(const std::vector<uint32_t>& prog) {
     if (g_program_shading.empty()) return 0;
     std::string s = VertexProgramHlsl(prog, 0xFFFF);
-    for (size_t i = 0; i < g_program_shading.size(); i++)
-        if (s.find(g_program_shading[i].match) != std::string::npos) return uint32_t(i + 1);
-    return 0;
+    uint64_t m = 0;
+    for (size_t i = 0; i < g_program_shading.size() && i < 64; i++)
+        if (s.find(g_program_shading[i].match) != std::string::npos) m |= 1ull << i;
+    return m;
 }
 
 uint32_t MatchProgramWatch(const std::vector<uint32_t>& prog) {

@@ -40,10 +40,10 @@ struct PixelKey {
 };
 
 // A game's own shading over vertex programs of the title's, while *on holds: its HLSL goes into the shaders of the
-// draws that run one. A program takes the first entry whose match its translation contains. vs runs at the end of
-// the vertex shader, after o is filled from the program's registers, and sets o.x0 and o.x1; ps runs in a
-// programmable pixel shader after the combiner stages, before the final combiner, and may change r0 (t0..t3, v0, v1,
-// i.x0, i.x1 and xc are there too). xc.x is 1 over the largest x the frame and the one before it set in vertex
+// draws that run one. A draw takes the first entry whose match its program's translation contains, that is on and,
+// with textures (below), takes the draw. vs runs at the end of the vertex shader, after o is filled from the
+// program's registers, and sets o.x0 and o.x1; ps runs in a programmable pixel shader after the combiner stages,
+// before the final combiner, and may change r0 (t0..t3, v0, v1, i.x0, i.x1 and xc are there too). xc.x is 1 over the largest x the frame and the one before it set in vertex
 // constant top (hardware order) for the draw's run of the entry's draws, 0 before one did: a draw whose x is 0
 // starts the next run, and runs pair up with last frame's by their order. xc.y is the seconds the renderer has run, as of the frame's
 // start, for shading that moves. between more draws go before each draw
@@ -59,7 +59,9 @@ struct PixelKey {
 // linear and clamped; it is uploaded again when its version moves on. functions is HLSL at the top of its shaders,
 // after the constants, for vs, ps and tess to call. screen, when set, hands its draws a copy of their colour target as
 // it stood before each, at the target's own size, as Texture2D xscreen (t4) with SamplerState xscreen_smp (s4), linear
-// and clamped: i.pos.xy over its size is the pixel's own spot, what the draw covers. Not with field.
+// and clamped: i.pos.xy over its size is the pixel's own spot, what the draw covers. Not with field. textures, when
+// set, limits it to the draws whose stage texture_stage texture's data lies at one of those guest addresses (the
+// list ends at 0), for a program that draws more than what the shading is for; the others draw as the title made them.
 struct ShadingField {
     const float* data = nullptr;  // w x h, rows of w
     uint32_t w = 0, h = 0;
@@ -78,6 +80,8 @@ struct ProgramShading {
     ShadingField (*field)() = nullptr;
     const char* functions = "";
     bool screen = false;
+    const uint32_t* textures = nullptr;
+    int texture_stage = 0;
 };
 inline std::vector<ProgramShading> g_program_shading;  // filled before the title boots, unchanged after
 
@@ -111,8 +115,8 @@ PixelKey MakePixelKey(const State& s, const TexInfo tex[4]);
 // shading: a g_program_shading entry, 1 based, 0 none
 std::string VertexProgramHlsl(const std::vector<uint32_t>& program, uint16_t regs, uint64_t decode = 0,
                               uint32_t shading = 0);
-// the g_program_shading entry a program matches, 1 based, 0 none, whether it is on or not
-uint32_t MatchProgramShading(const std::vector<uint32_t>& program);
+// the g_program_shading entries a program matches, bit i for entry i + 1 (the first 64), whether they are on or not
+uint64_t MatchProgramShading(const std::vector<uint32_t>& program);
 // the g_program_watch entry a program matches, 1 based, 0 none
 uint32_t MatchProgramWatch(const std::vector<uint32_t>& program);
 // where a vertex program's clip w comes from: the constant register (hardware order) a dp4 or dph into oPos.w reads,
