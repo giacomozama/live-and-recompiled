@@ -21,6 +21,24 @@ set(SDL_RENDER OFF CACHE BOOL "" FORCE)
 set(SDL_GPU OFF CACHE BOOL "" FORCE)
 set(SDL_CAMERA OFF CACHE BOOL "" FORCE)
 FetchContent_Declare(SDL3 GIT_REPOSITORY https://github.com/libsdl-org/SDL.git GIT_TAG release-3.4.16 GIT_SHALLOW TRUE)
+# FLTK for Setup's window: static, Wayland and X11 both (it picks at run time; Pango and Cairo draw on Wayland), and the
+# Win32 API on Windows. Its bundled image libraries and libdecor (cairo title bars), no GL, D-Bus, tools or tests, and of
+# X11's extensions only the ones Xft needs, so the window asks a desktop for as few libraries as possible
+foreach(option FLTK_BUILD_TEST FLTK_BUILD_EXAMPLES FLTK_BUILD_FLUID FLTK_BUILD_FLTK_OPTIONS FLTK_BUILD_FORMS FLTK_BUILD_GL
+        FLTK_BUILD_HTML_DOCS FLTK_BUILD_PDF_DOCS FLTK_OPTION_SVG FLTK_OPTION_PRINT_SUPPORT FLTK_BUILD_SHARED_LIBS
+        FLTK_USE_SYSTEM_LIBJPEG FLTK_USE_SYSTEM_LIBPNG FLTK_USE_SYSTEM_ZLIB FLTK_USE_XINERAMA FLTK_USE_XFIXES
+        FLTK_USE_XCURSOR FLTK_USE_DBUS FLTK_USE_SYSTEM_LIBDECOR FLTK_USE_LIBDECOR_GTK)
+    set(${option} OFF CACHE BOOL "" FORCE)
+endforeach()
+# (Windows has neither: Pango would be looked for in the mingw sysroot and fail the configure)
+if(WIN32)
+    set(FLTK_BACKEND_WAYLAND OFF CACHE BOOL "" FORCE)
+    set(FLTK_USE_PANGO OFF CACHE BOOL "" FORCE)
+else()
+    set(FLTK_BACKEND_WAYLAND ON CACHE BOOL "" FORCE)
+    set(FLTK_USE_PANGO ON CACHE BOOL "" FORCE)
+endif()
+FetchContent_Declare(fltk GIT_REPOSITORY https://github.com/fltk/fltk.git GIT_TAG release-1.4.5 GIT_SHALLOW TRUE)
 # miniz for Setup, which unpacks the compiler it downloads
 FetchContent_Declare(miniz GIT_REPOSITORY https://github.com/richgel999/miniz.git GIT_TAG 3.1.2 GIT_SHALLOW TRUE)
 # The Vulkan renderer: the API's headers, volk (loads the Vulkan loader at run time, nothing to link), VMA for memory,
@@ -38,7 +56,7 @@ foreach(option ENABLE_OPT ENABLE_GLSLANG_BINARIES ENABLE_SPVREMAPPER ENABLE_PCH 
 endforeach()
 set(ENABLE_HLSL ON CACHE BOOL "" FORCE)
 FetchContent_Declare(glslang GIT_REPOSITORY https://github.com/KhronosGroup/glslang.git GIT_TAG 15.0.0 GIT_SHALLOW TRUE)
-FetchContent_MakeAvailable(zydis tomlplusplus imgui SDL3 miniz vulkan_headers volk vma glslang)
+FetchContent_MakeAvailable(zydis tomlplusplus imgui SDL3 miniz vulkan_headers volk vma glslang fltk)
 
 # Codegen runs on the host. By default it is this build's own xbe_recomp, which works when the target runs here
 # (a native build, or Windows on Windows); cross compiling for another OS, set XBE_CODEGEN_TOOL to a native one's path.
@@ -60,13 +78,22 @@ target_include_directories(xbe_symbols PRIVATE ${XBE_SDK_DIR}/runtime)
 target_compile_definitions(xbe_symbols PRIVATE _CRT_SECURE_NO_WARNINGS)
 target_link_libraries(xbe_symbols PRIVATE Zydis tomlplusplus::tomlplusplus)
 
-# Setup, the player-side build: finds the game, recompiles it and links it with a prebuilt host (add_xbe_player_kit)
-add_executable(xbe_setup ${XBE_SDK_DIR}/tools/setup/main.cpp ${XBE_SDK_DIR}/tools/setup/store.cpp
+# Setup, the player-side build: finds the game, recompiles it and links it with a prebuilt host (add_xbe_player_kit),
+# from a window or the command line
+add_executable(xbe_setup ${XBE_SDK_DIR}/tools/setup/main.cpp ${XBE_SDK_DIR}/tools/setup/gui.cpp
+    ${XBE_SDK_DIR}/tools/setup/store.cpp
     ${XBE_SDK_DIR}/runtime/kernel/disc.cpp
     ${XBE_SDK_DIR}/runtime/kernel/crypto.cpp)
 target_include_directories(xbe_setup PRIVATE ${XBE_SDK_DIR}/runtime)
 target_compile_definitions(xbe_setup PRIVATE _CRT_SECURE_NO_WARNINGS)
-target_link_libraries(xbe_setup PRIVATE tomlplusplus::tomlplusplus miniz $<$<PLATFORM_ID:Windows>:winhttp>)
+target_link_libraries(xbe_setup PRIVATE tomlplusplus::tomlplusplus miniz fltk $<$<PLATFORM_ID:Windows>:winhttp>)
+# Zig builds use its own libc headers, so the X11 and Wayland ones FLTK includes are found after them, as for SDL (cmake-zig-glibc.cmake)
+if(XBE_ZIG_TARGET)
+    target_compile_options(fltk PRIVATE -idirafter /usr/include)
+    target_compile_options(xbe_setup PRIVATE -idirafter /usr/include)
+    # the system's X11, Wayland and Cairo libraries were built against a newer glibc than the one Zig links against, the player's has theirs
+    target_link_options(xbe_setup PRIVATE -Wl,--allow-shlib-undefined)
+endif()
 
 set(XBE_IMGUI_SOURCES
     ${imgui_SOURCE_DIR}/imgui.cpp

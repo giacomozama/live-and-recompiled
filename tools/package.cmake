@@ -12,10 +12,11 @@
 # tools/package.sh and tools/package.bat run it with the same options as flags.
 #
 # Output: game/out/release/Conker/ and game/out/release/Conker-<version>.zip
-# setup-linux and the Linux xbe_recomp are built with the pinned Zig, so those are the same from either host. The kit's
-# Linux half (the native game's prebuilt host) is built on Linux only, against the X11, Wayland and audio headers SDL
-# needs: a release packaged on Windows builds Game.exe alone. The test runs this host's Setup: setup-linux on Linux for
-# both the native Game and Game.exe, setup-windows.exe on Windows.
+# The Linux xbe_recomp is built with the pinned Zig (static, musl), so it is the same from either host. setup-linux, its
+# window included, and the kit's Linux half (the native game's prebuilt host) are built on Linux only, with Zig against
+# glibc and the X11, Wayland, Pango, Cairo and audio headers SDL and FLTK need: a release packaged on Windows has setup-windows.exe
+# alone and builds Game.exe. The test runs this host's Setup: setup-linux on Linux for both the native Game and
+# Game.exe, setup-windows.exe on Windows.
 cmake_minimum_required(VERSION 3.25)
 include(${CMAKE_CURRENT_LIST_DIR}/configure.cmake)
 
@@ -46,12 +47,12 @@ if(NOT CMAKE_HOST_WIN32)
     build(release xbe_recomp)
 endif()
 xbe_configure(zig-linux)
-build(zig-linux xbe_recomp xbe_setup)
+build(zig-linux xbe_recomp)
 xbe_configure(llvm-mingw)
 build(llvm-mingw Game_kit)
 if(NOT CMAKE_HOST_WIN32)
     xbe_configure(zig-glibc)
-    build(zig-glibc Game_kit)
+    build(zig-glibc Game_kit xbe_setup)
 endif()
 
 set(DEST ${OUT}/${NAME})
@@ -64,8 +65,11 @@ if(NOT CMAKE_HOST_WIN32)
     file(COPY ${XBE_BUILDS}/zig-glibc/package/Game/kit/lib/linux DESTINATION ${DEST}/kit/lib)
 endif()
 file(COPY ${XBE_ROOT}/README.md DESTINATION ${DEST})
-file(COPY ${XBE_BUILDS}/zig-linux/xbe_setup DESTINATION ${DEST})
-file(RENAME ${DEST}/xbe_setup ${DEST}/setup-linux)
+if(NOT CMAKE_HOST_WIN32)
+    # dynamic against glibc 2.31 like the game: its window needs X11, which a static musl program cannot load
+    file(COPY ${XBE_BUILDS}/zig-glibc/xbe_setup DESTINATION ${DEST})
+    file(RENAME ${DEST}/xbe_setup ${DEST}/setup-linux)
+endif()
 file(COPY ${XBE_BUILDS}/zig-linux/xbe_recomp DESTINATION ${DEST}/kit/bin)
 # no compiler in the release: Setup downloads the one of the same release for its host on the player's machine,
 # llvm-mingw for Game.exe from either, Zig for the native Linux game from Linux

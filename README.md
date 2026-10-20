@@ -42,25 +42,32 @@ advice.)
 - The USA disc release (`default.xbe` SHA-1 = `2232a1b3874d67b4bb4cf53a940420d2dab59535`)
 - The digital XBOX Backwards Compatibility release from the Microsoft Store (equivalent to the USA version).
 
-It is three steps: put the game in `assets`, run Setup, run the game.
+It is two steps: run Setup, run the game.
 
-1. **Put your game in the `assets` folder.** What you have decides how:
-   - **Disc image (`.iso`)** or **extracted files** (`default.xbe` with the game's folders beside it): put it in
-     `assets` as it is.
-   - **Digital XBOX Backwards Compatibility release** (`DefaultPackage` with a `DefaultPackage.data` folder): copy both
-     into `assets`. Setup unpacks them (a few seconds, about 5 GB free); afterwards the package can go.
+1. **Run Setup**: `setup-windows.exe` on Windows, or `./setup-linux` on Linux (double-click it, or run it in a terminal).
+   Its window asks for three things, each already filled in with where Setup would look:
+   - **The game**: your `DefaultPackage` (the digital XBOX Backwards Compatibility release, with its
+     `DefaultPackage.data` folder beside it), your disc image (`.iso`), or the folder with the extracted files
+     (`default.xbe` with the game's folders beside it). The default is the `assets` folder beside Setup, so putting your
+     copy there works too. Setup unpacks a package (a few seconds, about 5 GB free) and puts the game's files in
+     `assets` beside the game it makes.
      - **Windows:** if it is installed from the Microsoft Store in its default place
-       (`C:\XboxGames\Conker- Live and Reloaded\Content\Game`, not encrypted), leave `assets` empty. Setup finds it,
-       asks whether to use it, and unpacks it for you.
+       (`C:\XboxGames\Conker- Live and Reloaded\Content\Game`, not encrypted), Setup offers it when `assets` is empty.
      - **Linux:** if you bought it on the Microsoft Store, download its package with the
        [Xodus project](https://github.com/xodus-gaming/xodus) or copy it from a Windows install.
-2. **Run Setup**: `setup-windows.exe` on Windows, or `./setup-linux` in a terminal opened in this folder on Linux. It
-   unpacks the digital release if needed, checks your copy is a supported version, downloads the compiler (first time
-   only), recompiles the game and writes the executable. This takes a few minutes. Nothing of the game is uploaded.
+   - **Working folder**: where the generated code is built; Setup removes it when done (`kit/work`).
+   - **Game folder**: where the game is made (Setup's own folder).
+
+   Press Install. Setup checks your copy is a supported version, downloads the compiler (first time only), recompiles
+   the game and writes the executable. This takes a few minutes. Nothing of the game is uploaded.
    - **Windows:** downloads [llvm-mingw](https://github.com/mstorsjo/llvm-mingw) (80 to 180 MB) and writes `Game.exe`.
    - **Linux:** downloads [Zig](https://ziglang.org) (about 50 MB) and writes the native `Game`. If it says permission
      denied, your unzip tool dropped the executable bit: `chmod +x setup-linux kit/bin/xbe_recomp`.
-3. **Run `Game.exe`** (Windows) **or `./Game`** (Linux). Settings are in `settings.toml` beside it, and in the Esc menu.
+
+   Without a display, or with any option, Setup runs in the terminal instead: `./setup-linux --cli --source
+   path/to/DefaultPackage --work /tmp/conker-work --game-dir ~/Games/Conker`, every option optional and defaulting
+   to the same as the window (`--help` lists them).
+2. **Run `Game.exe`** (Windows) **or `./Game`** (Linux). Settings are in `settings.toml` beside it, and in the Esc menu.
 
 Setup keeps nothing it generated except the game and the compiler in `kit/toolchain`. Run it again after updating
 to a new release.
@@ -75,6 +82,6 @@ See [BUILDING.md](BUILDING.md).
 - [XenonRecomp](https://github.com/hedge-dev/XenonRecomp) for the overridable function layout and instruction hooks.
 - [xemu](https://github.com/xemu-project/xemu) and [Cxbx-Reloaded](https://github.com/Cxbx-Reloaded/Cxbx-Reloaded) as references for the Xbox's hardware and API behaviour. This project does not use emulation or any emulator code.
 - [SMAA](http://www.iryoku.com/smaa/) by Jorge Jimenez, Jose I. Echevarria, Belen Masia, Fernando Navarro and Diego Gutierrez (MIT), for the anti-aliasing effect.
-- [Zydis](https://github.com/zyantific/zydis) for decoding x86 instructions, [toml++](https://github.com/marzer/tomlplusplus) for the configs, [Dear ImGui](https://github.com/ocornut/imgui) for the settings overlay and [SDL](https://github.com/libsdl-org/SDL) for the window, input and controllers.
+- [Zydis](https://github.com/zyantific/zydis) for decoding x86 instructions, [toml++](https://github.com/marzer/tomlplusplus) for the configs, [Dear ImGui](https://github.com/ocornut/imgui) for the settings overlay, [FLTK](https://www.fltk.org) for Setup's window and [SDL](https://github.com/libsdl-org/SDL) for the window, input and controllers.
 - [llvm-mingw](https://github.com/mstorsjo/llvm-mingw) (Clang, LLD, mingw-w64, libc++), the compiler `setup-windows.exe` builds the game with.
 - [Zig](https://ziglang.org) (`zig c++`: Clang, LLD, glibc stubs, libc++), the compiler `setup-linux` builds the native game with.

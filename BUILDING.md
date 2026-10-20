@@ -73,8 +73,9 @@ tools/package.sh                         # writes game/out/release/Conker-<versi
 ```
 
 It downloads the pinned llvm-mingw and Zig if they're missing (the pins are in `tools/toolchains.cmake`). It builds
-the kit's Windows half with llvm-mingw, and with Zig `setup-linux` and the Linux `xbe_recomp` (static musl programs
-that run on any x86_64 distro) and the kit's Linux half (`game/out/build/zig-glibc`): the native port's runtime,
+the kit's Windows half with llvm-mingw, with Zig the Linux `xbe_recomp` (a static musl program that runs on any
+x86_64 distro), and `setup-linux` and the kit's Linux half (`game/out/build/zig-glibc`): Setup's FLTK window (Wayland or X11, picked at run time), which
+needs their headers, and the native port's runtime,
 against glibc 2.31 and Zig's own static libc++, which a player's Zig links the game code with into a `Game` that needs
 only glibc. Its SDL is built against this system's X11, Wayland, ALSA, PulseAudio and PipeWire headers (it loads those
 libraries at run time), which the native build needs anyway. Then it tests the release as a Linux player would: the
@@ -97,8 +98,8 @@ tools\package.bat
 It writes `game\out\release\Conker-<version>.zip` and takes the same `--no-test`, `--test-download` and
 `-j N` options. Here the test runs the packaged `setup-windows.exe`.
 
-Zig builds `setup-linux` and the Linux `xbe_recomp` on Windows too, but the kit's Linux half needs Linux's headers: a
-release packaged on Windows has none, and its `setup-linux` builds `Game.exe`.
+Zig builds the Linux `xbe_recomp` on Windows too, but `setup-linux` and the kit's Linux half need Linux's headers: a
+release packaged on Windows has `setup-windows.exe` alone, which builds `Game.exe`.
 
 Both scripts run `tools/package.cmake`, which can also be run directly: `cmake -P tools/package.cmake`, with
 `-DTEST=OFF`, `-DTEST_DOWNLOAD=ON` or `-DJOBS=N` before `-P`.
@@ -113,7 +114,8 @@ files, byte for byte, as extracting the disc does, `default.xbe` included, so th
 all there is to check: Setup still compares the XBE's SHA-1.
 
 ```bash
-setup-linux                              # a package in assets/ is unpacked and built
+setup-linux                              # the window: the game (package, image or files), working and game folder
+setup-linux --cli --source DefaultPackage --work DIR --game-dir DIR   # the same on the console
 xbe_setup --unpack DefaultPackage outdir # only the unpacking
 tools/build.sh --store DefaultPackage    # builds xbe_setup first, unpacks into iso/, builds the port
 ```
