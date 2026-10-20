@@ -11,12 +11,24 @@ namespace {
 // the lighting map, as the character programs; oD0 the room's light at n, a quadratic in n per channel (c166-c169 red,
 // c170-c173 green, c174-c177 blue), c179 the key light's direction (negated) and c180 its colour. Its pixel shaders
 // add the diffuse, a tenth of the sphere map and the lighting map, and scale the sum by 4. The tavern's beer bottles,
-// green and amber, are drawn so. As metal.cpp, the shading undoes oPos's divide and viewport for the view space
-// position. Registers are hardware order.
-constexpr const char* kMatch = "dot(((R10).xyzw), ((c[108]).xyzw))";
+// green and amber, are drawn so; one held in a hand that moves (the amber one by the candle) is drawn by the skinned
+// variant instead: R2 the normal, the sphere map from c162/c163 into oT1 and the lighting map from c181/c182 into oT2,
+// the rest alike. Metal's match is in that variant too, so glass registers first. As metal.cpp, the shading undoes
+// oPos's divide and viewport for the view space position. Registers are hardware order.
+constexpr const char* kMatchRigid = "dot(((R10).xyzw), ((c[108]).xyzw))";
+constexpr const char* kMatchSkinned = R"(dot(((R2).xyzw), ((c[163]).xyzw)).xxxx;
+        oT1.y = mr.y;
+    }
+    {
+        precise float4 mr = ((i.v4).wwww);
+        R2.w = mr.w;
+    }
+    {
+        precise float4 mr = dot(((R2).xyzw), ((c[181]).xyzw)))";
 
-// the room's light arriving from d, as the program's oD0 lights a normal d, in the final colour's scale
-constexpr const char* kFunctions = R"(
+// the room's light arriving from d, as the program's oD0 lights a normal d, in the final colour's scale; GlassMap,
+// the lighting map's coordinates for a direction d, w the normal's
+#define GLASS_ROOM R"(
 float3 GlassRoom(float3 d) {
     float4 q = float4(d, 1);
     float3 e = float3(dot(q, float4(dot(q, c[166]), dot(q, c[167]), dot(q, c[168]), dot(q, c[169]))),
@@ -24,16 +36,26 @@ float3 GlassRoom(float3 d) {
                       dot(q, float4(dot(q, c[174]), dot(q, c[175]), dot(q, c[176]), dot(q, c[177]))));
     return max(e, 0) * 4 / 3.14159;
 }
+)"
+constexpr const char* kFunctionsRigid = GLASS_ROOM R"(
+float2 GlassMap(float3 d, float w) { return float2(dot(float4(d, w), c[112]), dot(float4(d, w), c[113])); }
 )";
+constexpr const char* kFunctionsSkinned = GLASS_ROOM R"(
+float2 GlassMap(float3 d, float w) { return float2(dot(float4(d, w), c[181]), dot(float4(d, w), c[182])); }
+)";
+#undef GLASS_ROOM
 
 // x0: the normal, and the w the lighting map's lookup takes; x1: the position
-constexpr const char* kVs = R"(    {
+#define GLASS_VS(normal) R"(    {
         float w = oPos.w, z = -w;
         float2 clip = (oPos.xy - c[59].xy) * w / c[58].xy;
         float x = (clip.x - c[99].z * z - c[99].w) / c[99].x, y = (clip.y - c[100].z * z - c[100].w) / c[100].y;
-        o.x0 = R10;
+        o.x0 = )" normal R"(;
         o.x1 = float4(x, y, z, 1);
-    })";
+    })"
+constexpr const char* kVsRigid = GLASS_VS("R10");
+constexpr const char* kVsSkinned = GLASS_VS("R2");
+#undef GLASS_VS
 
 // The sphere map's middle gives the glass's hue; grey maps (chrome) stay as the game drew them. Through the glass is
 // what was drawn behind it, the screen copy read bent the way a full bottle, a lens, bends it: flipped, more so toward
@@ -51,7 +73,7 @@ constexpr const char* kPs = R"({
     float3 nx = ddx(n), ny = ddy(n);
     float nv = max(dot(n, v), 1e-3);
     float3 t = refract(-v, n, 1 / 1.5), r = reflect(-v, n), l = normalize(-c[179].xyz), key = c[180].xyz * 4;
-    float2 ruv = float2(dot(float4(r, i.x0.w), c[112]), dot(float4(r, i.x0.w), c[113])) + texsize[2].zw;
+    float2 ruv = GlassMap(r, i.x0.w) + texsize[2].zw;
 
     float2 size;
     xscreen.GetDimensions(size.x, size.y);
@@ -74,6 +96,8 @@ constexpr const char* kPs = R"({
 }  // namespace
 
 void glass::Init() {
-    gpu::g_program_shading.push_back(
-        {.match = kMatch, .on = &g_shading, .vs = kVs, .ps = kPs, .functions = kFunctions, .screen = true});
+    gpu::g_program_shading.push_back({.match = kMatchRigid, .on = &g_shading, .vs = kVsRigid, .ps = kPs,
+                                      .functions = kFunctionsRigid, .screen = true});
+    gpu::g_program_shading.push_back({.match = kMatchSkinned, .on = &g_shading, .vs = kVsSkinned, .ps = kPs,
+                                      .functions = kFunctionsSkinned, .screen = true});
 }

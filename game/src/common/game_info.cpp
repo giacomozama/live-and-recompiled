@@ -17,8 +17,8 @@ void Init() {
     display::Init();
     fur::Init();
     water::Init();
+    glass::Init();  // before metal: the skinned bottles' program has metal's match too
     metal::Init();
-    glass::Init();
 }
 
 }  // namespace
