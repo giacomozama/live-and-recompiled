@@ -1,8 +1,8 @@
 // Setup: builds the game on the player's machine from the player's own copy, so no release ever carries the
 // title's code. A release is this program, a kit (kit/: the recompiler, the prebuilt host library with everything
 // but the title's code, the headers the generated code includes, the config) and an empty assets folder.
-// Setup finds the game in assets (its files or a disc image; on Windows it offers the Microsoft Store install, unpacked
-// by unpack-store), checks it is the release the kit was made for,
+// Setup finds the game in assets (its files, a disc image or the digital release's package, which it unpacks; on Windows
+// it offers the Microsoft Store install too), checks it is the release the kit was made for,
 // downloads the compiler kit/<os>.toml pins for this host into kit/toolchain/<os>-<host> (once), recompiles the game,
 // compiles the result with that compiler and links the game beside itself. It runs on Windows and on Linux, and builds
 // for either: <exe>.exe for Windows (llvm-mingw; on Linux it runs with Proton) or the native Linux <exe> (Zig, against
@@ -49,6 +49,7 @@ extern char** environ;
 
 #include "kernel/crypto.h"
 #include "kernel/disc.h"
+#include "store.h"
 
 namespace fs = std::filesystem;
 
@@ -656,50 +657,42 @@ fs::path ExeDir() {
 #endif
 }
 
-// The digital, backwards compatible release (the Microsoft Store's) installs unencrypted, its package in this folder.
-// Windows only; offered when assets has no game. unpack-store, beside Setup, turns the package into the game's files.
+// The digital, backwards compatible release: its package, unpacked into assets (a few seconds, about 5 GB)
+bool UnpackPackage(const fs::path& root, const fs::path& package) {
+    fs::path assets = FindAssets(root);
+    if (assets.empty()) assets = root / "assets";
+    std::string error;
+    if (!store::Unpack(package, assets, Say, error)) {
+        Say("\nCannot unpack %s: %s\n", package.string().c_str(), error.c_str());
+        return false;
+    }
+    Say("\n");
+    return true;
+}
+
+// assets holds the package (DefaultPackage with its DefaultPackage.data folder) instead of the game
+bool UnpackFromAssets(const fs::path& root) {
+    fs::path assets = FindAssets(root);
+    if (assets.empty() || !store::HasPackage(assets)) return false;
+    Say("Found the digital release's package in %s\n", assets.string().c_str());
+    return UnpackPackage(root, assets);
+}
+
+// The Microsoft Store installs the same release unencrypted, its package in this folder. Windows only; offered when
+// assets has no game.
 #ifdef _WIN32
 constexpr const wchar_t* kStoreFolder = L"C:\\XboxGames\\Conker- Live and Reloaded\\Content\\Game";
 
 bool OfferStore(const fs::path& root) {
-    std::error_code ec;
-    fs::path store = kStoreFolder;
-    if (!fs::is_regular_file(store / "DefaultPackage", ec) || !fs::is_directory(store / "DefaultPackage.data", ec))
-        return false;
-    Say("\nFound the Microsoft Store version of the game:\n  %s\n", store.string().c_str());
+    fs::path folder = kStoreFolder;
+    if (!store::HasPackage(folder)) return false;
+    Say("\nFound the Microsoft Store version of the game:\n  %s\n", folder.string().c_str());
     if (!_isatty(_fileno(stdin))) return false;
     Say("Use it as your copy? Setup unpacks it into the assets folder (about 5 GB). [Y/n] ");
     std::string answer;
     std::getline(std::cin, answer);
     if (!answer.empty() && answer[0] != 'y' && answer[0] != 'Y') return false;
-
-    fs::path assets = FindAssets(root);
-    if (assets.empty()) assets = root / "assets";
-    fs::path unpack = ExeDir() / "unpack-store-windows.exe";
-    if (!fs::is_regular_file(unpack, ec)) {
-        Say("%s is missing; it comes with the release.\n", unpack.string().c_str());
-        return false;
-    }
-    std::wstring cmd = Quote(unpack.wstring()) + L" " + Quote(store.wstring()) + L" " + Quote(assets.wstring());
-    STARTUPINFOW si{};
-    si.cb = sizeof(si);
-    PROCESS_INFORMATION pi{};
-    // same console, so its progress shows
-    if (!CreateProcessW(unpack.wstring().c_str(), cmd.data(), nullptr, nullptr, TRUE, 0, nullptr, nullptr, &si, &pi)) {
-        Say("Cannot start %s\n", unpack.string().c_str());
-        return false;
-    }
-    WaitForSingleObject(pi.hProcess, INFINITE);
-    DWORD code = 1;
-    GetExitCodeProcess(pi.hProcess, &code);
-    CloseHandle(pi.hThread);
-    CloseHandle(pi.hProcess);
-    if (code) {
-        Say("Unpacking the Store version failed (exit %lu).\n", (unsigned long)code);
-        return false;
-    }
-    Say("Unpacked into %s\n\n", assets.string().c_str());
-    return true;
+    return UnpackPackage(root, folder);
 }
 #else
 bool OfferStore(const fs::path&) { return false; }
@@ -737,11 +730,18 @@ int main(int argc, char** argv) {
         else if (a == "--jobs" && i + 1 < argc) jobs = unsigned(std::max(1, std::atoi(argv[++i])));
         else if (a == "--keep") keep = true;
         else if (a == "--fetch-toolchain") fetch_only = true;
+        else if (a == "--unpack" && i + 2 < argc) {
+            // the digital release's package into a folder, nothing else (tools/build.sh --store)
+            std::string error;
+            bool ok = store::Unpack(fs::absolute(argv[i + 1]), fs::absolute(argv[i + 2]), Say, error);
+            if (!ok) std::fprintf(stderr, "\nsetup: %s\n", error.c_str());
+            return ok ? 0 : 1;
+        }
         else if (a == "--toolchain" && i + 1 < argc) toolchain = fs::absolute(argv[++i]);
         else if (a == "--root" && i + 1 < argc) root = fs::absolute(argv[++i]);
         else {
             std::fprintf(stderr, "usage: setup [--target windows|linux] [--jobs N] [--keep] [--toolchain DIR] "
-                                 "[--root DIR] [--fetch-toolchain]\n");
+                                 "[--root DIR] [--fetch-toolchain] [--unpack PACKAGE OUTDIR]\n");
             return 2;
         }
     }
@@ -777,7 +777,7 @@ int main(int argc, char** argv) {
 
     // 1. the game
     std::vector<uint8_t> xbe;
-    if (!FindXbe(root, k, xbe, true) && !(OfferStore(root) && FindXbe(root, k, xbe, true))) {
+    if (!FindXbe(root, k, xbe, true) && !((UnpackFromAssets(root) || OfferStore(root)) && FindXbe(root, k, xbe, true))) {
         FindXbe(root, k, xbe, false);  // says what is missing
         return Fail();
     }

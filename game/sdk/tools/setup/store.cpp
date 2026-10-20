@@ -1,9 +1,7 @@
-// unpack-store - unpacks the digital, backwards compatible release of the game into default.xbe, dvddata/ and media/.
+// The digital, backwards compatible release of the game, unpacked into default.xbe, dvddata/ and media/ (Setup calls
+// this when assets holds that release's package instead of the game).
 //
-//   unpack-store [package] [outdir]
-//
-// package is DefaultPackage (or the folder holding it, or its DefaultPackage.data folder); with none, assets/
-// beside this program is searched. outdir defaults to assets/ beside this program: the folder Setup reads.
+// package is DefaultPackage (or the folder holding it, or its DefaultPackage.data folder).
 //
 // The release is an Xbox 360 "Games on Demand" package: a small header file, DefaultPackage, and DefaultPackage.data/
 // with Data0000, Data0001, ... Nothing in it is encrypted. A Data file is a master hash table, then 203 times a
@@ -15,6 +13,9 @@
 // game is checked later, by Setup, against its SHA-1.
 //
 // Read only on the package; writes the files of the volume under outdir. Nothing of the game is kept in this program.
+#include "store.h"
+
+
 #include <algorithm>
 #include <cctype>
 #include <cstdint>
@@ -26,16 +27,6 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
-
-#ifdef _WIN32
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#include <windows.h>
-#include <shellapi.h>
-#else
-#include <unistd.h>
-#endif
 
 namespace fs = std::filesystem;
 
@@ -214,18 +205,6 @@ int64_t FindShift(Volume& v, uint32_t root, uint32_t rootSize, std::vector<File>
     throw Error("found no game in the package: it isn't the digital release of the game");
 }
 
-fs::path ProgramDir() {
-#ifdef _WIN32
-    wchar_t buf[MAX_PATH * 4];
-    DWORD n = GetModuleFileNameW(nullptr, buf, DWORD(std::size(buf)));
-    return n ? fs::path(buf).parent_path() : fs::current_path();
-#else
-    std::error_code ec;
-    fs::path p = fs::read_symlink("/proc/self/exe", ec);
-    return ec ? fs::current_path() : p.parent_path();
-#endif
-}
-
 // the folder with Data0000 for whatever the user pointed at
 fs::path FindData(const fs::path& given, fs::path& header) {
     std::error_code ec;
@@ -267,105 +246,73 @@ std::string Title(const fs::path& header) {
     return title;
 }
 
-void Pause() {
-#ifdef _WIN32
-    // started by double click or drag and drop: the window would close before it can be read
-    DWORD pid;
-    if (GetConsoleProcessList(&pid, 1) == 1) {
-        printf("\nPress Enter to close.\n");
-        getchar();
-    }
-#endif
-}
-
-int Run(int argc, const std::vector<fs::path>& argv) {
-    fs::path here = ProgramDir();
-    fs::path assets = here / "assets";
-    fs::path given = argc > 1 ? argv[1] : assets;
-    fs::path out = argc > 2 ? argv[2] : assets;
-    if (argc > 3 || (argc > 1 && (argv[1] == fs::path("-h") || argv[1] == fs::path("--help")))) {
-        printf("usage: unpack-store [DefaultPackage] [outdir]\n"
-               "  DefaultPackage  the package file, or the folder holding it (default: assets/ beside this program)\n"
-               "  outdir          where default.xbe, dvddata/ and media/ go (default: assets/ beside this program)\n");
-        return argc > 3 ? 2 : 0;
-    }
-
-    fs::path header;
-    fs::path data = FindData(given, header);
-    if (!header.empty() && fs::exists(header)) {
-        std::string title = Title(header);
-        printf("package: %s%s%s\n", Str(header).c_str(), title.empty() ? "" : "  ", title.c_str());
-    }
-    printf("data:    %s\n", Str(data).c_str());
-    Volume v(data);
-
-    uint8_t vd[kSector];
-    if (!v.Read(0, vd, kSector) || memcmp(vd, kMagic, kMagicSize) || memcmp(vd + 0x7EC, kMagic, kMagicSize)) {
-        throw Error("the package's data isn't a disc file system (is it a different kind of package?)");
-    }
-    uint32_t root = U32(vd + 0x14), rootSize = U32(vd + 0x18);
-
-    printf("finding the game's files...\n");
-    std::vector<File> files;
-    int64_t shift = FindShift(v, root, rootSize, files);
-    uint64_t total = 0;
-    for (auto& f : files) total += f.size;
-    printf("%zu files, %.2f GB, volume starts at disc sector %lld\n", files.size(), double(total) / 1e9,
-           (long long)shift);
-
-    std::error_code ec;
-    fs::create_directories(out, ec);
-    if (ec) throw Error("cannot create " + Str(out) + ": " + ec.message());
-    std::sort(files.begin(), files.end(), [](const File& a, const File& b) { return a.at < b.at; });  // one pass
-    std::vector<uint8_t> buf(4u << 20);
-    uint64_t written = 0;
-    int shown = -1;
-    for (auto& f : files) {
-        fs::path dest = out / fs::path(f.path);
-        fs::create_directories(dest.parent_path(), ec);
-        std::ofstream o(dest, std::ios::binary | std::ios::trunc);
-        if (!o) throw Error("cannot write " + Str(dest));
-        for (uint64_t pos = 0; pos < f.size;) {
-            uint64_t n = std::min<uint64_t>(buf.size(), f.size - pos);
-            if (!v.Read(f.at + pos, buf.data(), n)) throw Error("package ends inside " + f.path);
-            if (!o.write(reinterpret_cast<char*>(buf.data()), std::streamsize(n))) {
-                throw Error("cannot write " + Str(dest) + " (disk full?)");
-            }
-            pos += n;
-            written += n;
-            int pct = total ? int(written * 100 / total) : 100;
-            if (pct != shown) {
-                shown = pct;
-                printf("\r%3d%%", pct);
-                fflush(stdout);
-            }
-        }
-    }
-    printf("\r100%%\nunpacked into %s\n", Str(out).c_str());
-    return 0;
-}
-
 }  // namespace
 
-int main(int argc, char** argv) {
-    // paths as the system holds them: wide on Windows, where argv is in the code page
-    std::vector<fs::path> args;
-#ifdef _WIN32
-    (void)argc;
-    (void)argv;
-    int wide = 0;
-    wchar_t** w = CommandLineToArgvW(GetCommandLineW(), &wide);
-    for (int i = 0; w && i < wide; i++) args.emplace_back(w[i]);
-    if (w) LocalFree(w);
-#else
-    for (int i = 0; i < argc; i++) args.emplace_back(argv[i]);
-#endif
-    int code = 1;
+namespace store {
+
+bool Unpack(const fs::path& given, const fs::path& out, Say say, std::string& error) {
     try {
-        code = Run(int(args.size()), args);
+        fs::path header;
+        fs::path data = FindData(given, header);
+        if (!header.empty() && fs::exists(header)) {
+            std::string title = Title(header);
+            say("package: %s%s%s\n", Str(header).c_str(), title.empty() ? "" : "  ", title.c_str());
+        }
+        say("data:    %s\n", Str(data).c_str());
+        Volume v(data);
+
+        uint8_t vd[kSector];
+        if (!v.Read(0, vd, kSector) || memcmp(vd, kMagic, kMagicSize) || memcmp(vd + 0x7EC, kMagic, kMagicSize)) {
+            throw Error("the package's data isn't a disc file system (is it a different kind of package?)");
+        }
+        uint32_t root = U32(vd + 0x14), rootSize = U32(vd + 0x18);
+
+        say("finding the game's files...\n");
+        std::vector<File> files;
+        int64_t shift = FindShift(v, root, rootSize, files);
+        uint64_t total = 0;
+        for (auto& f : files) total += f.size;
+        say("%zu files, %.2f GB, volume starts at disc sector %lld\n", files.size(), double(total) / 1e9,
+            (long long)shift);
+
+        std::error_code ec;
+        fs::create_directories(out, ec);
+        if (ec) throw Error("cannot create " + Str(out) + ": " + ec.message());
+        std::sort(files.begin(), files.end(), [](const File& a, const File& b) { return a.at < b.at; });  // one pass
+        std::vector<uint8_t> buf(4u << 20);
+        uint64_t written = 0;
+        int shown = -1;
+        for (auto& f : files) {
+            fs::path dest = out / fs::path(f.path);
+            fs::create_directories(dest.parent_path(), ec);
+            std::ofstream o(dest, std::ios::binary | std::ios::trunc);
+            if (!o) throw Error("cannot write " + Str(dest));
+            for (uint64_t pos = 0; pos < f.size;) {
+                uint64_t n = std::min<uint64_t>(buf.size(), f.size - pos);
+                if (!v.Read(f.at + pos, buf.data(), n)) throw Error("package ends inside " + f.path);
+                if (!o.write(reinterpret_cast<char*>(buf.data()), std::streamsize(n))) {
+                    throw Error("cannot write " + Str(dest) + " (disk full?)");
+                }
+                pos += n;
+                written += n;
+                int pct = total ? int(written * 100 / total) : 100;
+                if (pct != shown) {
+                    shown = pct;
+                    say("\r%3d%%", pct);
+                }
+            }
+        }
+        say("\r100%%\nunpacked into %s\n", Str(out).c_str());
+        return true;
     } catch (const std::exception& e) {
-        fprintf(stderr, "\nunpack-store: %s\n", e.what());
+        error = e.what();
+        return false;
     }
-    Pause();
-    return code;
 }
+
+bool HasPackage(const fs::path& dir) {
+    std::error_code ec;
+    return fs::is_regular_file(dir / "DefaultPackage", ec) && fs::is_directory(dir / "DefaultPackage.data", ec);
+}
+
+}  // namespace store

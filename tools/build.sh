@@ -3,7 +3,7 @@
 #
 #   tools/build.sh                 build game/out/build/llvm-mingw/Game.exe from the game in game/assets
 #   tools/build.sh --iso FILE      first extract the disc image into iso/ and link game/assets to it
-#   tools/build.sh --store PATH    the same from the digital release's DefaultPackage (or its folder), see unpack-store
+#   tools/build.sh --store PATH    the same from the digital release's DefaultPackage (or its folder)
 #   tools/build.sh --game DIR      first link game/assets to an extracted copy (default.xbe, dvddata/, media/)
 #   tools/build.sh --linux         also build the native Linux port, game/out/build/release/Game (SDL3, Vulkan)
 #   tools/build.sh --harness       also build the Linux headless harness, game/out/harness/conker
@@ -73,9 +73,9 @@ elif [ -n "$STORE" ]; then
         echo "      iso/ is already extracted (delete it to unpack another package)"
     else
         configure_rel
-        cmake --build "$REL" --target unpack_store -j "$JOBS" >/dev/null
+        cmake --build "$REL" --target xbe_setup -j "$JOBS" >/dev/null
         mkdir -p "$ISO_DIR"
-        "$REL/unpack-store" "$STORE" "$ISO_DIR"
+        "$REL/xbe_setup" --unpack "$STORE" "$ISO_DIR"
     fi
     link_assets "$ISO_DIR" "../../iso/"
 elif [ -n "$FROM" ]; then

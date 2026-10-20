@@ -61,7 +61,8 @@ target_compile_definitions(xbe_symbols PRIVATE _CRT_SECURE_NO_WARNINGS)
 target_link_libraries(xbe_symbols PRIVATE Zydis tomlplusplus::tomlplusplus)
 
 # Setup, the player-side build: finds the game, recompiles it and links it with a prebuilt host (add_xbe_player_kit)
-add_executable(xbe_setup ${XBE_SDK_DIR}/tools/setup/main.cpp ${XBE_SDK_DIR}/runtime/kernel/disc.cpp
+add_executable(xbe_setup ${XBE_SDK_DIR}/tools/setup/main.cpp ${XBE_SDK_DIR}/tools/setup/store.cpp
+    ${XBE_SDK_DIR}/runtime/kernel/disc.cpp
     ${XBE_SDK_DIR}/runtime/kernel/crypto.cpp)
 target_include_directories(xbe_setup PRIVATE ${XBE_SDK_DIR}/runtime)
 target_compile_definitions(xbe_setup PRIVATE _CRT_SECURE_NO_WARNINGS)
