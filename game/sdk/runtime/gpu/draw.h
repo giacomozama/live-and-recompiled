@@ -90,6 +90,9 @@ bool CaptureOn();
 
 // the memory byte R G B A take in a 32 bit colour format, as texture.cpp decodes it
 void DepthByteOrder(uint32_t format, float order[4]);
+// which of those orders: 0 ARGB, 1 ABGR, 2 BGRA, 3 RGBA; and the order of each
+int DepthByteLayout(uint32_t format);
+void DepthLayoutOrder(int layout, float order[4]);
 float Bits(uint32_t v);
 void Color(uint32_t argb, float* o);
 // D3DCMP_NEVER 0x200 to D3DCMP_ALWAYS 0x207 as 0 to 7, the order D3D12's and Vulkan's comparisons both take

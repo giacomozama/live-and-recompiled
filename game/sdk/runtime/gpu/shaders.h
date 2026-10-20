@@ -16,12 +16,16 @@ struct TexInfo {
     uint8_t kind = kTexNone;
     uint8_t rect = 0;    // linear texture, coordinates in texels
     uint8_t shadow = 0;  // depth texture: 1 D24, 2 D16
-    uint8_t flags = 0;   // kTexWide, kTexOffset; bits 0 and 1 are a backend extension's
+    uint8_t flags = 0;   // kTexWide, kTexOffset, kTexDepthBytes; bits 0 and 1 are a backend extension's
 };
 enum : uint8_t {
     kTexWide = 4,    // an upscaled target shrunk by the pass: each tap averaged over console texels
     kTexOffset = 8,  // uploaded offset by 128 (OffsetSigned): the fetch reads back the console's bytes
+    // a depth buffer's bytes read as colour (stage 0 of a programmable draw: a depth of field's focus mask), bits 5
+    // and 6 the DepthByteLayout: nearer pixels around lend the draw their output (DepthSpread)
+    kTexDepthBytes = 16,
 };
+constexpr int kTexDepthLayoutShift = 5;
 
 struct PixelKey {
     uint32_t programmable = 0;
@@ -36,6 +40,7 @@ struct PixelKey {
     uint32_t proj = 0;       // fixed function: bit per stage sampled at coordinates divided by w
     uint32_t quad = 0;       // a screen quad: QuadHlsl
     uint32_t shading = 0;    // g_program_shading's entry for the draw's vertex program, 1 based, 0 none
+    uint32_t depth_pass = 0; // ProgramShading::depth_alpha's depth pass: discards what blends in fainter
     bool operator==(const PixelKey& o) const;
 };
 
@@ -62,7 +67,10 @@ struct PixelKey {
 // and clamped: i.pos.xy over its size is the pixel's own spot, what the draw covers. Not with field. textures, when
 // set, limits it to the draws whose stage texture_stage texture's data lies at one of those guest addresses (the
 // list ends at 0), for a program that draws more than what the shading is for; the others draw as the title made them.
-// skip_textures turns it around: the listed textures' draws don't take it.
+// skip_textures turns it around: the listed textures' draws don't take it. depth_alpha, when above 0, splits each
+// of its draws that blends and writes depth in two: the colour without the depth write, then a depth pass (no colour,
+// no stencil) where the output's alpha reaches depth_alpha, so what blends in fainter leaves the depth behind it;
+// with top set, only the draws whose x there is above 0 (the shells, not the skin under them).
 struct ShadingField {
     const float* data = nullptr;  // w x h, rows of w
     uint32_t w = 0, h = 0;
@@ -84,6 +92,7 @@ struct ProgramShading {
     const uint32_t* textures = nullptr;
     int texture_stage = 0;
     bool skip_textures = false;
+    float depth_alpha = 0;
 };
 inline std::vector<ProgramShading> g_program_shading;  // filled before the title boots, unchanged after
 

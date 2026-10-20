@@ -861,7 +861,8 @@ private:
     bool ReuseRun(const State& s);
     void BindGeometry(const Assembled& a);
     void IssueGeometry(const Assembled& a);
-    bool DrawBetweenShells(const State& s, const Assembled& a, uint32_t shading, const Bindings& b);
+    bool DrawBetweenShells(const State& s, const Assembled& a, uint32_t shading, const Bindings& b, VkPipeline pso,
+                           VkPipeline zpso);
     void UploadVertexBuffers(const Assembled& a);
     // visibility tests
     bool EnsureQueries();
@@ -2584,6 +2585,7 @@ Image* VulkanBackend::DepthBytes(Target& z, uint32_t format) {
                                   VK_IMAGE_USAGE_TRANSFER_SRC_BIT});
         if (!z.zb) return nullptr;
     }
+    uint32_t at = cap_i_;
     if (cap_) fprintf(cap_, "%04u depth bytes %08X format %X\n", cap_i_++, z.data, format);
     ResolveSamples(z);
     Transition(*z.res, kRead);
@@ -2592,6 +2594,12 @@ Image* VulkanBackend::DepthBytes(Target& z, uint32_t format) {
     DepthByteOrder(format, p);
     Pass(kDepthBytesHlsl, "psmain", kBgra, *z.zb, z.w, z.h, src, p, -1);
     Transition(*z.zb, kRead);
+    // the bytes as the draw reads them, at the target's own size (alpha kept: the 32 bit BMP holds it)
+    if (cap_) {
+        char name[48];
+        snprintf(name, sizeof(name), "%04u_zbytes_%08X_%X", at, z.data, format);
+        CapSave({.res = z.zb.get(), .view = z.zb->view, .w = z.w, .h = z.h}, name);
+    }
     return z.zb.get();
 }
 
@@ -3041,12 +3049,14 @@ Image* VulkanBackend::BindTexture(const State& s, int stage, DrawTextures& stage
             stages.rt[stage] = true;
             stages.exact[stage] = true;
             info.kind = kTex2D;
+            info.flags |= uint8_t(kTexDepthBytes | DepthByteLayout(d.format) << kTexDepthLayoutShift);
             if (!((stages.sampled >> stage) & 1)) return nullptr;
             if (Image* r = DepthBytes(zit->second, d.format)) {
                 stages.view[stage] = r->view;
                 return r;
             }
             stages.rt[stage] = false;
+            info = {};
             info.kind = TextureKind(d);
         }
     }
@@ -3563,11 +3573,14 @@ void VulkanBackend::IssueGeometry(const Assembled& a) {
 }
 
 // ProgramShading::between: the shells between the draw before in the run and this one, its geometry bound and drawn
-// with vertex constants of their own, then the draw's own bindings pushed back; false, nothing done, without any
-bool VulkanBackend::DrawBetweenShells(const State& s, const Assembled& a, uint32_t shading, const Bindings& b) {
+// with vertex constants of their own, each followed by its depth pass when there is one (zpso, then pso bound back),
+// then the draw's own bindings pushed back; false, nothing done, without any
+bool VulkanBackend::DrawBetweenShells(const State& s, const Assembled& a, uint32_t shading, const Bindings& b,
+                                      VkPipeline pso, VkPipeline zpso) {
     const ProgramShading& ps = g_program_shading[shading - 1];
+    if (ps.between <= 0) return false;
     float from = ShadingBefore(shading), to = s.vsc[size_t(ps.top)][0];
-    if (ps.between <= 0 || from < 0 || to <= from) return false;
+    if (from < 0 || to <= from) return false;
     BindGeometry(a);
     Bindings eb = b;
     for (int j = 1; j <= ps.between; j++) {
@@ -3578,6 +3591,11 @@ bool VulkanBackend::DrawBetweenShells(const State& s, const Assembled& a, uint32
         eb.cb[0] = {vc.buf, vc.off, sizeof(s.vsc.v)};
         PushRaw(eb);
         IssueGeometry(a);
+        if (zpso) {
+            vkCmdBindPipeline(cmd_, VK_PIPELINE_BIND_POINT_GRAPHICS, zpso);
+            IssueGeometry(a);
+            vkCmdBindPipeline(cmd_, VK_PIPELINE_BIND_POINT_GRAPHICS, pso);
+        }
     }
     PushRaw(b);  // drawn_.b still holds it
     return true;
@@ -3840,6 +3858,26 @@ void VulkanBackend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t
     // pipeline
     PsoKey k;
     BuildPipelineKey(s, a, sh.vh, sh.ph, k);
+    // ProgramShading::depth_alpha: the depth goes in a pass of its own after the colour, where it isn't faint
+    VkPipeline zpso = VK_NULL_HANDLE;
+    const ProgramShading* zps = sh.shading ? &g_program_shading[sh.shading - 1] : nullptr;
+    if (zps && zps->depth_alpha > 0 && k.blend && k.zen && k.zwrite &&
+        (zps->top < 0 || s.vsc[size_t(zps->top)][0] > 0)) {
+        PixelKey zpk = pk;
+        zpk.depth_pass = 1;
+        DrawShaders zsh = sh;
+        zsh.pkey = Hash(&zpk, sizeof(zpk));
+        EnsurePixelShader(zpk, zsh);
+        if (zsh.ps_code) {
+            PsoKey zk = k;
+            zk.ps = zsh.ph;
+            zk.blend = 0;
+            zk.wmask = 0;
+            zk.sten = 0;
+            zpso = EnsurePipeline(zk, zsh);
+        }
+        if (zpso) k.zwrite = 0;
+    }
     VkPipeline pso = EnsurePipeline(k, sh);
     if (!pso) return CountedSkip(s, "pipeline");
     g_perf.d_pso += PerfLap(lap);
@@ -3900,13 +3938,18 @@ void VulkanBackend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t
     SetBlendFactorStencilRef(s);
 
     // geometry, counted while the title runs a visibility test; a shading's shells between go first, uncounted
-    bool bound = sh.shading && DrawBetweenShells(s, a, sh.shading, b);
+    bool bound = sh.shading && DrawBetweenShells(s, a, sh.shading, b, pso, zpso);
     uint32_t query = BeginCountedDraw(s);
     if (bound)
         IssueGeometry(a);
     else
         DrawGeometry(a);
     EndCountedDraw(query);
+    if (zpso) {
+        vkCmdBindPipeline(cmd_, VK_PIPELINE_BIND_POINT_GRAPHICS, zpso);
+        drawn_.pso = zpso;
+        IssueGeometry(a);
+    }
     if (!sh.shading && &s != &sprite_) KeepDraw(a, sh, stages, pso, b, size);
     g_perf.d_record += PerfLap(lap);
 }
@@ -4845,9 +4888,11 @@ void VulkanBackend::CapSave(const CapImage& img, const char* name) {
     WriteBmp(cap_dir_ / (std::string(name) + ".bmp"), px, img.w, img.h);
 }
 
+// XBE_CAPTURE_FULL=1: at the target's own size, upscaled as drawn, rather than the console's
 void VulkanBackend::CapSave(Target& t, const char* name) {
+    static const bool full = std::getenv("XBE_CAPTURE_FULL") && std::atoi(std::getenv("XBE_CAPTURE_FULL"));
     ResolveSamples(t);
-    CapSave({.res = t.res.get(), .view = t.res->Sampled(), .w = t.gw, .h = t.gh}, name);
+    CapSave({.res = t.res.get(), .view = t.res->Sampled(), .w = full ? t.w : t.gw, .h = full ? t.h : t.gh}, name);
 }
 
 // XBE_CAPTURE_VS=<hex shader handle>, XBE_CAPTURE_RT=<hex surface address>: the colour and depth targets before each

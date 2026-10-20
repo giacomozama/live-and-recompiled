@@ -1,4 +1,5 @@
 #include "gpu/shaders.h"
+#include "gpu/draw.h"
 #include "gpu/vertex.h"
 
 #include <algorithm>
@@ -514,6 +515,38 @@ const char* kPsSoftAlphaTest = R"(float softalphatest(float a) {
 
 std::string PsHelpers() { return kPsSbyte + Hooks().Shadow() + kPsTail; }
 
+// A depth of field's composite (kTexDepthBytes on stage 0) works out each pixel's blur from its own depth alone, so
+// what lies behind an out of focus foreground shows through its gaps sharp: the grey squirrel's tail, its fur shells
+// drawn strand by strand, leaves the in focus body behind it crisp between the strands, a pixel or two on the
+// console, plain holes upscaled. A lens spreads the near blur over what's behind it: the combiners run again for depth
+// taps on two rings, 1 and 2 console pixels out, and a nearer tap's output (its blur, over this pixel's blurred
+// colour) replaces the pixel's when it blurs more, the outer ring's at 60%. An in focus foreground blurs nothing, so
+// the background beside it stays as it was. The depth bytes are the target's size: i.pos is the texel.
+std::string DepthSpread(const TexInfo& t, const std::string& combiners) {
+    float order[4];
+    DepthLayoutOrder(t.flags >> kTexDepthLayoutShift, order);
+    float w[4];
+    for (int c = 0; c < 4; c++) w[c] = order[c] == 3 ? 65536.0f : order[c] == 2 ? 256.0f : order[c] == 1 ? 1.0f : 0.0f;
+    std::string s = "{\n";
+    s += F("float4 zw = float4(%g, %g, %g, %g);\n", w[0], w[1], w[2], w[3]);
+    s += "uint2 zsize; tex0.GetDimensions(zsize.x, zsize.y);\n";
+    s += "int2 zp = int2(i.pos.xy);\n";
+    s += "float zown = dot(round(t0 * 255), zw), zk = max(round(zsize.x / texsize[0].x), 1);\n";
+    s += "float4 spread = outc;\n";
+    s += "[unroll] for (int ztap = 0; ztap < 16; ztap++) {\n";
+    s += "float zr = ztap < 8 ? 1 : 2, zang = (ztap + (ztap < 8 ? 0 : 0.5)) * 0.7853982, zwt = ztap < 8 ? 1 : 0.6;\n";
+    s += "int2 zq = clamp(zp + int2(round(float2(cos(zang), sin(zang)) * zr * zk)), 0, int2(zsize) - 1);\n";
+    s += "float4 t0 = tex0.Load(int3(zq, 0));\n";
+    s += "if (dot(round(t0 * 255), zw) >= zown) continue;\n";
+    s += combiners;
+    s += "float4 lent = outc * zwt;\n";
+    s += "if (lent.a > spread.a) spread = lent;\n";
+    s += "}\n";
+    s += "outc = spread;\n";
+    s += "}\n";
+    return s;
+}
+
 // spreadtapN: stage N's kTexWide fetch, after its texture is declared. It reads tex N and smp N itself: a texture
 // passed to a function is not valid SPIR-V until a legalizing pass the Vulkan renderer doesn't run
 std::string SpreadTap(int i) {
@@ -963,7 +996,7 @@ std::string PixelHlsl(const PixelKey& k) {
             if (fetch && ((k.alphakill >> i) & 1)) body += F("if (t%d.a == 0) discard;\n", i);
         }
         uint32_t mode0 = k.tex_modes & 0x1F;
-        body += F("float4 r0 = float4(0, 0, 0, %s), r1 = 0;\n", mode0 ? "t0.a" : "1");
+        std::string combiners = F("float4 r0 = float4(0, 0, 0, %s), r1 = 0;\n", mode0 ? "t0.a" : "1");
         Ps ps{k};
         uint32_t n = std::min<uint32_t>(k.count & 0xFF, 8);
         for (uint32_t st = 0; st < n; st++) {
@@ -973,8 +1006,8 @@ std::string PixelHlsl(const PixelKey& k) {
             std::string wa = ps.Stage(k.a_in[st], k.a_out[st], true);
             ps.code += wc + wa + "}\n";
         }
-        body += ps.code;
-        if (k.shading) body += std::string(Shading(k.shading).ps) + "\n";
+        combiners += ps.code;
+        if (k.shading) combiners += std::string(Shading(k.shading).ps) + "\n";
         if (k.final_abcd || k.final_efg) {
             ps.stage = 8;
             uint32_t fl = k.final_efg & 0xFF;
@@ -986,12 +1019,15 @@ std::string PixelHlsl(const PixelKey& k) {
             std::string A = ps.Input(ParseIn(k.final_abcd >> 24), false), B = ps.Input(ParseIn((k.final_abcd >> 16) & 0xFF), false),
                         C = ps.Input(ParseIn((k.final_abcd >> 8) & 0xFF), false), D = ps.Input(ParseIn(k.final_abcd & 0xFF), false),
                         G = ps.Input(ParseIn((k.final_efg >> 8) & 0xFF), true);
-            body += "float4 outc;\n";
-            body += "outc.rgb = " + D + " + lerp(" + C + ", " + B + ", " + A + ");\n";
-            body += "outc.a = " + G + ";\n";
+            combiners += "float4 outc;\n";
+            combiners += "outc.rgb = " + D + " + lerp(" + C + ", " + B + ", " + A + ");\n";
+            combiners += "outc.a = " + G + ";\n";
         } else {
-            body += "float4 outc = float4(lerp(fogin.rgb, r0.rgb, fogin.a), r0.a);\n";
+            combiners += "float4 outc = float4(lerp(fogin.rgb, r0.rgb, fogin.a), r0.a);\n";
         }
+        body += combiners;
+        if ((k.tex[0].flags & kTexDepthBytes) && (k.tex_modes & 0x1F) == 1 && !k.shading)
+            body += DepthSpread(k.tex[0], combiners);
     } else {
         body += "float4 cur = v0, tmp = 0;\n";
         for (int i = 0; i < 4; i++) {
@@ -1023,7 +1059,9 @@ std::string PixelHlsl(const PixelKey& k) {
         body += "cur.rgb = saturate(cur.rgb + v1.rgb);\n";
         body += "float4 outc = float4(lerp(fogin.rgb, cur.rgb, fogin.a), cur.a);\n";
     }
-    body += (soft ? "outc.a = softalphatest(outc.a);\n" : "alphatest(outc.a);\n") + Hooks().Output() + "return outc;\n}\n";
+    body += soft ? "outc.a = softalphatest(outc.a);\n" : "alphatest(outc.a);\n";
+    if (k.depth_pass) body += F("if (outc.a < %g) discard;\n", Shading(k.shading).depth_alpha);
+    body += Hooks().Output() + "return outc;\n}\n";
     s += body;
     return k.quad ? QuadHlsl(std::move(s)) : s;
 }

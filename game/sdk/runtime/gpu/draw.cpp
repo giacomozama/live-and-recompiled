@@ -28,17 +28,21 @@ namespace gpu {
 
 bool CaptureOn() { return !diag::CaptureDir().empty(); }
 
-void DepthByteOrder(uint32_t format, float order[4]) {
-    static const float argb[4] = {2, 1, 0, 3}, abgr[4] = {0, 1, 2, 3}, bgra[4] = {1, 2, 3, 0}, rgba[4] = {3, 2, 1, 0};
-    const float* o = argb;
+int DepthByteLayout(uint32_t format) {
     switch (format) {
-        case 0x3A: case 0x3F: o = abgr; break;
-        case 0x3B: case 0x40: o = bgra; break;
-        case 0x3C: case 0x41: o = rgba; break;
-        default: break;
+        case 0x3A: case 0x3F: return 1;
+        case 0x3B: case 0x40: return 2;
+        case 0x3C: case 0x41: return 3;
+        default: return 0;
     }
-    std::copy(o, o + 4, order);
 }
+
+void DepthLayoutOrder(int layout, float order[4]) {
+    static const float o[4][4] = {{2, 1, 0, 3}, {0, 1, 2, 3}, {1, 2, 3, 0}, {3, 2, 1, 0}};  // ARGB ABGR BGRA RGBA
+    std::copy(o[layout & 3], o[layout & 3] + 4, order);
+}
+
+void DepthByteOrder(uint32_t format, float order[4]) { DepthLayoutOrder(DepthByteLayout(format), order); }
 
 float Bits(uint32_t v) {
     float f;
