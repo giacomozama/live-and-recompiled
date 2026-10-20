@@ -587,10 +587,11 @@ private:
                     case Op::State: Apply(rs, b, c, &changed); break;
                     case Op::Draw: {
                         if (interp::Recording()) interp::CheckVertices(n, rs, c.a, c.b, c.c, c.d ? data : nullptr);
-                        interp::Blend(n++, t, rs, undo);
-                        inner_->Changed(changed);
-                        changed = false;
-                        inner_->Draw(rs, c.a, c.b, c.c, c.d ? data : nullptr);
+                        if (!interp::Hidden(interp::Blend(n++, t, rs, undo))) {
+                            inner_->Changed(changed);
+                            changed = false;
+                            inner_->Draw(rs, c.a, c.b, c.c, c.d ? data : nullptr);
+                        }
                         undo.Restore(rs);  // the draw's own constants and transforms, for the commands after
                         break;
                     }
@@ -613,6 +614,11 @@ private:
     // a frame's Present: with frame generation, the pictures between the frame before and it drawn first
     void Present(const Batch& b, const Cmd& c) {
         uint32_t pictures = keeping_ ? inner_->Pictures() : 1;
+        if (pictures > 1 && frame_draws_) {
+            auto match_start = Clock::now();
+            interp::Match();
+            gen_match_ns_ += Ns(match_start);
+        }
         auto replay_start = Clock::now();
         if (pictures > 1 && frame_draws_) {
             inner_->Keep(c.s1);

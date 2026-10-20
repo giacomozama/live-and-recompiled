@@ -753,6 +753,17 @@ std::bitset<192> ProgramReads(const std::vector<uint32_t>& prog) {
     return r;
 }
 
+uint32_t ProgramRelativeBase(const std::vector<uint32_t>& prog) {
+    uint32_t base = 192;
+    for (size_t i = 0; i + 4 <= prog.size(); i += 4) {
+        Tok k{&prog[i]};
+        if ((k.f(2, 26, 2) == 3 || k.f(2, 11, 2) == 3 || k.f(3, 28, 2) == 3) && k.f(3, 1, 1))
+            base = std::min(base, k.f(1, 13, 8));
+        if (k.f(3, 0, 1)) break;  // the last instruction
+    }
+    return base;
+}
+
 int PositionWSource(const std::vector<uint32_t>& prog) {
     // what each temporary's w lane holds, R12 being oPos
     int w[13];

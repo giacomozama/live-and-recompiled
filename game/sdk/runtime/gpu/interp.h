@@ -21,11 +21,14 @@ bool Tracing();
 // a draw of the frame as it is drawn the first time, in order; indices as Backend::Draw takes them. same: nothing
 // changed since the draw before it but vertex sources and constants (Backend::Changed)
 void Draw(const State& s, bool same, uint32_t prim, uint32_t start, uint32_t count, const uint8_t* indices);
+// the frame's draws are all in: each looked for in the frame before, before the first Blend (EndFrame does it if not)
+void Match();
 // the frame's draws are done: it becomes the frame before
 void EndFrame();
 // the frame's draw n drawn again at t between the frame before (0) and this one (1): its vertex constants and
-// transforms in s taken that far from the draw it was found as, each that jumped (a cut, a teleport) left as it is.
-// False, s untouched, for a draw not found. What it changed goes into undo, which puts it back
+// transforms in s taken that far from the draw it was found as (or that a neighbour found moved from, kBorrowed).
+// s untouched for a draw not found, or one with anything that jumped (a cut, a teleport). What it changed goes into
+// undo, which puts it back
 struct Undo {
     std::vector<std::pair<uint32_t, std::array<float, 4>>> vsc;
     std::vector<std::pair<uint32_t, std::array<float, 16>>> xf;
@@ -36,7 +39,10 @@ struct Undo {
         xf.clear();
     }
 };
-bool Blend(uint32_t n, float t, State& s, Undo& undo);
+enum class Blended { kNotFound, kJumped, kBorrowed, kYes };
+Blended Blend(uint32_t n, float t, State& s, Undo& undo);
+// XBE_INTERP_HIDE: whether a draw that came out so is left out of the picture drawn again
+bool Hidden(Blended how);
 
 // XBE_INTERP_RECORD=<pictures>: the pictures last shown are kept (at the console's size) with a note each, and F4
 // (gpu::g_record_dump) saves them; 0 when off

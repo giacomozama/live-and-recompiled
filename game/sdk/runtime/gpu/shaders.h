@@ -129,6 +129,8 @@ int PositionWSource(const std::vector<uint32_t>& program);
 // the constant registers (hardware order) a vertex program reads; one read relative to a0 marks its base and every
 // register above it
 std::bitset<192> ProgramReads(const std::vector<uint32_t>& program);
+// the lowest register a vertex program reads relative to a0 (a bone palette's base), 192 for none
+uint32_t ProgramRelativeBase(const std::vector<uint32_t>& program);
 // fixed function vertex state a shader is built for
 struct FixedKey {
     uint32_t light = 0;    // bit 0 lighting, 1 specular, 2 local viewer, 3 normalize, then D3DMCS 2 bits each from bit 8:
