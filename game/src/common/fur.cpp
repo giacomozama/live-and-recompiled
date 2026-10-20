@@ -1,5 +1,7 @@
 #include "common/fur.h"
 
+#include <cstdlib>
+
 #include "gpu/shaders.h"
 
 bool fur::g_shading = false;
@@ -80,9 +82,31 @@ constexpr const char* kPs = R"({
     }
 })";
 
+// The shells blend and write depth wherever they pass the alpha test, faint as a strand's edge may be, so a depth of
+// field takes the backdrop seen through them for the fur's own depth and keeps it sharp: a band of it in focus
+// around an in focus character, wide upscaled. Only the strands at least three quarters opaque write depth; the rest
+// blend in over the backdrop's, which the depth of field blurs. The game's own shells (fur_shading off) take that
+// alone. Only the shells: the skin pass under them (offset 0) writes its depth as drawn. XBE_FUR_DEPTH_ALPHA
+// overrides the 0.75, for tuning: higher leaves more of a strand's edge to the blur.
+constexpr float kDepthAlpha = 0.75f;
+// Conker's head (its morph targets in v1..v5) draws its shells with a program of its own, the offset c90.x times the
+// fur's length in v9; not lit by fur_shading (its registers differ), only its depth split
+constexpr const char* kHeadMatch = "mac_mul(((c[186]).xxxx), ((i.v9).xxxx))";
+const bool kAlways = true;
+
+float DepthAlpha() {
+    const char* e = std::getenv("XBE_FUR_DEPTH_ALPHA");
+    return e ? float(std::atof(e)) : kDepthAlpha;
+}
+
 }  // namespace
 
 void fur::Init() {
-    gpu::g_program_shading.push_back(
-        {.match = kMatch, .on = &g_shading, .vs = kVs, .ps = kPs, .top = 85 + 96, .between = 1, .soft = true});
+    const float depth_alpha = DepthAlpha();
+    gpu::g_program_shading.push_back({.match = kMatch, .on = &g_shading, .vs = kVs, .ps = kPs, .top = 85 + 96,
+                                      .between = 1, .soft = true, .depth_alpha = depth_alpha});
+    gpu::g_program_shading.push_back({.match = kMatch, .on = &kAlways, .vs = "    o.x0 = 0;\n    o.x1 = 0;",
+                                      .top = 85 + 96, .depth_alpha = depth_alpha});
+    gpu::g_program_shading.push_back({.match = kHeadMatch, .on = &kAlways, .vs = "    o.x0 = 0;\n    o.x1 = 0;",
+                                      .top = 90 + 96, .depth_alpha = depth_alpha});
 }
