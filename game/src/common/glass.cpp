@@ -31,11 +31,14 @@ constexpr const char* kMatchSkinned = R"(dot(((R2).xyzw), ((c[163]).xyzw)).xxxx;
 // painted pint, t2 the room's lightmap; the pixel shader adds the reflection, the colour times the lightmap and the
 // lighting map. Much of the bar is drawn by it, so only the pints' textures take it: the lager (empty glass at the top,
 // the foam a white band in the middle, the beer below) and the stout (its head at the top, the one by the Grim Reaper
-// too). The textures are the menu's, at the same addresses each run.
+// too); and the spirits hanging behind the bar, a clear one with a round label and a whisky with three, both on a
+// metal band at the bottom of their textures. The textures are the menu's, at the same addresses each run.
 constexpr const char* kMatchPint = R"(dot(((R10).xyzw), ((c[117]).xyzw)).xxxx;
         oT3.x)";
 constexpr uint32_t kLager[] = {0x81940580, 0};
 constexpr uint32_t kStout[] = {0x8193DA80, 0};
+constexpr uint32_t kClearSpirit[] = {0x81943080, 0};
+constexpr uint32_t kWhisky[] = {0x81945B80, 0};
 
 // the room's light arriving from d, as the program's oD0 lights a normal d, in the final colour's scale; GlassMap,
 // the lighting map's coordinates for a direction d, w the normal's
@@ -56,6 +59,14 @@ float2 GlassMap(float3 d, float w) { return float2(dot(float4(d, w), c[181]), do
 )";
 constexpr const char* kFunctionsPint = R"(
 float2 GlassMap(float3 d, float w) { return float2(dot(float4(d, w), c[117]), dot(float4(d, w), c[118])); }
+// 1 inside the box r of a 128x128 texture's texels (x0, y0, x1, y1), uv wrapped; GlassOval inside the oval in it;
+// GlassRow the texel row
+float GlassIn(float2 uv, float4 r) { float2 t = frac(uv) * 128; return all(t >= r.xy) && all(t <= r.zw + 1) ? 1 : 0; }
+float GlassOval(float2 uv, float4 r) {
+    float2 t = frac(uv) * 128, rad = (r.zw + 1 - r.xy) / 2;
+    return length((t - r.xy - rad) / rad) <= 1 ? 1 : 0;
+}
+float GlassRow(float2 uv) { return frac(uv.y) * 128; }
 )";
 
 #undef GLASS_ROOM
@@ -115,6 +126,7 @@ constexpr const char* kPs = R"({
 // bright streak down its side; the glass's up is the model's, its y through the view matrix c96..c98
 #define GLASS_PINT(liquid, see, beer) R"({
     float3 paint = t1.rgb;
+    float2 uv = tc1.xy / tc1.w;
     float hi = max(paint.r, max(paint.g, paint.b)), lo = min(paint.r, min(paint.g, paint.b));
     float sat = (hi - lo) / max(hi, 1e-3);
     float foam = smoothstep(0.86, 0.94, hi) * (1 - smoothstep(0.1, 0.2, sat));
@@ -152,6 +164,16 @@ constexpr const char* kPsLager = GLASS_PINT("smoothstep(0.35, 0.6, sat)", "(1 - 
                                             "behind * pow(tint, 0.4 + 0.5 / (0.3 + nv)) * hi + r0.rgb * 0.15");
 constexpr const char* kPsStout = GLASS_PINT("1 - foam", "(1 - foam) * 0.7",
                                             "behind * float3(0.45, 0.2, 0.08) + r0.rgb * 0.3");
+// the spirits: clear but for their labels and the metal band; the whisky between rows 36 and 108 of its texture, in
+// its amber (its painted reflections, paler, would otherwise read as glass)
+constexpr const char* kPsClearSpirit = GLASS_PINT(
+    "0", "0.9 * (1 - max(GlassOval(uv, float4(52, 20, 82, 50)), GlassIn(uv, float4(0, 102, 127, 127))))", "behind");
+constexpr const char* kPsWhisky = GLASS_PINT(
+    "smoothstep(34, 40, GlassRow(uv)) * (1 - smoothstep(106, 110, GlassRow(uv)))",
+    "lerp(0.9, 0.85, liquid) * (1 - max(max(GlassIn(uv, float4(52, 18, 76, 54)), "
+    "GlassIn(uv, float4(0, 110, 127, 127))), max(GlassIn(uv, float4(0, 13, 12, 62)), "
+    "GlassIn(uv, float4(116, 13, 127, 62)))))",
+    "behind * pow(float3(1, 0.67, 0.16), 0.4 + 0.5 / (0.3 + nv)) * 0.8 + r0.rgb * 0.15");
 #undef GLASS_PINT
 
 }  // namespace
@@ -166,5 +188,11 @@ void glass::Init() {
                                       .texture_stage = 1});
     gpu::g_program_shading.push_back({.match = kMatchPint, .on = &g_shading, .vs = kVsRigid, .ps = kPsStout,
                                       .functions = kFunctionsPint, .screen = true, .textures = kStout,
+                                      .texture_stage = 1});
+    gpu::g_program_shading.push_back({.match = kMatchPint, .on = &g_shading, .vs = kVsRigid, .ps = kPsClearSpirit,
+                                      .functions = kFunctionsPint, .screen = true, .textures = kClearSpirit,
+                                      .texture_stage = 1});
+    gpu::g_program_shading.push_back({.match = kMatchPint, .on = &g_shading, .vs = kVsRigid, .ps = kPsWhisky,
+                                      .functions = kFunctionsPint, .screen = true, .textures = kWhisky,
                                       .texture_stage = 1});
 }
