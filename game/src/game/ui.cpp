@@ -447,6 +447,13 @@ void Draw(double fps) {
                 if (ImGui::Combo("Frame rate", &rate, "30 (original)\0 60\0"))
                     display::SetFrameRate(kRates[rate]);
 
+                int gen = int(std::clamp<uint32_t>(s.frame_generation, 1, 4)) - 1;
+                if (ImGui::Combo("Frame generation", &gen, "Off\0 2x\0 3x\0 4x\0")) s.frame_generation = uint32_t(gen + 1);
+                if (gen) {
+                    ImGui::SameLine();
+                    ImGui::TextDisabled("(%u FPS shown)", display::g_frame_rate * uint32_t(gen + 1));
+                }
+
                 ImGui::SeparatorText("Quality");
                 constexpr uint32_t kAniso[] = {0, 2, 4, 8, 16};
                 int aniso = 0;

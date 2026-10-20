@@ -59,6 +59,7 @@
 #include "core/log.h"
 #include "gpu/backend.h"
 #include "gpu/draw.h"
+#include "gpu/interp.h"
 #include "gpu/shader_record.h"
 #include "gpu/shaders.h"
 #include "gpu/smaa_hlsl.h"
@@ -72,6 +73,7 @@ namespace gpu {
 namespace {
 
 constexpr int kFrames = 3;
+constexpr uint32_t kMaxGen = 4;  // app::Settings::frame_generation's most: pictures per frame
 constexpr uint64_t kStaleFrames = 8;  // frames a target may go unused and still be read back
 constexpr uint64_t kUploadSize = 64ull << 20;
 // a draw starting with less than this left in the frame's ring waits for the GPU and starts the ring over
@@ -697,11 +699,32 @@ public:
     void Changed(bool any) override { same_state_ = !any; }
     void Copy(const Surface& src, const Surface& dst, uint32_t count, uint32_t src_rects, uint32_t dst_points) override;
     void Present(const Surface& front) override;
+    bool Due(std::chrono::steady_clock::time_point& at) override {
+        if (held_.empty()) return false;
+        at = held_.front().at;
+        return true;
+    }
+    void Show() override;
+    uint32_t Pictures() override { return cap_ || !swap_ || minimised_ ? 1 : swap_gen_; }
+    void Keep(const Surface& front) override;
+    void Between(const Surface& front, uint32_t i) override;
+    void Replaying(bool on) override {
+        FlushRun();
+        replay_ = on;
+        pass_serial_ = skip_to_ = 0;
+        kept_run_next_ = 0;
+    }
+    // XBE_INTERP_RECORD: the pictures shown, kept at the console's size w x h, and F4's saving of them
+    void RecordPictures(const std::vector<Image*>& sources, const std::vector<std::string>& notes, uint32_t w, uint32_t h);
+    void SaveRecorded();
     void Sync(uint32_t data, uint32_t size) override;
     void SyncLate(uint32_t data) override;
     bool DeliverLate(uint32_t data) override;
     void RecordLate(uint32_t data) override;
-    void Flush() override { Submit(true); }
+    void Flush() override {
+        FlushRun();
+        Submit(true);
+    }
     void SetGamma(const uint8_t* ramp) override;
     void ClearReport() override { counted_.clear(); }
     void Note(const char* text) override {
@@ -714,8 +737,9 @@ private:
     struct Frame {
         VkCommandPool pool = VK_NULL_HANDLE;
         VkCommandBuffer cmd = VK_NULL_HANDLE;      // the frame's draws
-        VkCommandBuffer present = VK_NULL_HANDLE;  // its picture into the swap chain, after the image is acquired
-        VkSemaphore acquired = VK_NULL_HANDLE;
+        // its pictures into the swap chain, each after its image is acquired: one, or frame generation's
+        VkCommandBuffer present[kMaxGen] = {};
+        VkSemaphore acquired[kMaxGen] = {};
         BufferRef upload;
         uint64_t used = 0;
         uint64_t fence = 0;
@@ -828,6 +852,13 @@ private:
     void SetViewportScissor(const State& s, uint32_t gw);
     void SetBlendFactorStencilRef(const State& s);
     void DrawGeometry(const Assembled& a);
+    // a run of fast draws (FastDraw) in one state, drawn as one: whether a draw's geometry can join it, its joining,
+    // and the run drawn (anything else that records ends it first)
+    bool Mergeable(const Assembled& a) const;
+    void JoinRun(const Assembled& a);
+    void FlushRun();
+    // a frame drawn again: a run the frame drew starting at this draw, drawn from its geometry still in the ring
+    bool ReuseRun(const State& s);
     void BindGeometry(const Assembled& a);
     void IssueGeometry(const Assembled& a);
     bool DrawBetweenShells(const State& s, const Assembled& a, uint32_t shading, const Bindings& b);
@@ -871,14 +902,19 @@ private:
     void StartCapture();
     void ResizeSwap();
     void UploadGammaRamp();
-    bool AcquireImage(uint32_t& bi);
-    void DrawFrame(Target* t, uint32_t bi);
-    void BlitFrame(Target& t);
-    void RenderUi();
+    void FinishFront(Target& t);
+    bool KeepPicture(const Surface& front, uint32_t slot);
+    bool AcquireImage(uint32_t& bi, VkSemaphore acquired);
+    void DrawFrame(VkImageView picture, uint32_t bi);
+    void BlitFrame(VkImageView src);
+    void BuildUi();
+    void DrawUi();
     void QueuePresent(uint32_t bi);
+    void ShowHeld();
     void ReleaseOldTextures();
     void ResetFrame();
-    void CountFps();
+    // pictures shown: a frame's own, and those frame generation adds
+    void CountFps(uint32_t pictures);
     void ApplySettings();
     void RemakeTargets(float scale, uint32_t samples);
     ImageRef Shrink(Image& src, VkImageView view, uint32_t w, uint32_t h, const ShrinkOptions& o = {});
@@ -975,6 +1011,7 @@ private:
     VkSwapchainKHR swap_ = VK_NULL_HANDLE;
     VkFormat swap_fmt_ = kBgra;
     bool swap_vsync_ = true;
+    uint32_t swap_gen_ = 1;    // the frame generation it has images for
     bool swap_stale_ = false;  // out of date or suboptimal: made again before the next frame
     bool minimised_ = false;
     std::vector<ImageRef> bb_;
@@ -1158,6 +1195,51 @@ private:
     uint64_t draw_serial_ = 0;  // draws so far, Target::fb_draw
     State sprite_;              // a fixed function point sprite's state as the console draws it (SpriteStage)
     double fps_ = 0;
+    // frame generation (app::Settings::frame_generation): the frame's pictures (Keep, Between), its own last, and a
+    // bit for each taken this frame; whether the draws are the frame's again (Replaying); the pictures past a frame's
+    // first, held until their time (Due, Show); the time between frames, smoothed, which the pictures share out
+    std::vector<ImageRef> gen_pics_;
+    uint32_t gen_taken_ = 0;
+    bool replay_ = false;
+    struct Run {
+        uint32_t first = 0, last = 0;  // pass_serial_ of its first and last draws
+        uint32_t draws = 0, vertices = 0, buffers = 0;
+        int topo = 0;
+        std::array<uint32_t, 16> strides{};
+        std::array<std::vector<uint8_t>, 16> data;
+        std::vector<uint32_t> indices;
+    };
+    Run run_;
+    // the frame's runs as drawn, for its drawing again: their draws, their geometry in the ring, the stage bindings
+    // they had; good until the ring starts over (a waiting Submit) or the frame ends
+    struct KeptRun {
+        uint32_t first = 0, last = 0, buffers = 0, count = 0;
+        int topo = 0;
+        VkBuffer bufs[16];
+        VkDeviceSize offs[16], sizes[16], strides[16];
+        VkBuffer ib = VK_NULL_HANDLE;
+        VkDeviceSize ioff = 0;
+        VkImageView view[kBindViews];
+        VkSampler smp[kBindViews];
+    };
+    std::vector<KeptRun> kept_runs_;
+    size_t kept_run_next_ = 0;
+    uint32_t pass_serial_ = 0;  // Draw calls in this pass: the frame's, or a drawing again
+    uint32_t skip_to_ = 0;      // drawing again: the last draw of a reused run
+    struct Recorded {
+        ImageRef im;
+        uint32_t w = 0, h = 0;
+        std::string note;
+    };
+    std::vector<Recorded> recorded_;  // a ring, the next written at recorded_next_
+    uint64_t recorded_next_ = 0;
+    struct Held {
+        uint32_t bi;
+        std::chrono::steady_clock::time_point at;
+    };
+    std::deque<Held> held_;
+    std::chrono::steady_clock::time_point gen_last_{};
+    double gen_period_ = 1.0 / 60;
     std::chrono::steady_clock::time_point fps_t_ = std::chrono::steady_clock::now();
     uint64_t fps_n_ = 0;
 };
@@ -1200,7 +1282,9 @@ VulkanBackend::~VulkanBackend() {
     for (auto& f : frames_) {
         f.garbage.clear();
         f.upload.reset();
-        if (f.acquired) vkDestroySemaphore(dev_, f.acquired, nullptr);
+        for (VkSemaphore a : f.acquired) {
+            if (a) vkDestroySemaphore(dev_, a, nullptr);
+        }
         if (f.pool) vkDestroyCommandPool(dev_, f.pool, nullptr);
     }
     for (auto* m : {&psos_, &blit_psos_, &warm_.psos}) {
@@ -1463,6 +1547,7 @@ bool VulkanBackend::CreateSwapChain() {
     if (vkGetPhysicalDeviceSurfaceCapabilitiesKHR(phys_, surface_, &caps) != VK_SUCCESS) return false;
     VkExtent2D ext = caps.currentExtent.width == UINT32_MAX ? WindowExtent() : caps.currentExtent;
     swap_vsync_ = app::Get().vsync;
+    swap_gen_ = std::clamp<uint32_t>(app::Get().frame_generation, 1, kMaxGen);
     swap_stale_ = false;
     minimised_ = !ext.width || !ext.height;
     if (minimised_) return true;
@@ -1489,7 +1574,8 @@ bool VulkanBackend::CreateSwapChain() {
     // without vsync the frame tears in as soon as it is done, as D3D12's tearing does
     if (!swap_vsync_) mode = has(VK_PRESENT_MODE_IMMEDIATE_KHR) ? VK_PRESENT_MODE_IMMEDIATE_KHR
                              : has(VK_PRESENT_MODE_MAILBOX_KHR) ? VK_PRESENT_MODE_MAILBOX_KHR : mode;
-    uint32_t count = std::max<uint32_t>(caps.minImageCount, kFrames);
+    // a frame's pictures past the first are held acquired while the next is drawn: an image more for each
+    uint32_t count = std::max<uint32_t>(caps.minImageCount, kFrames) + swap_gen_ - 1;
     if (caps.maxImageCount) count = std::min(count, caps.maxImageCount);
     VkSwapchainCreateInfoKHR ci{VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR};
     ci.surface = surface_;
@@ -1580,13 +1666,15 @@ bool VulkanBackend::CreateFrames() {
         VkCommandBufferAllocateInfo ai{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
         ai.commandPool = f.pool;
         ai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-        ai.commandBufferCount = 2;
-        VkCommandBuffer cbs[2];
+        ai.commandBufferCount = 1 + kMaxGen;
+        VkCommandBuffer cbs[1 + kMaxGen];
         if (vkAllocateCommandBuffers(dev_, &ai, cbs) != VK_SUCCESS) return false;
         f.cmd = cbs[0];
-        f.present = cbs[1];
+        std::copy(cbs + 1, cbs + 1 + kMaxGen, f.present);
         VkSemaphoreCreateInfo si{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
-        if (vkCreateSemaphore(dev_, &si, nullptr, &f.acquired) != VK_SUCCESS) return false;
+        for (VkSemaphore& a : f.acquired) {
+            if (vkCreateSemaphore(dev_, &si, nullptr, &a) != VK_SUCCESS) return false;
+        }
         f.upload = NewBuffer(kUploadSize, kUploadUsage, false);
         if (!f.upload) return false;
     }
@@ -1653,7 +1741,8 @@ bool VulkanBackend::InitUi() {
     ii.Queue = queue_;
     ii.DescriptorPool = ui_pool_;
     ii.MinImageCount = 2;
-    ii.ImageCount = std::max<uint32_t>(uint32_t(bb_.size()), 2);
+    // its vertex buffers go round per draw: one per picture, kMaxGen a frame with frame generation, kFrames in flight
+    ii.ImageCount = std::max<uint32_t>(uint32_t(bb_.size()), kFrames * kMaxGen + 1);
     ii.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
     ii.UseDynamicRendering = true;
     ii.PipelineRenderingCreateInfo = {VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
@@ -1788,6 +1877,7 @@ void VulkanBackend::Submit(bool wait, VkSemaphore wait_sem, VkSemaphore signal_s
         vkResetCommandPool(dev_, f.pool, 0);
         f.garbage.clear();
         f.used = 0;
+        kept_runs_.clear();  // their geometry was in the ring
         BeginCommands(f.cmd);
         Begin();
     }
@@ -1944,6 +2034,7 @@ void VulkanBackend::EnsureRendering() {
 
 void VulkanBackend::EndRendering() {
     if (!rendering_) return;
+    FlushRun();
     vkCmdEndRendering(cmd_);
     rendering_ = false;
 }
@@ -3220,6 +3311,7 @@ void VulkanBackend::SetTextureViewsAndSamplers(const State& s, const Assembled& 
         b.smp[i] = EnsureSampler(StageSampler(s, i, stages, clamp, aniso));
     }
     if (drawn_.bound && std::memcmp(&b, &drawn_.b, sizeof(b)) == 0) return;
+    FlushRun();
     PushRaw(b);
     drawn_.b = b;
     drawn_.bound = true;
@@ -3249,6 +3341,7 @@ void VulkanBackend::SetViewportScissor(const State& s, uint32_t gw) {
     VkRect2D r{{x0, y0}, {uint32_t(std::max(x1 - x0, 0)), uint32_t(std::max(y1 - y0, 0))}};
     if (drawn_.view && std::memcmp(&vp, &drawn_.vp, sizeof(vp)) == 0 && std::memcmp(&r, &drawn_.sc, sizeof(r)) == 0)
         return;
+    FlushRun();
     vkCmdSetViewport(cmd_, 0, 1, &vp);
     vkCmdSetScissor(cmd_, 0, 1, &r);
     drawn_.vp = vp;
@@ -3261,6 +3354,7 @@ void VulkanBackend::SetBlendFactorStencilRef(const State& s) {
     Color(SimpleState(s, kMBlendColor), bf);
     uint32_t ref = SimpleState(s, kMStencilRef) & 0xFF;
     if (drawn_.fixed && std::memcmp(bf, drawn_.bf, sizeof(bf)) == 0 && ref == drawn_.sref) return;
+    FlushRun();
     vkCmdSetBlendConstants(cmd_, bf);
     vkCmdSetStencilReference(cmd_, VK_STENCIL_FACE_FRONT_AND_BACK, ref);
     std::memcpy(drawn_.bf, bf, sizeof(bf));
@@ -3295,6 +3389,151 @@ void VulkanBackend::UploadVertexBuffers(const Assembled& a) {
 void VulkanBackend::DrawGeometry(const Assembled& a) {
     BindGeometry(a);
     IssueGeometry(a);
+}
+
+// a list (not a strip, not patches) whose every binding holds the same number of whole vertices, the draw's own
+bool VulkanBackend::Mergeable(const Assembled& a) const {
+    if (!a.buffer_count || !a.regs || a.strip || a.topology == Topology::Patches) return false;
+    uint32_t v = 0;
+    for (uint32_t i = 0; i < a.buffer_count; i++) {
+        const VertexBuffer& b = a.buffers[i];
+        if (!b.stride || b.bytes % b.stride) return false;
+        if (i && b.bytes / b.stride != v) return false;
+        v = b.bytes / b.stride;
+    }
+    return v != 0;
+}
+
+void VulkanBackend::JoinRun(const Assembled& a) {
+    constexpr uint32_t kRunVertices = 1u << 18;
+    uint32_t v = a.buffers[0].bytes / a.buffers[0].stride;
+    int topo = int(PrimitiveTopology(a));
+    bool fits = run_.draws && run_.buffers == a.buffer_count && run_.topo == topo && run_.vertices + v <= kRunVertices;
+    for (uint32_t i = 0; fits && i < a.buffer_count; i++) fits = run_.strides[i] == a.buffers[i].stride;
+    if (!fits) {
+        FlushRun();
+        run_.first = pass_serial_;
+        run_.buffers = a.buffer_count;
+        run_.topo = topo;
+        for (uint32_t i = 0; i < a.buffer_count; i++) run_.strides[i] = a.buffers[i].stride;
+    }
+    uint32_t base = run_.vertices;
+    for (uint32_t i = 0; i < a.buffer_count; i++) {
+        const VertexBuffer& b = a.buffers[i];
+        run_.data[i].insert(run_.data[i].end(), b.src, b.src + b.bytes);
+    }
+    if (a.index_count) {
+        for (uint32_t k = 0; k < a.index_count; k++) {
+            uint32_t idx;
+            if (a.index16) {
+                uint16_t x;
+                std::memcpy(&x, static_cast<const uint8_t*>(a.index_src) + k * 2, 2);
+                idx = x;
+            } else {
+                std::memcpy(&idx, static_cast<const uint8_t*>(a.index_src) + k * 4, 4);
+            }
+            run_.indices.push_back(uint32_t(int64_t(idx) + a.base_vertex) + base);
+        }
+    } else {
+        for (uint32_t k = 0; k < a.draw_count; k++) run_.indices.push_back(base + k);
+    }
+    run_.vertices += v;
+    run_.draws++;
+    run_.last = pass_serial_;
+}
+
+// the run's geometry in one draw, with the bindings its draws left
+void VulkanBackend::FlushRun() {
+    if (!run_.draws) return;
+    run_.draws = 0;  // first: what this records must not come back here
+    g_perf.runs++;
+    VkBuffer bufs[16];
+    VkDeviceSize offs[16], sizes[16], strides[16];
+    constexpr uint64_t kSlack = 8;  // as UploadVertexBuffers
+    for (uint32_t i = 0; i < run_.buffers; i++) {
+        const std::vector<uint8_t>& d = run_.data[i];
+        uint64_t bytes = std::max<uint64_t>(d.size(), 16) + kSlack;
+        Alloc vb = Upload(bytes, 16);
+        std::memcpy(vb.cpu, d.data(), d.size());
+        std::memset(vb.cpu + d.size(), 0, bytes - d.size());
+        bufs[i] = vb.buf;
+        offs[i] = vb.off;
+        sizes[i] = bytes;
+        strides[i] = run_.strides[i];
+        run_.data[i].clear();
+    }
+    vkCmdBindVertexBuffers2(cmd_, 0, run_.buffers, bufs, offs, sizes, strides);
+    if (run_.topo != drawn_.topo) {
+        vkCmdSetPrimitiveTopology(cmd_, VkPrimitiveTopology(run_.topo));
+        drawn_.topo = run_.topo;
+    }
+    uint32_t ibytes = uint32_t(run_.indices.size() * 4);
+    Alloc ib = Upload(ibytes, 4);
+    std::memcpy(ib.cpu, run_.indices.data(), ibytes);
+    vkCmdBindIndexBuffer(cmd_, ib.buf, ib.off, VK_INDEX_TYPE_UINT32);
+    vkCmdDrawIndexed(cmd_, uint32_t(run_.indices.size()), 1, 0, 0, 0);
+    if (!replay_) {
+        KeptRun& k = kept_runs_.emplace_back();
+        k.first = run_.first;
+        k.last = run_.last;
+        k.buffers = run_.buffers;
+        k.count = uint32_t(run_.indices.size());
+        k.topo = run_.topo;
+        std::copy(bufs, bufs + run_.buffers, k.bufs);
+        std::copy(offs, offs + run_.buffers, k.offs);
+        std::copy(sizes, sizes + run_.buffers, k.sizes);
+        std::copy(strides, strides + run_.buffers, k.strides);
+        k.ib = ib.buf;
+        k.ioff = ib.off;
+        std::copy(drawn_.b.view, drawn_.b.view + kBindViews, k.view);
+        std::copy(drawn_.b.smp, drawn_.b.smp + kBindViews, k.smp);
+    }
+    run_.indices.clear();
+    run_.vertices = 0;
+}
+
+// The draws of a run all followed one draw (gpu/interp.h: same state, same constants), so drawn again they are all
+// blended alike and stay one run: its geometry, already in the ring, is drawn with the blended constants and the
+// rest of its draws are skipped (skip_to_). The checks are FastDraw's but those on the geometry, which is the frame's
+bool VulkanBackend::ReuseRun(const State& s) {
+    while (kept_run_next_ < kept_runs_.size() && kept_runs_[kept_run_next_].first < pass_serial_) kept_run_next_++;
+    if (kept_run_next_ >= kept_runs_.size() || kept_runs_[kept_run_next_].first != pass_serial_) return false;
+    const KeptRun& r = kept_runs_[kept_run_next_];
+    if (!last_vc_ok_ || !last_dc_ok_ || kept_.b.cb[0].buffer != last_vc_.buf || kept_.b.cb[0].offset != last_vc_.off ||
+        kept_.b.cb[1].buffer != last_dc_.buf || kept_.b.cb[1].offset != last_dc_.off)
+        return false;
+    for (size_t i = 0; i < kConstRegs; i++)
+        if (kept_.reads[i] && std::memcmp(&s.vsc[i], &last_vsc_[i], sizeof(s.vsc[i])) != 0) return false;
+    if (CurrentFrame().used > kUploadSize - kUploadReserve) return false;
+    if (bound_rt_ != kept_.rt || bound_ds_ != kept_.ds || bound_ms_ != kept_.ms || (!bound_rt_ && !bound_ds_))
+        return false;
+    FlushRun();
+    EnsureRendering();
+    if (kept_.pso != drawn_.pso) {
+        vkCmdBindPipeline(cmd_, VK_PIPELINE_BIND_POINT_GRAPHICS, kept_.pso);
+        drawn_.pso = kept_.pso;
+    }
+    Bindings b = kept_.b;
+    std::copy(r.view, r.view + kBindViews, b.view);
+    std::copy(r.smp, r.smp + kBindViews, b.smp);
+    if (!drawn_.bound || std::memcmp(&b, &drawn_.b, sizeof(b)) != 0) {
+        PushRaw(b);
+        drawn_.b = b;
+        drawn_.bound = true;
+    }
+    SetViewportScissor(s, kept_.size.w);
+    SetBlendFactorStencilRef(s);
+    vkCmdBindVertexBuffers2(cmd_, 0, r.buffers, r.bufs, r.offs, r.sizes, r.strides);
+    if (r.topo != drawn_.topo) {
+        vkCmdSetPrimitiveTopology(cmd_, VkPrimitiveTopology(r.topo));
+        drawn_.topo = r.topo;
+    }
+    vkCmdBindIndexBuffer(cmd_, r.ib, r.ioff, VK_INDEX_TYPE_UINT32);
+    vkCmdDrawIndexed(cmd_, r.count, 1, 0, 0, 0);
+    skip_to_ = r.last;
+    kept_run_next_++;
+    g_perf.reused++;
+    return true;
 }
 
 void VulkanBackend::BindGeometry(const Assembled& a) {
@@ -3370,7 +3609,7 @@ bool VulkanBackend::EnsureQueries() {
 // a draw while the title counts visible pixels gets an occlusion query of its own, kNoQuery otherwise; the query is
 // begun inside the draw's render pass and ended there
 uint32_t VulkanBackend::BeginCountedDraw(const State& s) {
-    if (!s.simple[kMCountEnable >> 2] || !EnsureQueries()) return kNoQuery;
+    if (replay_ || !s.simple[kMCountEnable >> 2] || !EnsureQueries()) return kNoQuery;
     uint32_t query = query_next_++ % kQueries;
     frame_counted_++;
     // its last use was frames ago, done by now
@@ -3534,12 +3773,14 @@ void VulkanBackend::ApplyPost(Target& t) {
 }
 
 void VulkanBackend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t count, const uint8_t* indices) {
+    if (&s != &sprite_) pass_serial_++;
+    if (replay_ && pass_serial_ <= skip_to_) return;  // drawn with the run it was in
     if (&s != &sprite_ && FixedSprite(s, prim)) {
         sprite_ = s;
         SpriteStage(sprite_);
         return Draw(sprite_, prim, start, count, indices);
     }
-    WatchDraw(s, start, count, indices);
+    if (!replay_) WatchDraw(s, start, count, indices);
     PerfScope perf_draw{g_perf.draw};
     g_perf.draws++;
     frame_draws_++;
@@ -3551,11 +3792,13 @@ void VulkanBackend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t
     }
     bool same = std::exchange(same_state_, false) && &s != &sprite_;
     bool patches = tess_ && TessellatedDraw(s, prim);
-    if (same && kept_.ok && !cap_ && !PostWanted() && FastDraw(s, prim, start, count, indices, patches)) {
+    if (same && kept_.ok && !cap_ && !PostWanted() &&
+        ((replay_ && ReuseRun(s)) || FastDraw(s, prim, start, count, indices, patches))) {
         g_perf.fast++;
         return;
     }
     kept_.ok = false;
+    FlushRun();
     auto lap = PerfClock::now();
     if (DepthCopy(s)) return CountedSkip(s, "depth copy");
     Assembled& a = asm_;
@@ -3722,6 +3965,7 @@ bool VulkanBackend::FastDraw(const State& s, uint32_t prim, uint32_t start, uint
 
     EnsureRendering();
     if (kept_.pso != drawn_.pso) {
+        FlushRun();
         vkCmdBindPipeline(cmd_, VK_PIPELINE_BIND_POINT_GRAPHICS, kept_.pso);
         drawn_.pso = kept_.pso;
     }
@@ -3729,9 +3973,16 @@ bool VulkanBackend::FastDraw(const State& s, uint32_t prim, uint32_t start, uint
     SetTextureViewsAndSamplers(s, a, stages, b);
     SetViewportScissor(s, kept_.size.w);
     SetBlendFactorStencilRef(s);
-    uint32_t query = BeginCountedDraw(s);
-    DrawGeometry(a);
-    EndCountedDraw(query);
+    // in the state the draws before it set: its geometry joins theirs, drawn with them later (a ground drawn a quad at
+    // a time is thousands of these)
+    if (!(s.simple[kMCountEnable >> 2] && !replay_) && Mergeable(a)) {
+        JoinRun(a);
+    } else {
+        FlushRun();
+        uint32_t query = BeginCountedDraw(s);
+        DrawGeometry(a);
+        EndCountedDraw(query);
+    }
     g_perf.d_record += PerfLap(lap);
     return true;
 }
@@ -3788,6 +4039,7 @@ void VulkanBackend::ClearTarget(Target& t, const State& s, const ClearArgs& c, s
 
 void VulkanBackend::Clear(const State& s, uint32_t count, const uint8_t* rects, uint32_t flags, uint32_t color,
                           float z, uint32_t stencil) {
+    FlushRun();
     PerfScope perf_clear{g_perf.clear};
     if (cap_) {
         CapStep(s.rt);
@@ -3882,6 +4134,7 @@ void VulkanBackend::CopyByRegion(const Target& src_t, Image& src, Target& dst_t,
 
 void VulkanBackend::Copy(const Surface& src, const Surface& dst, uint32_t count, uint32_t src_rects,
                          uint32_t dst_points) {
+    FlushRun();
     PerfScope perf_copy{g_perf.copy};
     Target* src_t = FindTarget(src, false);
     if (cap_) {
@@ -3923,7 +4176,9 @@ void VulkanBackend::ResizeSwap() {
     minimised_ = !ext.width || !ext.height;
     if (minimised_) return;
     bool vsync = app::Get().vsync;
-    if (swap_ && !swap_stale_ && ext.width == bb_w_ && ext.height == bb_h_ && vsync == swap_vsync_) return;
+    uint32_t gen = std::clamp<uint32_t>(app::Get().frame_generation, 1, kMaxGen);
+    if (swap_ && !swap_stale_ && ext.width == bb_w_ && ext.height == bb_h_ && vsync == swap_vsync_ && gen == swap_gen_)
+        return;
     Flush();
     vkDeviceWaitIdle(dev_);
     if (!CreateSwapChain()) LOG_FIRST(4, "vulkan: the swap chain could not be made again");
@@ -4019,9 +4274,9 @@ void VulkanBackend::UploadGammaRamp() {
 }
 
 // false when there is no image to draw this frame into (minimised, or the swap chain is out of date)
-bool VulkanBackend::AcquireImage(uint32_t& bi) {
+bool VulkanBackend::AcquireImage(uint32_t& bi, VkSemaphore acquired) {
     if (!swap_ || minimised_) return false;
-    VkResult r = vkAcquireNextImageKHR(dev_, swap_, UINT64_MAX, CurrentFrame().acquired, VK_NULL_HANDLE, &bi);
+    VkResult r = vkAcquireNextImageKHR(dev_, swap_, UINT64_MAX, acquired, VK_NULL_HANDLE, &bi);
     if (r == VK_SUBOPTIMAL_KHR) {
         swap_stale_ = true;
     } else if (r != VK_SUCCESS) {
@@ -4032,7 +4287,7 @@ bool VulkanBackend::AcquireImage(uint32_t& bi) {
     return true;
 }
 
-void VulkanBackend::BlitFrame(Target& t) {
+void VulkanBackend::BlitFrame(VkImageView src) {
     // 16:9 when the console reports a widescreen display, else 4:3, or the shape a patched title draws
     float aspect = app::FrameAspect();
     float w = float(bb_w_);
@@ -4042,10 +4297,11 @@ void VulkanBackend::BlitFrame(Target& t) {
     float uv[4] = {0, 0, 1, 1};
     SetViewport((w - vw) / 2, (h - vh) / 2, vw, vh);
     SetScissor(0, 0, int32_t(bb_w_), int32_t(bb_h_));
-    Blit(t.res->view, uv, {.gamma = gamma_, .rtv = swap_fmt_});
+    Blit(src, uv, {.gamma = gamma_, .rtv = swap_fmt_});
 }
 
-void VulkanBackend::RenderUi() {
+// the overlay, once a frame: each of the frame's pictures draws it (DrawUi)
+void VulkanBackend::BuildUi() {
     std::lock_guard lock(app::UiLock());
     ImGui_ImplVulkan_NewFrame();
 #ifdef _WIN32
@@ -4056,12 +4312,16 @@ void VulkanBackend::RenderUi() {
     ImGui::NewFrame();
     if (app::kGame.ui) app::kGame.ui(fps_);
     ImGui::Render();
+}
+
+void VulkanBackend::DrawUi() {
+    std::lock_guard lock(app::UiLock());
     ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), cmd_);
     ForgetDrawCmd();
 }
 
-// the frame's target, already readable, into the swap chain image bi, the overlay over it
-void VulkanBackend::DrawFrame(Target* t, uint32_t bi) {
+// a picture of the frame, readable (null: none), into the swap chain image bi, the overlay over it
+void VulkanBackend::DrawFrame(VkImageView picture, uint32_t bi) {
     Image& bb = *bb_[bi];
     SetTargets(&bb, nullptr);
     bound_rt_ = bound_ds_ = nullptr;
@@ -4070,9 +4330,117 @@ void VulkanBackend::DrawFrame(Target* t, uint32_t bi) {
     ca.clearValue.color = {{0, 0, 0, 1}};
     VkClearRect cr{{{0, 0}, {bb.w, bb.h}}, 0, 1};
     vkCmdClearAttachments(cmd_, 1, &ca, 1, &cr);
-    if (t) BlitFrame(*t);
-    RenderUi();
+    if (picture) BlitFrame(picture);
+    DrawUi();
     Transition(bb, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
+}
+
+// the front buffer's picture done: the effects under the 2D, when no 2D came to draw them, samples resolved, readable;
+// the next picture's effects start afresh
+void VulkanBackend::FinishFront(Target& t) {
+    if (!post_done_ && post_rt_ == t.data && PostWanted()) ApplyPost(t);
+    post_rt_ = 0;
+    post_done_ = false;
+    ResolveSamples(t);
+    Transition(*t.res, kRead);
+}
+
+// frame generation: the front buffer's picture copied into gen_pics_[slot], the frame's pictures one per slot
+bool VulkanBackend::KeepPicture(const Surface& front, uint32_t slot) {
+    Target* t = EnsureTarget(front, false);
+    if (!t || slot >= gen_pics_.size()) return false;
+    FinishFront(*t);
+    uint32_t w = t->res->w, h = t->res->h;
+    ImageRef& keep = gen_pics_[slot];
+    if (!keep || keep->w != w || keep->h != h) {
+        if (keep) Retire(keep);
+        keep = NewImage({.w = w, .h = h, .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT});
+        if (!keep) return false;
+    }
+    SetBlitTarget(*keep, w, h);
+    float uv[4] = {0, 0, 1, 1};
+    Blit(t->res->view, uv, {.alpha = true});
+    Transition(*keep, kRead);
+    gen_taken_ |= 1u << slot;
+    return true;
+}
+
+// the frame's own picture, before it is drawn again: the last of its pictures
+void VulkanBackend::Keep(const Surface& front) {
+    FlushRun();
+    gen_taken_ = 0;
+    gen_pics_.resize(Pictures());
+    if (Target* t = EnsureTarget(front, false); t && LatchCpuWrite(*t)) UploadTarget(*t, front);
+    KeepPicture(front, uint32_t(gen_pics_.size() - 1));
+}
+
+void VulkanBackend::Between(const Surface& front, uint32_t i) {
+    FlushRun();
+    KeepPicture(front, i - 1);
+}
+
+void VulkanBackend::RecordPictures(const std::vector<Image*>& sources, const std::vector<std::string>& notes,
+                                   uint32_t w, uint32_t h) {
+    recorded_.resize(interp::Recording());
+    for (size_t i = 0; i < sources.size(); i++) {
+        Recorded& r = recorded_[recorded_next_++ % recorded_.size()];
+        if (r.im && (r.w != w || r.h != h)) {
+            Retire(r.im);
+            r.im.reset();
+        }
+        r.im = Shrink(*sources[i], sources[i]->view, w, h, {.into = r.im});
+        r.w = w;
+        r.h = h;
+        char b[96];
+        snprintf(b, sizeof(b), "frame %llu, picture %zu of %zu: ", (unsigned long long)presents_, i + 1, sources.size());
+        r.note = b + notes[i];
+    }
+}
+
+// F4: the kept pictures, oldest first, as bitmaps beside notes.txt in a folder of their own
+void VulkanBackend::SaveRecorded() {
+    if (recorded_.empty()) {
+        LOGR("interp: no pictures kept to save (XBE_INTERP_RECORD)");
+        return;
+    }
+    std::time_t now = std::time(nullptr);
+    std::tm tm = *std::localtime(&now);
+    char stamp[32];
+    snprintf(stamp, sizeof(stamp), "interp_%02d%02d%02d", tm.tm_hour, tm.tm_min, tm.tm_sec);
+    std::error_code ec;
+    std::filesystem::path dir = app::ExeDir() / diag::CaptureDir() / stamp;
+    for (int n = 2; std::filesystem::exists(dir, ec); n++)
+        dir = app::ExeDir() / diag::CaptureDir() / (std::string(stamp) + "-" + std::to_string(n));
+    std::filesystem::create_directories(dir, ec);
+    FILE* notes = OpenFile(dir / "notes.txt", "w");
+    uint32_t saved = 0;
+    for (size_t k = 0; k < recorded_.size(); k++) {
+        Recorded& r = recorded_[(recorded_next_ + k) % recorded_.size()];
+        if (!r.im) continue;
+        std::vector<uint8_t> px;
+        if (!ReadBack(*r.im, r.w, r.h, px)) continue;
+        char name[16];
+        snprintf(name, sizeof(name), "%04u", saved++);
+        WriteBmp(dir / (std::string(name) + ".bmp"), px, r.w, r.h);
+        if (notes) fprintf(notes, "%s: %s\n", name, r.note.c_str());
+    }
+    if (notes) fclose(notes);
+    LOGR("interp: %u pictures saved to %s", saved, dir.string().c_str());
+}
+
+// the held pictures due by now, in order
+void VulkanBackend::Show() {
+    auto now = std::chrono::steady_clock::now();
+    while (!held_.empty() && held_.front().at <= now) {
+        QueuePresent(held_.front().bi);
+        held_.pop_front();
+    }
+}
+
+// every held picture, now: a new frame is here, or the swap chain is about to go
+void VulkanBackend::ShowHeld() {
+    for (const Held& h : held_) QueuePresent(h.bi);
+    held_.clear();
 }
 
 void VulkanBackend::QueuePresent(uint32_t bi) {
@@ -4116,8 +4484,8 @@ void VulkanBackend::ResetFrame() {
     Begin();
 }
 
-void VulkanBackend::CountFps() {
-    fps_n_++;
+void VulkanBackend::CountFps(uint32_t pictures) {
+    fps_n_ += pictures;
     auto now = std::chrono::steady_clock::now();
     double el = std::chrono::duration<double>(now - fps_t_).count();
     if (el >= 0.5) {
@@ -4130,6 +4498,7 @@ void VulkanBackend::CountFps() {
 // The frame's draws go to the GPU first; the swap chain image is acquired after, and only its picture and the overlay
 // wait for it
 void VulkanBackend::Present(const Surface& front) {
+    FlushRun();
     PerfScope perf_present{g_perf.present};
     if (cap_) {
         FinishCapture(front);
@@ -4145,31 +4514,60 @@ void VulkanBackend::Present(const Surface& front) {
         cap_seq_ = 0;
         StartCapture();
     }
+    ShowHeld();
+    if (g_record_dump.exchange(false)) SaveRecorded();
+    // frame generation: the pictures Keep and Between took, in turn, its own last; else the front buffer alone. With
+    // their notes for XBE_INTERP_RECORD
+    std::vector<VkImageView> pictures;
+    std::vector<Image*> sources;
+    std::vector<std::string> notes;
+    if (!gen_pics_.empty() && (gen_taken_ >> (gen_pics_.size() - 1) & 1)) {
+        for (size_t i = 0; i < gen_pics_.size(); i++) {
+            if (!(gen_taken_ >> i & 1)) continue;
+            pictures.push_back(gen_pics_[i]->view);
+            sources.push_back(gen_pics_[i].get());
+            notes.push_back(i + 1 < gen_pics_.size() ? interp::Note(uint32_t(i)) : "the frame's own");
+        }
+    }
+    gen_taken_ = 0;
     ResizeSwap();
     Target* t = EnsureTarget(front, false);
-    if (t && LatchCpuWrite(*t)) UploadTarget(*t, front);
-    if (t && !post_done_ && post_rt_ == front.data && PostWanted()) ApplyPost(*t);
+    if (pictures.empty() && t) {
+        if (LatchCpuWrite(*t)) UploadTarget(*t, front);
+        FinishFront(*t);
+        pictures.push_back(t->res->view);
+        sources.push_back(t->res.get());
+        notes.push_back("the frame's own, alone");
+    }
     post_rt_ = 0;
     post_done_ = false;
-    if (t) {
-        ResolveSamples(*t);
-        Transition(*t->res, kRead);
-    }
+    if (t && interp::Recording()) RecordPictures(sources, notes, t->gw, t->gh);
+    if (pictures.empty()) pictures.push_back(VK_NULL_HANDLE);
+    // the frame's pictures share out the time to the next frame, the first shown now; the time between frames is
+    // measured
+    auto now = std::chrono::steady_clock::now();
+    double since = gen_last_ == decltype(gen_last_){} ? 1.0 : std::chrono::duration<double>(now - gen_last_).count();
+    gen_last_ = now;
+    if (since < 0.25) gen_period_ += (since - gen_period_) * 0.1;
     if (ramp_dirty_) UploadGammaRamp();
     Submit(false);
 
-    uint32_t bi = 0;
-    bool shown = AcquireImage(bi);
-    if (shown) {
-        Frame& f = CurrentFrame();
-        BeginCommands(f.present);
-        DrawFrame(t, bi);
-        Submit(false, f.acquired, present_sem_[bi]);
+    BuildUi();
+    Frame& f = CurrentFrame();
+    uint32_t shown = 0;
+    for (size_t i = 0; i < pictures.size(); i++, shown++) {
+        uint32_t bi = 0;
+        if (!AcquireImage(bi, f.acquired[i])) break;
+        BeginCommands(f.present[i]);
+        DrawFrame(pictures[i], bi);
+        Submit(false, f.acquired[i], present_sem_[bi]);
+        held_.push_back({bi, now + std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                                       std::chrono::duration<double>(gen_period_ * double(i) / double(pictures.size())))});
     }
     DeliverReports();
-    if (shown) {
+    {
         auto perf_swap = PerfClock::now();
-        QueuePresent(bi);
+        Show();
         g_perf.swap += PerfMs(perf_swap);
     }
 
@@ -4180,10 +4578,12 @@ void VulkanBackend::Present(const Surface& front) {
         LOGI("frame %llu: %u draws, %u opaque, %u counted, %zu reports left", (unsigned long long)presents_,
              frame_draws_, frame_opaque_, frame_counted_, reports_.size());
     frame_draws_ = frame_opaque_ = frame_counted_ = 0;
+    kept_runs_.clear();
+    pass_serial_ = 0;
     EndShadingFrame();
     ReleaseOldTextures();
     ResetFrame();
-    CountFps();
+    CountFps(std::max(shown, 1u));
     if (diag::Perf()) LogPerf();
     ApplySettings();
 }
@@ -4262,6 +4662,7 @@ bool VulkanBackend::TargetStale(uint32_t data) const {
 
 // the CPU reads a surface the GPU drew: bring the pixels back
 void VulkanBackend::Sync(uint32_t data, uint32_t) {
+    FlushRun();
     auto it = targets_.find(TargetMapKey(data, false));
     if (it == targets_.end() || !it->second.drawn || TargetStale(data)) return;
     PerfScope perf_sync{g_perf.sync};
@@ -4288,6 +4689,7 @@ void VulkanBackend::Sync(uint32_t data, uint32_t) {
 // A NOOVERWRITE lock: the console reads whatever the GPU has finished, so a surface locked every frame gets the newest
 // finished copy (a frame or two old) and the CPU never waits on the GPU; one locked now and then still waits in Sync
 void VulkanBackend::SyncLate(uint32_t data) {
+    FlushRun();
     if (!DeliverLate(data)) Sync(data, 0);
     RecordLate(data);
 }
@@ -4363,6 +4765,7 @@ void VulkanBackend::RecordLateCopy(Late& l, uint32_t slot, Image& src) {
 }
 
 void VulkanBackend::RecordLate(uint32_t data) {
+    FlushRun();
     auto it = targets_.find(TargetMapKey(data, false));
     if (it == targets_.end() || TargetStale(data)) return;
     Target& t = it->second;
@@ -4475,6 +4878,7 @@ void VulkanBackend::CapStep(const Surface& rt) {
 }
 
 void VulkanBackend::SetGamma(const uint8_t* ramp) {
+    FlushRun();
     std::memcpy(ramp_, ramp, sizeof(ramp_));
     ramp_dirty_ = true;
 }

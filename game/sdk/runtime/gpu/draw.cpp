@@ -228,6 +228,9 @@ struct ShadingTop {
 };
 std::vector<ShadingTop> g_shading_tops;
 float g_shading_clock = 0;  // xc.y: seconds from the first frame's end to this frame's start
+float g_shading_clock_before = 0;  // the frame before's
+std::vector<ShadingTop> g_replay_tops;
+float g_replay_clock = 0;
 
 }  // namespace
 
@@ -256,6 +259,7 @@ float ShadingBefore(uint32_t shading) {
 
 void EndShadingFrame() {
     static const auto start = std::chrono::steady_clock::now();
+    g_shading_clock_before = g_shading_clock;
     g_shading_clock = std::chrono::duration<float>(std::chrono::steady_clock::now() - start).count();
     for (const ProgramWatch& w : g_program_watch)
         if (w.frame) w.frame();
@@ -263,6 +267,22 @@ void EndShadingFrame() {
         t.last.swap(t.frame);
         t.frame.clear();
     }
+}
+
+void ShadingReplay(bool begin, float t) {
+    if (!begin) {
+        g_shading_tops.swap(g_replay_tops);
+        g_shading_clock = g_replay_clock;
+        return;
+    }
+    g_replay_tops = g_shading_tops;
+    g_replay_clock = g_shading_clock;
+    for (ShadingTop& top : g_shading_tops) {
+        top.frame.clear();
+        top.x = 0;
+        top.before = -1;
+    }
+    g_shading_clock = g_shading_clock_before + (g_shading_clock - g_shading_clock_before) * t;
 }
 
 std::string VertexHlsl(const shader_record::VertexEntry& v, const std::vector<uint32_t>& program) {
@@ -794,9 +814,9 @@ void LogPerf() {
              p.compile / n, p.clear / n, p.copy / n, p.sync / n, p.present / n, p.swap / n, p.wait / n,
              (el - host) / n);
         LOGI("perf: draw steps per frame: setup %.2f vs %.2f ps %.2f pso %.2f consts %.2f record %.2f | %.0f of %.0f "
-             "draws in the state before",
+             "draws in the state before, drawn as %.0f runs (%.0f reused)",
              p.d_setup / n, p.d_vs / n, p.d_ps / n, p.d_pso / n, p.d_consts / n, p.d_record / n, p.fast / n,
-             p.draws / n);
+             p.draws / n, p.runs / n, p.reused / n);
         {
             uint64_t cyc[5], all = 0;
             for (int i = 0; i < 5; i++) all += cyc[i] = g_perf_rec_cycles[i].exchange(0);

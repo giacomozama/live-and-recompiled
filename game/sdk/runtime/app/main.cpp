@@ -96,6 +96,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
         case WM_KEYDOWN:
             if (wp == VK_F3) DumpThreads();
+            if (wp == VK_F4 && !(lp & (1 << 30))) gpu::g_record_dump = true;
             if (wp == VK_F5 && !(lp & (1 << 30))) x86_profile_dump();  // not on auto repeat
             return 0;
         case WM_ACTIVATE:

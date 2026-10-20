@@ -66,6 +66,8 @@ struct Perf {
     uint64_t raw = 0;
     uint64_t lates = 0;
     uint64_t fast = 0;  // draws that took the kept draw's state up again (FastDraw)
+    uint64_t runs = 0;  // runs of fast draws drawn as one
+    uint64_t reused = 0;  // runs a frame drawn again took from the frame's own
 };
 inline Perf g_perf;
 // the milliseconds since t, then t is now
@@ -328,6 +330,9 @@ float ShadingBefore(uint32_t shading);
 // each present: the frame's runs' largest tops become the last frame's, xc.y's clock moves on and the watches
 // hear of it
 void EndShadingFrame();
+// a frame drawn again (frame generation): begin keeps the frame's shading bookkeeping and starts it afresh, the clock t
+// of the way from the frame before's; end puts the frame's back
+void ShadingReplay(bool begin, float t = 1);
 // the same clip w for every vertex: an orthographic projection, or vertices already on the screen (text, menus, full
 // screen passes); pos_w is a vertex program's PositionWSource
 bool ScreenSpace(const State& s, const Assembled& a, int pos_w);

@@ -28,9 +28,12 @@
 #include <utility>
 #include <vector>
 
+#include "app/app.h"
 #include "core/diag.h"
 #include "core/log.h"
 #include "gpu/backend.h"
+#include "gpu/draw.h"
+#include "gpu/interp.h"
 #include "kernel/kernel.h"
 #include "kernel/memory.h"
 
@@ -483,20 +486,42 @@ private:
             Batch* b;
             {
                 std::unique_lock lock(m_);
+                // a held picture is shown at its time, between batches or while there are none
+                for (Clock::time_point at; queue_.empty() && !stop_ && inner_->Due(at);) {
+                    if (cv_.wait_until(lock, at, [&] { return stop_ || !queue_.empty(); })) break;
+                    lock.unlock();
+                    inner_->Show();
+                    lock.lock();
+                }
                 cv_.wait(lock, [&] { return stop_ || !queue_.empty(); });
                 if (queue_.empty()) break;
                 b = queue_.front();
                 queue_.pop_front();
             }
             for (const Cmd& c : b->cmds) Execute(*b, c);
+            ShowDue();
             uint64_t id = b->id;
-            b->cmds.clear();
-            b->bytes.clear();
-            b->vs.clear();
-            b->ps.clear();
+            // a frame's batches are kept to its Present while frame generation draws it again
+            std::vector<Batch*> freed;
+            if (frame_over_) {
+                freed.swap(frame_);
+                freed.push_back(b);
+                frame_over_ = false;
+                BeginFrame();
+            } else if (keeping_) {
+                frame_.push_back(b);
+            } else {
+                freed.push_back(b);
+            }
+            for (Batch* f : freed) {
+                f->cmds.clear();
+                f->bytes.clear();
+                f->vs.clear();
+                f->ps.clear();
+            }
             {
                 std::lock_guard lock(m_);
-                free_.push_back(b);
+                free_.insert(free_.end(), freed.begin(), freed.end());
                 done_.store(id);
             }
             done_cv_.notify_all();
@@ -504,6 +529,11 @@ private:
         std::lock_guard lock(m_);
         exited_ = true;
         done_cv_.notify_all();
+    }
+
+    void ShowDue() {
+        Clock::time_point at;
+        if (inner_->Due(at) && Clock::now() >= at) inner_->Show();
     }
 
     // a piece about to overwrite old at State offset off: true when a word other than a vertex source or constant differs
@@ -516,33 +546,122 @@ private:
         return false;
     }
 
+    // a State command into st; changed, when given, learns whether more than vertex sources and constants changed
+    void Apply(State& st, const Batch& b, const Cmd& c, bool* changed) const {
+        const uint8_t* data = b.bytes.data() + c.data;
+        uint8_t* s = reinterpret_cast<uint8_t*>(&st);
+        for (const uint8_t* p = data; p < data + c.size;) {
+            uint32_t head[2];
+            std::memcpy(head, p, 8);
+            if (changed && !*changed) *changed = ChangesState(s + head[0], p + 8, head[0], head[1]);
+            std::memcpy(s + head[0], p + 8, head[1]);
+            p += 8 + head[1];
+        }
+        if (c.vs >= 0) st.vs = b.vs[size_t(c.vs)];
+        if (c.ps >= 0) st.ps = b.ps[size_t(c.ps)];
+        if (changed && (c.vs >= 0 || c.ps >= 0)) *changed = true;
+    }
+
+    // a frame starts: kept for drawing again when frame generation is on, from the state it starts with
+    void BeginFrame() {
+        keeping_ = app::Get().frame_generation > 1;
+        if (keeping_) frame_start_ = state_;
+        frame_draws_ = 0;
+    }
+
+    // the frame's commands again, up to its Present in last, with the draws' constants at t from the frame before's;
+    // only what draws: clears, copies, state, draws
+    void Replay(const Batch& last, float t) {
+        State& rs = replay_state_;
+        rs = frame_start_;
+        uint32_t n = 0;
+        // what changed between draws, as Execute tells the backend: the blended constants don't count, so a run of
+        // draws in one state keeps the backend's fast path as the frame did
+        bool changed = true;
+        interp::Undo undo;
+        auto run = [&](const Batch& b) {
+            ShowDue();  // a picture held from the frame before keeps its time while this one is drawn again
+            for (const Cmd& c : b.cmds) {
+                const uint8_t* data = b.bytes.data() + c.data;
+                switch (c.op) {
+                    case Op::State: Apply(rs, b, c, &changed); break;
+                    case Op::Draw: {
+                        if (interp::Recording()) interp::CheckVertices(n, rs, c.a, c.b, c.c, c.d ? data : nullptr);
+                        interp::Blend(n++, t, rs, undo);
+                        inner_->Changed(changed);
+                        changed = false;
+                        inner_->Draw(rs, c.a, c.b, c.c, c.d ? data : nullptr);
+                        undo.Restore(rs);  // the draw's own constants and transforms, for the commands after
+                        break;
+                    }
+                    case Op::Clear:
+                        changed = true;
+                        inner_->Clear(rs, c.a, c.size ? data : nullptr, c.b, c.c, c.f, c.d);
+                        break;
+                    case Op::Copy:
+                        changed = true;
+                        inner_->Copy(c.s1, c.s2, c.a, c.b, c.c);
+                        break;
+                    default: changed = true; break;
+                }
+            }
+        };
+        for (const Batch* b : frame_) run(*b);
+        run(last);
+    }
+
+    // a frame's Present: with frame generation, the pictures between the frame before and it drawn first
+    void Present(const Batch& b, const Cmd& c) {
+        uint32_t pictures = keeping_ ? inner_->Pictures() : 1;
+        auto replay_start = Clock::now();
+        if (pictures > 1 && frame_draws_) {
+            inner_->Keep(c.s1);
+            for (uint32_t i = 1; i < pictures; i++) {
+                float t = float(i) / float(pictures);
+                inner_->Replaying(true);
+                ShadingReplay(true, t);
+                interp::BeginPass(t);
+                Replay(b, t);
+                interp::EndPass(i - 1);
+                ShadingReplay(false);
+                inner_->Replaying(false);
+                inner_->Between(c.s1, i);
+            }
+            changed_ = true;
+        }
+        gen_replay_ns_ += Ns(replay_start);
+        // XBE_PERF: what frame generation costs the render thread, a frame
+        if (diag::Perf() && keeping_ && ++gen_frames_ >= 120) {
+            LOGR("perf: frame generation: matching %.2f ms, drawing again %.2f ms a frame, %u draws, %u pictures",
+                 gen_match_ns_ / 1e6 / gen_frames_, gen_replay_ns_ / 1e6 / gen_frames_, frame_draws_, pictures);
+            gen_frames_ = 0;
+            gen_match_ns_ = gen_replay_ns_ = 0;
+        }
+        inner_->Present(c.s1);
+        interp::EndFrame();  // a frame not tracked leaves none to find draws in
+        frame_over_ = true;
+    }
+
     void Execute(const Batch& b, const Cmd& c) {
         const uint8_t* data = b.bytes.data() + c.data;
         // anything but state and draws may change what the backend holds (targets, frames): the next draw is new
         if (c.op != Op::State && c.op != Op::Draw) changed_ = true;
         switch (c.op) {
-            case Op::State: {
-                uint8_t* s = reinterpret_cast<uint8_t*>(&state_);
-                for (const uint8_t* p = data; p < data + c.size;) {
-                    uint32_t head[2];
-                    std::memcpy(head, p, 8);
-                    if (!changed_) changed_ = ChangesState(s + head[0], p + 8, head[0], head[1]);
-                    std::memcpy(s + head[0], p + 8, head[1]);
-                    p += 8 + head[1];
-                }
-                if (c.vs >= 0) state_.vs = b.vs[size_t(c.vs)];
-                if (c.ps >= 0) state_.ps = b.ps[size_t(c.ps)];
-                if (c.vs >= 0 || c.ps >= 0) changed_ = true;
-                break;
-            }
+            case Op::State: Apply(state_, b, c, &changed_); break;
             case Op::Draw:
+                if (keeping_ || interp::Tracing()) {
+                    auto t = Clock::now();
+                    interp::Draw(state_, !changed_, c.a, c.b, c.c, c.d ? data : nullptr);
+                    gen_match_ns_ += Ns(t);
+                    frame_draws_++;
+                }
                 inner_->Changed(changed_);
                 changed_ = false;
                 inner_->Draw(state_, c.a, c.b, c.c, c.d ? data : nullptr);
                 break;
             case Op::Clear: inner_->Clear(state_, c.a, c.size ? data : nullptr, c.b, c.c, c.f, c.d); break;
             case Op::Copy: inner_->Copy(c.s1, c.s2, c.a, c.b, c.c); break;
-            case Op::Present: inner_->Present(c.s1); break;
+            case Op::Present: Present(b, c); break;
             case Op::Sync: inner_->Sync(c.a, 0); break;
             case Op::RecordLate: inner_->RecordLate(c.a); break;
             case Op::Flush: inner_->Flush(); break;
@@ -585,6 +704,14 @@ private:
 
     // the render thread
     State state_;
+    // frame generation: while keeping_, the frame's batches run so far (the one running is not among them) and the
+    // state it started with; frame_over_ once its Present ran
+    std::vector<Batch*> frame_;
+    State frame_start_, replay_state_;
+    bool keeping_ = false, frame_over_ = false;
+    uint32_t frame_draws_ = 0;
+    uint64_t gen_match_ns_ = 0, gen_replay_ns_ = 0;  // XBE_PERF, over gen_frames_
+    uint32_t gen_frames_ = 0;
 
     std::mutex m_;
     std::condition_variable cv_, done_cv_;

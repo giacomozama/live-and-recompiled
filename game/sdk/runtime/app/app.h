@@ -21,6 +21,8 @@ struct Settings {
     uint32_t render_percent = 100;   // of the output height
     uint32_t fps_cap = 60;           // 0 unlimited
     bool vsync = true;
+    // pictures shown per frame the title presents: 1 (off), or 2 to 4, the ones between made from the frames around them
+    uint32_t frame_generation = 1;
     uint32_t aniso = 0;              // 0 as the game asks
     uint32_t msaa = 1;               // samples per pixel of the frame-sized targets: 1 (off), 2, 4 or 8
     // effects over the 3D picture, before the title's 2D draws: SMAA, then film grain and chromatic aberration in %

@@ -1,5 +1,6 @@
 #pragma once
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <memory>
 
@@ -27,6 +28,19 @@ public:
     virtual void Copy(const Surface& src, const Surface& dst, uint32_t count, uint32_t src_rects_va,
                       uint32_t dst_points_va) = 0;
     virtual void Present(const Surface& front) = 0;
+    // frame generation: Present shows the first of a frame's pictures and holds the rest for later; Due says when the
+    // next held one is to be shown (false when none is held), Show shows those due by now. Present itself shows any
+    // still held from the frame before first
+    virtual bool Due(std::chrono::steady_clock::time_point& /*at*/) { return false; }
+    virtual void Show() {}
+    // frame generation by drawing the frame again (render_thread.cpp): Pictures is how many the frame about to be
+    // presented is shown as, 1 for itself alone. Keep takes its own picture from the front buffer before it is drawn
+    // again, Between each one drawn again, i from 1 to Pictures - 1; Present then shows them in turn, its own last.
+    // Replaying brackets the draws done again, which count no visibility test and feed no shading watch
+    virtual uint32_t Pictures() { return 1; }
+    virtual void Keep(const Surface& /*front*/) {}
+    virtual void Between(const Surface& /*front*/, uint32_t /*i*/) {}
+    virtual void Replaying(bool /*on*/) {}
     // the CPU is about to touch this resource's memory: write GPU results back first
     virtual void Sync(uint32_t data_va, uint32_t size) = 0;
     // a lock that does not wait for the GPU (NOOVERWRITE): a result a frame or two old is what the console gives too
@@ -74,5 +88,7 @@ inline std::atomic<uint64_t> g_perf_rec_cycles[5];
 
 // F3: save the next frame, every draw and target, under diag::CaptureDir
 inline std::atomic<bool> g_capture{false};
+// F4: save the pictures XBE_INTERP_RECORD keeps (gpu/interp.h) under diag::CaptureDir
+inline std::atomic<bool> g_record_dump{false};
 
 }  // namespace gpu

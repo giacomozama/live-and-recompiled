@@ -733,6 +733,24 @@ uint32_t MatchProgramWatch(const std::vector<uint32_t>& prog) {
     return 0;
 }
 
+std::bitset<192> ProgramReads(const std::vector<uint32_t>& prog) {
+    std::bitset<192> r;
+    for (size_t i = 0; i + 4 <= prog.size(); i += 4) {
+        Tok k{&prog[i]};
+        // mux 3 is a constant; an instruction reads one, whichever operands take it
+        if (k.f(2, 26, 2) == 3 || k.f(2, 11, 2) == 3 || k.f(3, 28, 2) == 3) {
+            uint32_t cr = k.f(1, 13, 8);
+            if (k.f(3, 1, 1)) {
+                for (uint32_t c = cr; c < 192; c++) r.set(c);
+            } else if (cr < 192) {
+                r.set(cr);
+            }
+        }
+        if (k.f(3, 0, 1)) break;  // the last instruction
+    }
+    return r;
+}
+
 int PositionWSource(const std::vector<uint32_t>& prog) {
     // what each temporary's w lane holds, R12 being oPos
     int w[13];
