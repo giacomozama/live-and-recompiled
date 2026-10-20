@@ -24,6 +24,7 @@
 #include "common/cutscenes.h"
 #include "common/display.h"
 #include "common/fur.h"
+#include "common/glass.h"
 #include "common/grass.h"
 #include "common/keyboard.h"
 #include "common/metal.h"
@@ -483,6 +484,9 @@ void Draw(double fps) {
                 ImGui::Checkbox("Metal shading", &metal::g_shading);
                 ImGui::SameLine();
                 ImGui::TextDisabled("armour catches highlights and reflections");
+                ImGui::Checkbox("Glass shading", &glass::g_shading);
+                ImGui::SameLine();
+                ImGui::TextDisabled("bottles glow through, glint and reflect");
                 end_tab();
             }
 

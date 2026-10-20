@@ -2,6 +2,7 @@
 #include "common/cutscenes.h"
 #include "common/display.h"
 #include "common/fur.h"
+#include "common/glass.h"
 #include "common/grass.h"
 #include "common/keyboard.h"
 #include "common/metal.h"
@@ -11,12 +12,13 @@
 
 namespace {
 
-// after the settings load: the fps cap follows frame_rate, the fur, water and metal programs get their shading
+// after the settings load: the fps cap follows frame_rate, the fur, water, metal and glass programs get their shading
 void Init() {
     display::Init();
     fur::Init();
     water::Init();
     metal::Init();
+    glass::Init();
 }
 
 }  // namespace
@@ -39,13 +41,14 @@ const app::GameInfo app::kGame = {
                 {"fur_shading", &fur::g_shading, nullptr},  // lit, soft edged fur shells (src/common/fur.cpp)
                 {"dynamic_water", &water::g_dynamic, nullptr},  // flowing, rippling water (src/common/water.cpp)
                 {"metal_shading", &metal::g_shading, nullptr},  // shiny, dented armour (src/common/metal.cpp)
+                {"glass_shading", &glass::g_shading, nullptr},  // glowing, glinting bottles (src/common/glass.cpp)
                 {"mouse_look", &mouse::g_look, nullptr},  // the mouse turns the camera (src/game/mouse.cpp)
                 {"mouse_sensitivity", nullptr, &mouse::g_sensitivity},  // percent, horizontal
                 {"mouse_sensitivity_y", nullptr, &mouse::g_sensitivity_y},  // percent, vertical
                 {"mouse_invert_y", &mouse::g_invert_y, nullptr}},
     .load = keyboard::Load,               // the [keys] table: keyboard bindings (src/game/keyboard.cpp)
     .save = keyboard::Save,               // writes it
-    .init = Init,                         // after the settings load: the fps cap, the fur shading, the waves, the metal
+    .init = Init,                         // after the settings load: the fps cap, fur, waves, metal and glass
     .loaded = nullptr,                    // image in memory, before its entry point runs
     .window = nullptr,                    // the game window is up
     .message = ui::Message,               // window messages first; true takes one

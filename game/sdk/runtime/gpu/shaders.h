@@ -57,7 +57,9 @@ struct PixelKey {
 // the corners, and the draw's stages are there as Texture2D tex0..tex3 with smp0..smp3. field,
 // when set, hands a grid of floats its shaders read as Texture2D<float> xfield (t4) with SamplerState xfield_smp (s4),
 // linear and clamped; it is uploaded again when its version moves on. functions is HLSL at the top of its shaders,
-// after the constants, for vs, ps and tess to call.
+// after the constants, for vs, ps and tess to call. screen, when set, hands its draws a copy of their colour target as
+// it stood before each, at the target's own size, as Texture2D xscreen (t4) with SamplerState xscreen_smp (s4), linear
+// and clamped: i.pos.xy over its size is the pixel's own spot, what the draw covers. Not with field.
 struct ShadingField {
     const float* data = nullptr;  // w x h, rows of w
     uint32_t w = 0, h = 0;
@@ -75,6 +77,7 @@ struct ProgramShading {
     const char* tess = "";
     ShadingField (*field)() = nullptr;
     const char* functions = "";
+    bool screen = false;
 };
 inline std::vector<ProgramShading> g_program_shading;  // filled before the title boots, unchanged after
 

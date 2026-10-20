@@ -1119,6 +1119,9 @@ private:
     };
     std::vector<FieldImage> fields_;
     VkImageView FieldView(uint32_t shading);
+    // ProgramShading::screen: a copy of the draw's colour target as it stands, the one its stages reading the target
+    // share; null for the dummy without one
+    VkImageView ScreenView();
     // one frame capture: every draw in a text file, each target as the frame leaves it, the textures it read
     FILE* cap_ = nullptr;
     std::filesystem::path cap_dir_;
@@ -3239,6 +3242,7 @@ void VulkanBackend::UploadConstants(const State& s, const DrawShaders& sh, const
     }
     if (sh.shading) FillShadingConstants(s, sh.shading, c);
     if (sh.shading && g_program_shading[sh.shading - 1].field) b.view[4] = FieldView(sh.shading);
+    if (sh.shading && g_program_shading[sh.shading - 1].screen) b.view[4] = ScreenView();
     if (!last_dc_ok_ || std::memcmp(&c, &last_c_, sizeof(c)) != 0) {
         last_dc_ = Upload(sizeof(DrawConstants));
         std::memcpy(last_dc_.cpu, &c, sizeof(c));
@@ -4248,6 +4252,16 @@ VkImageView VulkanBackend::FieldView(uint32_t shading) {
         Transition(*fi.im, kRead);
     }
     return fi.im->view;
+}
+
+VkImageView VulkanBackend::ScreenView() {
+    Target* t = draw_rt_;
+    if (!t) return VK_NULL_HANDLE;
+    if (!t->fb || t->fb_draw != draw_serial_) {
+        t->fb_draw = draw_serial_;
+        if (!Feedback(*t)) return VK_NULL_HANDLE;
+    }
+    return t->fb->view;
 }
 
 void VulkanBackend::UploadGammaRamp() {
