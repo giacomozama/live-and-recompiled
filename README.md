@@ -80,9 +80,11 @@ Developers: building from source differs from Setup, see [Building from source](
 ## Features
 
 ### Display
-- **Frame Rate** - 30 (the original) or 60 FPS, from the Esc menu or `frame_rate` in `settings.toml`. The game's
-  timers follow real time at either rate, and the frame rate is also the FPS limit. V-Sync still applies. There is no
-  120: the game's clock counts 60ths of a second, so half the frames would advance none and play would jitter.
+- **Frame Rate** - 30 (the original), 60, 120, 180 or 240 FPS, from the Esc menu or `frame_rate` in `settings.toml`.
+  The game's timers follow real time, and the frame rate is also the FPS limit. V-Sync still applies. The game's clock
+  counts 60ths of a second, so above 60 the game itself runs at 60 and each frame is drawn again for the pictures
+  between it and the one before, its characters and camera part way between the two; this adds up to a frame of
+  latency. Pick a rate your display shows, or use VRR.
 - **Any Aspect Ratio** - The 3D view widens to the display's shape (`aspect = "auto"`), or to any `W:H` such as
   `"21:9"`; `"4:3"` keeps the original view. The HUD stretches with the frame. Raise Render % to sharpen wide frames.
 

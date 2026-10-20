@@ -440,18 +440,15 @@ void Draw(double fps) {
                 Slider("Render %", &s.render_percent, 25, 400, app::Settings{}.render_percent);
                 ImGui::Checkbox("V-Sync", &s.vsync);
 
-                constexpr uint32_t kRates[] = {30, 60};
+                constexpr uint32_t kRates[] = {30, 60, 120, 180, 240};
                 int rate = 0;
-                for (int i = 0; i < 2; i++)
+                for (int i = 0; i < 5; i++)
                     if (kRates[i] == display::g_frame_rate) rate = i;
-                if (ImGui::Combo("Frame rate", &rate, "30 (original)\0 60\0"))
+                if (ImGui::Combo("Frame rate", &rate, "30 (original)\0 60\0 120\0 180\0 240\0"))
                     display::SetFrameRate(kRates[rate]);
-
-                int gen = int(std::clamp<uint32_t>(s.frame_generation, 1, 4)) - 1;
-                if (ImGui::Combo("Frame generation", &gen, "Off\0 2x\0 3x\0 4x\0")) s.frame_generation = uint32_t(gen + 1);
-                if (gen) {
+                if (display::g_frame_rate > 60) {
                     ImGui::SameLine();
-                    ImGui::TextDisabled("(%u FPS shown)", display::g_frame_rate * uint32_t(gen + 1));
+                    ImGui::TextDisabled("(the game at 60, the frames between drawn again)");
                 }
 
                 ImGui::SeparatorText("Quality");

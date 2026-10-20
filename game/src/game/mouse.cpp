@@ -383,7 +383,7 @@ bool Probe(input::Pad& pad, int64_t now, uint32_t cam, bool pressed) {
             return false;
         }
         LOGR("mouse: probing the fast turn at %u fps; leave the mouse and the stick alone (F9 stops)",
-             display::g_frame_rate);
+             display::GameRate());
         p = {0, now, 0, false, RF(cam + kYaw)};
     }
     if (p.index < 0) return false;
@@ -433,7 +433,7 @@ bool Calibrate(input::Pad& pad, int64_t now) {
             LOGR("mouse: calibration needs the player camera (stand in a level, third person)");
             return false;
         }
-        LOGR("mouse: calibrating at %u fps; leave the mouse and the stick alone (F9 stops)", display::g_frame_rate);
+        LOGR("mouse: calibrating at %u fps; leave the mouse and the stick alone (F9 stops)", display::GameRate());
         Begin(cam, 0, now);
     }
     if (s.index < 0) return false;
@@ -586,7 +586,7 @@ void Pad(input::Pad& pad) {
     }
 
     // the first poll of a frame: hand this frame's motion over and take its steps
-    const float expect = 1.0f / float(std::max<uint32_t>(display::g_frame_rate, 30));
+    const float expect = 1.0f / float(display::GameRate());
     if (now - g_frame_us >= int64_t(expect * 0.5e6f)) {
         if (g_frame_us) g_frame += (std::clamp(float(now - g_frame_us) * 1e-6f, expect * 0.5f, 0.1f) - g_frame) * 0.1f;
         g_frame_us = now;

@@ -44,7 +44,6 @@ void Load() {
     s.render_percent = t["render_percent"].value_or(s.render_percent);
     s.fps_cap = t["fps_cap"].value_or(s.fps_cap);
     s.vsync = t["vsync"].value_or(s.vsync);
-    s.frame_generation = t["frame_generation"].value_or(s.frame_generation);
     s.aniso = t["anisotropic_filtering"].value_or(s.aniso);
     s.msaa = t["msaa"].value_or(s.msaa);
     s.smaa = t["smaa"].value_or(s.smaa);
@@ -72,7 +71,6 @@ toml::table Table() {
                   {"render_percent", int64_t(s.render_percent)},
                   {"fps_cap", int64_t(s.fps_cap)},
                   {"vsync", s.vsync},
-                  {"frame_generation", int64_t(s.frame_generation)},
                   {"anisotropic_filtering", int64_t(s.aniso)},
                   {"msaa", int64_t(s.msaa)},
                   {"smaa", s.smaa},

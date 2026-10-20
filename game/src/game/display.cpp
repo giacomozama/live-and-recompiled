@@ -11,9 +11,10 @@
 //     (0x2A8020, D3DSWAPDATA.MissedVBlanks) reports missed, at most 60
 // About 400 places step by ticks (counters, fades, integer motion), so the XBE patch's interval ONE (60 FPS) is one
 // tick a frame. Here ticks come from the time the frame took instead, rounded with the remainder carried, so they
-// stay right when a frame runs long, at least one a frame. Nothing runs above 60: the ticks would alternate one and
-// none, and what steps by them (Conker's jump and fall, weapon mode's walk, the pad's presses) would move or read
-// only on every second frame, so jitter and drop half the presses.
+// stay right when a frame runs long, at least one a frame. The game runs no faster than 60: the ticks would alternate
+// one and none, and what steps by them (Conker's jump and fall, weapon mode's walk, the pad's presses) would move or
+// read only on every second frame, so jitter and drop half the presses. 120, 180 and 240 keep the game at 60 and have
+// the runtime draw each frame again for the pictures between it and the one before (frame generation).
 //
 // Aspect. 0x64468 builds a camera's projection from its aspect ([camera+0x260], 4:3) and vertical field of view
 // ([camera+0x264]). The widescreen patch multiplied the aspect by 4/3 there for a 16:9 TV; scaling it by the display
@@ -48,10 +49,14 @@ namespace {
 constexpr uint32_t kPresentInterval = 0x549BF4;    // D3DRS_PRESENTATIONINTERVAL in the render state shadow
 constexpr uint32_t kIntervalImmediate = 0x80000000u;
 
-uint32_t Clamp(uint32_t r) { return r <= 30 ? 30 : 60; }
+constexpr uint32_t kGameMost = 60;     // the ticks are 60ths of a second: the game runs no faster
+constexpr uint32_t kShownMost = 240;   // four pictures a frame, the most the runtime draws
 
-// what the setting asks for: 30 (the console's) or 60
-uint32_t Rate() {
+// 30, or a multiple of 60 up to kShownMost
+uint32_t Clamp(uint32_t r) { return r <= 30 ? 30 : std::min((r + kGameMost / 2) / kGameMost * kGameMost, kShownMost); }
+
+// what the setting asks for: the pictures shown a second
+uint32_t Shown() {
     static const uint32_t env = [] {
         const char* e = std::getenv("XBE_FRAME_RATE");
         return e ? uint32_t(std::atoi(e)) : 0u;
@@ -59,12 +64,18 @@ uint32_t Rate() {
     return Clamp(env ? env : g_frame_rate);
 }
 
+// the game's: 30 (the console's) or 60, past which the runtime draws the frames between
+uint32_t Rate() { return std::min(Shown(), kGameMost); }
+
 }  // namespace
 
 void SetFrameRate(uint32_t rate) {
-    g_frame_rate = Clamp(rate);  // a settings.toml from when 120 was offered runs, and saves, 60
+    g_frame_rate = Clamp(rate);
     app::Get().fps_cap = Rate();
+    app::Get().frame_generation = Shown() / Rate();
 }
+
+uint32_t GameRate() { return Rate(); }
 
 void Init() { SetFrameRate(g_frame_rate); }
 

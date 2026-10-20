@@ -33,7 +33,7 @@ const app::GameInfo app::kGame = {
     .images = {{"default.xbe", "Game"}},  // each recompiled xbe and its exe, for title launches
     .options = {{"fps_overlay", &ui::g_fps_overlay, nullptr},  // ImGui settings menu options (src/game/ui.cpp)
                 {"fps_in_title", &ui::g_fps_title, nullptr},
-                {"frame_rate", nullptr, &display::g_frame_rate},  // 30 or 60 (src/game/display.cpp)
+                {"frame_rate", nullptr, &display::g_frame_rate},  // 30, 60, 120, 180 or 240 (src/game/display.cpp)
                 {"skippable_cutscenes", &cutscenes::g_skippable, nullptr},  // LT skips any cutscene (hooks.cpp)
                 {"grass_wind", &grass::g_wind, nullptr},  // distant grass sways too (hooks.cpp)
                 {"fur_shading", &fur::g_shading, nullptr},  // lit, soft edged fur shells (src/common/fur.cpp)
