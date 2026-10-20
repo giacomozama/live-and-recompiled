@@ -164,16 +164,19 @@ uint32_t DrawShading(const State& s, const ShaderChoice& sh) {
     static std::unordered_map<uint64_t, uint64_t> matched;
     auto [it, fresh] = matched.try_emplace(s.vs->hash, 0);
     if (fresh) it->second = MatchProgramShading(s.vs->program);
-    // the first entry the program matches that is on and, with textures, takes the draw's
+    // the first entry the program matches that is on and, with textures, takes the draw's (or, skipping them, not)
     for (uint64_t m = it->second; m; m &= m - 1) {
         const ProgramShading& e = g_program_shading[size_t(std::countr_zero(m))];
         if (!e.on || !*e.on) continue;
         if (const uint32_t* t = e.textures) {
             TextureDesc d;
             uint32_t header = s.textures[size_t(e.texture_stage)];
-            if (!header || !Describe(header, d)) continue;
-            while (*t && *t != d.data) t++;
-            if (!*t) continue;
+            bool listed = false;
+            if (header && Describe(header, d)) {
+                while (*t && *t != d.data) t++;
+                listed = *t != 0;
+            }
+            if (listed == e.skip_textures) continue;
         }
         return uint32_t(std::countr_zero(m)) + 1;
     }

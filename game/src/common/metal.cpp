@@ -12,6 +12,9 @@ namespace {
 // colour; pc2 the weights) times the key light's map (t0), and scale the sum by 4. The goblins' armour is drawn so. As
 // fur.cpp, the shading undoes oPos's divide and viewport for the view space position. Registers are hardware order.
 constexpr const char* kMatch = "dot(((R2).xyzw), ((c[162]).xyzw))";
+// Most characters are drawn so too, and their white or bone-coloured parts pass for metal: the menu's male bartender
+// (his shirt) and Grim Reaper (his skull) keep the game's shading, their atlases at the same addresses each run
+constexpr uint32_t kNotMetal[] = {0x81F3FD80, 0x820A0700, 0};
 
 // x0: the normal, and the w the lighting map's lookup takes; x1: the position
 constexpr const char* kVs = R"(    {
@@ -66,4 +69,7 @@ constexpr const char* kPs = R"({
 
 }  // namespace
 
-void metal::Init() { gpu::g_program_shading.push_back({.match = kMatch, .on = &g_shading, .vs = kVs, .ps = kPs}); }
+void metal::Init() {
+    gpu::g_program_shading.push_back({.match = kMatch, .on = &g_shading, .vs = kVs, .ps = kPs, .textures = kNotMetal,
+                                      .texture_stage = 1, .skip_textures = true});
+}

@@ -62,6 +62,7 @@ struct PixelKey {
 // and clamped: i.pos.xy over its size is the pixel's own spot, what the draw covers. Not with field. textures, when
 // set, limits it to the draws whose stage texture_stage texture's data lies at one of those guest addresses (the
 // list ends at 0), for a program that draws more than what the shading is for; the others draw as the title made them.
+// skip_textures turns it around: the listed textures' draws don't take it.
 struct ShadingField {
     const float* data = nullptr;  // w x h, rows of w
     uint32_t w = 0, h = 0;
@@ -82,6 +83,7 @@ struct ProgramShading {
     bool screen = false;
     const uint32_t* textures = nullptr;
     int texture_stage = 0;
+    bool skip_textures = false;
 };
 inline std::vector<ProgramShading> g_program_shading;  // filled before the title boots, unchanged after
 
