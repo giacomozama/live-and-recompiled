@@ -13,9 +13,11 @@ namespace {
 // add the diffuse, a tenth of the sphere map and the lighting map, and scale the sum by 4. The tavern's beer bottles,
 // green and amber, are drawn so; one held in a hand that moves (the amber one by the candle) is drawn by the skinned
 // variant instead: R2 the normal, the sphere map from c162/c163 into oT1 and the lighting map from c181/c182 into oT2,
-// the rest alike. Metal's match is in that variant too, so glass registers first. As metal.cpp, the shading undoes
-// oPos's divide and viewport for the view space position. Registers are hardware order.
+// the rest alike. Metal's match is in that variant too, so glass registers first. Other props are drawn so too,
+// Conker's golden crown in the intro among them, so only the bottles' two sphere maps take it. As metal.cpp, the
+// shading undoes oPos's divide and viewport for the view space position. Registers are hardware order.
 constexpr const char* kMatchRigid = "dot(((R10).xyzw), ((c[108]).xyzw))";
+constexpr uint32_t kBottles[] = {0x824D4280, 0x824CD200, 0};  // green and amber, the menu's
 constexpr const char* kMatchSkinned = R"(dot(((R2).xyzw), ((c[163]).xyzw)).xxxx;
         oT1.y = mr.y;
     }
@@ -180,9 +182,11 @@ constexpr const char* kPsWhisky = GLASS_PINT(
 
 void glass::Init() {
     gpu::g_program_shading.push_back({.match = kMatchRigid, .on = &g_shading, .vs = kVsRigid, .ps = kPs,
-                                      .functions = kFunctionsRigid, .screen = true});
+                                      .functions = kFunctionsRigid, .screen = true, .textures = kBottles,
+                                      .texture_stage = 1});
     gpu::g_program_shading.push_back({.match = kMatchSkinned, .on = &g_shading, .vs = kVsSkinned, .ps = kPs,
-                                      .functions = kFunctionsSkinned, .screen = true});
+                                      .functions = kFunctionsSkinned, .screen = true, .textures = kBottles,
+                                      .texture_stage = 1});
     gpu::g_program_shading.push_back({.match = kMatchPint, .on = &g_shading, .vs = kVsRigid, .ps = kPsLager,
                                       .functions = kFunctionsPint, .screen = true, .textures = kLager,
                                       .texture_stage = 1});
