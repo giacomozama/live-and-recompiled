@@ -8,15 +8,28 @@ An unofficial native PC port of the original Xbox *Conker: Live & Reloaded*, bui
 > the game. The game [can currently be purchased from the Windows Store](https://www.xbox.com/games/store/conker-live-and-reloaded/bvfb8cbs75r6). The Windows Store version is fully compatible with this project.
 
 > [!WARNING]
-> **AI usage in this project**
+> **AI disclaimer**
 >
-> In case you're wondering, ALL first-party code here is LLM generated. It was tested manually, but pretty much no code at all was typed in by humans. I think it works well, but it IS one-hundred percent, unadulterated, vibecoded slop. 
+> ALL first-party code here is LLM generated. It was tested manually, but pretty much no code at all was typed in by humans. I think it works well, but it IS one-hundred percent, unadulterated, "vibecoded slop".
+> This was not made to gain recognition or to showcase my own skills, it was made because I wanted an enjoyable Conker: L&R experience on PC and, while I understand and even partially share concerns surrounding LLM coding, I also recognize that implementing a project like this manually would take *years* of effort and dedication while producing nothing humanity hasn't already done before and not even guaranteeing a superior final product. I don't see the value in that for such a niche game, but I welcome and encourage you to try and implement your own, manually coded version if you truly care about one existing.
 
 ## Status and Known Bugs
 
-- Single player SHOULD be fully playable but there may be uncaught bugs/edge cases. Playtesting is very appreciated: you are encouraged to play through the game and report bugs, crashes and glitches.
-- Still in the process of recording shaders encountered during gameplay. These can then be rebuilt at startup time so future players never encounter stutters even during their first gameplay. Sharing these is also appreciated (`shaders.rec`)
-- No effort has been made to implement multiplayer yet.
+This is a beta: single player is supposed to be fully playable, but there may be uncaught bugs and/or edge cases. Playtesting and bug reports are very appreciated.
+
+Modes above 60 FPS WILL have frame interpolation glitches, as we have not achieved 100% draw matching yet.
+
+No effort has been made to implement multiplayer yet.
+
+## Contributing
+
+You may open issues for requesting features or reporting bugs, and submit PRs if you fix a bug or want to add a new feature yourself. There is no guarantee it will be merged, but you won't be laughed at either. We DO accept LLM-written PRs obviously.
+
+**Bug reporting advice**
+
+If you notice a bug, you can take a frame capture by pressing F3. It will be saved in a subdirectory of the `cap` directory. *Please remove the `tex_XXXXXXX.bmp` and `.hlsl` files from the capture directory*, as they come from the game itself and must not be submitted. Then zip the directory and attach it to your bug report.
+
+If you notice frame interpolation glitches at high FPS, run the game with `XBE_INTERP_RECORD=120` (or whichever framerate you are playing at) and press F4 *immediately after* experiencing the glitch. Captures are generated inside the `cap` directory with the `interp_` prefix. Zip and attach the generated directory to your bug report.
 
 ## Features
 
@@ -26,17 +39,13 @@ An unofficial native PC port of the original Xbox *Conker: Live & Reloaded*, bui
 shiny armour, see-through glass and swaying distant grass.
 - **Controls** - Xbox, PlayStation and Switch controllers with rumble, or keyboard and mouse with mouse look; all
   rebindable.
-- **Skippable cutscenes** - Skip any in-engine cutscene without seeing them first.
+- **Skippable cutscenes** - Skip any in-engine cutscene without having seen them once first.
 
 Everything is configurable in the Esc menu and in `settings.toml`.
 
 ## Installation
 
-A release contains none of the game. Part of the recompiled code is a mechanical translation of the game's own
-`default.xbe`, including Microsoft's XDK libraries, which can't be shared; the rest (the recompiler, runtime and hooks)
-is written for this project. So Setup recompiles your own copy on your PC, once, with a compiler it downloads from the
-official release and checks by SHA-256. Emulators and decompilation projects work the same way. (This isn't legal
-advice.)
+For legal reasons, releases contain none of the game. Setup performs the entire extraction and recompilation process on your PC, which might require several minutes.
 
 **Supported versions**
 - The USA disc release (`default.xbe` SHA-1 = `2232a1b3874d67b4bb4cf53a940420d2dab59535`)
