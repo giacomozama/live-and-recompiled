@@ -4,10 +4,10 @@
 #include <FL/Fl_Box.H>
 #include <FL/Fl_Button.H>
 #include <FL/Fl_Check_Button.H>
-#include <FL/Fl_Choice.H>
 #include <FL/Fl_Double_Window.H>
 #include <FL/Fl_Input.H>
 #include <FL/Fl_Native_File_Chooser.H>
+#include <FL/Fl_Progress.H>
 #include <FL/Fl_Text_Buffer.H>
 #include <FL/Fl_Text_Display.H>
 
@@ -54,16 +54,17 @@ struct Window {
     Fl_Double_Window* win = nullptr;
     Row source, work, game;
     Fl_Box* status = nullptr;
-    Fl_Choice* target = nullptr;
     Fl_Check_Button* keep = nullptr;
     Fl_Button* install = nullptr;
     Fl_Button* close = nullptr;
+    Fl_Progress* bar = nullptr;
     Fl_Text_Display* log = nullptr;
     Fl_Text_Buffer* text = nullptr;
     std::thread worker;
     bool running = false, close_when_done = false, overwrite = false;
     std::mutex lock;
     std::string pending;  // what the build said and the window has not shown yet
+    double progress = 0;  // the build's, for the bar
 };
 
 Window* g_ui = nullptr;
@@ -92,6 +93,27 @@ void Flush(void*) {
     u.log->show_insert_position();
 }
 
+void ShowProgress(void*) {
+    double fraction;
+    {
+        std::lock_guard<std::mutex> g(g_ui->lock);
+        fraction = g_ui->progress;
+    }
+    static char label[16];
+    std::snprintf(label, sizeof(label), "%d%%", int(fraction * 100));
+    g_ui->bar->value(float(fraction));
+    g_ui->bar->label(label);
+    g_ui->bar->redraw();
+}
+
+void Progressed(double fraction) {
+    {
+        std::lock_guard<std::mutex> g(g_ui->lock);
+        g_ui->progress = fraction;
+    }
+    Fl::awake(ShowProgress, nullptr);
+}
+
 void Sink(const char* text) {
     {
         std::lock_guard<std::mutex> g(g_ui->lock);
@@ -106,8 +128,6 @@ Options Read(Window& u) {
     o.work = ToPath(u.work.input->value());
     o.game_dir = ToPath(u.game.input->value());
     o.keep = u.keep->value();
-    const char* t = u.target->text();
-    o.target = t && std::string(t) == "Linux" ? "linux" : "windows";
     return o;
 }
 
@@ -124,7 +144,7 @@ void Lock(Window& u, bool busy) {
     for (Fl_Widget* w : {static_cast<Fl_Widget*>(u.source.input), static_cast<Fl_Widget*>(u.source.browse),
                          static_cast<Fl_Widget*>(u.source.browse_file), static_cast<Fl_Widget*>(u.work.input),
                          static_cast<Fl_Widget*>(u.work.browse), static_cast<Fl_Widget*>(u.game.input),
-                         static_cast<Fl_Widget*>(u.game.browse), static_cast<Fl_Widget*>(u.target),
+                         static_cast<Fl_Widget*>(u.game.browse),
                          static_cast<Fl_Widget*>(u.keep)}) {
         if (busy) w->deactivate();
         else w->activate();
@@ -148,6 +168,7 @@ void Start(Fl_Widget*, void*) {
     Lock(u, true);
     u.install->deactivate();
     u.text->text("");
+    Progressed(0);
     Options o = Read(u);
     u.worker = std::thread([o]() {
         Build(o);
@@ -188,16 +209,16 @@ int RunWindow(const Options& defaults) {
     Window u;
     g_ui = &u;
     u.opt = defaults;
-    u.kit = ReadKit(defaults.root);
+    u.kit = ReadKit();
     Fl::lock();
     Fl::scheme("gtk+");
 
-    const int W = 700, H = 620, M = 14, label_h = 20, row_h = 30, browse_w = 90;
+    const int W = 780, H = 620, M = 14, label_h = 20, row_h = 30, browse_w = 90;
     u.win = new Fl_Double_Window(W, H, "Setup");
     u.win->callback(OnClose);
     int y = M;
     auto* title = new Fl_Box(M, y, W - 2 * M, 28, nullptr);
-    static std::string heading = (u.kit.title.empty() ? "The game" : u.kit.title) + ": build it from your copy of the game";
+    static std::string heading = "Conker: Live & Recompiled Setup";
     title->label(heading.c_str());
     title->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
     title->labelfont(FL_HELVETICA_BOLD);
@@ -223,38 +244,32 @@ int RunWindow(const Options& defaults) {
         y += row_h;
     };
 
-    row(u.source, "The game: its DefaultPackage, a disc image (.iso), or the folder with default.xbe", defaults.source, true);
+    row(u.source, "Your copy of the game: the DefaultPackage file, a disc image (.iso) or the folder with the extracted files", defaults.source, true);
     u.source.browse->callback([](Fl_Widget*, void*) { Browse(g_ui->source, false); });
     u.status = new Fl_Box(M, y + 2, W - 2 * M, label_h, "");
     u.status->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
     y += label_h + 10;
 
-    row(u.work, "Working folder: where the generated code is built, removed when done", defaults.work, false);
+    row(u.work, "Working folder: where Setup keeps the tools it downloads (about 100 MB, reused next time) and its temporary files", defaults.work, false);
     u.work.browse->callback([](Fl_Widget*, void*) { Browse(g_ui->work, false); });
     y += 10;
-    row(u.game, "Game folder: where the game is made, with its files in assets/ below it", defaults.game_dir, false);
+    row(u.game, "Game folder: where Setup puts the finished game and its data files", defaults.game_dir, false);
     u.game.browse->callback([](Fl_Widget*, void*) { Browse(g_ui->game, false); });
     y += 12;
 
-    u.target = new Fl_Choice(M + 70, y, 120, row_h, "Build for");
-    u.target->align(FL_ALIGN_LEFT);
-#ifdef _WIN32
-    bool host_windows = true;
-#else
-    bool host_windows = false;
-#endif
-    if (u.kit.has_windows) u.target->add("Windows");
-    if (u.kit.has_linux) u.target->add("Linux");
-    bool linux_first = !host_windows && u.kit.has_linux;
-    u.target->value(linux_first && u.kit.has_windows ? 1 : 0);
-    u.target->callback(Changed);
-    u.keep = new Fl_Check_Button(M + 220, y, 260, row_h, "Keep the generated code");
+    u.keep = new Fl_Check_Button(M, y, 260, row_h, "Keep temporary files (for troubleshooting)");
     u.keep->value(defaults.keep);
     u.install = new Fl_Button(W - M - 2 * browse_w - 8, y, browse_w, row_h, "Install");
     u.install->callback(Start);
     u.close = new Fl_Button(W - M - browse_w, y, browse_w, row_h, "Close");
     u.close->callback(OnClose);
     y += row_h + 12;
+
+    u.bar = new Fl_Progress(M, y, W - 2 * M, 22);
+    u.bar->minimum(0);
+    u.bar->maximum(1);
+    u.bar->value(0);
+    y += 22 + 10;
 
     u.text = new Fl_Text_Buffer();
     u.log = new Fl_Text_Display(M, y, W - 2 * M, H - y - M);
@@ -271,11 +286,13 @@ int RunWindow(const Options& defaults) {
         u.install->deactivate();
     }
     SetSink(Sink);
+    SetProgress(Progressed);
     Refresh(u);
     u.win->show();
     int code = Fl::run();
     if (u.worker.joinable()) u.worker.join();
     SetSink(nullptr);
+    SetProgress(nullptr);
     return code;
 }
 

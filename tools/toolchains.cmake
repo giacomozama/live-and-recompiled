@@ -1,16 +1,16 @@
 # toolchains.cmake - the pinned toolchains, fetched into toolchain/ ($LLVM_MINGW_ROOT) when needed:
 #
-#   llvm-mingw  the Windows compiler: the Windows build, the player kit and Setup all use this release. The prebuilt
-#               half of a release and the player's own build of the game code must come from the same compiler and
-#               runtime libraries.
-#   zig         `zig cc` against musl: the static Linux setup-linux and xbe_recomp of a release, from Linux or Windows;
-#               `zig c++` against glibc: the native Linux port's player kit, and setup-linux downloads it to build the
-#               game with it. A new Zig needs a new player release too.
+#   zig         the compiler of the release, for Windows and for Linux: `zig c++` for x86_64-windows-gnu builds Game.exe,
+#               setup-windows.exe and the player kit's Windows half; against glibc 2.31 the native Linux port,
+#               setup-linux and the kit's Linux half. Setup downloads the same Zig on the player's machine to build the
+#               game with it, so the prebuilt half and the player's own build of the game code come from one compiler
+#               and one libc++. A new Zig needs a new player release too.
+#   llvm-mingw  only llvm-ar and llvm-ranlib for those builds (CMake's archiver can't be `zig ar`, a command with a
+#               subcommand), and the compiler of the Windows developer build (game/build.bat)
 #
-# Included by game/cmake-llvm-mingw.cmake, game/cmake-zig-linux.cmake, game/cmake-zig-glibc.cmake,
-# fetch-toolchain.cmake, configure.cmake and package.cmake. To update one: change its version and both SHA-256s (llvm-mingw's release page and ziglang.org's
-# download index list them), then delete the build folders that use it. A new llvm-mingw needs a new player release,
-# since the host library and the kit's compiler must match.
+# Included by game/cmake-llvm-mingw.cmake, game/cmake-zig-windows.cmake, game/cmake-zig-glibc.cmake,
+# fetch-toolchain.cmake, configure.cmake and package.cmake. To update one: change its version and both SHA-256s
+# (llvm-mingw's release page and ziglang.org's download index list them), then delete the build folders that use it.
 
 set(LLVM_MINGW_VERSION 20260922)
 set(LLVM_MINGW_URL https://github.com/mstorsjo/llvm-mingw/releases/download/${LLVM_MINGW_VERSION})

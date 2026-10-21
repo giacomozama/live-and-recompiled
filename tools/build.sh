@@ -73,9 +73,9 @@ elif [ -n "$STORE" ]; then
         echo "      iso/ is already extracted (delete it to unpack another package)"
     else
         configure_rel
-        cmake --build "$REL" --target xbe_setup -j "$JOBS" >/dev/null
+        cmake --build "$REL" --target setup -j "$JOBS" >/dev/null
         mkdir -p "$ISO_DIR"
-        "$REL/xbe_setup" --unpack "$STORE" "$ISO_DIR"
+        "$REL/setup-linux" --unpack "$STORE" "$ISO_DIR"
     fi
     link_assets "$ISO_DIR" "../../iso/"
 elif [ -n "$FROM" ]; then

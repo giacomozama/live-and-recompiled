@@ -80,19 +80,25 @@ target_link_libraries(xbe_symbols PRIVATE Zydis tomlplusplus::tomlplusplus)
 
 # Setup, the player-side build: finds the game, recompiles it and links it with a prebuilt host (add_xbe_player_kit),
 # from a window or the command line
-add_executable(xbe_setup ${XBE_SDK_DIR}/tools/setup/main.cpp ${XBE_SDK_DIR}/tools/setup/gui.cpp
+add_executable(setup ${XBE_SDK_DIR}/tools/setup/main.cpp ${XBE_SDK_DIR}/tools/setup/gui.cpp
     ${XBE_SDK_DIR}/tools/setup/store.cpp
     ${XBE_SDK_DIR}/runtime/kernel/disc.cpp
     ${XBE_SDK_DIR}/runtime/kernel/crypto.cpp)
-target_include_directories(xbe_setup PRIVATE ${XBE_SDK_DIR}/runtime)
-target_compile_definitions(xbe_setup PRIVATE _CRT_SECURE_NO_WARNINGS)
-target_link_libraries(xbe_setup PRIVATE tomlplusplus::tomlplusplus miniz fltk $<$<PLATFORM_ID:Windows>:winhttp>)
+# built under its final name: setup-windows.exe, setup-linux
+if(WIN32)
+    set_target_properties(setup PROPERTIES OUTPUT_NAME setup-windows)
+else()
+    set_target_properties(setup PROPERTIES OUTPUT_NAME setup-linux)
+endif()
+target_include_directories(setup PRIVATE ${XBE_SDK_DIR}/runtime)
+target_compile_definitions(setup PRIVATE _CRT_SECURE_NO_WARNINGS)
+target_link_libraries(setup PRIVATE tomlplusplus::tomlplusplus miniz fltk $<$<PLATFORM_ID:Windows>:winhttp>)
 # Zig builds use its own libc headers, so the X11 and Wayland ones FLTK includes are found after them, as for SDL (cmake-zig-glibc.cmake)
-if(XBE_ZIG_TARGET)
+if(XBE_ZIG_TARGET AND NOT WIN32)
     target_compile_options(fltk PRIVATE -idirafter /usr/include)
-    target_compile_options(xbe_setup PRIVATE -idirafter /usr/include)
+    target_compile_options(setup PRIVATE -idirafter /usr/include)
     # the system's X11, Wayland and Cairo libraries were built against a newer glibc than the one Zig links against, the player's has theirs
-    target_link_options(xbe_setup PRIVATE -Wl,--allow-shlib-undefined)
+    target_link_options(setup PRIVATE -Wl,--allow-shlib-undefined)
 endif()
 
 set(XBE_IMGUI_SOURCES
@@ -133,6 +139,9 @@ set(XBE_GLSLANG_LIBS glslang glslang-default-resource-limits)
 set(XBE_GEN_COMPILE_OPTIONS -O2 -fno-strict-aliasing -Wno-unused-label -Wno-parentheses-equality -Wno-unused-variable)
 set(XBE_HOST_DEFINITIONS UNICODE _UNICODE _CRT_SECURE_NO_WARNINGS)
 # what the host links besides SDL; xaudio2 is the Windows SDK's name, mingw's is xaudio2_8
+if(NOT XBE_XAUDIO2)
+    set(XBE_XAUDIO2 xaudio2)
+endif()
 if(WIN32)
     set(XBE_HOST_SYSTEM_LIBS dxguid ole32 windowscodecs dbghelp winmm dwmapi ws2_32)
 else()
@@ -200,7 +209,7 @@ function(add_xbe_image target xbe config partitions game_dir)
     target_compile_options(${target}_host PUBLIC -fno-strict-aliasing)
     target_compile_definitions(${target}_host PUBLIC ${XBE_HOST_DEFINITIONS})
     target_link_libraries(${target}_host PUBLIC tomlplusplus::tomlplusplus $<LINK_ONLY:SDL3::SDL3-static> ${XBE_HOST_SYSTEM_LIBS}
-        $<$<PLATFORM_ID:Windows>:xaudio2>)
+        $<$<PLATFORM_ID:Windows>:${XBE_XAUDIO2}>)
     # the game's hooks see an SDL window (src/game), the runtime's input code hands it the controllers
     if(NOT WIN32)
         target_compile_definitions(${target}_host PRIVATE XBE_SDL)
@@ -217,7 +226,7 @@ function(add_xbe_image target xbe config partitions game_dir)
     target_link_libraries(${target} PRIVATE "$<LINK_LIBRARY:WHOLE_ARCHIVE,${target}_host>")
     # lld keeps the recompiled weak functions overridable by the host ones
     target_link_options(${target} PRIVATE -fuse-ld=lld -g)
-    if(MINGW)
+    if(MINGW OR (WIN32 AND XBE_ZIG_TARGET))
         target_link_options(${target} PRIVATE -municode)  # the host's entry is wWinMain
         if(XBE_PDB)
             target_compile_options(${target}_host PRIVATE -g -gcodeview)
@@ -232,8 +241,7 @@ endfunction()
 # A player kit for an image (MinGW builds, and the Zig glibc builds of cmake-zig-glibc.cmake): everything a player needs
 # to build the game from their own copy, and none of the title's code. Staged in <build>/package/<target>, one half of
 # it per build (tools/package.cmake puts the two together):
-#   setup-windows.exe  xbe_setup: finds the game, recompiles, compiles and links <target>.exe (or <target>) beside it
-#   assets/            empty, the player's game goes here
+#   setup-windows.exe  Setup: finds the game, recompiles, compiles and links <target>.exe (or <target>) beside it
 #   kit/kit.toml       what Setup reads first: the release's sha1, the config, the recompiler, the headers
 #   kit/<os>.toml      how to build for that OS (windows: <target>.exe, linux: the native <target>): the compiler, its
 #                      flags and the libraries
@@ -247,7 +255,7 @@ endfunction()
 # unpacks it into kit/toolchain/<os>-<host> on the first run, and cxx is relative to that.
 # title is the name Setup shows.
 function(add_xbe_player_kit target title)
-    if(MINGW)
+    if(WIN32 AND (MINGW OR XBE_ZIG_TARGET))
         set(os windows)
     elseif(XBE_ZIG_TARGET)
         set(os linux)
@@ -279,11 +287,20 @@ function(add_xbe_player_kit target title)
     endforeach()
     list(APPEND libs ${lib}/libSDL3.a)
     if(os STREQUAL "windows")
-        list(APPEND libs ${lib}/libxaudio2.a)
         set(sdl_libs m kernel32 user32 gdi32 winmm imm32 ole32 oleaut32 version uuid advapi32 setupapi shell32 dinput8)
-        set(ldflags -static -mwindows -municode -fuse-ld=lld)
-        set(cxx bin/x86_64-w64-mingw32-clang++)
-        set(driver)
+        if(XBE_ZIG_TARGET)
+            # Zig makes the import library of xaudio2_8 itself, and the flags carry its -target as on Linux
+            list(APPEND sdl_libs ${XBE_XAUDIO2})
+            separate_arguments(ldflags NATIVE_COMMAND "${CMAKE_CXX_FLAGS}")
+            list(APPEND ldflags -mwindows -municode -fuse-ld=lld)
+            set(cxx zig)
+            set(driver c++)
+        else()
+            list(APPEND libs ${lib}/libxaudio2.a)
+            set(ldflags -static -mwindows -municode -fuse-ld=lld)
+            set(cxx bin/x86_64-w64-mingw32-clang++)
+            set(driver)
+        endif()
     else()
         set(sdl_libs m)
         # the compile flags too, as CMake links: without zig's -target the game would ask for this host's glibc
@@ -316,6 +333,9 @@ function(add_xbe_player_kit target title)
 
     set(extra)
     if(os STREQUAL "windows")
+        set(extra COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:setup> ${pkg}/)
+    endif()
+    if(os STREQUAL "windows" AND NOT XBE_ZIG_TARGET)
         set(xaudio2 "")
         foreach(dir ${CMAKE_CXX_IMPLICIT_LINK_DIRECTORIES} ${CMAKE_FIND_ROOT_PATH}/lib)
             if(NOT xaudio2 AND EXISTS ${dir}/libxaudio2_8.a)
@@ -325,9 +345,7 @@ function(add_xbe_player_kit target title)
         if(NOT xaudio2)
             message(FATAL_ERROR "libxaudio2_8.a not found in the toolchain")
         endif()
-        set(extra
-            COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:xbe_setup> ${pkg}/setup-windows$<TARGET_FILE_SUFFIX:xbe_setup>
-            COMMAND ${CMAKE_COMMAND} -E copy ${xaudio2} ${kit}/${lib}/libxaudio2.a)
+        list(APPEND extra COMMAND ${CMAKE_COMMAND} -E copy ${xaudio2} ${kit}/${lib}/libxaudio2.a)
     endif()
     set(glslang_libs)
     foreach(l ${XBE_GLSLANG_LIBS})
@@ -337,7 +355,7 @@ function(add_xbe_player_kit target title)
     add_custom_target(${target}_kit
         COMMAND ${CMAKE_COMMAND} -E rm -rf ${pkg}/assets ${pkg}/THIRD_PARTY.txt ${kit}/bin ${kit}/config ${kit}/xdk
             ${kit}/include ${kit}/lib ${kit}/kit.toml
-        COMMAND ${CMAKE_COMMAND} -E make_directory ${pkg}/assets ${kit}/bin ${kit}/config ${kit}/include/cpu
+        COMMAND ${CMAKE_COMMAND} -E make_directory ${kit}/bin ${kit}/config ${kit}/include/cpu
             ${kit}/${lib}
         COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:xbe_recomp> ${kit}/bin/
         COMMAND ${CMAKE_COMMAND} -DMODE=kit -DSHA=${sha1_file} -DIN=${CMAKE_BINARY_DIR}/${target}_kit.toml.in
@@ -351,7 +369,7 @@ function(add_xbe_player_kit target title)
         COMMAND ${CMAKE_COMMAND} -E copy ${glslang_libs} ${kit}/${lib}/
         ${extra}
         COMMAND ${CMAKE_COMMAND} -E copy ${XBE_SDK_DIR}/THIRD_PARTY.txt ${pkg}/
-        DEPENDS ${target}_host xbe_setup xbe_recomp SDL3::SDL3-static ${XBE_GLSLANG_LIBS} ${sha1_file}
+        DEPENDS ${target}_host setup xbe_recomp SDL3::SDL3-static ${XBE_GLSLANG_LIBS} ${sha1_file}
         COMMENT "Staging the ${os} player kit for ${target} in ${pkg}"
         VERBATIM)
 endfunction()

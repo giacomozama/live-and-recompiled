@@ -1,25 +1,26 @@
 // Setup: builds the game on the player's machine from the player's own copy, so no release ever carries the
-// title's code. A release is this program, a kit (kit/: the recompiler, the prebuilt host library with everything
-// but the title's code, the headers the generated code includes, the config) and an empty assets folder.
-// Setup finds the game in assets (its files, a disc image or the digital release's package, which it unpacks; on Windows
-// it offers the Microsoft Store install too), checks it is the release the kit was made for,
-// downloads the compiler kit/<os>.toml pins for this host into kit/toolchain/<os>-<host> (once), recompiles the game,
+// title's code. A release is this program, with a kit inside it (the recompiler, the prebuilt host library with
+// everything but the title's code, the headers the generated code includes, the config; unpacked into the working
+// folder on the first run) and an empty assets folder.
+// Setup takes the game from where the player points it (its files, a disc image or the digital release's package, which
+// it unpacks), checks it is the release the kit was made for,
+// downloads the compiler the kit's <os>.toml pins for this host into work/toolchain/<os>-<host> (once), recompiles the game,
 // compiles the result with that compiler and links the game beside itself. It runs on Windows and on Linux, and builds
-// for either: <exe>.exe for Windows (llvm-mingw; on Linux it runs with Proton) or the native Linux <exe> (Zig, against
-// glibc). By default it builds for the system it runs on, or for Windows when the kit has no Linux half.
+// for the system it runs on: <exe>.exe on Windows (Zig's mingw-w64), the native <exe> on Linux (Zig, against
+// glibc), both with the Zig the kit pins.
 //
 //   setup-windows.exe, setup-linux                      a window: pick the game, the working folder and the folder
-//                                                       the game is made in (all three start as the defaults)
-//   setup-windows.exe, setup-linux --cli [--source PATH] [--work DIR] [--game-dir DIR] [--target windows|linux]
+//                                                       the game is made in (the last two start as the defaults)
+//   setup-windows.exe, setup-linux --cli --source PATH [--work DIR] [--game-dir DIR]
 //                                  [--jobs N] [--keep] [--toolchain DIR] [--root DIR] [--fetch-toolchain]
 //
 // Run with no arguments, Setup opens the window (when there is a display), with any it runs on the console. --source
 // is the game: its DefaultPackage (the digital release's package, unpacked for you), a disc image (.iso), a folder
-// with the extracted default.xbe, or a folder holding one of these (assets, the default). The game's files are put in
+// with the extracted default.xbe, or a folder holding one of these. The game's files are put in
 // assets/ below the game folder, where the game looks for them, unless they are already there. --work is where the
-// generated code and objects go (kit/work); --game-dir is where the game is linked (Setup's own folder).
+// kit, the compiler and, while building, the generated code and objects go (work, beside Setup); --game-dir is where the game is linked (game, beside Setup). Both are made when missing.
 // --keep leaves the work folder's contents in place; --toolchain uses another copy of the target's
-// compiler of the kit's version (a Linux-hosted llvm-mingw tests a kit without Windows); --root is the folder Setup
+// compiler of the kit's version; --root is the folder Setup
 // would be in; --fetch-toolchain only downloads the compiler.
 #include <miniz.h>
 #include <toml++/toml.hpp>
@@ -74,6 +75,14 @@ constexpr const char* kHost = "linux";
 FILE* g_log = nullptr;  // setup.log beside Setup, everything printed goes there too
 void (*g_sink)(const char*) = nullptr;  // the window's, when there is one
 std::atomic<bool> g_cancel{false};
+void (*g_progress)(double) = nullptr;  // the window's bar: how much of the install is done, 0 to 1
+double g_done = 0;
+
+// the bar only moves forward
+void Progress(double fraction) {
+    g_done = std::max(g_done, std::min(fraction, 1.0));
+    if (g_progress) g_progress(g_done);
+}
 
 void Say(const char* fmt, ...) {
     va_list a, b;
@@ -98,7 +107,7 @@ void Say(const char* fmt, ...) {
     va_end(a);
 }
 
-// what the kit says, kit/kit.toml and kit/<os>.toml for the target
+// what the kit says, kit.toml and <os>.toml for the target
 struct Kit {
     std::string title, exe, xbe, sha1;
     std::string target;  // windows or linux, what the game is built for
@@ -106,7 +115,7 @@ struct Kit {
     std::vector<fs::path> include;
     std::vector<std::string> driver;  // the compiler's own first arguments (zig's "c++"), before every command
     std::vector<std::string> cxxflags, ldflags, libs;
-    fs::path toolchain;                           // kit/toolchain/<os>-<host>, cxx is in it
+    fs::path toolchain;                           // work/toolchain/<os>-<host>, cxx is in it
     std::string toolchain_url, toolchain_sha256;  // [toolchain.<host>]: the compiler's archive Setup downloads
     std::string Game() const { return target == "windows" ? exe + ".exe" : exe; }
 };
@@ -119,26 +128,165 @@ std::vector<std::string> Strings(const toml::node_view<toml::node>& n) {
     return out;
 }
 
-bool ParseToml(const fs::path& p, toml::table& t, std::string& error) {
+fs::path ExePath() {
+#ifdef _WIN32
+    std::wstring p(32768, L'\0');
+    p.resize(GetModuleFileNameW(nullptr, p.data(), DWORD(p.size())));
+    return fs::path(p);
+#else
+    return fs::read_symlink("/proc/self/exe");
+#endif
+}
+
+fs::path ExeDir() { return ExePath().parent_path(); }
+
+void SetEnv(const char* name, const fs::path& value) {
+#ifdef _WIN32
+    SetEnvironmentVariableW(fs::path(name).c_str(), value.c_str());
+#else
+    setenv(name, value.c_str(), 1);
+#endif
+}
+
+// A release carries its kit inside Setup: a zip of the kit's files for this host (kit.toml, <os>.toml, config, xdk,
+// include, lib/<os>, bin) appended to the executable, then a footer of kMagic and the zip's size as 16 decimal digits
+// (tools/package.cmake). Setup reads the tomls from it as they are, and unpacks the rest into the working folder
+// when it builds, again only when the folder does not hold this kit already.
+constexpr char kMagic[] = "XBEKIT01";
+constexpr size_t kMagicSize = 8, kFooterSize = kMagicSize + 16;
+
+std::vector<uint8_t> g_kit_zip;
+std::string g_kit_stamp;  // the zip's checksum and size: what .payload holds in a folder it is unpacked in
+
+// reads the kit out of Setup's executable; false only when there is one and it is damaged
+bool LoadPayload(std::string& error) {
+    std::ifstream in(ExePath(), std::ios::binary);
+    in.seekg(0, std::ios::end);
+    uint64_t end = uint64_t(std::max<std::streamoff>(in.tellg(), 0));
+    char footer[kFooterSize];
+    if (!in || end < kFooterSize) return true;
+    in.seekg(std::streamoff(end - kFooterSize));
+    in.read(footer, kFooterSize);
+    if (!in || std::memcmp(footer, kMagic, kMagicSize) != 0) return true;
+    uint64_t size = std::strtoull(std::string(footer + kMagicSize, 16).c_str(), nullptr, 10);
+    if (size == 0 || size > end - kFooterSize) {
+        error = "the kit inside Setup is damaged";
+        return false;
+    }
+    g_kit_zip.resize(size);
+    in.seekg(std::streamoff(end - kFooterSize - size));
+    in.read(reinterpret_cast<char*>(g_kit_zip.data()), std::streamsize(size));
+    if (!in) {
+        g_kit_zip.clear();
+        error = "cannot read the kit inside Setup";
+        return false;
+    }
+    char stamp[64];
+    unsigned long crc = static_cast<unsigned long>(mz_crc32(MZ_CRC32_INIT, g_kit_zip.data(), g_kit_zip.size()));
+    std::snprintf(stamp, sizeof(stamp), "%08lx %llu", crc, static_cast<unsigned long long>(size));
+    g_kit_stamp = stamp;
+    return true;
+}
+
+const char* const kNoKit = "this Setup has no kit inside (tools/package.cmake makes one that does)";
+
+// a file of the kit, read from the zip in Setup
+bool KitFile(const std::string& name, std::string& out, std::string& error) {
+    mz_zip_archive z{};
+    if (g_kit_zip.empty() || !mz_zip_reader_init_mem(&z, g_kit_zip.data(), g_kit_zip.size(), 0)) {
+        error = kNoKit;
+        return false;
+    }
+    size_t n = 0;
+    void* data = mz_zip_reader_extract_file_to_heap(&z, name.c_str(), &n, 0);
+    mz_zip_reader_end(&z);
+    if (!data) {
+        error = "the kit inside Setup has no " + name;
+        return false;
+    }
+    out.assign(static_cast<const char*>(data), n);
+    mz_free(data);
+    return true;
+}
+
+// the kit's files into dir, the working folder: one that holds this kit already is left as it is, one that holds
+// another version of it is cleared of the kit's own parts first (never of anything else, it may be a folder the
+// player chose)
+bool UnpackKit(const fs::path& dir, std::string& error) {
+    if (g_kit_zip.empty()) {
+        error = kNoKit;
+        return false;
+    }
+    std::error_code ec;
+    fs::create_directories(dir, ec);
+    std::string line;
+    bool ours = false;
+    {
+        std::ifstream have(dir / ".payload");
+        ours = have && std::getline(have, line);
+    }
+    if (ours && line == g_kit_stamp && fs::exists(dir / "kit.toml", ec)) return true;
+    if (ours) {
+        for (const char* d : {"bin", "config", "xdk", "include", "lib"}) fs::remove_all(dir / d, ec);
+        for (const char* f : {"kit.toml", "windows.toml", "linux.toml", ".payload"}) fs::remove(dir / f, ec);
+    }
+
+    mz_zip_archive z{};
+    if (!mz_zip_reader_init_mem(&z, g_kit_zip.data(), g_kit_zip.size(), 0)) {
+        error = "cannot read the kit inside Setup";
+        return false;
+    }
+    bool ok = true;
+    for (mz_uint i = 0, count = mz_zip_reader_get_num_files(&z); ok && i < count; i++) {
+        mz_zip_archive_file_stat st;
+        ok = mz_zip_reader_file_stat(&z, i, &st);
+        if (!ok || st.m_is_directory) continue;
+        fs::path rel = fs::path(st.m_filename).lexically_normal();
+        if (rel.is_absolute() || std::find(rel.begin(), rel.end(), "..") != rel.end()) continue;  // not below dir
+        fs::path out = dir / rel;
+        fs::create_directories(out.parent_path(), ec);
+        {
+            std::ofstream f(out, std::ios::binary | std::ios::trunc);
+            auto write = [](void* o, mz_uint64, const void* buf, size_t n) -> size_t {
+                return static_cast<std::ofstream*>(o)->write(static_cast<const char*>(buf), std::streamsize(n)) ? n : 0;
+            };
+            ok = f && mz_zip_reader_extract_to_callback(&z, i, write, &f, 0) && f.flush();
+        }
+        if (!ok) {
+            error = "cannot unpack " + out.string();
+            break;
+        }
+#ifndef _WIN32
+        fs::permissions(out, *rel.begin() == "bin" ? fs::perms(0755) : fs::perms(0644), ec);
+#endif
+    }
+    mz_zip_reader_end(&z);
+    if (!ok) {
+        if (error.empty()) error = "cannot read the kit inside Setup";
+        return false;
+    }
+    std::ofstream(dir / ".payload") << g_kit_stamp << "\n";
+    return true;
+}
+
+// a toml of the kit
+bool ParseToml(const std::string& name, toml::table& t, std::string& error) {
+    std::string text;
+    if (!KitFile(name, text, error)) return false;
     try {
-        t = toml::parse_file(p.string());
+        t = toml::parse(text, name);
     } catch (const toml::parse_error& e) {
-        error = p.string() + ": " + std::string(e.description());
+        error = name + ": " + std::string(e.description());
         return false;
     }
     return true;
 }
 
-// target empty: this host's, when the kit has it, else windows
-bool LoadKit(const fs::path& kit_dir, std::string target, Kit& k, std::string& error) {
-    std::error_code ec;
-    if (target.empty()) target = fs::exists(kit_dir / (std::string(kHost) + ".toml"), ec) ? kHost : "windows";
-    if (!fs::exists(kit_dir / (target + ".toml"), ec)) {
-        error = "this kit cannot build for " + target + " (no kit/" + target + ".toml)";
-        return false;
-    }
+// the kit for this host: it builds the game for the system Setup runs on. kit_dir is where its files are unpacked
+bool LoadKit(const fs::path& kit_dir, Kit& k, std::string& error) {
+    std::string target = kHost;
     toml::table t, o;
-    if (!ParseToml(kit_dir / "kit.toml", t, error) || !ParseToml(kit_dir / (target + ".toml"), o, error)) return false;
+    if (!ParseToml("kit.toml", t, error) || !ParseToml(target + ".toml", o, error)) return false;
     k.target = target;
     k.title = t["title"].value_or(std::string("the game"));
     k.exe = t["exe"].value_or(std::string());
@@ -195,16 +343,6 @@ bool ReadFile(const fs::path& p, std::vector<uint8_t>& out) {
 bool WriteFile(const fs::path& p, const void* data, size_t n) {
     std::ofstream f(p, std::ios::binary | std::ios::trunc);
     return f.write(static_cast<const char*>(data), std::streamsize(n)) && f.flush();
-}
-
-// the assets folder: beside Setup or in a folder above (as the game looks)
-fs::path FindAssets(const fs::path& root) {
-    std::error_code ec;
-    for (fs::path dir = root; !dir.empty(); dir = dir.parent_path()) {
-        if (fs::is_directory(dir / "assets", ec)) return dir / "assets";
-        if (dir.parent_path() == dir) break;
-    }
-    return {};
 }
 
 std::string Lower(std::string s) {
@@ -433,7 +571,7 @@ bool Run(const char* what, const fs::path& exe, const std::vector<std::string>& 
     return true;
 }
 
-// the toolchain: kit/<os>.toml pins the compiler's archive by URL and SHA-256, Setup downloads it into kit/toolchain
+// the toolchain: the kit's <os>.toml pins the compiler's archive by URL and SHA-256, Setup downloads it into work/toolchain
 // once
 
 std::string Sha256File(const fs::path& p) {
@@ -529,6 +667,7 @@ bool Download(const std::string& url, const fs::path& to, const fs::path&) {
             got += n;
             if (got >> 20 != shown) {
                 shown = got >> 20;
+                if (total) Progress(0.10 + 0.15 * double(got) / double(total));
                 if (total) Say("\r  %llu / %llu MB", (unsigned long long)shown, (unsigned long long)(total >> 20));
                 else Say("\r  %llu MB", (unsigned long long)shown);
             }
@@ -541,7 +680,7 @@ bool Download(const std::string& url, const fs::path& to, const fs::path&) {
     if (conn) WinHttpCloseHandle(conn);
     if (session) WinHttpCloseHandle(session);
     if (!ok || status != 200) {
-        if (ok) Say("The download failed: the server answered %lu.\n", (unsigned long)status);
+        if (ok) Say("The download failed (the server answered %lu). Try again later.\n", (unsigned long)status);
         else Say("The download failed (error %lu). Check the internet connection and run Setup again.\n",
                  (unsigned long)error);
         return false;
@@ -556,22 +695,7 @@ bool Download(const std::string& url, const fs::path& to, const fs::path&) {
 }
 #endif
 
-// what a Windows x86_64 build needs of an llvm-mingw (Zig is kept whole), by path below its top folder: the compiler
-// and linker (bin, and the LLVM libraries a Linux-hosted one loads), the headers without their .idl sources (a
-// Linux-hosted one keeps them in generic-w64-mingw32), clang's headers and x86_64 builtins, the x86_64 libraries
-bool Wanted(const std::string& name) {
-    if (name.size() > 4 && name.compare(name.size() - 4, 4, ".idl") == 0) return false;
-    if (name.rfind("lib/clang/", 0) == 0) {  // lib/clang/<version>/...
-        size_t v = name.find('/', 10);
-        std::string sub = v == std::string::npos ? std::string() : name.substr(v + 1);
-        return sub.rfind("include/", 0) == 0 || sub == "lib/windows/libclang_rt.builtins-x86_64.a";
-    }
-    static const char* const kKeep[] = {"bin/",        "include/",         "x86_64-w64-mingw32/", "generic-w64-mingw32/",
-                                        "lib/libLLVM", "lib/libclang-cpp", "LICENSE.TXT"};
-    return std::any_of(std::begin(kKeep), std::end(kKeep), [&](const char* k) { return name.rfind(k, 0) == 0; });
-}
-
-// the zip's wanted files below its top folder into dest
+// the zip's files below its top folder into dest
 bool Unzip(const fs::path& zip, const fs::path& dest) {
     std::ifstream in(zip, std::ios::binary);
     std::error_code ec;
@@ -601,7 +725,6 @@ bool Unzip(const fs::path& zip, const fs::path& dest) {
         size_t slash = name.find('/');
         if (slash == std::string::npos) continue;
         name.erase(0, slash + 1);
-        if (!Wanted(name)) continue;
         fs::path rel = fs::path(name).lexically_normal();
         if (rel.is_absolute() || std::find(rel.begin(), rel.end(), "..") != rel.end()) continue;  // not below dest
         fs::path out = dest / rel;
@@ -623,28 +746,8 @@ bool Unzip(const fs::path& zip, const fs::path& dest) {
     return ok;
 }
 
-#ifndef _WIN32
-// the files Wanted does not keep, then the folders left empty
-void Prune(const fs::path& dir) {
-    std::error_code ec;
-    std::vector<fs::path> drop, dirs;
-    for (auto it = fs::recursive_directory_iterator(dir, ec); !ec && it != fs::recursive_directory_iterator();
-         it.increment(ec)) {
-        if (it->is_directory(ec) && !it->is_symlink(ec)) dirs.push_back(it->path());
-        else if (!Wanted(it->path().lexically_relative(dir).generic_string())) drop.push_back(it->path());
-    }
-    for (auto& f : drop) fs::remove(f, ec);
-    std::sort(dirs.begin(), dirs.end(), [](const fs::path& x, const fs::path& y) {
-        return x.native().size() > y.native().size();  // the deepest first
-    });
-    for (auto& d : dirs) fs::remove(d, ec);  // only removes it when empty
-}
-#endif
-
-// a .zip (the Windows-hosted builds) with miniz; a .tar.xz (the Linux-hosted ones) with the system tar; prune keeps
-// only what Wanted says
-bool Unpack(const fs::path& archive, const std::string& url, const fs::path& dest, [[maybe_unused]] const fs::path& log,
-            [[maybe_unused]] bool prune) {
+// a .zip (the Windows-hosted builds) with miniz; a .tar.xz (the Linux-hosted ones) with the system tar
+bool Unpack(const fs::path& archive, const std::string& url, const fs::path& dest, [[maybe_unused]] const fs::path& log) {
     if (url.size() > 4 && url.compare(url.size() - 4, 4, ".zip") == 0) return Unzip(archive, dest);
 #ifdef _WIN32
     Say("Cannot unpack %s: Setup on Windows reads only .zip\n", url.c_str());
@@ -655,12 +758,11 @@ bool Unpack(const fs::path& archive, const std::string& url, const fs::path& des
     if (!Run("Unpacking", "/usr/bin/env",
              {"tar", "-xJf", archive.string(), "-C", dest.string(), "--strip-components=1"}, log))
         return false;
-    if (prune) Prune(dest);
     return true;
 #endif
 }
 
-// kit/toolchain/<os>-<host> holds the archive kit/<os>.toml pins for this host once it is downloaded, checked and
+// work/toolchain/<os>-<host> holds the archive the kit's <os>.toml pins for this host once it is downloaded, checked and
 // unpacked; sha256.txt in it says which
 bool EnsureToolchain(const fs::path& kit_dir, const Kit& k) {
     fs::path tc = k.toolchain, stamp = tc / "sha256.txt";
@@ -670,15 +772,15 @@ bool EnsureToolchain(const fs::path& kit_dir, const Kit& k) {
                                                               std::string(have.begin(), have.end()) == k.toolchain_sha256)))
         return true;
     if (k.toolchain_url.empty()) {
-        Say("This kit has no compiler for building the %s game on %s: %s is missing and kit/%s.toml names none to "
-            "download.\n", k.target.c_str(), kHost, k.cxx.string().c_str(), k.target.c_str());
+        Say("The tools for building the game are missing (%s) and this Setup has no address to download them from.\n",
+            k.cxx.string().c_str());
         return false;
     }
     fs::path archive = tc.string() + ".download", fresh = tc.string() + ".new";
     fs::create_directories(tc.parent_path(), ec);
     fs::remove(archive, ec);
     fs::remove_all(fresh, ec);
-    Say("Downloading the compiler (%s), once:\n  %s\n", k.target == "windows" ? "llvm-mingw" : "Zig",
+    Say("Downloading the tools needed to build the game (about 100 MB, only the first time):\n  %s\n",
         k.toolchain_url.c_str());
     if (!Download(k.toolchain_url, archive, kit_dir / "download.log")) {
         fs::remove(archive, ec);
@@ -686,14 +788,14 @@ bool EnsureToolchain(const fs::path& kit_dir, const Kit& k) {
     }
     std::string sha = Sha256File(archive);
     if (sha != k.toolchain_sha256) {
-        Say("The download is not the compiler this kit was made with (sha256 %s, expected %s).\n"
-            "Run Setup again; if this keeps happening, the address in kit/%s.toml is wrong.\n",
-            sha.c_str(), k.toolchain_sha256.c_str(), k.target.c_str());
+        Say("The downloaded file is not the one this Setup expects (checksum %s, expected %s).\n"
+            "Run Setup again; if this keeps happening, please report it.\n",
+            sha.c_str(), k.toolchain_sha256.c_str());
         fs::remove(archive, ec);
         return false;
     }
-    Say("Unpacking the compiler ...\n");
-    bool ok = Unpack(archive, k.toolchain_url, fresh, kit_dir / "unpack.log", k.target == "windows") &&
+    Say("Unpacking the downloaded tools ...\n");
+    bool ok = Unpack(archive, k.toolchain_url, fresh, kit_dir / "unpack.log") &&
               WriteFile(fresh / "sha256.txt", sha.data(), sha.size());
     fs::remove(archive, ec);
     if (ok) {
@@ -702,30 +804,12 @@ bool EnsureToolchain(const fs::path& kit_dir, const Kit& k) {
         ok = !ec;
     }
     if (!ok || !fs::exists(k.cxx, ec)) {
-        Say("Cannot set up the compiler in %s\n", tc.string().c_str());
+        Say("Could not unpack the downloaded tools into %s\n", tc.string().c_str());
         fs::remove_all(fresh, ec);
         return false;
     }
     return true;
 }
-
-fs::path ExeDir() {
-#ifdef _WIN32
-    std::wstring p(32768, L'\0');
-    p.resize(GetModuleFileNameW(nullptr, p.data(), DWORD(p.size())));
-    return fs::path(p).parent_path();
-#else
-    return fs::read_symlink("/proc/self/exe").parent_path();
-#endif
-}
-
-// The Microsoft Store installs the same release unencrypted, its package in this folder (Windows only)
-#ifdef _WIN32
-constexpr const wchar_t* kStoreFolder = L"C:\\XboxGames\\Conker- Live and Reloaded\\Content\\Game";
-fs::path StoreFolder() { return kStoreFolder; }
-#else
-fs::path StoreFolder() { return {}; }
-#endif
 
 // the game's files in `assets` below the game folder, from wherever the source has them
 bool Stage(const setup::Options& opt, const Kit& k, Source& src, fs::path& assets_out) {
@@ -735,17 +819,17 @@ bool Stage(const setup::Options& opt, const Kit& k, Source& src, fs::path& asset
     fs::create_directories(assets, ec);
     switch (src.kind) {
         case Kind::Package: {
-            Say("Unpacking the digital release's package into %s (a few seconds, about 5 GB)\n", assets.string().c_str());
+            Say("Unpacking the game's package into %s (about 5 GB, a few seconds) ...\n", assets.string().c_str());
             std::string error;
             if (!store::Unpack(src.path, assets, Say, error)) {
-                Say("\nCannot unpack %s: %s\n", src.path.string().c_str(), error.c_str());
+                Say("\nCould not unpack %s: %s\n", src.path.string().c_str(), error.c_str());
                 return false;
             }
             Say("\n");
             std::vector<uint8_t> data;
             Source after;
             if (!ReadFile(assets / k.xbe, data) || !MatchXbe(data, k, assets / k.xbe, after)) {
-                Say("The package holds another release than this build is made for.\n");
+                Say("This package is a different version of the game than this Setup supports.\n");
                 return false;
             }
             src.xbe = std::move(after.xbe);
@@ -753,12 +837,12 @@ bool Stage(const setup::Options& opt, const Kit& k, Source& src, fs::path& asset
         }
         case Kind::Iso: {
             fs::path to = assets / src.path.filename();
-            if (!Same(src.path, to)) Say("Copying %s into %s\n", src.path.filename().string().c_str(), assets.string().c_str());
+            if (!Same(src.path, to)) Say("Copying the disc image into %s ...\n", assets.string().c_str());
             return Place(src.path, to);
         }
         case Kind::Files: {
             if (Same(src.path, assets)) return true;
-            Say("Copying the game's files into %s\n", assets.string().c_str());
+            Say("Copying the game's files into %s ...\n", assets.string().c_str());
             size_t n = 0;
             for (auto it = fs::recursive_directory_iterator(src.path, ec); !ec && it != fs::recursive_directory_iterator();
                  it.increment(ec)) {
@@ -796,19 +880,16 @@ bool SayCancelled() {
 namespace setup {
 
 void SetSink(void (*sink)(const char*)) { g_sink = sink; }
+void SetProgress(void (*progress)(double)) { g_progress = progress; }
 void Cancel() { g_cancel = true; }
 bool Cancelled() { return g_cancel; }
 
-KitInfo ReadKit(const fs::path& root) {
+KitInfo ReadKit() {
     KitInfo info;
-    toml::table t;
-    fs::path kit = root / "kit";
-    if (!ParseToml(kit / "kit.toml", t, info.error)) return info;
+    toml::table t, o;
+    if (!ParseToml("kit.toml", t, info.error)) return info;
     info.title = t["title"].value_or(std::string("the game"));
-    std::error_code ec;
-    info.has_windows = fs::exists(kit / "windows.toml", ec);
-    info.has_linux = fs::exists(kit / "linux.toml", ec);
-    if (!info.has_windows && !info.has_linux) info.error = "no kit/windows.toml or kit/linux.toml";
+    ParseToml(std::string(kHost) + ".toml", o, info.error);
     return info;
 }
 
@@ -816,18 +897,8 @@ Options Defaults(const fs::path& root) {
     Options o;
     o.root = root;
     o.jobs = std::max(1u, std::thread::hardware_concurrency());
-    o.game_dir = root;
-    o.work = root / "kit" / "work";
-    // the game: assets where the game looks for it, unless it has none and the Microsoft Store has it installed
-    fs::path assets = FindAssets(root);
-    fs::path store = StoreFolder();
-    std::error_code ec;
-    o.source = assets.empty() ? root / "assets" : assets;
-    if (!store.empty() && store::HasPackage(store)) {
-        Kit k;
-        std::string error;
-        if (!LoadKit(root / "kit", "", k, error) || Resolve(o.source, k).kind == Kind::Missing) o.source = store;
-    }
+    o.game_dir = root / "game";
+    o.work = root / "work";
     return o;
 }
 
@@ -835,23 +906,27 @@ Probe CheckSource(const Options& opt) {
     Probe p;
     Kit k;
     std::string error;
-    if (!LoadKit(opt.root / "kit", opt.target, k, error)) {
+    if (!LoadKit(opt.work, k, error)) {
         p.text = error;
         return p;
     }
     std::error_code ec;
-    if (opt.source.empty() || !fs::exists(opt.source, ec)) {
-        p.text = "Nothing at this path.";
+    if (opt.source.empty()) {
+        p.text = "Pick your copy of the game.";
+        return p;
+    }
+    if (!fs::exists(opt.source, ec)) {
+        p.text = "Nothing found there.";
         return p;
     }
     Source s = Resolve(opt.source, k);
     switch (s.kind) {
-        case Kind::Files: p.text = "The extracted game: " + k.xbe + " is the right release."; break;
-        case Kind::Iso: p.text = "A disc image of the right release."; break;
-        case Kind::Package: p.text = "The digital release's package: Setup unpacks it (about 5 GB)."; break;
+        case Kind::Files: p.text = "Found the game's files. This is the right version."; break;
+        case Kind::Iso: p.text = "Found a disc image. This is the right version."; break;
+        case Kind::Package: p.text = "Found the digital release. Setup will unpack it, which needs about 5 GB of free space."; break;
         default:
-            if (s.other.empty()) p.text = "Not the game: pick its DefaultPackage, a disc image (.iso) or the folder with " + k.xbe + ".";
-            else p.text = "Not the release this build is made for (" + s.other[0] + ").";
+            if (s.other.empty()) p.text = "This isn't the game. Choose the DefaultPackage file, a disc image (.iso) or the folder with " + k.xbe + " in it.";
+            else p.text = "This is a different version of the game than this Setup supports (" + s.other[0] + ").";
             return p;
     }
     p.ok = true;
@@ -860,6 +935,8 @@ Probe CheckSource(const Options& opt) {
 
 bool Build(const Options& opt) {
     g_cancel = false;
+    g_done = 0;
+    Progress(0);
     auto start = std::chrono::steady_clock::now();
     const fs::path& root = opt.root;
     unsigned jobs = opt.jobs;
@@ -876,50 +953,55 @@ bool Build(const Options& opt) {
         }
     } close;
     auto fail = [&]() {
-        Say("\nSetup did not finish. setup.log has the whole run.\n");
+        Say("\nSetup could not finish. The file setup.log next to Setup has the details.\n");
         return false;
     };
 
-    fs::path kit_dir = root / "kit";
+    // the working folder holds the kit, the compiler and, while building, the generated code and objects
+    fs::path work = opt.work.empty() ? root / "work" : opt.work;
     Kit k;
     std::string error;
-    if (!LoadKit(kit_dir, opt.target, k, error)) {
-        Say("%s: %s\n", kit_dir.string().c_str(), error.c_str());
+    if (!LoadKit(work, k, error) || !UnpackKit(work, error)) {
+        Say("%s\n", error.c_str());
         return fail();
     }
     if (!opt.toolchain.empty()) k.cxx = opt.toolchain / k.cxx.lexically_relative(k.toolchain);
-    fs::path work = opt.work.empty() ? kit_dir / "work" : opt.work;
-    fs::path game_dir = opt.game_dir.empty() ? root : opt.game_dir;
-#ifndef _WIN32
+    fs::path game_dir = opt.game_dir.empty() ? root / "game" : opt.game_dir;
+    fs::create_directories(game_dir, ec);
     // Zig's caches: the C++ library it builds for the target once beside the downloaded compiler (with --toolchain, in
     // the work folder like the rest)
     fs::path zig_cache = opt.toolchain.empty() ? k.toolchain / "cache" : work / "zig-cache";
-    setenv("ZIG_GLOBAL_CACHE_DIR", zig_cache.c_str(), 1);
-    setenv("ZIG_LOCAL_CACHE_DIR", (work / "zig-cache").c_str(), 1);
-#endif
-    Say("Building %s for %s from your copy of the game. This takes a few minutes, once.\n\n", k.title.c_str(),
+    SetEnv("ZIG_GLOBAL_CACHE_DIR", zig_cache);
+    SetEnv("ZIG_LOCAL_CACHE_DIR", work / "zig-cache");
+    Say("Installing %s for %s. This takes a few minutes and only needs doing once.\n\n", k.title.c_str(),
         k.target == "windows" ? "Windows" : "Linux");
 
     // 1. the game
     Source src = Resolve(opt.source, k);
     if (src.kind == Kind::Missing) {
-        if (src.other.empty()) {
-            Say("No game at %s: pick its DefaultPackage, a disc image (.iso) or the folder with %s.\n",
-                opt.source.string().c_str(), k.xbe.c_str());
+        if (opt.source.empty()) {
+            Say("Say where your copy of the game is with --source: the DefaultPackage file, a disc image (.iso) or the "
+                "folder with %s in it.\n", k.xbe.c_str());
+        } else if (src.other.empty()) {
+            Say("There is no game at %s. Choose the DefaultPackage file, a disc image (.iso) or the folder with %s in "
+                "it.\n", opt.source.string().c_str(), k.xbe.c_str());
         } else {
-            Say("This build is made for one release of %s (%s sha1 %s). Found only:\n", k.title.c_str(), k.xbe.c_str(),
-                k.sha1.c_str());
+            Say("This Setup works with one version of %s, and your copy is a different one. What it found:\n",
+                k.title.c_str());
             for (auto& o : src.other) Say("  %s\n", o.c_str());
         }
         return fail();
     }
-    Say("Found the game: %s\n", src.path.string().c_str());
+    Say("Using your game at: %s\n", src.path.string().c_str());
+    Progress(0.02);
     Options staged = opt;
     staged.game_dir = game_dir;
     fs::path assets;
     if (!Stage(staged, k, src, assets)) return fail();
+    Progress(0.10);
     if (SayCancelled()) return false;
-    if (opt.toolchain.empty() && !EnsureToolchain(kit_dir, k)) return fail();
+    if (opt.toolchain.empty() && !EnsureToolchain(work, k)) return fail();
+    Progress(0.25);
     if (SayCancelled()) return false;
 
     // the work folder's own parts only: it may be a folder the player chose
@@ -935,17 +1017,17 @@ bool Build(const Options& opt) {
     fs::create_directories(obj, ec);
     fs::create_directories(logs, ec);
     if (ec) {
-        Say("Cannot create %s: %s\n", work.string().c_str(), ec.message().c_str());
+        Say("Could not create the folder %s: %s\n", work.string().c_str(), ec.message().c_str());
         return fail();
     }
     fs::path xbe_path = work / k.xbe;
     if (!WriteFile(xbe_path, src.xbe.data(), src.xbe.size())) {
-        Say("Cannot write %s\n", xbe_path.string().c_str());
+        Say("Could not write %s\n", xbe_path.string().c_str());
         return fail();
     }
 
     // 2. recompile
-    Say("Recompiling %s ...\n", k.xbe.c_str());
+    Say("Step 1 of 3: converting the game's code ...\n");
     if (!Run("Recompiling", k.recomp,
              {k.config.string(), xbe_path.string(), gen.string(), "--xdk", k.xdk.string()}, logs / "recompile.log"))
         return fail();
@@ -954,7 +1036,7 @@ bool Build(const Options& opt) {
     for (auto& inc : k.include)
         if (ReadFile(inc / "image_symbols.h", expected)) break;
     if (!ReadFile(gen / "image_symbols.h", made) || made != expected) {
-        Say("The recompiled symbols differ from the ones this kit was built with. The kit is damaged or mixed up.\n");
+        Say("The converted code does not match what this Setup expects. Delete the working folder and run Setup again.\n");
         return fail();
     }
 
@@ -965,7 +1047,8 @@ bool Build(const Options& opt) {
     std::sort(sources.begin(), sources.end(), [](const fs::path& a, const fs::path& b) {
         return fs::file_size(a) > fs::file_size(b);  // the big ones first, so the last to finish is short
     });
-    Say("Compiling %zu files on %u threads ...\n", sources.size(), jobs);
+    Progress(0.30);
+    Say("Step 2 of 3: building the game (%zu parts, %u at a time) ...\n", sources.size(), jobs);
     std::vector<std::string> base = k.cxxflags;
     for (auto& inc : k.include) base.push_back("-I" + inc.generic_string());
     base.push_back("-I" + gen.generic_string());
@@ -984,7 +1067,7 @@ bool Build(const Options& opt) {
             Child c;
             c.job = i;
             if (!Spawn(k.cxx, args, logs / (sources[i].stem().string() + ".log"), c)) {
-                Say("Cannot start the compiler %s\n", k.cxx.string().c_str());
+                Say("Could not start the build tools at %s\n", k.cxx.string().c_str());
                 failed = true;
                 break;
             }
@@ -998,13 +1081,14 @@ bool Build(const Options& opt) {
         done++;
         if (code) {
             if (!failed) {
-                Say("Compiling %s failed:\n", sources[job].filename().string().c_str());
+                Say("Building %s failed:\n", sources[job].filename().string().c_str());
                 ShowLog(logs / (sources[job].stem().string() + ".log"));
             }
             failed = true;
             continue;
         }
         Say("\r  %zu / %zu", done, sources.size());
+        Progress(0.30 + 0.65 * double(done) / double(sources.size()));
     }
     Say("\n");
     if (g_cancel) {
@@ -1015,7 +1099,7 @@ bool Build(const Options& opt) {
     if (failed) return fail();
 
     // 4. link in the game folder; a response file keeps the command line short
-    Say("Linking %s ...\n", k.Game().c_str());
+    Say("Step 3 of 3: putting %s together ...\n", k.Game().c_str());
     fs::create_directories(game_dir, ec);
     fs::path rsp = work / "link.rsp", out = game_dir / k.Game(), tmp = game_dir / (k.Game() + ".new");
     {
@@ -1038,23 +1122,20 @@ bool Build(const Options& opt) {
     }
     std::vector<std::string> link = k.driver;
     link.push_back("@" + rsp.generic_string());
+    Progress(0.95);
     if (!Run("Linking", k.cxx, link, logs / "link.log")) return fail();
     fs::rename(tmp, out, ec);
     if (ec) {
-        Say("Cannot replace %s: %s (is the game still running?)\n", out.string().c_str(), ec.message().c_str());
+        Say("Could not replace %s (%s). Is the game still running? Close it and try again.\n", out.string().c_str(),
+            ec.message().c_str());
         return fail();
     }
 
     // the generated code and objects are the title's code: only kept when asked for
     if (!opt.keep) clear();
     double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
-    Say("\nDone in %.0f s: %s\n", secs, out.string().c_str());
-    if (k.target == "linux") Say("Start the game with %s.\n", out.string().c_str());
-#ifdef _WIN32
-    else Say("Start the game with %s.\n", out.string().c_str());
-#else
-    else Say("Start %s with Proton or Wine.\n", out.string().c_str());
-#endif
+    Progress(1);
+    Say("\nDone in %.0f seconds. The game is ready:\n  %s\n", secs, out.string().c_str());
     return true;
 }
 
@@ -1064,14 +1145,19 @@ int main(int argc, char** argv) {
     fs::path root = ExeDir();
     for (int i = 1; i + 1 < argc; i++)
         if (std::strcmp(argv[i], "--root") == 0) root = fs::absolute(argv[i + 1]);
+    {
+        std::string error;
+        if (!LoadPayload(error)) {
+            std::fprintf(stderr, "setup: %s\n", error.c_str());
+            return 1;
+        }
+    }
     setup::Options opt = setup::Defaults(root);
-    bool cli = argc > 1, gui = false, fetch_only = false, source_given = false;
+    bool cli = argc > 1, gui = false, fetch_only = false;
     for (int i = 1; i < argc; i++) {
         std::string a = argv[i];
         bool more = i + 1 < argc;
-        if (a == "--target" && more && (std::strcmp(argv[i + 1], "windows") == 0 || std::strcmp(argv[i + 1], "linux") == 0))
-            opt.target = argv[++i];
-        else if (a == "--jobs" && more) opt.jobs = unsigned(std::max(1, std::atoi(argv[++i])));
+        if (a == "--jobs" && more) opt.jobs = unsigned(std::max(1, std::atoi(argv[++i])));
         else if (a == "--keep") opt.keep = true;
         else if (a == "--fetch-toolchain") fetch_only = true;
         else if (a == "--cli") cli = true;
@@ -1083,18 +1169,18 @@ int main(int argc, char** argv) {
             if (!ok) std::fprintf(stderr, "\nsetup: %s\n", error.c_str());
             return ok ? 0 : 1;
         }
-        else if (a == "--source" && more) opt.source = fs::absolute(argv[++i]), source_given = true;
+        else if (a == "--source" && more) opt.source = fs::absolute(argv[++i]);
         else if (a == "--work" && more) opt.work = fs::absolute(argv[++i]);
         else if (a == "--game-dir" && more) opt.game_dir = fs::absolute(argv[++i]);
         else if (a == "--toolchain" && more) opt.toolchain = fs::absolute(argv[++i]);
         else if (a == "--root" && more) i++;
         else if (a == "--help" || a == "-h") {
-            std::printf("usage: setup [--cli] [--source GAME] [--work DIR] [--game-dir DIR] [--target windows|linux] "
+            std::printf("usage: setup [--cli] [--source GAME] [--work DIR] [--game-dir DIR] "
                         "[--jobs N] [--keep] [--toolchain DIR] [--root DIR] [--fetch-toolchain]\n"
                         "  no options: a window with the same choices\n");
             return 0;
         } else {
-            std::fprintf(stderr, "usage: setup [--cli] [--source GAME] [--work DIR] [--game-dir DIR] [--target windows|linux] "
+            std::fprintf(stderr, "usage: setup [--cli] [--source GAME] [--work DIR] [--game-dir DIR] "
                                  "[--jobs N] [--keep] [--toolchain DIR] [--root DIR] [--fetch-toolchain] "
                                  "[--unpack PACKAGE OUTDIR]\n");
             return 2;
@@ -1112,38 +1198,17 @@ int main(int argc, char** argv) {
         g_log = std::fopen((root / "setup.log").string().c_str(), "w");
         Kit k;
         std::string error;
-        fs::path kit_dir = root / "kit";
-        if (!LoadKit(kit_dir, opt.target, k, error)) {
-            Say("%s: %s\n", kit_dir.string().c_str(), error.c_str());
+        fs::path work = opt.work.empty() ? root / "work" : opt.work;
+        if (!LoadKit(work, k, error) || !UnpackKit(work, error)) {
+            Say("%s\n", error.c_str());
             return 1;
         }
-#ifndef _WIN32
-        setenv("ZIG_GLOBAL_CACHE_DIR", (k.toolchain / "cache").c_str(), 1);
-        setenv("ZIG_LOCAL_CACHE_DIR", (kit_dir / "work" / "zig-cache").c_str(), 1);
-#endif
-        if (!EnsureToolchain(kit_dir, k)) return 1;
+        SetEnv("ZIG_GLOBAL_CACHE_DIR", k.toolchain / "cache");
+        SetEnv("ZIG_LOCAL_CACHE_DIR", work / "zig-cache");
+        if (!EnsureToolchain(work, k)) return 1;
         Say("The compiler is in %s\n", k.cxx.parent_path().parent_path().string().c_str());
         if (g_log) std::fclose(g_log);
         return 0;
-    }
-    // the Microsoft Store's install is the default only when assets has no game: offer it, it is 5 GB
-    if (!source_given && !StoreFolder().empty() && Same(opt.source, StoreFolder())) {
-        Say("Found the Microsoft Store version of the game:\n  %s\n", opt.source.string().c_str());
-#ifdef _WIN32
-        bool tty = _isatty(_fileno(stdin));
-#else
-        bool tty = false;
-#endif
-        std::string answer = "n";
-        if (tty) {
-            Say("Use it as your copy? Setup unpacks it into the assets folder (about 5 GB). [Y/n] ");
-            std::getline(std::cin, answer);
-        }
-        if (answer.empty() || answer[0] == 'y' || answer[0] == 'Y') {
-            Say("\n");
-        } else {
-            opt.source = root / "assets";
-        }
     }
     bool ok = setup::Build(opt);
     Pause();

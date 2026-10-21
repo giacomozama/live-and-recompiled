@@ -9,7 +9,7 @@ How to build the port from a checkout and how to package a release. For playing,
 
 - **Your copy of the game**, the supported release (USA disc, SHA-1 `2232a1b3874d67b4bb4cf53a940420d2dab59535`, see the [README](README.md#installation)), as a disc image (`.iso`), extracted files
   (`default.xbe` with `dvddata/` and `media/` beside it), or the digital release's package (`DefaultPackage` and its
-  `DefaultPackage.data` folder), which Setup's unpacker (`xbe_setup --unpack`) unpacks (a Microsoft Store install keeps it in
+  `DefaultPackage.data` folder), which Setup's unpacker (`setup-linux --unpack`) unpacks (a Microsoft Store install keeps it in
   `C:\XboxGames\Conker- Live and Reloaded\Content\Game`; see the README's Installation).
 - **Linux:** `clang`/`clang++`, `lld`, `cmake` (3.25 or newer), `ninja`, `git`, `curl` and `zip`. Add `extract-xiso`
   to build from a disc image, and Wine or Proton to run `Game.exe`. The native port (`--linux`) also needs the X11 and
@@ -46,8 +46,8 @@ builds `game/out/harness/conker`, a headless Linux build with no window or GPU, 
 
 1. Put the extracted game in `game\assets\`: `default.xbe` with `dvddata\` and `media\` beside it. (`build.bat`
    reads the files, not a disc image. `extract-xiso` has Windows builds.) From the digital release's package,
-   `xbe_setup` does the unpacking: build it with `cmake --build game\out\build\llvm-mingw --target xbe_setup`
-   after the first `build.bat`, then `game\out\build\llvm-mingw\xbe_setup.exe --unpack path\to\DefaultPackage game\assets`.
+   `setup-windows.exe` does the unpacking: build it with `cmake --build game\out\build\llvm-mingw --target setup`
+   after the first `build.bat`, then `game\out\build\llvm-mingw\setup-windows.exe --unpack path\to\DefaultPackage game\assets`.
 2. Run `game\build.bat`. It checks for CMake, Ninja and Git, downloads llvm-mingw into `toolchain\` on the first
    run, recompiles the XBE and builds the port. Later runs rebuild only what changed.
 3. Run `game\out\build\llvm-mingw\Game.exe`.
@@ -60,9 +60,9 @@ the compiler.
 
 ## Building a release
 
-A release is `setup-windows.exe`, `setup-linux` and a kit: the
-recompiler, the prebuilt runtime and hooks for Windows and for Linux, the config, the headers the generated code
-includes, and the pinned compilers' addresses and SHA-256s. It contains none of the game.
+A release is `setup-windows.exe` and `setup-linux`, each with its own kit inside (appended to the executable, unpacked into
+its working folder, `work/` beside it, on the first run): the recompiler, the prebuilt runtime and hooks for that OS, the config, the headers
+the generated code includes, and the pinned compiler's address and SHA-256. It contains none of the game.
 
 ### On Linux
 
@@ -72,15 +72,15 @@ Put the supported release in `game/assets/` (any `tools/build.sh` above does tha
 tools/package.sh                         # writes game/out/release/Conker-<version>.zip
 ```
 
-It downloads the pinned llvm-mingw and Zig if they're missing (the pins are in `tools/toolchains.cmake`). It builds
-the kit's Windows half with llvm-mingw, with Zig the Linux `xbe_recomp` (a static musl program that runs on any
-x86_64 distro), and `setup-linux` and the kit's Linux half (`game/out/build/zig-glibc`): Setup's FLTK window (Wayland or X11, picked at run time), which
-needs their headers, and the native port's runtime,
-against glibc 2.31 and Zig's own static libc++, which a player's Zig links the game code with into a `Game` that needs
-only glibc. Its SDL is built against this system's X11, Wayland, ALSA, PulseAudio and PipeWire headers (it loads those
-libraries at run time), which the native build needs anyway. Then it tests the release as a Linux player would: the
-packaged `setup-linux` builds the native `Game`, then `Game.exe` (`--target windows`), from the game in
-`game/assets/`, and the test fails unless both come out. `--no-test` skips the test, and `--test-download` makes it
+It downloads the pinned Zig and llvm-mingw if they're missing (the pins are in `tools/toolchains.cmake`; llvm-mingw
+is only there for `llvm-ar`). Zig builds both halves of the kit: the Windows one (`game/out/build/zig-windows`: Setup,
+`xbe_recomp` and the runtime for `x86_64-windows-gnu`, with Zig's own mingw-w64 and static libc++), and the Linux one
+(`game/out/build/zig-glibc`): `setup-linux` and the native port's runtime against glibc 2.31 and Zig's static libc++.
+Setup's FLTK window (Wayland or X11, picked at run time) and the native SDL need Linux's X11, Wayland, ALSA, PulseAudio
+and PipeWire headers (SDL loads those libraries at run time). A player's Zig links the game code with the same
+libc++ into a `Game` that needs only glibc, or a `Game.exe` that needs only system DLLs. Then it tests the release as
+a Linux player would: the packaged `setup-linux` builds the native `Game` from the game in
+`game/assets/`, and the test fails unless it comes out. `--no-test` skips the test, and `--test-download` makes it
 use the compilers Setup downloads.
 
 The kit only accepts the exact XBE it was packaged from, so package from the supported release.
@@ -88,7 +88,7 @@ The kit only accepts the exact XBE it was packaged from, so package from the sup
 ### On Windows
 
 You need the same CMake, Ninja and Git as for building (running `game\build.bat` once sets them up). Packaging
-builds with the pinned llvm-mingw and Zig, which it downloads into `toolchain\`. Put the supported release in
+builds with the pinned Zig (and llvm-mingw's `llvm-ar`), which it downloads into `toolchain\`. Put the supported release in
 `game\assets\`, then:
 
 ```bat
@@ -98,8 +98,8 @@ tools\package.bat
 It writes `game\out\release\Conker-<version>.zip` and takes the same `--no-test`, `--test-download` and
 `-j N` options. Here the test runs the packaged `setup-windows.exe`.
 
-Zig builds the Linux `xbe_recomp` on Windows too, but `setup-linux` and the kit's Linux half need Linux's headers: a
-release packaged on Windows has `setup-windows.exe` alone, which builds `Game.exe`.
+`setup-linux` and the kit's Linux half need Linux's headers: a release packaged on Windows has `setup-windows.exe`
+alone, which builds `Game.exe`.
 
 Both scripts run `tools/package.cmake`, which can also be run directly: `cmake -P tools/package.cmake`, with
 `-DTEST=OFF`, `-DTEST_DOWNLOAD=ON` or `-DJOBS=N` before `-P`.
@@ -116,8 +116,8 @@ all there is to check: Setup still compares the XBE's SHA-1.
 ```bash
 setup-linux                              # the window: the game (package, image or files), working and game folder
 setup-linux --cli --source DefaultPackage --work DIR --game-dir DIR   # the same on the console
-xbe_setup --unpack DefaultPackage outdir # only the unpacking
-tools/build.sh --store DefaultPackage    # builds xbe_setup first, unpacks into iso/, builds the port
+setup-linux --unpack DefaultPackage outdir # only the unpacking
+tools/build.sh --store DefaultPackage    # builds setup-linux first, unpacks into iso/, builds the port
 ```
 
 It is read only on the package, never touches keys or signatures, and takes about 5 GB of space and a few seconds.

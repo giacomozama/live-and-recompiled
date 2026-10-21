@@ -7,15 +7,14 @@
 
 namespace setup {
 
-// what a player picks; every path empty means "the default" and Defaults() fills them in
+// what a player picks; the game starts empty, the other paths start as Defaults() fills them in
 struct Options {
-    std::filesystem::path root;       // the folder Setup is in: kit/ is below it
+    std::filesystem::path root;       // the folder Setup is in
     std::filesystem::path source;     // the game: a DefaultPackage, a disc image (.iso), a folder with default.xbe, or a
                                       // folder holding one of these
-    std::filesystem::path work;       // where the generated code and the objects go while building
-    std::filesystem::path game_dir;   // where the game is made: its executable, with the game's files in assets/ below it
+    std::filesystem::path work;       // the kit, the compiler and, while building, the generated code and objects
+    std::filesystem::path game_dir;   // where the game is made: its executable, and the game's files in its assets folder
     std::filesystem::path toolchain;  // another copy of the target's compiler (testing)
-    std::string target;               // windows or linux, empty: this system's
     unsigned jobs = 1;
     bool keep = false;                // leave the work folder in place
 };
@@ -23,14 +22,12 @@ struct Options {
 // the kit's own facts: what the window shows before anything is chosen
 struct KitInfo {
     std::string title;
-    bool has_windows = false, has_linux = false;  // the targets it can build
     std::string error;                    // set when the kit cannot be read
 };
 
-KitInfo ReadKit(const std::filesystem::path& root);
+KitInfo ReadKit();
 
-// the default of every empty choice: the game where Setup looks for it (assets, or on Windows the Microsoft Store's
-// install), kit/work, and Setup's own folder
+// the default of every choice but the game: the working folder (work) and the game folder (game), both beside Setup
 Options Defaults(const std::filesystem::path& root);
 
 // what is at opt.source, for the window to show: ok when the build can use it
@@ -44,6 +41,8 @@ Probe CheckSource(const Options& opt);
 // to the sink when there is one.
 bool Build(const Options& opt);
 void SetSink(void (*sink)(const char* text));
+// called from the build's thread with how much of it is done, 0 to 1; it only goes up
+void SetProgress(void (*progress)(double fraction));
 void Cancel();
 bool Cancelled();
 
