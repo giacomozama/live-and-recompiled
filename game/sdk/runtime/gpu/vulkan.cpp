@@ -2425,10 +2425,10 @@ const Spirv* VulkanBackend::Compile(const std::string& src, const char* entry, c
     std::string err;
     PerfScope perf_compile{g_perf.compile};
     g_perf.shaders++;
-    auto t = PerfClock::now();
+    auto t = std::chrono::steady_clock::now();
     bool ok = CompileSpirv(src, entry, profile, code, err);
     // a compile runs on the frame that first needs the shader: log the ones long enough to be seen as a hitch
-    if (double ms = PerfMs(t); ms > 20) LOGR("vulkan: %s compile took %.0f ms (%zu bytes of source)", profile, ms, src.size());
+    if (double ms = SinceMs(t); ms > 20) LOGR("vulkan: %s compile took %.0f ms (%zu bytes of source)", profile, ms, src.size());
     if (!ok) {
         LOGE("vulkan: %s compile failed: %s", profile, err.c_str());
         LOGE("%s", src.c_str());
@@ -2764,10 +2764,10 @@ VkPipeline VulkanBackend::FindPipeline(const PsoKey& k, const DrawShaders& sh) {
             ds = Compile(tess, "ds", "ds_5_0", gh);
         }
         g_perf.psos++;
-        auto t = PerfClock::now();
+        auto t = std::chrono::steady_clock::now();
         pso = CreateDrawPipeline(k, *sh.vs_code, *sh.ps_code, gs, hs, ds);
         if (!pso) LOGE("vulkan: pipeline creation failed");
-        if (double ms = PerfMs(t); ms > 20) LOGR("vulkan: pipeline creation took %.0f ms", ms);
+        if (double ms = SinceMs(t); ms > 20) LOGR("vulkan: pipeline creation took %.0f ms", ms);
     }
     psos_[h] = pso;
     return pso;
@@ -2785,14 +2785,14 @@ void VulkanBackend::StartWarmUp() {
 }
 
 void VulkanBackend::WarmUp(std::vector<shader_record::Entry> entries, shader_record::Programs programs) {
-    auto t = PerfClock::now();
+    auto t = std::chrono::steady_clock::now();
     std::vector<const shader_record::Entry*> shaders, pipelines;
     for (const auto& e : entries) (e.kind == shader_record::kPipeline ? pipelines : shaders).push_back(&e);
     std::unordered_map<uint64_t, WarmShader> made;  // by record id
     WarmShaders(shaders, programs, made);
     size_t psos = WarmPipelines(pipelines, made);
     LOGR("shaders: made %zu of %zu recorded shaders and %zu of %zu pipelines ahead in %.0f ms%s", made.size(),
-         shaders.size(), psos, pipelines.size(), PerfMs(t), warm_.stop ? ", stopped" : "");
+         shaders.size(), psos, pipelines.size(), SinceMs(t), warm_.stop ? ", stopped" : "");
 }
 
 // vertex shaders of programs this machine has not run yet are left out: shader_programs.bin has no words for them

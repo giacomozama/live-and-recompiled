@@ -12,6 +12,7 @@
 #include <thread>
 #include <vector>
 
+#include "core/diag.h"
 #include "gpu/shader_record.h"
 #include "gpu/shaders.h"
 #include "gpu/state.h"
@@ -21,10 +22,19 @@
 
 namespace gpu {
 
-// perf diagnostic: where a frame's time goes, logged once a second with diag::Perf
-using PerfClock = std::chrono::steady_clock;
+// perf diagnostic: where a frame's time goes, logged once a second with diag::Perf. The clock is read only then: tens
+// of reads a draw, and a Windows that times with the ACPI timer instead of the TSC makes each a kernel call of ~6 µs,
+// which alone held a 900-draw frame to 10 FPS
+struct PerfClock {
+    using time_point = std::chrono::steady_clock::time_point;
+    static time_point now() { return diag::Perf() ? std::chrono::steady_clock::now() : time_point{}; }
+};
 inline double PerfMs(PerfClock::time_point t) {
     return std::chrono::duration<double, std::milli>(PerfClock::now() - t).count();
+}
+// the timings logged without XBE_PERF (a slow shader or pipeline, the warm-up), rare enough for the real clock
+inline double SinceMs(std::chrono::steady_clock::time_point t) {
+    return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t).count();
 }
 struct Perf {
     // milliseconds

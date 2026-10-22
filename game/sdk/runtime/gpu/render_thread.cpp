@@ -129,7 +129,8 @@ std::vector<uint8_t> WordKinds() {
 }
 
 using Clock = std::chrono::steady_clock;
-uint64_t Ns(Clock::time_point t) { return uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - t).count()); }
+// XBE_PERF timing, on PerfClock (gpu/draw.h): read only with XBE_PERF, as the title's thread takes it twice a call
+uint64_t Ns(PerfClock::time_point t) { return uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(PerfClock::now() - t).count()); }
 
 class Threaded final : public Backend {
 public:
@@ -153,7 +154,7 @@ public:
     bool Init(uint32_t width, uint32_t height) override { return inner_->Init(width, height); }
 
     void Draw(const State& s, uint32_t prim, uint32_t start, uint32_t count, const uint8_t* indices) override {
-        auto t = Clock::now();
+        auto t = PerfClock::now();
         static const bool perf = diag::Perf();
         uint64_t tsc[6];
         if (perf) tsc[0] = __rdtsc();
@@ -184,7 +185,7 @@ public:
     }
 
     void Clear(const State& s, uint32_t count, const uint8_t* rects, uint32_t flags, uint32_t color, float z, uint32_t stencil) override {
-        auto t = Clock::now();
+        auto t = PerfClock::now();
         SendState(s);
         Cmd c{Op::Clear};
         c.a = count;
@@ -205,7 +206,7 @@ public:
 
     // rects and points are taken now; the copy itself, CPU or GPU, runs in order like the console's
     void Copy(const Surface& src, const Surface& dst, uint32_t count, uint32_t src_rects, uint32_t dst_points) override {
-        auto t = Clock::now();
+        auto t = PerfClock::now();
         Cmd c{Op::Copy};
         c.a = count;
         c.b = count && src_rects ? Scratch(kernel::HostPtr(src_rects), count * 16) : 0;
@@ -222,7 +223,7 @@ public:
     }
 
     void Present(const Surface& front) override {
-        auto t = Clock::now();
+        auto t = PerfClock::now();
         Cmd c{Op::Present};
         c.s1 = front;
         c.s1.header = Header(front.header);
@@ -459,7 +460,7 @@ private:
     void Wait(uint64_t id, WaitFor kind, const char* why) {
         if (!id || done_.load() >= id) return;
         if (id >= cur_->id) id = Submit();
-        auto t = Clock::now();
+        auto t = PerfClock::now();
         {
             std::unique_lock lock(m_);
             done_cv_.wait(lock, [&] { return done_.load() >= id; });
@@ -615,11 +616,11 @@ private:
     void Present(const Batch& b, const Cmd& c) {
         uint32_t pictures = keeping_ ? inner_->Pictures() : 1;
         if (pictures > 1 && frame_draws_) {
-            auto match_start = Clock::now();
+            auto match_start = PerfClock::now();
             interp::Match();
             gen_match_ns_ += Ns(match_start);
         }
-        auto replay_start = Clock::now();
+        auto replay_start = PerfClock::now();
         if (pictures > 1 && frame_draws_) {
             inner_->Keep(c.s1);
             for (uint32_t i = 1; i < pictures; i++) {
@@ -656,7 +657,7 @@ private:
             case Op::State: Apply(state_, b, c, &changed_); break;
             case Op::Draw:
                 if (keeping_ || interp::Tracing()) {
-                    auto t = Clock::now();
+                    auto t = PerfClock::now();
                     interp::Draw(state_, !changed_, c.a, c.b, c.c, c.d ? data : nullptr);
                     gen_match_ns_ += Ns(t);
                     frame_draws_++;
