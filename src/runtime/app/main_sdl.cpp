@@ -421,6 +421,7 @@ int main(int argc, char** argv) {
     ImGuiIO& io = ImGui::GetIO();
     io.IniFilename = nullptr;
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard | ImGuiConfigFlags_NavEnableGamepad;
+    app::UiFont();
     // the renderer's thread starts each frame: the cursor's shape is set on the window thread alone
     io.ConfigFlags |= ImGuiConfigFlags_NoMouseCursorChange;
     ImGui_ImplSDL3_InitForVulkan(app::g_window);

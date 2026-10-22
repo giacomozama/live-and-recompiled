@@ -12,6 +12,9 @@ set(ZYDIS_BUILD_DOXYGEN OFF CACHE BOOL "" FORCE)
 FetchContent_Declare(zydis GIT_REPOSITORY https://github.com/zyantific/zydis.git GIT_TAG v4.1.1 GIT_SHALLOW TRUE)
 FetchContent_Declare(tomlplusplus GIT_REPOSITORY https://github.com/marzer/tomlplusplus.git GIT_TAG v3.4.0 GIT_SHALLOW TRUE)
 FetchContent_Declare(imgui GIT_REPOSITORY https://github.com/ocornut/imgui.git GIT_TAG v1.91.9b GIT_SHALLOW TRUE)
+# Roboto Regular for the overlay, from the static fonts' last release (ImGui ships only Medium)
+FetchContent_Declare(roboto URL https://github.com/googlefonts/roboto-2/releases/download/v2.138/roboto-unhinted.zip
+    URL_HASH SHA256=70f64c718510a601fbcf752aafe644314dacaeb85474dc689c89787c4a72a728 DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
 # SDL3 for controllers, static so it links into the exe
 set(SDL_SHARED OFF CACHE BOOL "" FORCE)
 set(SDL_STATIC ON CACHE BOOL "" FORCE)
@@ -55,7 +58,7 @@ foreach(option ENABLE_OPT ENABLE_GLSLANG_BINARIES ENABLE_SPVREMAPPER ENABLE_PCH 
 endforeach()
 set(ENABLE_HLSL ON CACHE BOOL "" FORCE)
 FetchContent_Declare(glslang GIT_REPOSITORY https://github.com/KhronosGroup/glslang.git GIT_TAG 15.0.0 GIT_SHALLOW TRUE)
-FetchContent_MakeAvailable(zydis tomlplusplus imgui SDL3 miniz vulkan_headers volk vma glslang fltk)
+FetchContent_MakeAvailable(zydis tomlplusplus imgui roboto SDL3 miniz vulkan_headers volk vma glslang fltk)
 
 # Codegen runs on the host. By default it is this build's own xbe_recomp, which works when the target runs here
 # (a native build, or Windows on Windows); cross compiling for another OS, set XBE_CODEGEN_TOOL to a native one's path.
@@ -106,6 +109,18 @@ set(XBE_IMGUI_SOURCES
     ${imgui_SOURCE_DIR}/imgui_tables.cpp
     ${imgui_SOURCE_DIR}/imgui_widgets.cpp
     ${imgui_SOURCE_DIR}/backends/imgui_impl_vulkan.cpp)
+# the overlay's font, Roboto Regular, as bytes in the executable (src/runtime/app/ui_font.cpp)
+set(XBE_UI_FONT ${CMAKE_BINARY_DIR}/xbe_ui_font.cpp)
+file(READ ${roboto_SOURCE_DIR}/Roboto-Regular.ttf XBE_UI_FONT_HEX HEX)
+string(REGEX REPLACE "(..)" "0x\\1," XBE_UI_FONT_HEX "${XBE_UI_FONT_HEX}")
+file(CONFIGURE OUTPUT ${XBE_UI_FONT} @ONLY CONTENT "// generated from Roboto-Regular.ttf
+#include <cstddef>
+namespace app {
+extern const unsigned char kUiFont[] = {${XBE_UI_FONT_HEX}};
+extern const size_t kUiFontSize = sizeof(kUiFont);
+}
+")
+list(APPEND XBE_IMGUI_SOURCES ${XBE_UI_FONT})
 
 # The host's platform: on Windows a Win32 window and XAudio2; elsewhere an SDL3 window and audio (XBE_SDL). Vulkan draws
 # on both. Each side's own sources are left out of the other's build.

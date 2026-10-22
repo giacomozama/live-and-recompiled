@@ -114,6 +114,9 @@ void FinishHandover();  // any thread but the window thread's: opens the game wi
 
 // held around ImGui: the window thread's messages and the renderer's frame
 std::recursive_mutex& UiLock();
+// the overlay's font (ui_font.cpp), sized to the window's height
+void UiFont();        // after ImGui::CreateContext
+bool UiFontResize();  // each frame before ImGui's, UiLock held: true when the font changed size, its texture to make again
 
 // what the game repo defines once
 struct Option {  // a setting in the settings file, flag or value

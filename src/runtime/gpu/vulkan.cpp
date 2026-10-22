@@ -4360,12 +4360,14 @@ void VulkanBackend::BlitFrame(VkImageView src) {
 // the overlay, once a frame: each of the frame's pictures draws it (DrawUi)
 void VulkanBackend::BuildUi() {
     std::lock_guard lock(app::UiLock());
-    ImGui_ImplVulkan_NewFrame();
 #ifdef _WIN32
     ImGui_ImplWin32_NewFrame();
 #else
     app::UiNewFrame();
 #endif
+    // the window's size is known now; a new font waits for the queue to go idle, on a resize alone
+    if (app::UiFontResize()) ImGui_ImplVulkan_CreateFontsTexture();
+    ImGui_ImplVulkan_NewFrame();
     ImGui::NewFrame();
     if (app::kGame.ui) app::kGame.ui(fps_);
     ImGui::Render();
