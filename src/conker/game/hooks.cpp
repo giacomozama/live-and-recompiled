@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <algorithm>
+#include <chrono>
 #include <cstring>
 
 #include "xdk/hle.h"
@@ -37,6 +38,68 @@ X86_FUNC(sub_004E2801) {
         return;
     }
     __imp__sub_004E2801(ctx, base);
+}
+
+// 0x601D0: one step of the hard disk cache copier. The first launch copies wavebanks, packages and textures to Z:
+// (0x35950 and its kind queue them at priority 3), and the intro won't take a skip (0x1F6C50) until that queue is
+// empty. The file pump (0x2A37B0, once a frame) polls the async I/O (0x1F1360), and with none in flight (0x775F50)
+// picks the next job (0x5FFE0) and runs this step, which moves 128 KB between double buffers: one step a frame,
+// about 6 MB/s, so the copy took most of the intro FMVs. Keep stepping within a slice of the frame, completing this
+// thread's reads at once (they land a moment later otherwise), until a step finds nothing to do or I/O is still
+// out. XBE_CONSOLE_CACHE_COPY keeps the one step a frame.
+X86_EXTERN_FUNC(__imp__sub_000601D0);
+X86_FUNC(sub_000601D0) {
+    static const bool console = std::getenv("XBE_CONSOLE_CACHE_COPY") != nullptr;
+    static thread_local bool inner = false;
+    if (console || inner) {
+        __imp__sub_000601D0(ctx, base);
+        return;
+    }
+    using kernel::R32;
+    using clock = std::chrono::steady_clock;
+    constexpr uint32_t kPollFiles = 0x1F1360, kFilesInFlight = 0x775F50, kQueue = 0x5F5F0, kNextJob = 0x5FFE0;
+    const auto end = clock::now() + std::chrono::milliseconds(2);
+    const uint32_t step = ctx.eax;  // the copier: its 0x40000 double buffer at +0, freed when idle
+    inner = true;
+    kernel::CallGuest(ctx, 0x601D0, {});
+    const uint32_t queue = kernel::CallGuest(ctx, kQueue, {});
+    while (clock::now() < end) {
+        kernel::FlushPendingIo();
+        kernel::CallGuest(ctx, kPollFiles, {});
+        if (R32(kFilesInFlight) || base[queue + 0xC]) break;  // a read still out, or the queue paused
+        const bool idle = !R32(step);
+        const uint32_t esi = ctx.esi, edi = ctx.edi;
+        ctx.edi = R32(queue);
+        ctx.esi = R32(queue + 8);
+        kernel::CallGuest(ctx, kNextJob, {});
+        ctx.eax = step;
+        kernel::CallGuest(ctx, 0x601D0, {});
+        ctx.esi = esi, ctx.edi = edi;
+        if (idle && !R32(step)) break;  // nothing under way and nothing picked up
+    }
+    inner = false;
+    kernel::Return(ctx, ctx.eax, 0);
+}
+
+// 0x1F6C50: the intro FMVs' update (eax the intro, [intro] its state, 1 while a movie plays). It runs the file pump
+// and takes a skip (A, B or Start: 0x4110 in the pressed bits at +8 of the pad record 0x4E020 returns) only once the
+// cache copy queue is empty, so a press while the first launch's copy runs was lost and the movies looked
+// unskippable. Remember that press and hand it back each frame until the intro takes it, then put the pad as it was
+// so nothing else reads it a second time.
+X86_EXTERN_FUNC(__imp__sub_001F6C50);
+X86_FUNC(sub_001F6C50) {
+    using kernel::R32;
+    constexpr uint32_t kSkipButtons = 0x4110;
+    static uint32_t intro = 0, held = 0;
+    const uint32_t self = ctx.eax;
+    if (self != intro) intro = self, held = 0;
+    const uint32_t pad = kernel::CallGuest(ctx, 0x4E020, {1});
+    const uint32_t pressed = R32(pad + 8);
+    held |= pressed & kSkipButtons;
+    kernel::W32(pad + 8, pressed | held);
+    __imp__sub_001F6C50(ctx, base);
+    kernel::W32(pad + 8, pressed);
+    if (R32(self) != 1) held = 0;  // skipped, or the movies ended
 }
 
 // 0x4FF00: may LT end the playing in-engine cutscene (edi its slot)? The title allows it only for cutscenes the
