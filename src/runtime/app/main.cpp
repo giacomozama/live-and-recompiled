@@ -171,6 +171,7 @@ bool KeyDown(int vk) { return (GetAsyncKeyState(vk) & 0x8000) != 0; }
 void Post(uint32_t msg) {
     if (g_hwnd) PostMessageW(g_hwnd, msg, 0, 0);
 }
+void Quit() { Post(WM_CLOSE); }
 void SetTitle(const std::wstring& title) { SetWindowTextW(g_hwnd, title.c_str()); }
 bool Focused() { return g_hwnd && GetForegroundWindow() == g_hwnd && !IsIconic(g_hwnd); }
 void HoldMouse(bool) {}  // the game's own mouse code holds it on Windows

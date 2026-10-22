@@ -85,6 +85,7 @@ enum : uint32_t {
 // a key or mouse button held, by Windows virtual-key code (the codes settings.toml's key names stand for); any thread
 bool KeyDown(int vk);
 void Post(uint32_t msg);                    // any thread: msg to GameInfo::message on the window thread
+void Quit();                                // any thread: closes the window, as its X does
 void SetTitle(const std::wstring& title);   // window thread
 bool Focused();                             // window thread: the game window has the keyboard
 void HoldMouse(bool hold);                  // window thread, SDL only: the cursor hidden, motion as kMsgMouseMotion

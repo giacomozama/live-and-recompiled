@@ -273,6 +273,12 @@ bool KeyDown(int vk) {
 
 void Post(uint32_t msg) { PushUser(kUserPost, msg); }
 
+void Quit() {
+    SDL_Event e{};
+    e.type = SDL_EVENT_QUIT;
+    SDL_PushEvent(&e);
+}
+
 void SetTitle(const std::wstring& title) {
     if (g_window) SDL_SetWindowTitle(g_window, Utf8(title).c_str());
 }

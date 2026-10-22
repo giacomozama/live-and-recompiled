@@ -376,7 +376,7 @@ void Draw(double fps) {
         bool keys_shown = false;
         if (ImGui::BeginTabBar("##tabs")) {
             // each tab scrolls on its own above the footer line
-            const float footer = ImGui::GetTextLineHeightWithSpacing() + ImGui::GetStyle().ItemSpacing.y * 2.0f;
+            const float footer = ImGui::GetFrameHeightWithSpacing() + ImGui::GetStyle().ItemSpacing.y * 2.0f;
             auto tab = [&](const char* name) {
                 if (!ImGui::BeginTabItem(name)) return false;
                 ImGui::BeginChild("##page", ImVec2(0, -footer));
@@ -519,7 +519,19 @@ void Draw(double fps) {
         if (!keys_shown) g_rebind = -1;  // leaving the Controls tab cancels a rebind
 
         ImGui::Separator();
+        ImGui::AlignTextToFramePadding();
         ImGui::TextDisabled("Esc toggles this menu; changes save as they are made");
+        const char* quit = "Quit game";
+        ImGui::SameLine(ImGui::GetContentRegionMax().x - ImGui::CalcTextSize(quit).x -
+                        ImGui::GetStyle().FramePadding.x * 2.0f);
+        if (ImGui::Button(quit)) ImGui::OpenPopup("Quit?");
+        if (ImGui::BeginPopupModal("Quit?", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+            ImGui::TextUnformatted("Quit the game? Progress since the last save is lost.");
+            if (ImGui::Button("Quit")) app::Quit();  // only posts: the window thread closes
+            ImGui::SameLine();
+            if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
+            ImGui::EndPopup();
+        }
     }
     ImGui::End();
     if (!keep_open) g_open.store(false);  // the window's X
