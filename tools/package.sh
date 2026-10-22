@@ -7,7 +7,7 @@
 #   tools/package.sh -j N             parallel jobs (default: every core)
 #
 # Output: out/release/Conker/ and out/release/Conker-<version>.zip
-# env overrides: LLVM_MINGW_ROOT (toolchains, default toolchain/)
+# env overrides: XBE_TOOLCHAIN_ROOT (the toolchain, default toolchain/)
 set -euo pipefail
 
 ARGS=()

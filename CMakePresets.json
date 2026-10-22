@@ -3,17 +3,17 @@
     "cmakeMinimumRequired": {"major": 3, "minor": 25, "patch": 0},
     "configurePresets": [
         {
-            "name": "llvm-mingw",
-            "displayName": "llvm-mingw (the pinned compiler; on Windows)",
+            "name": "zig-windows",
+            "displayName": "zig-windows (the pinned Zig; on Windows)",
             "description": "What tools\\build.bat configures. Fetch the compiler first: cmake -P tools/fetch-toolchain.cmake",
             "generator": "Ninja",
-            "binaryDir": "${sourceDir}/out/build/llvm-mingw",
-            "toolchainFile": "${sourceDir}/cmake/llvm-mingw.cmake",
+            "binaryDir": "${sourceDir}/out/build/zig-windows",
+            "toolchainFile": "${sourceDir}/cmake/zig-windows.cmake",
             "cacheVariables": {"CMAKE_BUILD_TYPE": "Release"},
             "condition": {"type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows"}
         }
     ],
     "buildPresets": [
-        {"name": "llvm-mingw", "configurePreset": "llvm-mingw", "targets": ["Game"]}
+        {"name": "zig-windows", "configurePreset": "zig-windows", "targets": ["Game"]}
     ]
 }

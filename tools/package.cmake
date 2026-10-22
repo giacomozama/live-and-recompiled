@@ -33,8 +33,7 @@ function(build dir)
         COMMAND_ERROR_IS_FATAL ANY)
 endfunction()
 
-message(STATUS "[1/5] toolchains")
-toolchain_fetch(LLVM_MINGW ${TOOLCHAIN_HOST})
+message(STATUS "[1/5] toolchain")
 toolchain_fetch(ZIG ${TOOLCHAIN_HOST})
 
 message(STATUS "[2/5] kit")

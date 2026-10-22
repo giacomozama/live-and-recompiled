@@ -1,9 +1,9 @@
 @echo off
-rem build.bat - build Game.exe on Windows with the pinned llvm-mingw, the compiler releases use.
+rem build.bat - build Game.exe on Windows with the pinned Zig, the compiler releases and players use.
 rem
-rem   tools\build.bat          configure (first run: downloads llvm-mingw into toolchain\), recompile, build
+rem   tools\build.bat          configure (first run: downloads Zig into toolchain\), recompile, build
 rem   tools\build.bat --pdb    also write Game.pdb, for Visual Studio or WinDbg (turn it off again with
-rem                            cmake -DXBE_PDB=OFF out\build\llvm-mingw)
+rem                            cmake -DXBE_PDB=OFF out\build\zig-windows)
 rem
 rem Needs CMake 3.25 or newer, Ninja and Git; it offers to install them with winget. No Visual Studio.
 setlocal
@@ -18,7 +18,7 @@ echo   %GAME_TITLE% - build
 echo   ================================================
 echo.
 
-set "OUT=%CD%\out\build\llvm-mingw"
+set "OUT=%CD%\out\build\zig-windows"
 set "PDB="
 if /i "%~1"=="--pdb" set "PDB=1"
 
@@ -41,7 +41,7 @@ if not defined TOOLS_OK (
 for /f "tokens=*" %%v in ('cmake --version ^| findstr /i version') do echo       %%v
 
 echo [2/3] Compiler and configure
-cmake -DWHAT=llvm-mingw -P "%~dp0configure.cmake" || goto :fail
+cmake -DWHAT=zig-windows -P "%~dp0configure.cmake" || goto :fail
 if defined PDB cmake -DXBE_PDB=ON "%OUT%" >nul || goto :fail
 
 echo [3/3] Game code

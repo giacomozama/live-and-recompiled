@@ -16,7 +16,7 @@ How to build the port from a checkout and how to package a release. For playing,
   Wayland development headers SDL builds against (SDL loads the libraries themselves at run time), and a Vulkan 1.3
   driver to run. `ndisasm` is only for `tools/xbe_disasm.py`.
 - **Windows:** CMake (3.25 or newer), Ninja and Git. `tools\build.bat` offers to install whichever is missing with
-  `winget`. No Visual Studio: the compiler is the pinned llvm-mingw on Windows too.
+  `winget`. No Visual Studio: the compiler is the pinned Zig, as on Linux and in releases.
 
 ### On Linux
 
@@ -25,13 +25,13 @@ tools/build.sh --iso path/to/disc.iso    # first build, from a disc image: extra
 tools/build.sh --store path/to/package   # or from the digital release's DefaultPackage (or its folder): unpacks into iso/
 tools/build.sh --game path/to/files      # or from files you already extracted
 tools/build.sh                           # after a change: incremental
-umu-run out/build/llvm-mingw/Game.exe
+umu-run out/build/zig-windows/Game.exe
 tools/build.sh --linux                   # also the native Linux port
 out/build/release/Game
 ```
 
 `--iso`, `--store` and `--game` link `assets/` to the game. You only need them once, or to switch to another copy; the
-build notices the switch and recompiles. The first run downloads the pinned llvm-mingw into `toolchain/` and checks
+build notices the switch and recompiles. The first run downloads the pinned Zig into `toolchain/` and checks
 its SHA-256, then recompiles the whole XBE and compiles the result, so it takes a while. Later builds redo only what
 changed.
 
@@ -46,16 +46,16 @@ builds `out/harness/conker`, a headless Linux build with no window or GPU, for t
 
 1. Put the extracted game in `assets\`: `default.xbe` with `dvddata\` and `media\` beside it. (`tools\build.bat`
    reads the files, not a disc image. `extract-xiso` has Windows builds.) From the digital release's package,
-   `setup-windows.exe` does the unpacking: build it with `cmake --build out\build\llvm-mingw --target setup`
-   after the first `tools\build.bat`, then `out\build\llvm-mingw\setup-windows.exe --unpack path\to\DefaultPackage assets`.
-2. Run `tools\build.bat`. It checks for CMake, Ninja and Git, downloads llvm-mingw into `toolchain\` on the first
+   `setup-windows.exe` does the unpacking: build it with `cmake --build out\build\zig-windows --target setup`
+   after the first `tools\build.bat`, then `out\build\zig-windows\setup-windows.exe --unpack path\to\DefaultPackage assets`.
+2. Run `tools\build.bat`. It checks for CMake, Ninja and Git, downloads Zig into `toolchain\` on the first
    run, recompiles the XBE and builds the port. Later runs rebuild only what changed.
-3. Run `out\build\llvm-mingw\Game.exe`.
+3. Run `out\build\zig-windows\Game.exe`.
 
 It's the same build as on Linux and in releases, with the same compiler and flags. `tools\build.bat --pdb` also writes
 `Game.pdb`, for debugging in Visual Studio or WinDbg; it makes builds slower, and
-`cmake -DXBE_PDB=OFF out\build\llvm-mingw` turns it off again. (`tools/build.sh --pdb` does the same on Linux.)
-IDEs that read `CMakePresets.json` get the same build as the `llvm-mingw` preset, once `tools\build.bat` has fetched
+`cmake -DXBE_PDB=OFF out\build\zig-windows` turns it off again. (`tools/build.sh --pdb` does the same on Linux.)
+IDEs that read `CMakePresets.json` get the same build as the `zig-windows` preset, once `tools\build.bat` has fetched
 the compiler.
 
 ## Building a release
@@ -72,8 +72,7 @@ Put the supported release in `assets/` (any `tools/build.sh` above does that), t
 tools/package.sh                         # writes out/release/Conker-<version>.zip
 ```
 
-It downloads the pinned Zig and llvm-mingw if they're missing (the pins are in `tools/toolchains.cmake`; llvm-mingw
-is only there for `llvm-ar`). Zig builds both halves of the kit: the Windows one (`out/build/zig-windows`: Setup,
+It downloads the pinned Zig if it's missing (the pin is in `tools/toolchains.cmake`). Zig builds both halves of the kit: the Windows one (`out/build/zig-windows`: Setup,
 `xbe_recomp` and the runtime for `x86_64-windows-gnu`, with Zig's own mingw-w64 and static libc++), and the Linux one
 (`out/build/zig-glibc`): `setup-linux` and the native port's runtime against glibc 2.31 and Zig's static libc++.
 Setup's FLTK window (Wayland or X11, picked at run time) and the native SDL need Linux's X11, Wayland, ALSA, PulseAudio
@@ -81,14 +80,14 @@ and PipeWire headers (SDL loads those libraries at run time). A player's Zig lin
 libc++ into a `Game` that needs only glibc, or a `Game.exe` that needs only system DLLs. Then it tests the release as
 a Linux player would: the packaged `setup-linux` builds the native `Game` from the game in
 `assets/`, and the test fails unless it comes out. `--no-test` skips the test, and `--test-download` makes it
-use the compilers Setup downloads.
+use the compiler Setup downloads.
 
 The kit only accepts the exact XBE it was packaged from, so package from the supported release.
 
 ### On Windows
 
 You need the same CMake, Ninja and Git as for building (running `tools\build.bat` once sets them up). Packaging
-builds with the pinned Zig (and llvm-mingw's `llvm-ar`), which it downloads into `toolchain\`. Put the supported release in
+builds with the pinned Zig, which it downloads into `toolchain\`. Put the supported release in
 `assets\`, then:
 
 ```bat

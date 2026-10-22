@@ -1,10 +1,9 @@
 # configure.cmake - the build folders tools/build.sh and tools/package.cmake share, configured the same way.
 #
 #   release     native, Linux only: xbe_recomp, the codegen tool of the other builds there, and the native Linux port
-#   llvm-mingw  Windows, with the pinned llvm-mingw (fetched first if missing): Game.exe and the player kit. On Windows
-#               it runs its own xbe_recomp
+#   zig-windows the Windows port with the pinned Zig (fetched first if missing), on either host: Game.exe, the player
+#               kit's Windows half and setup-windows.exe. On Windows it runs its own xbe_recomp
 #   zig-glibc   the native Linux port with the pinned Zig against glibc, Linux only: the player kit's Linux half
-#   zig-windows the Windows port with the pinned Zig, on either host: the player kit's Windows half and setup-windows.exe
 #
 # Included, it defines xbe_configure(<folder>); run as cmake -DWHAT=<folder> -P tools/configure.cmake, it configures
 # out/build/<folder>. A folder is configured once: delete it to configure it again.
@@ -14,10 +13,7 @@ set(XBE_BUILDS ${XBE_ROOT}/out/build)
 
 function(xbe_configure what)
     set(dir ${XBE_BUILDS}/${what})
-    # the toolchains, also when configured already: the build needs them
-    if(what MATCHES "^(llvm-mingw|zig-glibc|zig-windows)$")
-        toolchain_fetch(LLVM_MINGW ${TOOLCHAIN_HOST})
-    endif()
+    # the toolchain, also when configured already: the build needs it
     if(what MATCHES "^zig-")
         toolchain_fetch(ZIG ${TOOLCHAIN_HOST})
     endif()
@@ -37,13 +33,8 @@ function(xbe_configure what)
         if(NOT CMAKE_HOST_WIN32)
             list(APPEND args ${codegen})
         endif()
-    elseif(what STREQUAL "llvm-mingw")
-        set(args -DCMAKE_TOOLCHAIN_FILE=${XBE_ROOT}/cmake/llvm-mingw.cmake -DLLVM_MINGW=${LLVM_MINGW_HOST_DIR})
-        if(NOT CMAKE_HOST_WIN32)
-            list(APPEND args ${codegen})
-        endif()
     else()
-        message(FATAL_ERROR "xbe_configure: release, llvm-mingw, zig-glibc or zig-windows, not '${what}'")
+        message(FATAL_ERROR "xbe_configure: release, zig-glibc or zig-windows, not '${what}'")
     endif()
     execute_process(COMMAND ${CMAKE_COMMAND} -S ${XBE_ROOT} -B ${dir} -G Ninja -DCMAKE_BUILD_TYPE=Release ${args}
         COMMAND_ERROR_IS_FATAL ANY)

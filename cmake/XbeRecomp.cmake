@@ -60,9 +60,9 @@ FetchContent_MakeAvailable(zydis tomlplusplus imgui SDL3 miniz vulkan_headers vo
 # Codegen runs on the host. By default it is this build's own xbe_recomp, which works when the target runs here
 # (a native build, or Windows on Windows); cross compiling for another OS, set XBE_CODEGEN_TOOL to a native one's path.
 set(XBE_CODEGEN_TOOL "xbe_recomp" CACHE FILEPATH "xbe_recomp used for codegen (a host path when cross compiling)")
-# MinGW builds: CodeView debug info and <target>.pdb beside the exe, for Visual Studio or WinDbg. It is set on the
+# Windows builds: CodeView debug info and <target>.pdb beside the exe, for Visual Studio or WinDbg. It is set on the
 # targets, not the compile flags, so a player kit's compile line (from CMAKE_CXX_FLAGS) stays without it.
-option(XBE_PDB "MinGW builds: write <target>.pdb (slower builds, bigger objects)" OFF)
+option(XBE_PDB "Windows builds: write <target>.pdb (slower builds, bigger objects)" OFF)
 
 # x86 to C++ recompiler
 file(GLOB XBE_RECOMP_SOURCES CONFIGURE_DEPENDS ${XBE_ROOT_DIR}/src/recomp/*.cpp)
@@ -229,7 +229,7 @@ function(add_xbe_image target xbe config partitions game_dir)
     target_link_libraries(${target} PRIVATE "$<LINK_LIBRARY:WHOLE_ARCHIVE,${target}_host>")
     # lld keeps the recompiled weak functions overridable by the host ones
     target_link_options(${target} PRIVATE -fuse-ld=lld -g)
-    if(MINGW OR (WIN32 AND XBE_ZIG_TARGET))
+    if(WIN32)
         target_link_options(${target} PRIVATE -municode)  # the host's entry is wWinMain
         if(XBE_PDB)
             target_compile_options(${target}_host PRIVATE -g -gcodeview)
@@ -241,7 +241,7 @@ function(add_xbe_image target xbe config partitions game_dir)
         XBE_GEN ${GEN})
 endfunction()
 
-# A player kit for an image (MinGW builds, and the Zig glibc builds of cmake/zig-glibc.cmake): everything a player needs
+# A player kit for an image (the Zig builds, cmake/zig-windows.cmake and cmake/zig-glibc.cmake): everything a player needs
 # to build the game from their own copy, and none of the title's code. Staged in <build>/package/<target>, one half of
 # it per build (tools/package.cmake puts the two together):
 #   setup-windows.exe  Setup: finds the game, recompiles, compiles and links <target>.exe (or <target>) beside it
@@ -251,20 +251,19 @@ endfunction()
 #   kit/bin/           xbe_recomp (the packaging script adds the Linux one, and setup-linux beside setup-windows.exe)
 #   kit/config, xdk/   the image's config and the XDK tables
 #   kit/include/       the headers the generated code includes, and image_symbols.h to check the recompile against
-#   kit/lib/<os>/      the prebuilt host (runtime, game hooks, ImGui), glslang, SDL and on Windows the xaudio2 import
-#                      library
+#   kit/lib/<os>/      the prebuilt host (runtime, game hooks, ImGui), glslang and SDL
 # <os>.toml's [toolchain.windows] and [toolchain.linux] (where Setup downloads the compiler of the version the kit was
-# built with, llvm-mingw or Zig, for the host it runs on, and its SHA-256) are added by the packaging script; Setup
+# built with, Zig, for the host it runs on, and its SHA-256) are added by the packaging script; Setup
 # unpacks it into kit/toolchain/<os>-<host> on the first run, and cxx is relative to that.
 # title is the name Setup shows.
 function(add_xbe_player_kit target title)
-    if(WIN32 AND (MINGW OR XBE_ZIG_TARGET))
+    if(NOT XBE_ZIG_TARGET)
+        message(FATAL_ERROR "add_xbe_player_kit needs a Zig build (cmake/zig-windows.cmake or cmake/zig-glibc.cmake): "
+            "players build with the same toolchain")
+    elseif(WIN32)
         set(os windows)
-    elseif(XBE_ZIG_TARGET)
-        set(os linux)
     else()
-        message(FATAL_ERROR "add_xbe_player_kit needs a MinGW build (llvm-mingw) or a Zig glibc one "
-            "(cmake/zig-glibc.cmake): players build with the same toolchain")
+        set(os linux)
     endif()
     get_target_property(xbe ${target} XBE_FILE)
     get_target_property(sha1_file ${target} XBE_SHA1_FILE)
@@ -292,19 +291,12 @@ function(add_xbe_player_kit target title)
     list(APPEND libs ${lib}/libSDL3.a)
     if(os STREQUAL "windows")
         set(sdl_libs m kernel32 user32 gdi32 winmm imm32 ole32 oleaut32 version uuid advapi32 setupapi shell32 dinput8)
-        if(XBE_ZIG_TARGET)
-            # Zig makes the import library of xaudio2_8 itself, and the flags carry its -target as on Linux
-            list(APPEND sdl_libs ${XBE_XAUDIO2})
-            separate_arguments(ldflags NATIVE_COMMAND "${CMAKE_CXX_FLAGS}")
-            list(APPEND ldflags -mwindows -municode -fuse-ld=lld)
-            set(cxx zig)
-            set(driver c++)
-        else()
-            list(APPEND libs ${lib}/libxaudio2.a)
-            set(ldflags -static -mwindows -municode -fuse-ld=lld)
-            set(cxx bin/x86_64-w64-mingw32-clang++)
-            set(driver)
-        endif()
+        # Zig makes the import library of xaudio2_8 itself, and the flags carry its -target as on Linux
+        list(APPEND sdl_libs ${XBE_XAUDIO2})
+        separate_arguments(ldflags NATIVE_COMMAND "${CMAKE_CXX_FLAGS}")
+        list(APPEND ldflags -mwindows -municode -fuse-ld=lld)
+        set(cxx zig)
+        set(driver c++)
     else()
         set(sdl_libs m)
         # the compile flags too, as CMake links: without zig's -target the game would ask for this host's glibc
@@ -338,18 +330,6 @@ function(add_xbe_player_kit target title)
     set(extra)
     if(os STREQUAL "windows")
         set(extra COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:setup> ${pkg}/)
-    endif()
-    if(os STREQUAL "windows" AND NOT XBE_ZIG_TARGET)
-        set(xaudio2 "")
-        foreach(dir ${CMAKE_CXX_IMPLICIT_LINK_DIRECTORIES} ${CMAKE_FIND_ROOT_PATH}/lib)
-            if(NOT xaudio2 AND EXISTS ${dir}/libxaudio2_8.a)
-                set(xaudio2 ${dir}/libxaudio2_8.a)
-            endif()
-        endforeach()
-        if(NOT xaudio2)
-            message(FATAL_ERROR "libxaudio2_8.a not found in the toolchain")
-        endif()
-        list(APPEND extra COMMAND ${CMAKE_COMMAND} -E copy ${xaudio2} ${kit}/${lib}/libxaudio2.a)
     endif()
     set(glslang_libs)
     foreach(l ${XBE_GLSLANG_LIBS})

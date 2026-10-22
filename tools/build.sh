@@ -1,18 +1,18 @@
 #!/usr/bin/env bash
 # build.sh - build the port from a checkout: the game into assets/, the pinned toolchain, Game.exe.
 #
-#   tools/build.sh                 build out/build/llvm-mingw/Game.exe from the game in assets/
+#   tools/build.sh                 build out/build/zig-windows/Game.exe from the game in assets/
 #   tools/build.sh --iso FILE      first extract the disc image into iso/ and link assets/ to it
 #   tools/build.sh --store PATH    the same from the digital release's DefaultPackage (or its folder)
 #   tools/build.sh --game DIR      first link assets/ to an extracted copy (default.xbe, dvddata/, media/)
 #   tools/build.sh --linux         also build the native Linux port, out/build/release/Game (SDL3, Vulkan)
 #   tools/build.sh --harness       also build the Linux headless harness, out/harness/conker
-#   tools/build.sh --pdb           also write Game.pdb (off again: cmake -DXBE_PDB=OFF out/build/llvm-mingw)
+#   tools/build.sh --pdb           also write Game.pdb (off again: cmake -DXBE_PDB=OFF out/build/zig-windows)
 #   tools/build.sh -j N            parallel jobs (default: nproc)
 #
 # The first build recompiles the XBE and compiles the result, which takes a while; later ones are incremental.
 # Game.exe finds assets/ by walking up from its own folder: run it from where it is with Proton or Wine.
-# env overrides: LLVM_MINGW_ROOT (toolchains, default toolchain/), JOBS, EXTRACT_XISO (extract-xiso path)
+# env overrides: XBE_TOOLCHAIN_ROOT (the toolchain, default toolchain/), JOBS, EXTRACT_XISO (extract-xiso path)
 set -euo pipefail
 
 source "$(dirname "${BASH_SOURCE[0]}")/configure.sh"
@@ -96,7 +96,7 @@ configure_rel
 cmake --build "$REL" --target xbe_recomp -j "$JOBS"
 
 echo "[4/4] Game.exe"
-configure_mingw
+configure_windows
 [ "$PDB" = 1 ] && cmake -DXBE_PDB=ON "$BUILD" >/dev/null
 cmake --build "$BUILD" --target Game -j "$JOBS"
 echo "      $BUILD/Game.exe"

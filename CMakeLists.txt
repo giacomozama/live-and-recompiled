@@ -32,8 +32,8 @@ set(XBE_ALSO_SHA1 68a37f0d03d73dabc86a848df5ec1820dd551254)
 # target name = GAME_EXE in tools/build.bat, xbe = GAME_XBE
 add_xbe_image(Game default.xbe game.toml ${GAME_PARTITIONS} game)
 
-# a player kit (MinGW and Zig builds): Setup and everything but the game code, for players to build from their
+# a player kit (the Zig builds): Setup and everything but the game code, for players to build from their
 # own copy
-if(MINGW OR XBE_ZIG_TARGET)
+if(XBE_ZIG_TARGET)
     add_xbe_player_kit(Game "Conker: Live & Reloaded")
 endif()
