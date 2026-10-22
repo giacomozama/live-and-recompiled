@@ -1,7 +1,10 @@
-# Conker: Live & Recompiled
+# Live & Recompiled
 
 An unofficial native PC port of the original Xbox *Conker: Live & Reloaded*, built on a heavily modified version of
 [Xbox XBE Recomp](https://github.com/TGP482/XboxXBERecomp). Currently supports Linux and Windows.
+
+This project is not affiliated with or endorsed by Rare or Microsoft. *Conker* and *Conker: Live & Reloaded* are
+trademarks of their respective owners.
 
 > [!NOTE]
 > This project does not include any game assets. You must provide the files from your own copy of
@@ -51,7 +54,7 @@ For legal reasons, releases contain none of the game. Setup performs the entire 
 - The USA disc release (`default.xbe` SHA-1 = `2232a1b3874d67b4bb4cf53a940420d2dab59535`)
 - The digital XBOX Backwards Compatibility release from the Microsoft Store (equivalent to the USA version).
 
-Download the release for your system, `Conker-<version>-windows.zip` or `Conker-<version>-linux.tar.gz`, and unpack it.
+Download the release for your system, `LiveAndRecompiled-<version>-windows.zip` or `LiveAndRecompiled-<version>-linux.tar.gz`, and unpack it.
 Then it is two steps: run Setup, run the game.
 
 1. **Run Setup**: `setup-windows.exe` on Windows, or `./setup-linux` on Linux (double-click it, or run it in a terminal).

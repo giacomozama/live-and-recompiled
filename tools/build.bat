@@ -7,7 +7,7 @@ rem                            cmake -DXBE_PDB=OFF out\build\zig-windows)
 rem
 rem Needs CMake 3.25 or newer, Ninja and Git; it offers to install them with winget. No Visual Studio.
 setlocal
-set "GAME_TITLE=Conker: Live and Reloaded"
+set "GAME_TITLE=Live and Recompiled"
 set "GAME_XBE=default.xbe"
 set "GAME_EXE=Game"
 title %GAME_TITLE% - Build

@@ -11,8 +11,8 @@
 #   cmake -DJOBS=N -P tools/package.cmake           parallel jobs (default: every core)
 # tools/package.sh and tools/package.bat run it with the same options as flags.
 #
-# Output: out/release/Conker/, out/release/Conker-<version>-windows.zip and, packaged on Linux,
-# out/release/Conker-<version>-linux.tar.gz
+# Output: out/release/LiveAndRecompiled/, out/release/LiveAndRecompiled-<version>-windows.zip and, packaged on Linux,
+# out/release/LiveAndRecompiled-<version>-linux.tar.gz
 # Everything is built with the pinned Zig: Game.exe and setup-windows.exe for Windows, on either host, and on Linux
 # setup-linux and the native game's prebuilt host against glibc 2.31 (the X11, Wayland, Pango, Cairo and audio headers
 # SDL and FLTK need are Linux's): a release packaged on Windows has setup-windows.exe alone. The test runs this host's
@@ -21,7 +21,7 @@ cmake_minimum_required(VERSION 3.25)
 include(${CMAKE_CURRENT_LIST_DIR}/configure.cmake)
 
 set(OUT ${XBE_ROOT}/out/release)
-set(NAME Conker)
+set(NAME LiveAndRecompiled)
 if(NOT DEFINED TEST)
     set(TEST ON)
 endif()
@@ -167,7 +167,7 @@ execute_process(COMMAND git -C ${XBE_ROOT} describe --tags --always --dirty OUTP
 if(code OR NOT version)
     set(version dev)
 endif()
-# one archive per platform, each a Conker/ folder with that platform's Setup: a zip for Windows, and for Linux a
+# one archive per platform, each a LiveAndRecompiled/ folder with that platform's Setup: a zip for Windows, and for Linux a
 # .tar.gz, which keeps setup-linux executable (unzip tools often drop the bit)
 function(archive os setup ext flags format)
     set(file ${OUT}/${NAME}-${version}-${os}.${ext})

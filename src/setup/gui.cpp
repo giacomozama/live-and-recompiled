@@ -408,7 +408,7 @@ int RunWindow(const Options& defaults) {
     Fl::set_boxtype(kInsetBox, DrawInset, 8, 4, 16, 8);
 
     const int W = 780, H = 710, M = 22, label_h = 22, row_h = 32, browse_w = 100;
-    static const char* const kTitle = "Conker: Live & Recompiled Setup";
+    static const char* const kTitle = "Live & Recompiled Setup";
     u.win = new Fl_Double_Window(W, H, kTitle);
     u.win->color(kBackground);
     u.win->callback(OnClose);

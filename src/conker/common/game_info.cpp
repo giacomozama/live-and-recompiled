@@ -25,8 +25,8 @@ void Init() {
 
 // what the runtime asks of the game; strings must be set, hooks may stay null
 const app::GameInfo app::kGame = {
-    .title = L"Conker: Live & Reloaded",  // window and splash
-    .short_title = L"Conker",             // message boxes
+    .title = L"Live & Recompiled",        // window and splash
+    .short_title = L"Live & Recompiled",  // message boxes
     .name = L"Conker",                    // window classes, crash dumps, handover event
     .log = "game",                        // log file prefix
     .settings = "settings.toml",          // settings file beside the exe

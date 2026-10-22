@@ -1,4 +1,4 @@
-# Building Conker: Live & Recompiled from source
+# Building Live & Recompiled from source
 
 How to build the port from a checkout and how to package a release. For playing, see the
 [README](README.md).
@@ -84,7 +84,7 @@ the generated code includes, and the pinned compiler's address and SHA-256. It c
 Put the supported release in `assets/` (any `tools/build.sh` above does that), then:
 
 ```bash
-tools/package.sh                         # writes out/release/Conker-<version>-windows.zip and -linux.tar.gz
+tools/package.sh                         # writes out/release/LiveAndRecompiled-<version>-windows.zip and -linux.tar.gz
 ```
 
 It downloads the pinned Zig if it's missing (the pin is in `tools/toolchains.cmake`). Zig builds both halves of the kit: the Windows one (`out/build/zig-windows`: Setup,
@@ -109,7 +109,7 @@ builds with the pinned Zig, which it downloads into `toolchain\`. Put the suppor
 tools\package.bat
 ```
 
-It writes `out\release\Conker-<version>-windows.zip` and takes the same `--no-test`, `--test-download` and
+It writes `out\release\LiveAndRecompiled-<version>-windows.zip` and takes the same `--no-test`, `--test-download` and
 `-j N` options. Here the test runs the packaged `setup-windows.exe`.
 
 `setup-linux` and the kit's Linux half need Linux's headers: a release packaged on Windows has `setup-windows.exe`
