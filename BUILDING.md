@@ -1,7 +1,20 @@
 # Building Conker: Live & Recompiled from source
 
 How to build the port from a checkout and how to package a release. For playing, see the
-[README](README.md); for why releases are built this way, see its "Two ways to get the game".
+[README](README.md).
+
+## Where things are
+
+| Path | What it is |
+|---|---|
+| `src/runtime/` | The Xbox kernel, the XDK libraries (`xdk/`, with the XDK 1.0.5849 tables in `xdk/5849/`), the Vulkan renderer, audio and the host app |
+| `src/conker/` | The game: `game.toml` (the recompiler's config), `common/` and `game/` (hooks, patches, input, the Esc menu) |
+| `src/recomp/`, `src/symbols/` | `xbe_recomp`, the x86 to C++ recompiler, and `xbe_symbols`, which writes a new title's config |
+| `src/setup/` | Setup, the player's build: unpacks the game, recompiles it and links it |
+| `src/harness/` | A headless Linux build for testing, with no window or GPU |
+| `cmake/` | `XbeRecomp.cmake` (the build of all of the above) and the Zig toolchain files |
+| `tools/` | `build.sh` and `build.bat`, `package.sh` and `package.bat`, the toolchain pin and a few Python helpers |
+| `assets/`, `generated/`, `out/`, `toolchain/` | Not in git: the game, the recompiled code, the build folders and the downloaded Zig |
 
 ## Building the port
 
@@ -11,7 +24,8 @@ How to build the port from a checkout and how to package a release. For playing,
   (`default.xbe` with `dvddata/` and `media/` beside it), or the digital release's package (`DefaultPackage` and its
   `DefaultPackage.data` folder), which Setup's unpacker (`setup-linux --unpack`) unpacks (a Microsoft Store install keeps it in
   `C:\XboxGames\Conker- Live and Reloaded\Content\Game`; see the README's Installation).
-- **Linux:** `clang`/`clang++`, `lld`, `cmake` (3.25 or newer), `ninja`, `git`, `curl` and `zip`. Add `extract-xiso`
+- **Linux:** `clang`/`clang++`, `lld`, `cmake` (3.25 or newer), `ninja` and `git` (and `curl` for packaging's
+  `--test-download`). Add `extract-xiso`
   to build from a disc image, and Wine or Proton to run `Game.exe`. The native port (`--linux`) also needs the X11 and
   Wayland development headers SDL builds against (SDL loads the libraries themselves at run time), and a Vulkan 1.3
   driver to run. `ndisasm` is only for `tools/xbe_disasm.py`.
@@ -46,8 +60,9 @@ builds `out/harness/conker`, a headless Linux build with no window or GPU, for t
 
 1. Put the extracted game in `assets\`: `default.xbe` with `dvddata\` and `media\` beside it. (`tools\build.bat`
    reads the files, not a disc image. `extract-xiso` has Windows builds.) From the digital release's package,
-   `setup-windows.exe` does the unpacking: build it with `cmake --build out\build\zig-windows --target setup`
-   after the first `tools\build.bat`, then `out\build\zig-windows\setup-windows.exe --unpack path\to\DefaultPackage assets`.
+   `setup-windows.exe` does the unpacking. Without the game the build configures only the tools, so build it with
+   `cmake -DWHAT=zig-windows -P tools\configure.cmake` and `cmake --build out\build\zig-windows --target setup`,
+   then run `out\build\zig-windows\setup-windows.exe --unpack path\to\DefaultPackage assets`.
 2. Run `tools\build.bat`. It checks for CMake, Ninja and Git, downloads Zig into `toolchain\` on the first
    run, recompiles the XBE and builds the port. Later runs rebuild only what changed.
 3. Run `out\build\zig-windows\Game.exe`.
@@ -109,8 +124,8 @@ The digital, backwards compatible release is a small `DefaultPackage` file and a
 `Data0000`, `Data0001`, ... It's an Xbox 360 Games-on-Demand package: the disc's file system cut into 4 KiB blocks
 with a table of hashes after every 204 of them. Nothing in it is encrypted, so Setup only needs to
 leave the hash tables out and find where the files start. `src/setup/store.cpp` has the layout. It writes the same 881
-files, byte for byte, as extracting the disc does, `default.xbe` included, so the supported-release rule is
-all there is to check: Setup still compares the XBE's SHA-1.
+files as extracting the disc does, and Setup still compares the XBE's SHA-1: the disc's, or the Microsoft Store
+`default.xbe`'s, which has the same code and data and only a different header (`XBE_ALSO_SHA1` in `CMakeLists.txt`).
 
 ```bash
 setup-linux                              # the window: the game (package, image or files), working and game folder
