@@ -16,7 +16,7 @@ Needs clang and the game's generated code. The game repo supplies stand ins for 
 ## Build
 
 ```
-harness/build.sh -r <repo> -g <generated/image> -o <out> [-n exe] [-x regex]... [-e source]... [-G gen objects]
+src/harness/build.sh -r <repo> -g <generated/image> -o <out> [-n exe] [-x regex]... [-e source]... [-G gen objects]
 ```
 
 `-x` leaves sources out, `-e` adds sources, `-G` shares the generated objects between builds.
@@ -24,7 +24,7 @@ harness/build.sh -r <repo> -g <generated/image> -o <out> [-n exe] [-x regex]... 
 ## Run
 
 ```
-harness/run.sh -x <exe> -g <game folder> -o <out> [-t seconds] [-s script]... [-n instances] [-d seconds]
+src/harness/run.sh -x <exe> -g <game folder> -o <out> [-t seconds] [-s script]... [-n instances] [-d seconds]
 ```
 
 Instance k runs in `<out>/k` with its own `logs`, `hdd` and `cap`. With more than one instance each gets

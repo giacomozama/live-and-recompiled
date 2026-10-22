@@ -109,7 +109,7 @@ Both scripts run `tools/package.cmake`, which can also be run directly: `cmake -
 The digital, backwards compatible release is a small `DefaultPackage` file and a `DefaultPackage.data` folder of
 `Data0000`, `Data0001`, ... It's an Xbox 360 Games-on-Demand package: the disc's file system cut into 4 KiB blocks
 with a table of hashes after every 204 of them. Nothing in it is encrypted, so Setup only needs to
-leave the hash tables out and find where the files start. `tools/setup/store.cpp` has the layout. It writes the same 881
+leave the hash tables out and find where the files start. `src/setup/store.cpp` has the layout. It writes the same 881
 files, byte for byte, as extracting the disc does, `default.xbe` included, so the supported-release rule is
 all there is to check: Setup still compares the XBE's SHA-1.
 

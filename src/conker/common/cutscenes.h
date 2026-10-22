@@ -1,6 +1,6 @@
 #pragma once
 
-// In-engine cutscene skipping (src/game/hooks.cpp, the hook on 0x4FF00).
+// In-engine cutscene skipping (src/conker/game/hooks.cpp, the hook on 0x4FF00).
 namespace cutscenes {
 
 // settings.toml skippable_cutscenes: LT skips any in-engine cutscene, seen or not, not just the ones seen this

@@ -1,6 +1,6 @@
 #pragma once
 
-// Glass (src/common/glass.cpp): the program that draws rigid props by a sphere map of their normal, the beer bottles
+// Glass (src/conker/common/glass.cpp): the program that draws rigid props by a sphere map of their normal, the beer bottles
 // the soldiers hold in the menu's tavern, gets the renderer's gpu::ProgramShading.
 namespace glass {
 

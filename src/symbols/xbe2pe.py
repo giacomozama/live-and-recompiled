@@ -1,5 +1,5 @@
 # Flat PE of an XBE for Ghidra: the image at its load address, recompiler functions and config names as exports.
-# usage, from the game repo after a build: python tools/symbols/xbe2pe.py config/game.toml game.exe
+# usage, from the game repo after a build: python src/symbols/xbe2pe.py config/game.toml game.exe
 import re
 import struct
 import sys

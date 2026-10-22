@@ -3,7 +3,7 @@
 #include <cstdint>
 
 // ImGui settings menu and fps readout, wired through GameInfo::ui and GameInfo::message (see game_info.cpp);
-// implemented in src/game/ui.cpp. That file compiles to stubs on the headless harness, where ImGui and the
+// implemented in src/conker/game/ui.cpp. That file compiles to stubs on the headless harness, where ImGui and the
 // real Win32 headers are absent, so nothing here may pull either in.
 namespace ui {
 

@@ -1,6 +1,6 @@
 #pragma once
 
-// Metal (src/common/metal.cpp): the character programs that light a material by the character's lighting map too, the
+// Metal (src/conker/common/metal.cpp): the character programs that light a material by the character's lighting map too, the
 // game's shiny parts (the goblins' armour), get the renderer's gpu::ProgramShading.
 namespace metal {
 

@@ -18,7 +18,7 @@
 // Every action can be rebound, to up to two keys or mouse buttons: in the menu (Esc), or in settings.toml's [keys]
 // table by key name (move_up = 'W', a = ['Space', 'Mouse 1'], 'none' unbinds).
 //
-// With mouse look on (src/game/mouse.cpp) the mouse also turns the camera, over the camera keys while it moves.
+// With mouse look on (src/conker/game/mouse.cpp) the mouse also turns the camera, over the camera keys while it moves.
 #include <algorithm>
 #include <cctype>
 #include <cstdint>

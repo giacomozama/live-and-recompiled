@@ -109,6 +109,6 @@ fi
 
 if [ "$HARNESS" = 1 ]; then
     echo "[+] headless harness"
-    (cd "$ROOT" && JOBS="$JOBS" bash harness/build.sh -r . -g generated/game -o out/harness -n conker)
+    (cd "$ROOT" && JOBS="$JOBS" bash src/harness/build.sh -r . -g generated/game -o out/harness -n conker)
     echo "      $ROOT/out/harness/conker"
 fi

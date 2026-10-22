@@ -5,7 +5,7 @@
 
 struct X86Context;
 
-// Debug warps (src/game/warp.cpp): start the game at any checkpoint, load any level at a spawn point, play any
+// Debug warps (src/conker/game/warp.cpp): start the game at any checkpoint, load any level at a spawn point, play any
 // in-engine cutscene. The F1 menu's Debug tab and the XBE_WARP / XBE_CUTSCENE variables post requests; the main
 // thread carries them out at the next frame the game can take a level change.
 namespace warp {

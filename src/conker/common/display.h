@@ -2,7 +2,7 @@
 
 #include <cstdint>
 
-// Frame rate and aspect patches (src/game/display.cpp), after the community widescreen and 60 FPS XBE patches.
+// Frame rate and aspect patches (src/conker/game/display.cpp), after the community widescreen and 60 FPS XBE patches.
 namespace display {
 
 // settings.toml frame_rate, the pictures shown a second: 30 is the console's (present every second blank), 60 the

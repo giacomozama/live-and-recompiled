@@ -63,31 +63,31 @@ set(XBE_CODEGEN_TOOL "xbe_recomp" CACHE FILEPATH "xbe_recomp used for codegen (a
 option(XBE_PDB "MinGW builds: write <target>.pdb (slower builds, bigger objects)" OFF)
 
 # x86 to C++ recompiler
-file(GLOB XBE_RECOMP_SOURCES CONFIGURE_DEPENDS ${XBE_ROOT_DIR}/tools/recomp/*.cpp)
+file(GLOB XBE_RECOMP_SOURCES CONFIGURE_DEPENDS ${XBE_ROOT_DIR}/src/recomp/*.cpp)
 add_executable(xbe_recomp ${XBE_RECOMP_SOURCES})
-target_include_directories(xbe_recomp PRIVATE ${XBE_ROOT_DIR}/runtime ${XBE_ROOT_DIR}/tools/recomp)
+target_include_directories(xbe_recomp PRIVATE ${XBE_ROOT_DIR}/src/runtime ${XBE_ROOT_DIR}/src/recomp)
 target_compile_definitions(xbe_recomp PRIVATE _CRT_SECURE_NO_WARNINGS)
 target_link_libraries(xbe_recomp PRIVATE Zydis tomlplusplus::tomlplusplus)
 
 # XDK signature scanner that writes a new title's config
-add_executable(xbe_symbols ${XBE_ROOT_DIR}/tools/symbols/main.cpp)
-target_include_directories(xbe_symbols PRIVATE ${XBE_ROOT_DIR}/runtime)
+add_executable(xbe_symbols ${XBE_ROOT_DIR}/src/symbols/main.cpp)
+target_include_directories(xbe_symbols PRIVATE ${XBE_ROOT_DIR}/src/runtime)
 target_compile_definitions(xbe_symbols PRIVATE _CRT_SECURE_NO_WARNINGS)
 target_link_libraries(xbe_symbols PRIVATE Zydis tomlplusplus::tomlplusplus)
 
 # Setup, the player-side build: finds the game, recompiles it and links it with a prebuilt host (add_xbe_player_kit),
 # from a window or the command line
-add_executable(setup ${XBE_ROOT_DIR}/tools/setup/main.cpp ${XBE_ROOT_DIR}/tools/setup/gui.cpp
-    ${XBE_ROOT_DIR}/tools/setup/store.cpp
-    ${XBE_ROOT_DIR}/runtime/kernel/disc.cpp
-    ${XBE_ROOT_DIR}/runtime/kernel/crypto.cpp)
+add_executable(setup ${XBE_ROOT_DIR}/src/setup/main.cpp ${XBE_ROOT_DIR}/src/setup/gui.cpp
+    ${XBE_ROOT_DIR}/src/setup/store.cpp
+    ${XBE_ROOT_DIR}/src/runtime/kernel/disc.cpp
+    ${XBE_ROOT_DIR}/src/runtime/kernel/crypto.cpp)
 # built under its final name: setup-windows.exe, setup-linux
 if(WIN32)
     set_target_properties(setup PROPERTIES OUTPUT_NAME setup-windows)
 else()
     set_target_properties(setup PROPERTIES OUTPUT_NAME setup-linux)
 endif()
-target_include_directories(setup PRIVATE ${XBE_ROOT_DIR}/runtime)
+target_include_directories(setup PRIVATE ${XBE_ROOT_DIR}/src/runtime)
 target_compile_definitions(setup PRIVATE _CRT_SECURE_NO_WARNINGS)
 target_link_libraries(setup PRIVATE tomlplusplus::tomlplusplus miniz fltk $<$<PLATFORM_ID:Windows>:winhttp>)
 # Zig builds use its own libc headers, so the X11 and Wayland ones FLTK includes are found after them, as for SDL (cmake/zig-glibc.cmake)
@@ -107,24 +107,24 @@ set(XBE_IMGUI_SOURCES
 
 # The host's platform: on Windows a Win32 window and XAudio2; elsewhere an SDL3 window and audio (XBE_SDL). Vulkan draws
 # on both. Each side's own sources are left out of the other's build.
-file(GLOB XBE_RUNTIME_SOURCES CONFIGURE_DEPENDS ${XBE_ROOT_DIR}/runtime/*/*.cpp)
+file(GLOB XBE_RUNTIME_SOURCES CONFIGURE_DEPENDS ${XBE_ROOT_DIR}/src/runtime/*/*.cpp)
 if(WIN32)
     list(APPEND XBE_IMGUI_SOURCES ${imgui_SOURCE_DIR}/backends/imgui_impl_win32.cpp)
     list(FILTER XBE_RUNTIME_SOURCES EXCLUDE REGEX "/(app/main_sdl|app/crash_posix|app/system_info_posix|audio/sdl_audio)\\.cpp$")
-    set(XBE_SDL_SOURCES ${XBE_ROOT_DIR}/runtime/core/input.cpp)
+    set(XBE_SDL_SOURCES ${XBE_ROOT_DIR}/src/runtime/core/input.cpp)
 else()
     list(APPEND XBE_IMGUI_SOURCES ${imgui_SOURCE_DIR}/backends/imgui_impl_sdl3.cpp)
     list(FILTER XBE_RUNTIME_SOURCES EXCLUDE REGEX
         "/(app/main|app/crash|app/splash|app/handover|app/system_info|audio/xaudio2)\\.cpp$")
-    set(XBE_SDL_SOURCES ${XBE_ROOT_DIR}/runtime/core/input.cpp ${XBE_ROOT_DIR}/runtime/app/main_sdl.cpp
-        ${XBE_ROOT_DIR}/runtime/audio/sdl_audio.cpp ${imgui_SOURCE_DIR}/backends/imgui_impl_sdl3.cpp)
+    set(XBE_SDL_SOURCES ${XBE_ROOT_DIR}/src/runtime/core/input.cpp ${XBE_ROOT_DIR}/src/runtime/app/main_sdl.cpp
+        ${XBE_ROOT_DIR}/src/runtime/audio/sdl_audio.cpp ${imgui_SOURCE_DIR}/backends/imgui_impl_sdl3.cpp)
 endif()
 # SDL's headers go to the code that uses it alone (it is linked LINK_ONLY), so the generated sources' compile line stays
 # the same
 set_source_files_properties(${XBE_SDL_SOURCES} PROPERTIES INCLUDE_DIRECTORIES "${sdl3_SOURCE_DIR}/include")
 # Vulkan's and glslang's the same way, to the renderer and ImGui's backend for it; ENABLE_HLSL is glslang's own define
 set(XBE_VULKAN_INCLUDES ${vulkan_headers_SOURCE_DIR}/include ${volk_SOURCE_DIR})
-set_source_files_properties(${XBE_ROOT_DIR}/runtime/gpu/vulkan.cpp PROPERTIES
+set_source_files_properties(${XBE_ROOT_DIR}/src/runtime/gpu/vulkan.cpp PROPERTIES
     INCLUDE_DIRECTORIES "${XBE_VULKAN_INCLUDES};${vma_SOURCE_DIR}/include;${glslang_SOURCE_DIR};${glslang_BINARY_DIR}/include"
     COMPILE_DEFINITIONS "ENABLE_HLSL;IMGUI_IMPL_VULKAN_USE_VOLK" COMPILE_OPTIONS -Wno-nullability-completeness)
 set_source_files_properties(${imgui_SOURCE_DIR}/backends/imgui_impl_vulkan.cpp PROPERTIES
@@ -146,7 +146,8 @@ else()
 endif()
 
 # One executable per recompiled image: its code from config/<config> (partitions as that config sets them),
-# the runtime, XBE_HOST_SOURCES shared by every image of the game, and src/<game_dir> hooks only this image has.
+# the runtime, XBE_HOST_SOURCES shared by every image of the game, and <XBE_GAME_SRC>/<game_dir> hooks only this
+# image has. XBE_GAME_SRC (set by the project) is the game's source folder, also its include root.
 # Expects assets/<xbe> and the config's out = "generated/<game_dir>". At run time the game may be a disc image instead.
 function(add_xbe_image target xbe config partitions game_dir)
     set(GEN ${CMAKE_CURRENT_SOURCE_DIR}/generated/${game_dir})
@@ -187,7 +188,7 @@ function(add_xbe_image target xbe config partitions game_dir)
     add_custom_target(recompile_${target} DEPENDS ${GEN}/codegen.stamp)
     add_dependencies(recompile_${target} ${target}_xbe_sha1)
     set_source_files_properties(${GEN_SOURCES} PROPERTIES GENERATED TRUE COMPILE_OPTIONS "${XBE_GEN_COMPILE_OPTIONS}")
-    file(GLOB GAME_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/src/${game_dir}/*.cpp)
+    file(GLOB GAME_SOURCES CONFIGURE_DEPENDS ${XBE_GAME_SRC}/${game_dir}/*.cpp)
     # the xbe's SHA-1 in the executable: it checks the game it finds is the release it was made from
     set(XBE_HASH ${CMAKE_CURRENT_BINARY_DIR}/${target}_xbe.cpp)
     # XBE_ALSO_SHA1 (set by the project): releases whose code and data are the same and only the header differs, as
@@ -204,13 +205,13 @@ function(add_xbe_image target xbe config partitions game_dir)
     # (a player-side build, see add_xbe_player_kit).
     add_library(${target}_host STATIC ${XBE_RUNTIME_SOURCES} ${XBE_HOST_SOURCES} ${GAME_SOURCES} ${XBE_IMGUI_SOURCES} ${XBE_HASH})
     add_dependencies(${target}_host recompile_${target})
-    target_include_directories(${target}_host PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src ${XBE_ROOT_DIR}/runtime ${GEN})
+    target_include_directories(${target}_host PUBLIC ${XBE_GAME_SRC} ${XBE_ROOT_DIR}/src/runtime ${GEN})
     target_include_directories(${target}_host SYSTEM PRIVATE ${imgui_SOURCE_DIR})
     target_compile_options(${target}_host PUBLIC -fno-strict-aliasing)
     target_compile_definitions(${target}_host PUBLIC ${XBE_HOST_DEFINITIONS})
     target_link_libraries(${target}_host PUBLIC tomlplusplus::tomlplusplus $<LINK_ONLY:SDL3::SDL3-static> ${XBE_HOST_SYSTEM_LIBS}
         $<$<PLATFORM_ID:Windows>:${XBE_XAUDIO2}>)
-    # the game's hooks see an SDL window (src/game), the runtime's input code hands it the controllers
+    # the game's hooks see an SDL window (src/conker/game), the runtime's input code hands it the controllers
     if(NOT WIN32)
         target_compile_definitions(${target}_host PRIVATE XBE_SDL)
     endif()
@@ -220,7 +221,7 @@ function(add_xbe_image target xbe config partitions game_dir)
 
     add_executable(${target} WIN32 ${GEN_SOURCES})
     add_dependencies(${target} recompile_${target})
-    target_include_directories(${target} PRIVATE ${XBE_ROOT_DIR}/runtime ${GEN})
+    target_include_directories(${target} PRIVATE ${XBE_ROOT_DIR}/src/runtime ${GEN})
     # whole: an archive member is otherwise only taken for a symbol nothing defines yet, and every function the host
     # replaces already has the recompiled weak definition, so the replacements would be left out
     target_link_libraries(${target} PRIVATE "$<LINK_LIBRARY:WHOLE_ARCHIVE,${target}_host>")
@@ -363,7 +364,7 @@ function(add_xbe_player_kit target title)
             -DOUT=${kit}/kit.toml -P ${XBE_ROOT_DIR}/cmake/xbe_sha1.cmake
         COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_CURRENT_SOURCE_DIR}/config/${config} ${kit}/config/
         COMMAND ${CMAKE_COMMAND} -E copy_directory ${XBE_ROOT_DIR}/xdk ${kit}/xdk
-        COMMAND ${CMAKE_COMMAND} -E copy ${XBE_ROOT_DIR}/runtime/cpu/x86_ops.h ${XBE_ROOT_DIR}/runtime/cpu/x86_context.h
+        COMMAND ${CMAKE_COMMAND} -E copy ${XBE_ROOT_DIR}/src/runtime/cpu/x86_ops.h ${XBE_ROOT_DIR}/src/runtime/cpu/x86_context.h
             ${kit}/include/cpu/
         COMMAND ${CMAKE_COMMAND} -E copy ${gen}/image_symbols.h ${kit}/include/
         COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:${target}_host> $<TARGET_FILE:SDL3::SDL3-static> ${kit}/${lib}/

@@ -6,7 +6,7 @@ namespace input {
 struct Pad;
 }
 
-// Mouse look: the mouse turns the camera as the right stick does (src/game/mouse.cpp). The window thread reads raw
+// Mouse look: the mouse turns the camera as the right stick does (src/conker/game/mouse.cpp). The window thread reads raw
 // mouse motion and holds the cursor in the window; keyboard::Pad hands the motion to the game as right stick.
 namespace mouse {
 

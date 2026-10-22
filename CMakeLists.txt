@@ -9,8 +9,10 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # the recompiler, the runtime and add_xbe_image()
 include(cmake/XbeRecomp.cmake)
 
-file(GLOB XBE_HOST_SOURCES CONFIGURE_DEPENDS src/*/*.cpp)
-list(FILTER XBE_HOST_SOURCES EXCLUDE REGEX "/src/game/")
+# the game's own code: src/conker/common for every image, src/conker/game for this one (add_xbe_image)
+set(XBE_GAME_SRC ${CMAKE_CURRENT_SOURCE_DIR}/src/conker)
+file(GLOB XBE_HOST_SOURCES CONFIGURE_DEPENDS ${XBE_GAME_SRC}/*/*.cpp)
+list(FILTER XBE_HOST_SOURCES EXCLUDE REGEX "/src/conker/game/")
 
 # partitions as xbe_symbols wrote them into config/game.toml
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS config/game.toml)

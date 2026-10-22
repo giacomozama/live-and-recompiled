@@ -291,7 +291,7 @@ D3D_Device                  = 0x547540
 # this object itself; library internals that guard on its flags then find a valid (zeroed) object
 D3D_FvfShader               = 0x547040
 # The library's own device init (miniport at device+0x1C28 + NV2A bring-up) does real hardware waits the
-# runtime cannot answer, so it is NOT run; the internals that need it are host-replaced in src/game/hooks.cpp.
+# runtime cannot answer, so it is NOT run; the internals that need it are host-replaced in src/conker/game/hooks.cpp.
 # D3D_DeviceInit            = 0x53E5D0
 # D3D_InitSize0             = 0x54A8B8
 # D3D_InitSize1             = 0x54A8BC
@@ -336,7 +336,7 @@ D3D_MakeRequestedSpace = ["eax", "stack"]  # (Size, ...)
 # ppReturnedDeviceInterface in ecx; a[0..2] are unused by the host so they borrow free registers.
 Direct3D_CreateDevice = ["ebx", "edx", "esi", "eax", "stack", "ecx"]
 
-# frame rate and aspect patches (src/game/display.cpp)
+# frame rate and aspect patches (src/conker/game/display.cpp)
 [[hook]]
 at = 0x2A7CBC  # frame timer: the frame's ticks from the time it took, above 30 FPS
 call = "ConkerFrameTicks"

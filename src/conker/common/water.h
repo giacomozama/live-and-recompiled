@@ -1,6 +1,6 @@
 #pragma once
 
-// Water (src/common/water.cpp): the vertex program that draws rivers and ponds over a copy of the screen gets the
+// Water (src/conker/common/water.cpp): the vertex program that draws rivers and ponds over a copy of the screen gets the
 // renderer's gpu::ProgramShading.
 namespace water {
 

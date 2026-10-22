@@ -7,7 +7,7 @@ struct Pad;
 }
 
 // Keyboard as a controller on port 0, so the game can be played without a gamepad. Wired through
-// GameInfo::pad (see game_info.cpp); implemented in src/game/keyboard.cpp.
+// GameInfo::pad (see game_info.cpp); implemented in src/conker/game/keyboard.cpp.
 namespace keyboard {
 
 // what a key can drive: a stick direction or a controller button

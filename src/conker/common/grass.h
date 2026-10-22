@@ -1,6 +1,6 @@
 #pragma once
 
-// Grass patches (src/game/hooks.cpp, the wrapper of 0x1A9540).
+// Grass patches (src/conker/game/hooks.cpp, the wrapper of 0x1A9540).
 namespace grass {
 
 // settings.toml grass_wind: patches fading out in the distance sway in the wind like the near ones, instead of
