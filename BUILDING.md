@@ -21,17 +21,17 @@ How to build the port from a checkout and how to package a release. For playing,
 ### On Linux
 
 ```bash
-tools/build.sh --iso path/to/disc.iso    # first build, from a disc image: extracts it into iso/
-tools/build.sh --store path/to/package   # or from the digital release's DefaultPackage (or its folder): unpacks into iso/
-tools/build.sh --game path/to/files      # or from files you already extracted
+tools/build.sh --iso path/to/disc.iso    # first build, from a disc image: extracts it into assets/
+tools/build.sh --store path/to/package   # or from the digital release's DefaultPackage (or its folder): unpacks into assets/
+tools/build.sh --game path/to/files      # or from files you already extracted: copies them into assets/
 tools/build.sh                           # after a change: incremental
 umu-run out/build/zig-windows/Game.exe
 tools/build.sh --linux                   # also the native Linux port
 out/build/release/Game
 ```
 
-`--iso`, `--store` and `--game` link `assets/` to the game. You only need them once, or to switch to another copy; the
-build notices the switch and recompiles. The first run downloads the pinned Zig into `toolchain/` and checks
+`--iso`, `--store` and `--game` put the game in `assets/`. You only need them once; to switch to another copy, empty
+`assets/` and run one again, and the build notices the switch and recompiles. The first run downloads the pinned Zig into `toolchain/` and checks
 its SHA-256, then recompiles the whole XBE and compiles the result, so it takes a while. Later builds redo only what
 changed.
 
@@ -116,7 +116,7 @@ all there is to check: Setup still compares the XBE's SHA-1.
 setup-linux                              # the window: the game (package, image or files), working and game folder
 setup-linux --cli --source DefaultPackage --work DIR --game-dir DIR   # the same on the console
 setup-linux --unpack DefaultPackage outdir # only the unpacking
-tools/build.sh --store DefaultPackage    # builds setup-linux first, unpacks into iso/, builds the port
+tools/build.sh --store DefaultPackage    # builds setup-linux first, unpacks into assets/, builds the port
 ```
 
 It is read only on the package, never touches keys or signatures, and takes about 5 GB of space and a few seconds.

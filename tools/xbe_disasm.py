@@ -2,7 +2,7 @@
 """Disassemble a range of the Conker default.xbe by virtual address, using ndisasm."""
 import struct, subprocess, sys
 
-XBE = "iso/default.xbe"
+XBE = "assets/default.xbe"
 d = open(XBE, "rb").read()
 
 def u32(o): return struct.unpack_from("<I", d, o)[0]

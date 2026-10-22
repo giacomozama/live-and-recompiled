@@ -2,9 +2,9 @@
 # build.sh - build the port from a checkout: the game into assets/, the pinned toolchain, Game.exe.
 #
 #   tools/build.sh                 build out/build/zig-windows/Game.exe from the game in assets/
-#   tools/build.sh --iso FILE      first extract the disc image into iso/ and link assets/ to it
-#   tools/build.sh --store PATH    the same from the digital release's DefaultPackage (or its folder)
-#   tools/build.sh --game DIR      first link assets/ to an extracted copy (default.xbe, dvddata/, media/)
+#   tools/build.sh --iso FILE      first extract the disc image into assets/
+#   tools/build.sh --store PATH    first unpack the digital release's DefaultPackage (or its folder) into assets/
+#   tools/build.sh --game DIR      first copy extracted files into assets/ (default.xbe, dvddata/, media/)
 #   tools/build.sh --linux         also build the native Linux port, out/build/release/Game (SDL3, Vulkan)
 #   tools/build.sh --harness       also build the Linux headless harness, out/harness/conker
 #   tools/build.sh --pdb           also write Game.pdb (off again: cmake -DXBE_PDB=OFF out/build/zig-windows)
@@ -17,7 +17,6 @@ set -euo pipefail
 
 source "$(dirname "${BASH_SOURCE[0]}")/configure.sh"
 ASSETS="$ROOT/assets"
-ISO_DIR="$ROOT/iso"
 EXTRACT_XISO="${EXTRACT_XISO:-extract-xiso}"
 ISO=""
 STORE=""
@@ -41,46 +40,42 @@ while [ $# -gt 0 ]; do
     shift
 done
 
-# link <dir> <prefix>: assets/{default.xbe,dvddata,media} -> <prefix><name>, never over real files
-link_assets() {
+# ready_assets: true when assets/ is free for a game; links an older checkout left there (to iso/) are removed
+ready_assets() {
     mkdir -p "$ASSETS"
     local d
     for d in default.xbe dvddata media; do
-        [ -e "$1/$d" ] || { echo "no $d in $1" >&2; exit 1; }
-        if [ -e "$ASSETS/$d" ] && [ ! -L "$ASSETS/$d" ]; then
-            echo "assets/$d is a real file or folder, not a link: move it away first" >&2
-            exit 1
-        fi
-        ln -sfn "$2$d" "$ASSETS/$d"
+        if [ -L "$ASSETS/$d" ]; then rm "$ASSETS/$d"; fi
     done
-    echo "      assets -> $1"
+    if [ -e "$ASSETS/default.xbe" ]; then
+        echo "      assets/ already holds a game (empty it to put in another)"
+        return 1
+    fi
 }
 
 echo "[1/4] game"
 if [ -n "$ISO" ]; then
     [ -f "$ISO" ] || { echo "no such disc image: $ISO" >&2; exit 1; }
-    if [ -f "$ISO_DIR/default.xbe" ]; then
-        echo "      iso/ is already extracted (delete it to extract another image)"
-    else
+    if ready_assets; then
         command -v "$EXTRACT_XISO" >/dev/null || { echo "missing $EXTRACT_XISO (or set EXTRACT_XISO)" >&2; exit 1; }
-        echo "      extracting $(basename "$ISO") -> iso/"
-        mkdir -p "$ISO_DIR"
-        "$EXTRACT_XISO" -q -x "$ISO" -d "$ISO_DIR"
+        echo "      extracting $(basename "$ISO") -> assets/"
+        "$EXTRACT_XISO" -q -x "$ISO" -d "$ASSETS"
     fi
-    link_assets "$ISO_DIR" "../iso/"
 elif [ -n "$STORE" ]; then
-    if [ -f "$ISO_DIR/default.xbe" ]; then
-        echo "      iso/ is already extracted (delete it to unpack another package)"
-    else
+    if ready_assets; then
         configure_rel
         cmake --build "$REL" --target setup -j "$JOBS" >/dev/null
-        mkdir -p "$ISO_DIR"
-        "$REL/setup-linux" --unpack "$STORE" "$ISO_DIR"
+        echo "      unpacking $(basename "$STORE") -> assets/"
+        "$REL/setup-linux" --unpack "$STORE" "$ASSETS"
     fi
-    link_assets "$ISO_DIR" "../iso/"
 elif [ -n "$FROM" ]; then
-    FROM="$(realpath "$FROM")"
-    link_assets "$FROM" "$FROM/"
+    for d in default.xbe dvddata media; do
+        [ -e "$FROM/$d" ] || { echo "no $d in $FROM" >&2; exit 1; }
+    done
+    if ready_assets; then
+        echo "      copying $FROM -> assets/"
+        cp -r --reflink=auto "$FROM/default.xbe" "$FROM/dvddata" "$FROM/media" "$ASSETS/"
+    fi
 fi
 if [ ! -f "$ASSETS/default.xbe" ]; then
     echo "no game in assets/: pass --iso FILE (a disc image), --store PATH (the digital release's package) or --game DIR (extracted files)" >&2

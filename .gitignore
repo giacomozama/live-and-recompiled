@@ -46,3 +46,7 @@ settings.toml
 docs/
 run-proton.sh
 run-linux.sh
+
+# the digital release's package, before unpacking into assets/
+/packed/
+/windows_store_pack/
