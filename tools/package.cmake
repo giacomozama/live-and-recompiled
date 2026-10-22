@@ -56,6 +56,7 @@ set(DEST ${OUT}/${NAME})
 message(STATUS "[3/5] staging ${DEST}")
 file(REMOVE_RECURSE ${DEST})
 file(COPY ${XBE_BUILDS}/zig-windows/package/Game/ DESTINATION ${DEST})
+file(COPY ${XBE_ROOT}/LICENSE DESTINATION ${DEST})
 if(NOT CMAKE_HOST_WIN32)
     # the Linux half beside it: kit.toml and the rest are the same in both
     file(COPY ${XBE_BUILDS}/zig-glibc/package/Game/kit/linux.toml DESTINATION ${DEST}/kit)
