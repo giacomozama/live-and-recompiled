@@ -6,7 +6,7 @@
 #   tools/package.sh --test-download  test with the compiler Setup downloads, not the one in toolchain/
 #   tools/package.sh -j N             parallel jobs (default: every core)
 #
-# Output: out/release/Conker/ and out/release/Conker-<version>.zip
+# Output: out/release/Conker/, out/release/Conker-<version>-windows.zip and out/release/Conker-<version>-linux.tar.gz
 # env overrides: XBE_TOOLCHAIN_ROOT (the toolchain, default toolchain/)
 set -euo pipefail
 

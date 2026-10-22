@@ -11,7 +11,8 @@
 #   cmake -DJOBS=N -P tools/package.cmake           parallel jobs (default: every core)
 # tools/package.sh and tools/package.bat run it with the same options as flags.
 #
-# Output: out/release/Conker/ and out/release/Conker-<version>.zip
+# Output: out/release/Conker/, out/release/Conker-<version>-windows.zip and, packaged on Linux,
+# out/release/Conker-<version>-linux.tar.gz
 # Everything is built with the pinned Zig: Game.exe and setup-windows.exe for Windows, on either host, and on Linux
 # setup-linux and the native game's prebuilt host against glibc 2.31 (the X11, Wayland, Pango, Cairo and audio headers
 # SDL and FLTK need are Linux's): a release packaged on Windows has setup-windows.exe alone. The test runs this host's
@@ -160,16 +161,25 @@ else()
     message(STATUS "      skipped")
 endif()
 
-message(STATUS "[5/5] zip")
+message(STATUS "[5/5] archives")
 execute_process(COMMAND git -C ${XBE_ROOT} describe --tags --always --dirty OUTPUT_VARIABLE version
     OUTPUT_STRIP_TRAILING_WHITESPACE RESULT_VARIABLE code ERROR_QUIET)
 if(code OR NOT version)
     set(version dev)
 endif()
-set(zip ${OUT}/${NAME}-${version}.zip)
-file(REMOVE ${zip})
-execute_process(COMMAND ${CMAKE_COMMAND} -E tar cf ${zip} --format=zip ${NAME} WORKING_DIRECTORY ${OUT}
-    COMMAND_ERROR_IS_FATAL ANY)
-file(SIZE ${zip} size)
-math(EXPR mb "(${size} + 524288) / 1048576")
-message(STATUS "      ${zip} (${mb} MB)")
+# one archive per platform, each a Conker/ folder with that platform's Setup: a zip for Windows, and for Linux a
+# .tar.gz, which keeps setup-linux executable (unzip tools often drop the bit)
+function(archive os setup ext flags format)
+    set(file ${OUT}/${NAME}-${version}-${os}.${ext})
+    file(REMOVE ${file})
+    execute_process(COMMAND ${CMAKE_COMMAND} -E tar ${flags} ${file} --format=${format}
+            ${NAME}/${setup} ${NAME}/LICENSE ${NAME}/THIRD_PARTY.txt
+        WORKING_DIRECTORY ${OUT} COMMAND_ERROR_IS_FATAL ANY)
+    file(SIZE ${file} size)
+    math(EXPR mb "(${size} + 524288) / 1048576")
+    message(STATUS "      ${file} (${mb} MB)")
+endfunction()
+archive(windows setup-windows.exe zip cf zip)
+if(EXISTS ${DEST}/setup-linux)
+    archive(linux setup-linux tar.gz czf gnutar)
+endif()

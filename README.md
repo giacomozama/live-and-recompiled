@@ -51,7 +51,8 @@ For legal reasons, releases contain none of the game. Setup performs the entire 
 - The USA disc release (`default.xbe` SHA-1 = `2232a1b3874d67b4bb4cf53a940420d2dab59535`)
 - The digital XBOX Backwards Compatibility release from the Microsoft Store (equivalent to the USA version).
 
-It is two steps: run Setup, run the game.
+Download the release for your system, `Conker-<version>-windows.zip` or `Conker-<version>-linux.tar.gz`, and unpack it.
+Then it is two steps: run Setup, run the game.
 
 1. **Run Setup**: `setup-windows.exe` on Windows, or `./setup-linux` on Linux (double-click it, or run it in a terminal).
    Its window asks for three things; the last two are already filled in:
@@ -72,7 +73,7 @@ It is two steps: run Setup, run the game.
    the game and writes the executable. This takes a few minutes. Nothing of the game is uploaded.
    - **Windows:** downloads [Zig](https://ziglang.org) (about 100 MB) and writes `Game.exe`.
    - **Linux:** downloads [Zig](https://ziglang.org) (about 50 MB) and writes the native `Game`. If it says permission
-     denied, your unzip tool dropped the executable bit: `chmod +x setup-linux`.
+     denied, your archive tool dropped the executable bit: `chmod +x setup-linux`.
 
    Without a display, or with any option, Setup runs in the terminal instead: `./setup-linux --cli --source
    path/to/DefaultPackage --work /tmp/conker-work --game-dir ~/Games/Conker`, `--source` is required and the other
