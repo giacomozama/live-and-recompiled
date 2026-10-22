@@ -231,7 +231,7 @@ int main(int argc, char** argv) {
     std::fprintf(stderr, "%s: title %08X entry %08X kernel thunk %08X\n", xbe_path.filename().string().c_str(),
                  img.title_id, img.entry, img.kernel_thunk);
     if ((cfg.title && cfg.title != img.title_id) || (cfg.entry && cfg.entry != img.entry)) {
-        std::fprintf(stderr, "%s was written for title %08X entry %08X, not this image: delete it so build.bat writes a new one\n",
+        std::fprintf(stderr, "%s was written for title %08X entry %08X, not this image: write a new one with xbe_symbols\n",
                      args[0].c_str(), cfg.title, cfg.entry);
         return 1;
     }

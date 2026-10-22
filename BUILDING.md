@@ -15,7 +15,7 @@ How to build the port from a checkout and how to package a release. For playing,
   to build from a disc image, and Wine or Proton to run `Game.exe`. The native port (`--linux`) also needs the X11 and
   Wayland development headers SDL builds against (SDL loads the libraries themselves at run time), and a Vulkan 1.3
   driver to run. `ndisasm` is only for `tools/xbe_disasm.py`.
-- **Windows:** CMake (3.25 or newer), Ninja and Git. `build.bat` offers to install whichever is missing with
+- **Windows:** CMake (3.25 or newer), Ninja and Git. `tools\build.bat` offers to install whichever is missing with
   `winget`. No Visual Studio: the compiler is the pinned llvm-mingw on Windows too.
 
 ### On Linux
@@ -44,18 +44,18 @@ builds `out/harness/conker`, a headless Linux build with no window or GPU, for t
 
 ### On Windows
 
-1. Put the extracted game in `assets\`: `default.xbe` with `dvddata\` and `media\` beside it. (`build.bat`
+1. Put the extracted game in `assets\`: `default.xbe` with `dvddata\` and `media\` beside it. (`tools\build.bat`
    reads the files, not a disc image. `extract-xiso` has Windows builds.) From the digital release's package,
    `setup-windows.exe` does the unpacking: build it with `cmake --build out\build\llvm-mingw --target setup`
-   after the first `build.bat`, then `out\build\llvm-mingw\setup-windows.exe --unpack path\to\DefaultPackage assets`.
-2. Run `build.bat`. It checks for CMake, Ninja and Git, downloads llvm-mingw into `toolchain\` on the first
+   after the first `tools\build.bat`, then `out\build\llvm-mingw\setup-windows.exe --unpack path\to\DefaultPackage assets`.
+2. Run `tools\build.bat`. It checks for CMake, Ninja and Git, downloads llvm-mingw into `toolchain\` on the first
    run, recompiles the XBE and builds the port. Later runs rebuild only what changed.
 3. Run `out\build\llvm-mingw\Game.exe`.
 
-It's the same build as on Linux and in releases, with the same compiler and flags. `build.bat --pdb` also writes
+It's the same build as on Linux and in releases, with the same compiler and flags. `tools\build.bat --pdb` also writes
 `Game.pdb`, for debugging in Visual Studio or WinDbg; it makes builds slower, and
 `cmake -DXBE_PDB=OFF out\build\llvm-mingw` turns it off again. (`tools/build.sh --pdb` does the same on Linux.)
-IDEs that read `CMakePresets.json` get the same build as the `llvm-mingw` preset, once `build.bat` has fetched
+IDEs that read `CMakePresets.json` get the same build as the `llvm-mingw` preset, once `tools\build.bat` has fetched
 the compiler.
 
 ## Building a release
@@ -87,7 +87,7 @@ The kit only accepts the exact XBE it was packaged from, so package from the sup
 
 ### On Windows
 
-You need the same CMake, Ninja and Git as for building (running `build.bat` once sets them up). Packaging
+You need the same CMake, Ninja and Git as for building (running `tools\build.bat` once sets them up). Packaging
 builds with the pinned Zig (and llvm-mingw's `llvm-ar`), which it downloads into `toolchain\`. Put the supported release in
 `assets\`, then:
 

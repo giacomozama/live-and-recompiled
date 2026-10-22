@@ -1,9 +1,9 @@
 @echo off
 rem build.bat - build Game.exe on Windows with the pinned llvm-mingw, the compiler releases use.
 rem
-rem   build.bat          configure (first run: downloads llvm-mingw into toolchain\), recompile, build
-rem   build.bat --pdb    also write Game.pdb, for Visual Studio or WinDbg (turn it off again with
-rem                      cmake -DXBE_PDB=OFF out\build\llvm-mingw)
+rem   tools\build.bat          configure (first run: downloads llvm-mingw into toolchain\), recompile, build
+rem   tools\build.bat --pdb    also write Game.pdb, for Visual Studio or WinDbg (turn it off again with
+rem                            cmake -DXBE_PDB=OFF out\build\llvm-mingw)
 rem
 rem Needs CMake 3.25 or newer, Ninja and Git; it offers to install them with winget. No Visual Studio.
 setlocal
@@ -11,7 +11,8 @@ set "GAME_TITLE=Conker: Live and Reloaded"
 set "GAME_XBE=default.xbe"
 set "GAME_EXE=Game"
 title %GAME_TITLE% - Build
-cd /d "%~dp0"
+rem the repository root, where assets\ and out\ are
+cd /d "%~dp0.."
 echo.
 echo   %GAME_TITLE% - build
 echo   ================================================
@@ -40,7 +41,7 @@ if not defined TOOLS_OK (
 for /f "tokens=*" %%v in ('cmake --version ^| findstr /i version') do echo       %%v
 
 echo [2/3] Compiler and configure
-cmake -DWHAT=llvm-mingw -P "%~dp0tools\configure.cmake" || goto :fail
+cmake -DWHAT=llvm-mingw -P "%~dp0configure.cmake" || goto :fail
 if defined PDB cmake -DXBE_PDB=ON "%OUT%" >nul || goto :fail
 
 echo [3/3] Game code
