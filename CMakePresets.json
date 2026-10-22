@@ -1,0 +1,19 @@
+{
+    "version": 6,
+    "cmakeMinimumRequired": {"major": 3, "minor": 25, "patch": 0},
+    "configurePresets": [
+        {
+            "name": "llvm-mingw",
+            "displayName": "llvm-mingw (the pinned compiler; on Windows)",
+            "description": "What build.bat configures. Fetch the compiler first: cmake -P tools/fetch-toolchain.cmake",
+            "generator": "Ninja",
+            "binaryDir": "${sourceDir}/out/build/llvm-mingw",
+            "toolchainFile": "${sourceDir}/cmake/llvm-mingw.cmake",
+            "cacheVariables": {"CMAKE_BUILD_TYPE": "Release"},
+            "condition": {"type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows"}
+        }
+    ],
+    "buildPresets": [
+        {"name": "llvm-mingw", "configurePreset": "llvm-mingw", "targets": ["Game"]}
+    ]
+}

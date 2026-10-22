@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # package.sh - build, test and zip the player release (tools/package.cmake, which says what it does).
 #
-#   tools/package.sh                  build the kit, test it against the game in game/assets, zip it
-#   tools/package.sh --no-test        skip the test (it needs the game in game/assets)
+#   tools/package.sh                  build the kit, test it against the game in assets/, zip it
+#   tools/package.sh --no-test        skip the test (it needs the game in assets/)
 #   tools/package.sh --test-download  test with the compiler Setup downloads, not the one in toolchain/
 #   tools/package.sh -j N             parallel jobs (default: every core)
 #
-# Output: game/out/release/Conker/ and game/out/release/Conker-<version>.zip
+# Output: out/release/Conker/ and out/release/Conker-<version>.zip
 # env overrides: LLVM_MINGW_ROOT (toolchains, default toolchain/)
 set -euo pipefail
 

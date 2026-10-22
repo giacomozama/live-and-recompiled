@@ -7,11 +7,10 @@
 #   zig-windows the Windows port with the pinned Zig, on either host: the player kit's Windows half and setup-windows.exe
 #
 # Included, it defines xbe_configure(<folder>); run as cmake -DWHAT=<folder> -P tools/configure.cmake, it configures
-# game/out/build/<folder>. A folder is configured once: delete it to configure it again.
+# out/build/<folder>. A folder is configured once: delete it to configure it again.
 include(${CMAKE_CURRENT_LIST_DIR}/toolchains.cmake)
 get_filename_component(XBE_ROOT ${CMAKE_CURRENT_LIST_DIR}/.. ABSOLUTE)
-set(XBE_GAME ${XBE_ROOT}/game)
-set(XBE_BUILDS ${XBE_GAME}/out/build)
+set(XBE_BUILDS ${XBE_ROOT}/out/build)
 
 function(xbe_configure what)
     set(dir ${XBE_BUILDS}/${what})
@@ -32,21 +31,21 @@ function(xbe_configure what)
     if(what STREQUAL "release")
         set(args ${native} ${codegen})
     elseif(what STREQUAL "zig-glibc")
-        set(args -DCMAKE_TOOLCHAIN_FILE=${XBE_GAME}/cmake-zig-glibc.cmake ${codegen})
+        set(args -DCMAKE_TOOLCHAIN_FILE=${XBE_ROOT}/cmake/zig-glibc.cmake ${codegen})
     elseif(what STREQUAL "zig-windows")
-        set(args -DCMAKE_TOOLCHAIN_FILE=${XBE_GAME}/cmake-zig-windows.cmake)
+        set(args -DCMAKE_TOOLCHAIN_FILE=${XBE_ROOT}/cmake/zig-windows.cmake)
         if(NOT CMAKE_HOST_WIN32)
             list(APPEND args ${codegen})
         endif()
     elseif(what STREQUAL "llvm-mingw")
-        set(args -DCMAKE_TOOLCHAIN_FILE=${XBE_GAME}/cmake-llvm-mingw.cmake -DLLVM_MINGW=${LLVM_MINGW_HOST_DIR})
+        set(args -DCMAKE_TOOLCHAIN_FILE=${XBE_ROOT}/cmake/llvm-mingw.cmake -DLLVM_MINGW=${LLVM_MINGW_HOST_DIR})
         if(NOT CMAKE_HOST_WIN32)
             list(APPEND args ${codegen})
         endif()
     else()
         message(FATAL_ERROR "xbe_configure: release, llvm-mingw, zig-glibc or zig-windows, not '${what}'")
     endif()
-    execute_process(COMMAND ${CMAKE_COMMAND} -S ${XBE_GAME} -B ${dir} -G Ninja -DCMAKE_BUILD_TYPE=Release ${args}
+    execute_process(COMMAND ${CMAKE_COMMAND} -S ${XBE_ROOT} -B ${dir} -G Ninja -DCMAKE_BUILD_TYPE=Release ${args}
         COMMAND_ERROR_IS_FATAL ANY)
 endfunction()
 

@@ -5,8 +5,43 @@ iso/
 
 toolchain/
 
+# build
+/out/
+/build/
+*.zip
+*.pdb
+*.exe
+*.obj
+*.o
+
+# recompiled code, derived from the game
+/generated/
+
+# user's own game files
+/assets/
+
+# runtime files
+settings.toml
+/logs/
+/hdd/
+/CrashDumps/
+
+# Windows/Proton test prefix, run folders and local link shims
+/prefix/
+/winrun/
+/linrun/
+
+# editors
+.vs/
 .vscode/
+.idea/
 .claude/
+
+# Local temporary folder
+.local
+
+# run log
+/proton-run.log
 
 docs/
 run-proton.sh

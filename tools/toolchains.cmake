@@ -6,9 +6,9 @@
 #               game with it, so the prebuilt half and the player's own build of the game code come from one compiler
 #               and one libc++. A new Zig needs a new player release too.
 #   llvm-mingw  only llvm-ar and llvm-ranlib for those builds (CMake's archiver can't be `zig ar`, a command with a
-#               subcommand), and the compiler of the Windows developer build (game/build.bat)
+#               subcommand), and the compiler of the Windows developer build (build.bat)
 #
-# Included by game/cmake-llvm-mingw.cmake, game/cmake-zig-windows.cmake, game/cmake-zig-glibc.cmake,
+# Included by cmake/llvm-mingw.cmake, cmake/zig-windows.cmake, cmake/zig-glibc.cmake,
 # fetch-toolchain.cmake, configure.cmake and package.cmake. To update one: change its version and both SHA-256s
 # (llvm-mingw's release page and ziglang.org's download index list them), then delete the build folders that use it.
 

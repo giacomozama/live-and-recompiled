@@ -88,7 +88,7 @@ See [BUILDING.md](BUILDING.md).
 
 ## Credits
 
-- [Xbox XBE Recomp](https://github.com/TGP482/XboxXBE-Recomp), the recompiler and runtime this is built on.
+- [Xbox XBE Recomp](https://github.com/TGP482/XboxXBERecomp), the recompiler and runtime this is built on.
 - [xemu](https://github.com/xemu-project/xemu) and [Cxbx-Reloaded](https://github.com/Cxbx-Reloaded/Cxbx-Reloaded) as references for the Xbox's hardware and API behaviour. This project does not use emulation or any emulator code.
 - [SMAA](http://www.iryoku.com/smaa/) by Jorge Jimenez, Jose I. Echevarria, Belen Masia, Fernando Navarro and Diego Gutierrez (MIT), for the anti-aliasing effect.
 - [toml++](https://github.com/marzer/tomlplusplus) for the configs, [Dear ImGui](https://github.com/ocornut/imgui) for the settings overlay, [FLTK](https://www.fltk.org) for Setup's window and [SDL](https://github.com/libsdl-org/SDL) for the window, input and controllers.
@@ -97,5 +97,5 @@ See [BUILDING.md](BUILDING.md).
 ## License
 
 This project is licensed under the GNU General Public License, version 3 only (see [LICENSE](LICENSE)). The parts that
-come from Xbox XBE Recomp keep its MIT license ([game/sdk/LICENSE](game/sdk/LICENSE)), and the libraries it uses keep
-theirs ([game/sdk/THIRD_PARTY.txt](game/sdk/THIRD_PARTY.txt)). The game itself is not part of it.
+come from Xbox XBE Recomp keep its MIT license, and the libraries it uses keep theirs (both in
+[THIRD_PARTY.txt](THIRD_PARTY.txt)). The game itself is not part of it.

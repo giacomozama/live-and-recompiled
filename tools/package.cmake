@@ -5,13 +5,13 @@
 # pinned Zig for its host, recompiles the game, compiles the result and links it: Game.exe on Windows, the native Game
 # on Linux (against glibc). Nothing in the release is the title's code, or the compiler.
 #
-#   cmake -P tools/package.cmake                    build the kit, test it against the game in game/assets, zip it
+#   cmake -P tools/package.cmake                    build the kit, test it against the game in assets/, zip it
 #   cmake -DTEST=OFF -P tools/package.cmake         skip the test
 #   cmake -DTEST_DOWNLOAD=ON -P tools/package.cmake test with the compiler Setup downloads, not the one in toolchain/
 #   cmake -DJOBS=N -P tools/package.cmake           parallel jobs (default: every core)
 # tools/package.sh and tools/package.bat run it with the same options as flags.
 #
-# Output: game/out/release/Conker/ and game/out/release/Conker-<version>.zip
+# Output: out/release/Conker/ and out/release/Conker-<version>.zip
 # Everything is built with the pinned Zig: Game.exe and setup-windows.exe for Windows, on either host, and on Linux
 # setup-linux and the native game's prebuilt host against glibc 2.31 (the X11, Wayland, Pango, Cairo and audio headers
 # SDL and FLTK need are Linux's): a release packaged on Windows has setup-windows.exe alone. The test runs this host's
@@ -19,7 +19,7 @@
 cmake_minimum_required(VERSION 3.25)
 include(${CMAKE_CURRENT_LIST_DIR}/configure.cmake)
 
-set(OUT ${XBE_GAME}/out/release)
+set(OUT ${XBE_ROOT}/out/release)
 set(NAME Conker)
 if(NOT DEFINED TEST)
     set(TEST ON)
@@ -38,8 +38,8 @@ toolchain_fetch(LLVM_MINGW ${TOOLCHAIN_HOST})
 toolchain_fetch(ZIG ${TOOLCHAIN_HOST})
 
 message(STATUS "[2/5] kit")
-if(NOT EXISTS ${XBE_GAME}/assets/default.xbe)
-    message(FATAL_ERROR "no game in game/assets: put the supported release there first (see README.md)")
+if(NOT EXISTS ${XBE_ROOT}/assets/default.xbe)
+    message(FATAL_ERROR "no game in assets/: put the supported release there first (see README.md)")
 endif()
 if(NOT CMAKE_HOST_WIN32)
     xbe_configure(release)  # the Linux codegen tool; on Windows the zig-windows build runs its own
@@ -132,7 +132,7 @@ if(TEST)
     string(RANDOM LENGTH 6 tag)
     set(scratch ${OUT}/.test-${tag})
     file(MAKE_DIRECTORY ${scratch}/assets)
-    file(COPY_FILE ${XBE_GAME}/assets/default.xbe ${scratch}/assets/default.xbe)
+    file(COPY_FILE ${XBE_ROOT}/assets/default.xbe ${scratch}/assets/default.xbe)
     if(NOT CMAKE_HOST_WIN32)
         file(COPY ${DEST}/setup-linux DESTINATION ${scratch})
         set(setup ${scratch}/setup-linux)
