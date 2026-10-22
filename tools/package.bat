@@ -10,6 +10,8 @@ rem Needs CMake 3.25 or newer, Ninja and Git on PATH (winget install --id Kitwar
 rem Git.Git, or game\build.bat offers to). The compiler, llvm-mingw, is downloaded into toolchain\. No Visual Studio.
 rem A release made here has no Linux half: no setup-linux, and setup-windows.exe builds Game.exe alone.
 setlocal
+rem before any shift: shift moves %0 too, and %~dp0 with it
+set "HERE=%~dp0"
 set "ARGS="
 :args
 if "%~1"=="" goto run
@@ -40,5 +42,5 @@ if exist "%LOCALAPPDATA%\Microsoft\WinGet\Links" set "PATH=%LOCALAPPDATA%\Micros
 where cmake >nul 2>nul || (echo cmake is missing: winget install --id Kitware.CMake -e& exit /b 1)
 where ninja >nul 2>nul || (echo ninja is missing: winget install --id Ninja-build.Ninja -e& exit /b 1)
 where git >nul 2>nul || (echo git is missing: winget install --id Git.Git -e& exit /b 1)
-cmake %ARGS% -P "%~dp0package.cmake"
+cmake %ARGS% -P "%HERE%package.cmake"
 exit /b %errorlevel%

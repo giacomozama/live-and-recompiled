@@ -11,6 +11,7 @@
 #include "kernel/disc.h"
 
 extern const char kImageSha1[];  // the xbe recompiled into this executable, written by CMake
+extern const char* const kImageAlsoSha1[];  // releases with its code and a different header, null-ended
 
 namespace app {
 
@@ -72,6 +73,7 @@ bool FindGame(GameFiles& game) {
     auto consider = [&](const fs::path& name, std::vector<uint8_t> xbe, std::unique_ptr<kernel::Disc> disc) {
         std::string sha = Sha1(xbe);
         bool match = sha == kImageSha1;
+        for (const char* const* also = kImageAlsoSha1; *also; also++) match |= sha == *also;
         LOGR("Game: %s in %s, sha1 %s%s", IMAGE_XBE, name.string().c_str(), sha.c_str(), match ? "" : ", another release");
         if (match) {
             game = {assets, std::move(xbe)};

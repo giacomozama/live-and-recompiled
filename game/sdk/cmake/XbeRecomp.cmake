@@ -193,9 +193,12 @@ function(add_xbe_image target xbe config partitions game_dir)
     file(GLOB GAME_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/src/${game_dir}/*.cpp)
     # the xbe's SHA-1 in the executable: it checks the game it finds is the release it was made from
     set(XBE_HASH ${CMAKE_CURRENT_BINARY_DIR}/${target}_xbe.cpp)
+    # XBE_ALSO_SHA1 (set by the project): releases whose code and data are the same and only the header differs, as
+    # the list separator is the shell's they travel comma-separated
+    string(REPLACE ";" "," XBE_ALSO_SHA1_ARG "${XBE_ALSO_SHA1}")
     add_custom_command(
         OUTPUT ${XBE_HASH}
-        COMMAND ${CMAKE_COMMAND} -DMODE=cpp -DSHA=${XBE_SHA1_FILE} -DOUT=${XBE_HASH}
+        COMMAND ${CMAKE_COMMAND} -DMODE=cpp -DSHA=${XBE_SHA1_FILE} -DALSO=${XBE_ALSO_SHA1_ARG} -DOUT=${XBE_HASH}
             -P ${XBE_SDK_DIR}/cmake/xbe_sha1.cmake
         DEPENDS ${XBE_SHA1_FILE} ${XBE_SDK_DIR}/cmake/xbe_sha1.cmake
         VERBATIM)
@@ -269,6 +272,7 @@ function(add_xbe_player_kit target title)
     get_target_property(gen ${target} XBE_GEN)
     set(pkg ${CMAKE_BINARY_DIR}/package/${target})
     set(kit ${pkg}/kit)
+    string(REPLACE ";" "," XBE_ALSO_SHA1_ARG "${XBE_ALSO_SHA1}")
     set(lib lib/${os})
 
     # the compile line of the generated sources, as add_xbe_image's target has it in a Release build
@@ -315,7 +319,7 @@ function(add_xbe_player_kit target title)
     list(APPEND libs ${std_libs})
     set(toml "# written by add_xbe_player_kit; Setup reads it\n")
     # the sha1 is filled in at build time, from the game in assets/ then (xbe_sha1.cmake)
-    string(APPEND toml "title = \"${title}\"\nexe = \"${target}\"\nxbe = \"${xbe}\"\nsha1 = \"@XBE_SHA1@\"\n")
+    string(APPEND toml "title = \"${title}\"\nexe = \"${target}\"\nxbe = \"${xbe}\"\nsha1 = \"@XBE_SHA1@\"\nalso_sha1 = [@XBE_ALSO_SHA1@]\n")
     get_filename_component(config_name ${config} NAME)
     string(APPEND toml "config = \"config/${config_name}\"\nxdk = \"xdk\"\nrecomp = \"bin/xbe_recomp\"\n")
     string(APPEND toml "include = [\"include\"]\n")
@@ -358,7 +362,7 @@ function(add_xbe_player_kit target title)
         COMMAND ${CMAKE_COMMAND} -E make_directory ${kit}/bin ${kit}/config ${kit}/include/cpu
             ${kit}/${lib}
         COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:xbe_recomp> ${kit}/bin/
-        COMMAND ${CMAKE_COMMAND} -DMODE=kit -DSHA=${sha1_file} -DIN=${CMAKE_BINARY_DIR}/${target}_kit.toml.in
+        COMMAND ${CMAKE_COMMAND} -DMODE=kit -DSHA=${sha1_file} -DALSO=${XBE_ALSO_SHA1_ARG} -DIN=${CMAKE_BINARY_DIR}/${target}_kit.toml.in
             -DOUT=${kit}/kit.toml -P ${XBE_SDK_DIR}/cmake/xbe_sha1.cmake
         COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_CURRENT_SOURCE_DIR}/config/${config} ${kit}/config/
         COMMAND ${CMAKE_COMMAND} -E copy_directory ${XBE_SDK_DIR}/xdk ${kit}/xdk

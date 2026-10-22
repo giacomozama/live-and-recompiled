@@ -149,7 +149,7 @@ if(TEST)
     endif()
     execute_process(COMMAND ${setup} ${args} RESULT_VARIABLE code)
     if(code OR NOT EXISTS ${scratch}/game/${game})
-        message(FATAL_ERROR "the test build made no game/${game} (exit ${code}); ${scratch}/setup.log has the run")
+        message(FATAL_ERROR "the test build made no game/${game} (exit ${code})")
     endif()
     if(EXISTS ${scratch}/work/generated)
         message(FATAL_ERROR "Setup left its generated code behind in ${scratch}/work")
@@ -161,7 +161,7 @@ else()
 endif()
 
 message(STATUS "[5/5] zip")
-execute_process(COMMAND git -C ${XBE_ROOT} describe --always --dirty OUTPUT_VARIABLE version
+execute_process(COMMAND git -C ${XBE_ROOT} describe --tags --always --dirty OUTPUT_VARIABLE version
     OUTPUT_STRIP_TRAILING_WHITESPACE RESULT_VARIABLE code ERROR_QUIET)
 if(code OR NOT version)
     set(version dev)

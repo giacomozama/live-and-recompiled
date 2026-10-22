@@ -16,7 +16,8 @@ struct Options {
     std::filesystem::path game_dir;   // where the game is made: its executable, and the game's files in its assets folder
     std::filesystem::path toolchain;  // another copy of the target's compiler (testing)
     unsigned jobs = 1;
-    bool keep = false;                // leave the work folder in place
+    bool keep = false;                // leave the generated code, the objects and the unpacked kit in the work folder
+    bool keep_compiler = true;        // leave the downloaded compiler there too, for the next install
 };
 
 // the kit's own facts: what the window shows before anything is chosen
@@ -37,7 +38,7 @@ struct Probe {
 };
 Probe CheckSource(const Options& opt);
 
-// the build, to the end; false when it failed or was cancelled. Everything it says goes to stdout (and setup.log), and
+// the build, to the end; false when it failed or was cancelled. Everything it says goes to stdout, and
 // to the sink when there is one.
 bool Build(const Options& opt);
 void SetSink(void (*sink)(const char* text));

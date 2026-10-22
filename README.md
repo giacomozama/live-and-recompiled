@@ -63,22 +63,23 @@ It is two steps: run Setup, run the game.
        (`C:\XboxGames\Conker- Live and Reloaded\Content\Game`, not encrypted), pick that folder.
      - **Linux:** if you bought it on the Microsoft Store, download its package with the
        [Xodus project](https://github.com/xodus-gaming/xodus) or copy it from a Windows install.
-   - **Working folder**: `work` beside Setup by default (made if it's missing). The compiler is downloaded into it (once), and the
-     generated code is built there and removed when done.
+   - **Working folder**: `work` beside Setup by default (made if it's missing). The compiler is downloaded into it (once) and the
+     game is built there. Setup removes the temporary files when done and keeps the compiler for next time, unless
+     you untick "Keep the downloaded compiler".
    - **Game folder**: `game` beside Setup by default; where the game is made, with the game's files in an `assets` folder inside it.
 
-   Press Install. Setup checks your copy is a supported version, downloads the compiler (first time only), recompiles
+   Press Recompile. Setup checks your copy is a supported version, downloads the compiler (first time only), recompiles
    the game and writes the executable. This takes a few minutes. Nothing of the game is uploaded.
    - **Windows:** downloads [Zig](https://ziglang.org) (about 100 MB) and writes `Game.exe`.
    - **Linux:** downloads [Zig](https://ziglang.org) (about 50 MB) and writes the native `Game`. If it says permission
      denied, your unzip tool dropped the executable bit: `chmod +x setup-linux`.
 
    Without a display, or with any option, Setup runs in the terminal instead: `./setup-linux --cli --source
-   path/to/DefaultPackage --work /tmp/conker-work --game-dir ~/Games/Conker`, every option optional and defaulting
-   to the same as the window (`--help` lists them).
+   path/to/DefaultPackage --work /tmp/conker-work --game-dir ~/Games/Conker`, `--source` is required and the other
+   options default to the same as the window (`--help` lists them, including `--delete-compiler`).
 2. **Run `Game.exe`** (Windows) **or `./Game`** (Linux), in the game folder (`game` beside Setup). Settings are in `settings.toml` beside it, and in the Esc menu.
 
-Setup keeps nothing it generated except the game, and the compiler in the working folder. Run it again after updating
+Setup keeps nothing it generated except the game, and the compiler in the working folder (unless you chose not to). Run it again after updating
 to a new release.
 
 ## Building from source

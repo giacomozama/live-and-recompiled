@@ -35,6 +35,10 @@ if(NOT GAME_PARTITIONS)
     set(GAME_PARTITIONS 8)
 endif()
 
+# the Microsoft Store package's default.xbe: the disc's code and data, only the header (signature, certificate) is
+# different
+set(XBE_ALSO_SHA1 68a37f0d03d73dabc86a848df5ec1820dd551254)
+
 # target name = GAME_EXE in build.bat, xbe = GAME_XBE
 add_xbe_image(Game default.xbe game.toml ${GAME_PARTITIONS} game)
 

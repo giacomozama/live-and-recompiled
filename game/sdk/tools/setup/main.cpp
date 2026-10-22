@@ -12,14 +12,15 @@
 //   setup-windows.exe, setup-linux                      a window: pick the game, the working folder and the folder
 //                                                       the game is made in (the last two start as the defaults)
 //   setup-windows.exe, setup-linux --cli --source PATH [--work DIR] [--game-dir DIR]
-//                                  [--jobs N] [--keep] [--toolchain DIR] [--root DIR] [--fetch-toolchain]
+//                                  [--jobs N] [--keep] [--delete-compiler] [--toolchain DIR] [--root DIR] [--fetch-toolchain]
 //
 // Run with no arguments, Setup opens the window (when there is a display), with any it runs on the console. --source
 // is the game: its DefaultPackage (the digital release's package, unpacked for you), a disc image (.iso), a folder
 // with the extracted default.xbe, or a folder holding one of these. The game's files are put in
 // assets/ below the game folder, where the game looks for them, unless they are already there. --work is where the
 // kit, the compiler and, while building, the generated code and objects go (work, beside Setup); --game-dir is where the game is linked (game, beside Setup). Both are made when missing.
-// --keep leaves the work folder's contents in place; --toolchain uses another copy of the target's
+// --keep leaves the generated code and the unpacked kit in the work folder, --delete-compiler removes the downloaded
+// compiler when done (it stays by default, for the next install); --toolchain uses another copy of the target's
 // compiler of the kit's version; --root is the folder Setup
 // would be in; --fetch-toolchain only downloads the compiler.
 #include <miniz.h>
@@ -72,7 +73,6 @@ constexpr const char* kHost = "windows";
 constexpr const char* kHost = "linux";
 #endif
 
-FILE* g_log = nullptr;  // setup.log beside Setup, everything printed goes there too
 void (*g_sink)(const char*) = nullptr;  // the window's, when there is one
 std::atomic<bool> g_cancel{false};
 void (*g_progress)(double) = nullptr;  // the window's bar: how much of the install is done, 0 to 1
@@ -85,9 +85,8 @@ void Progress(double fraction) {
 }
 
 void Say(const char* fmt, ...) {
-    va_list a, b;
+    va_list a;
     va_start(a, fmt);
-    va_copy(b, a);
     if (g_sink) {
         char text[2048];
         va_list c;
@@ -99,17 +98,13 @@ void Say(const char* fmt, ...) {
         std::vfprintf(stdout, fmt, a);
         std::fflush(stdout);
     }
-    if (g_log) {
-        std::vfprintf(g_log, fmt, b);
-        std::fflush(g_log);
-    }
-    va_end(b);
     va_end(a);
 }
 
 // what the kit says, kit.toml and <os>.toml for the target
 struct Kit {
     std::string title, exe, xbe, sha1;
+    std::vector<std::string> also_sha1;  // releases with the same code and another header
     std::string target;  // windows or linux, what the game is built for
     fs::path config, xdk, recomp, cxx;
     std::vector<fs::path> include;
@@ -292,6 +287,7 @@ bool LoadKit(const fs::path& kit_dir, Kit& k, std::string& error) {
     k.exe = t["exe"].value_or(std::string());
     k.xbe = t["xbe"].value_or(std::string());
     k.sha1 = t["sha1"].value_or(std::string());
+    k.also_sha1 = Strings(t["also_sha1"]);
     k.config = kit_dir / t["config"].value_or(std::string());
     k.xdk = kit_dir / t["xdk"].value_or(std::string());
     k.recomp = kit_dir / t["recomp"].value_or(std::string());
@@ -361,7 +357,7 @@ struct Source {
 
 bool MatchXbe(std::vector<uint8_t>& data, const Kit& k, const fs::path& where, Source& s) {
     std::string sha = Sha1(data);
-    if (sha != k.sha1) {
+    if (sha != k.sha1 && std::find(k.also_sha1.begin(), k.also_sha1.end(), sha) == k.also_sha1.end()) {
         s.other.push_back(where.string() + " (sha1 " + sha + ")");
         return false;
     }
@@ -830,6 +826,8 @@ bool Stage(const setup::Options& opt, const Kit& k, Source& src, fs::path& asset
             Source after;
             if (!ReadFile(assets / k.xbe, data) || !MatchXbe(data, k, assets / k.xbe, after)) {
                 Say("This package is a different version of the game than this Setup supports.\n");
+                if (after.other.empty()) Say("  There is no %s in it.\n", k.xbe.c_str());
+                for (auto& o : after.other) Say("  %s, and this Setup is for sha1 %s\n", o.c_str(), k.sha1.c_str());
                 return false;
             }
             src.xbe = std::move(after.xbe);
@@ -945,15 +943,8 @@ bool Build(const Options& opt) {
 #endif
     std::error_code ec;
     fs::create_directories(root, ec);
-    g_log = std::fopen((root / "setup.log").string().c_str(), "w");
-    struct Close {
-        ~Close() {
-            if (g_log) std::fclose(g_log);
-            g_log = nullptr;
-        }
-    } close;
     auto fail = [&]() {
-        Say("\nSetup could not finish. The file setup.log next to Setup has the details.\n");
+        Say("\nSetup could not finish.\n");
         return false;
     };
 
@@ -973,7 +964,7 @@ bool Build(const Options& opt) {
     fs::path zig_cache = opt.toolchain.empty() ? k.toolchain / "cache" : work / "zig-cache";
     SetEnv("ZIG_GLOBAL_CACHE_DIR", zig_cache);
     SetEnv("ZIG_LOCAL_CACHE_DIR", work / "zig-cache");
-    Say("Installing %s for %s. This takes a few minutes and only needs doing once.\n\n", k.title.c_str(),
+    Say("Recompiling %s for %s. This takes a few minutes and only needs doing once.\n\n", k.title.c_str(),
         k.target == "windows" ? "Windows" : "Linux");
 
     // 1. the game
@@ -1013,6 +1004,18 @@ bool Build(const Options& opt) {
         fs::remove(work, ec);  // only when it is empty now
     };
     clear();
+    // what a finished (or cancelled) install leaves in the work folder, as the player chose: the unpacked kit and the
+    // generated code with it, and the compiler
+    auto finish = [&]() {
+        if (!opt.keep) {
+            clear();
+            for (const char* d : {"bin", "config", "xdk", "include", "lib"}) fs::remove_all(work / d, ec);
+            for (const char* f : {"kit.toml", "windows.toml", "linux.toml", ".payload", "download.log", "unpack.log"})
+                fs::remove(work / f, ec);
+        }
+        if (!opt.keep_compiler) fs::remove_all(work / "toolchain", ec);
+        fs::remove(work, ec);  // only when it is empty now
+    };
     fs::create_directories(gen, ec);
     fs::create_directories(obj, ec);
     fs::create_directories(logs, ec);
@@ -1093,7 +1096,7 @@ bool Build(const Options& opt) {
     Say("\n");
     if (g_cancel) {
         SayCancelled();
-        if (!opt.keep) clear();
+        finish();
         return false;
     }
     if (failed) return fail();
@@ -1101,7 +1104,7 @@ bool Build(const Options& opt) {
     // 4. link in the game folder; a response file keeps the command line short
     Say("Step 3 of 3: putting %s together ...\n", k.Game().c_str());
     fs::create_directories(game_dir, ec);
-    fs::path rsp = work / "link.rsp", out = game_dir / k.Game(), tmp = game_dir / (k.Game() + ".new");
+    fs::path rsp = work / "link.rsp", out = game_dir / k.Game(), tmp = game_dir / (k.exe + ".new");
     {
         std::ofstream f(rsp);
         auto put = [&](const std::string& s) { f << '"' << s << "\"\n"; };
@@ -1124,6 +1127,12 @@ bool Build(const Options& opt) {
     link.push_back("@" + rsp.generic_string());
     Progress(0.95);
     if (!Run("Linking", k.cxx, link, logs / "link.log")) return fail();
+    // Zig puts .exe after the name it is given for a Windows program
+    if (!fs::exists(tmp, ec)) {
+        fs::path with_ext = tmp;
+        with_ext += ".exe";
+        if (fs::exists(with_ext, ec)) tmp = with_ext;
+    }
     fs::rename(tmp, out, ec);
     if (ec) {
         Say("Could not replace %s (%s). Is the game still running? Close it and try again.\n", out.string().c_str(),
@@ -1132,7 +1141,7 @@ bool Build(const Options& opt) {
     }
 
     // the generated code and objects are the title's code: only kept when asked for
-    if (!opt.keep) clear();
+    finish();
     double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
     Progress(1);
     Say("\nDone in %.0f seconds. The game is ready:\n  %s\n", secs, out.string().c_str());
@@ -1159,6 +1168,7 @@ int main(int argc, char** argv) {
         bool more = i + 1 < argc;
         if (a == "--jobs" && more) opt.jobs = unsigned(std::max(1, std::atoi(argv[++i])));
         else if (a == "--keep") opt.keep = true;
+        else if (a == "--delete-compiler") opt.keep_compiler = false;
         else if (a == "--fetch-toolchain") fetch_only = true;
         else if (a == "--cli") cli = true;
         else if (a == "--gui") gui = true;
@@ -1176,12 +1186,12 @@ int main(int argc, char** argv) {
         else if (a == "--root" && more) i++;
         else if (a == "--help" || a == "-h") {
             std::printf("usage: setup [--cli] [--source GAME] [--work DIR] [--game-dir DIR] "
-                        "[--jobs N] [--keep] [--toolchain DIR] [--root DIR] [--fetch-toolchain]\n"
+                        "[--jobs N] [--keep] [--delete-compiler] [--toolchain DIR] [--root DIR] [--fetch-toolchain]\n"
                         "  no options: a window with the same choices\n");
             return 0;
         } else {
             std::fprintf(stderr, "usage: setup [--cli] [--source GAME] [--work DIR] [--game-dir DIR] "
-                                 "[--jobs N] [--keep] [--toolchain DIR] [--root DIR] [--fetch-toolchain] "
+                                 "[--jobs N] [--keep] [--delete-compiler] [--toolchain DIR] [--root DIR] [--fetch-toolchain] "
                                  "[--unpack PACKAGE OUTDIR]\n");
             return 2;
         }
@@ -1195,7 +1205,6 @@ int main(int argc, char** argv) {
     }
 
     if (fetch_only) {
-        g_log = std::fopen((root / "setup.log").string().c_str(), "w");
         Kit k;
         std::string error;
         fs::path work = opt.work.empty() ? root / "work" : opt.work;
@@ -1207,7 +1216,6 @@ int main(int argc, char** argv) {
         SetEnv("ZIG_LOCAL_CACHE_DIR", work / "zig-cache");
         if (!EnsureToolchain(work, k)) return 1;
         Say("The compiler is in %s\n", k.cxx.parent_path().parent_path().string().c_str());
-        if (g_log) std::fclose(g_log);
         return 0;
     }
     bool ok = setup::Build(opt);
