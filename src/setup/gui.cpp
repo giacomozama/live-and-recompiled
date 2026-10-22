@@ -9,20 +9,15 @@
 #include <FL/Fl_Input.H>
 #include <FL/Fl_Native_File_Chooser.H>
 #include <FL/Fl_Progress.H>
-#include <FL/Fl_RGB_Image.H>
 #include <FL/Fl_Scrollbar.H>
 #include <FL/Fl_Text_Buffer.H>
 #include <FL/Fl_Text_Display.H>
 
 #include <algorithm>
-#include <cmath>
 #include <cstdlib>
-#include <map>
-#include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
-#include <tuple>
 #include <vector>
 
 #include "setup.h"
@@ -87,58 +82,15 @@ const Fl_Color kBackground = fl_rgb_color(0x22, 0x22, 0x22), kField = fl_rgb_col
                kAccent = fl_rgb_color(0x4c, 0x8d, 0xff), kOk = fl_rgb_color(0x6f, 0xcf, 0x8a),
                kBad = fl_rgb_color(0xff, 0x7b, 0x72);
 
-// a rounded rectangle, rasterized at the window's own pixel scale: the shape comes from a signed distance in device pixels,
-// so the four corners match at any display scaling (FLTK's arcs and polygons are whole units, which a 125% or 150%
-// scale turns into corners that differ by a pixel). The image is kept for the next draw of the same shape.
-Fl_RGB_Image* RoundedImage(int w, int h, int r, Fl_Color c, bool outline) {
-    struct Key {
-        int w, h, r;
-        Fl_Color c;
-        bool outline;
-        float scale;
-        bool operator<(const Key& o) const {
-            return std::tie(w, h, r, c, outline, scale) < std::tie(o.w, o.h, o.r, o.c, o.outline, o.scale);
-        }
-    };
-    static std::map<Key, std::unique_ptr<Fl_RGB_Image>> cache;
-    const float s = fl_graphics_driver->scale();
-    Key key{w, h, r, c, outline, s};
-    auto it = cache.find(key);
-    if (it != cache.end()) return it->second.get();
-    if (cache.size() > 256) cache.clear();  // the progress bar's fill is a new width every draw
-
-    const int dw = std::max(1, int(w * s + 0.5f)), dh = std::max(1, int(h * s + 0.5f));
-    const float radius = std::min(r * s, std::min(dw, dh) / 2.0f), thickness = std::max(1.0f, std::floor(s + 0.5f));
-    uchar red, green, blue;
-    Fl::get_color(c, red, green, blue);
-    auto* rgba = new uchar[size_t(dw) * dh * 4];  // the image takes it over
-    for (int py = 0; py < dh; py++) {
-        for (int px = 0; px < dw; px++) {
-            // the distance from the pixel's centre to the rounded box's edge, negative inside
-            float qx = std::fabs(px + 0.5f - dw / 2.0f) - (dw / 2.0f - radius);
-            float qy = std::fabs(py + 0.5f - dh / 2.0f) - (dh / 2.0f - radius);
-            float d = std::hypot(std::max(qx, 0.0f), std::max(qy, 0.0f)) + std::min(std::max(qx, qy), 0.0f) - radius;
-            float edge = outline ? std::fabs(d + thickness / 2) - thickness / 2 : d;
-            float a = std::clamp(0.5f - edge, 0.0f, 1.0f);
-            uchar* out = &rgba[(size_t(py) * dw + px) * 4];
-            out[0] = red;
-            out[1] = green;
-            out[2] = blue;
-            out[3] = uchar(a * 255 + 0.5f);
-        }
-    }
-    auto* image = new Fl_RGB_Image(rgba, dw, dh, 4);
-    image->alloc_array = 1;
-    image->scale(w, h, 0, 1);
-    return cache.emplace(key, std::unique_ptr<Fl_RGB_Image>(image)).first->second.get();
+// square boxes: the radius is kept in the signatures but no longer rounds anything
+void FillRounded(int x, int y, int w, int h, int, Fl_Color c) {
+    fl_color(c);
+    fl_rectf(x, y, w, h);
 }
 
-void FillRounded(int x, int y, int w, int h, int r, Fl_Color c) {
-    RoundedImage(w, h, r, c, false)->draw(x, y);
-}
-
-void OutlineRounded(int x, int y, int w, int h, int r, Fl_Color c) {
-    RoundedImage(w, h, r, c, true)->draw(x, y);
+void OutlineRounded(int x, int y, int w, int h, int, Fl_Color c) {
+    fl_color(c);
+    fl_rect(x, y, w, h);
 }
 
 const int kRadius = 6;
