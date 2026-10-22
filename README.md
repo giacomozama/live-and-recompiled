@@ -8,7 +8,7 @@ trademarks of their respective owners.
 
 > [!NOTE]
 > This project does not include any game assets. You must provide the files from your own copy of
-> the game. The game [can currently be purchased from the Windows Store](https://www.xbox.com/games/store/conker-live-and-reloaded/bvfb8cbs75r6). The Windows Store version is fully compatible with this project.
+> the game. The game [can currently be purchased from the XBOX Store](https://www.xbox.com/games/store/conker-live-and-reloaded/bvfb8cbs75r6). The XBOX Store version is fully compatible with this project.
 
 > [!WARNING]
 > **AI disclaimer**
