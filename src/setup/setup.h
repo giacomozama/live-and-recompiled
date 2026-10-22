@@ -31,6 +31,9 @@ KitInfo ReadKit();
 // the default of every choice but the game: the working folder (work) and the game folder (game), both beside Setup
 Options Defaults(const std::filesystem::path& root);
 
+// where the Microsoft Store installed the game (Windows), for the window to start with; empty when it isn't found
+std::filesystem::path FindStoreInstall();
+
 // what is at opt.source, for the window to show: ok when the build can use it
 struct Probe {
     bool ok = false;

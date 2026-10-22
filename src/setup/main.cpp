@@ -900,6 +900,18 @@ Options Defaults(const fs::path& root) {
     return o;
 }
 
+// where the Microsoft Store puts the game, on whichever drive it was installed to; empty when it isn't there
+fs::path FindStoreInstall() {
+#ifdef _WIN32
+    std::error_code ec;
+    for (char drive = 'C'; drive <= 'Z'; drive++) {
+        fs::path dir = fs::path(std::string(1, drive) + ":\\") / "XboxGames" / "Conker- Live and Reloaded" / "Content" / "Game";
+        if (store::HasPackage(dir) || fs::is_regular_file(dir / "default.xbe", ec)) return dir;
+    }
+#endif
+    return {};
+}
+
 Probe CheckSource(const Options& opt) {
     Probe p;
     Kit k;
@@ -1201,6 +1213,7 @@ int main(int argc, char** argv) {
         DWORD ids[2];
         if (GetConsoleProcessList(ids, 2) <= 1) FreeConsole();  // double-clicked: no console behind the window
 #endif
+        if (opt.source.empty()) opt.source = setup::FindStoreInstall();
         return setup::RunWindow(opt);
     }
 
