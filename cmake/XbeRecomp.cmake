@@ -134,6 +134,12 @@ set_source_files_properties(${imgui_SOURCE_DIR}/backends/imgui_impl_vulkan.cpp P
 # glslang's libraries in the order they link
 set(XBE_GLSLANG_LIBS glslang glslang-default-resource-limits)
 
+# a whole archive as --whole-archive ... --no-whole-archive, the way a player kit's link line has it. CMake's own
+# WHOLE_ARCHIVE wraps it in --push-state and --pop-state when lld takes them, which zig c++ rejects
+set(CMAKE_LINK_LIBRARY_USING_XBE_WHOLE_ARCHIVE "LINKER:--whole-archive" "<LINK_ITEM>" "LINKER:--no-whole-archive")
+set(CMAKE_LINK_LIBRARY_USING_XBE_WHOLE_ARCHIVE_SUPPORTED TRUE)
+set(CMAKE_LINK_LIBRARY_XBE_WHOLE_ARCHIVE_ATTRIBUTES LIBRARY_TYPE=STATIC DEDUPLICATION=YES OVERRIDE=DEFAULT)
+
 # how the generated code is compiled, here and by a player kit's Setup
 set(XBE_GEN_COMPILE_OPTIONS -O2 -fno-strict-aliasing -Wno-unused-label -Wno-parentheses-equality -Wno-unused-variable)
 set(XBE_HOST_DEFINITIONS UNICODE _UNICODE _CRT_SECURE_NO_WARNINGS)
@@ -162,8 +168,14 @@ function(add_xbe_image target xbe config partitions game_dir)
     # the xbe's SHA-1, checked on every build and rewritten only when it changed: what follows depends on the game by
     # its content (xbe_sha1.cmake)
     set(xbe_file ${CMAKE_CURRENT_SOURCE_DIR}/assets/${xbe})
+    # without the game only the tools are configured (tools/build.sh --store unpacks the package with setup-linux), and
+    # assets/ changing configures again: the game's targets appear once the game is there
     if(NOT EXISTS ${xbe_file})
-        message(FATAL_ERROR "${xbe_file} is missing: put the game in assets/ (tools/build.sh --iso FILE)")
+        message(WARNING "${xbe_file} is missing: only the tools are configured (xbe_recomp, xbe_symbols, setup). Put "
+            "the game in assets/ (tools/build.sh --iso, --store or --game).")
+        file(MAKE_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/assets)
+        set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/assets)
+        return()
     endif()
     set(XBE_SHA1_FILE ${CMAKE_CURRENT_BINARY_DIR}/${target}_xbe.sha1)
     # the build's own recompiler, by its target: CMake only puts a target's path in a command itself when not cross
@@ -226,7 +238,7 @@ function(add_xbe_image target xbe config partitions game_dir)
     target_include_directories(${target} PRIVATE ${XBE_ROOT_DIR}/src/runtime ${GEN})
     # whole: an archive member is otherwise only taken for a symbol nothing defines yet, and every function the host
     # replaces already has the recompiled weak definition, so the replacements would be left out
-    target_link_libraries(${target} PRIVATE "$<LINK_LIBRARY:WHOLE_ARCHIVE,${target}_host>")
+    target_link_libraries(${target} PRIVATE "$<LINK_LIBRARY:XBE_WHOLE_ARCHIVE,${target}_host>")
     # lld keeps the recompiled weak functions overridable by the host ones
     target_link_options(${target} PRIVATE -fuse-ld=lld -g)
     if(WIN32)
