@@ -1,5 +1,5 @@
 #pragma once
-// XDK data layouts come from the image config (xdk/<build>/layout.toml), data addresses from its [data]. One the
+// XDK data layouts come from the image config (src/runtime/xdk/<build>/layout.toml), data addresses from its [data]. One the
 // config lacks is unknown and traps where it is first needed rather than being guessed.
 #include <cstdint>
 #include <cstdlib>

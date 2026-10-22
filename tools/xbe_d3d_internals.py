@@ -5,7 +5,7 @@ Conker was built with LTCG and links the D3D8 library internals straight into th
 non-exported D3D functions that xbe_symbols cannot name (and the runtime therefore does not host-replace).
 Each one is a candidate for a hook in src/conker/game/hooks.cpp.
 
-usage: xbe_d3d_internals.py <default.xbe> <config/game.toml>
+usage: xbe_d3d_internals.py <default.xbe> <src/conker/game.toml>
 """
 import re
 import struct

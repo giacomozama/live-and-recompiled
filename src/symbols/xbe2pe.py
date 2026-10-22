@@ -1,5 +1,5 @@
 # Flat PE of an XBE for Ghidra: the image at its load address, recompiler functions and config names as exports.
-# usage, from the game repo after a build: python src/symbols/xbe2pe.py config/game.toml game.exe
+# usage, from the repository root after a build: python src/symbols/xbe2pe.py src/conker/game.toml game.exe
 import re
 import struct
 import sys
@@ -18,8 +18,7 @@ def load(path, cfg):
 
 cfg_path, out = Path(sys.argv[1]), Path(sys.argv[2])
 cfg = load(cfg_path, {})
-root = cfg_path.parent.parent
-d = (root / cfg['xbe']['path']).read_bytes()
+d = Path(cfg['xbe']['path']).read_bytes()  # relative to the repository root, as for xbe_recomp
 u32 = lambda o: struct.unpack_from('<I', d, o)[0]
 # XBE header: base, headers size, image size; the entry is xored with the retail key, else the debug key
 base, hsize, isize = u32(0x104), u32(0x108), u32(0x10C)

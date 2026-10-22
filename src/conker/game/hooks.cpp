@@ -20,7 +20,7 @@
 
 namespace {
 
-// device globals Conker's D3D8LTCG uses (see config/game.toml [data])
+// device globals Conker's D3D8LTCG uses (see src/conker/game.toml [data])
 constexpr uint32_t kD3D_pDevice = 0x5499E8;
 constexpr uint32_t kDevBackBuffer = 0x1A14;  // CDevice_BackBuffer
 constexpr uint32_t kDevAutoDepth = 0x1A20;   // CDevice_AutoDepth

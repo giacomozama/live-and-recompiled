@@ -14,13 +14,13 @@ set(XBE_GAME_SRC ${CMAKE_CURRENT_SOURCE_DIR}/src/conker)
 file(GLOB XBE_HOST_SOURCES CONFIGURE_DEPENDS ${XBE_GAME_SRC}/*/*.cpp)
 list(FILTER XBE_HOST_SOURCES EXCLUDE REGEX "/src/conker/game/")
 
-# partitions as xbe_symbols wrote them into config/game.toml
-set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS config/game.toml)
-if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/config/game.toml)
-    file(STRINGS config/game.toml GAME_PARTITIONS REGEX "^partitions *=")
+# partitions as xbe_symbols wrote them into src/conker/game.toml
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${XBE_GAME_SRC}/game.toml)
+if(EXISTS ${XBE_GAME_SRC}/game.toml)
+    file(STRINGS ${XBE_GAME_SRC}/game.toml GAME_PARTITIONS REGEX "^partitions *=")
     string(REGEX MATCH "[0-9]+" GAME_PARTITIONS "${GAME_PARTITIONS}")
 endif()
-# no config yet: write it with xbe_symbols (assets/default.xbe xdk --out config/game.toml), the change reconfigures
+# no config yet: write it with xbe_symbols (assets/default.xbe src/runtime/xdk --out src/conker/game.toml), the change reconfigures
 if(NOT GAME_PARTITIONS)
     set(GAME_PARTITIONS 8)
 endif()

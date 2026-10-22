@@ -1357,7 +1357,7 @@ int main(int argc, char** argv) {
     }
     if (a.size() != 2) {
         std::fprintf(stderr,
-                     "usage: xbe_symbols <game.xbe> <sdk>/xdk [--out config/game.toml] [--name game]\n"
+                     "usage: xbe_symbols <game.xbe> src/runtime/xdk [--out src/conker/game.toml] [--name game]\n"
                      "       xbe_symbols --sign <config.toml>... --out signatures.toml [--skip name,...]\n");
         return 1;
     }

@@ -169,7 +169,7 @@ void x86_icall(X86Context& ctx, uint8_t* base, uint32_t target) {
     }
     uint32_t ret = kernel::R32(ctx.esp);
     LOGE("indirect call to %08X has no recompiled function (return address %08X, esp %08X)", target, ret, ctx.esp);
-    LOGE("add 0x%X to [functions] in the image's config/*.toml and rebuild", target);
+    LOGE("add 0x%X to [functions] in the image's config (src/conker/game.toml) and rebuild", target);
     x86_trap(ctx, ret, "indirect call to unknown code");
 }
 

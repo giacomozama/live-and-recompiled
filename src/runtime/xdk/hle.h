@@ -5,7 +5,7 @@
 #include "image_symbols.h"
 #include "kernel/kernel.h"
 
-// Symbols are named in config/<image>.toml; the recompiler writes their addresses to image_symbols.h
+// Symbols are named in the image's config (src/conker/game.toml); the recompiler writes their addresses to image_symbols.h
 #define X86_CAT_(a, b) a##b
 #define X86_CAT(a, b) X86_CAT_(a, b)
 #define SYM(name) X86_CAT(0x, SYM_##name)                 // address

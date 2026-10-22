@@ -2,6 +2,8 @@
 include_guard(GLOBAL)
 
 get_filename_component(XBE_ROOT_DIR ${CMAKE_CURRENT_LIST_DIR}/.. ABSOLUTE)
+# the XDK tables: signatures for xbe_symbols, struct layouts for the recompiler and the runtime
+set(XBE_XDK_DIR ${XBE_ROOT_DIR}/src/runtime/xdk)
 
 include(FetchContent)
 set(ZYDIS_BUILD_TOOLS OFF CACHE BOOL "" FORCE)
@@ -145,7 +147,7 @@ else()
     set(XBE_HOST_SYSTEM_LIBS ${CMAKE_DL_LIBS} pthread)
 endif()
 
-# One executable per recompiled image: its code from config/<config> (partitions as that config sets them),
+# One executable per recompiled image: its code from <XBE_GAME_SRC>/<config> (partitions as that config sets them),
 # the runtime, XBE_HOST_SOURCES shared by every image of the game, and <XBE_GAME_SRC>/<game_dir> hooks only this
 # image has. XBE_GAME_SRC (set by the project) is the game's source folder, also its include root.
 # Expects assets/<xbe> and the config's out = "generated/<game_dir>". At run time the game may be a disc image instead.
@@ -156,7 +158,7 @@ function(add_xbe_image target xbe config partitions game_dir)
     foreach(i RANGE ${last})
         list(APPEND GEN_SOURCES ${GEN}/x86_recomp.${i}.cpp)
     endforeach()
-    file(GLOB configs CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/config/*.toml ${XBE_ROOT_DIR}/xdk/*/*.toml)
+    file(GLOB configs CONFIGURE_DEPENDS ${XBE_GAME_SRC}/*.toml ${XBE_XDK_DIR}/*/*.toml)
     # the xbe's SHA-1, checked on every build and rewritten only when it changed: what follows depends on the game by
     # its content (xbe_sha1.cmake)
     set(xbe_file ${CMAKE_CURRENT_SOURCE_DIR}/assets/${xbe})
@@ -179,7 +181,7 @@ function(add_xbe_image target xbe config partitions game_dir)
     add_custom_command(
         OUTPUT ${GEN}/codegen.stamp
         BYPRODUCTS ${GEN_SOURCES} ${GEN}/x86_recomp_shared.h ${GEN}/image_symbols.h
-        COMMAND ${codegen} config/${config} --xdk ${XBE_ROOT_DIR}/xdk
+        COMMAND ${codegen} ${XBE_GAME_SRC}/${config} --xdk ${XBE_XDK_DIR}
         COMMAND ${CMAKE_COMMAND} -E touch ${GEN}/codegen.stamp
         DEPENDS ${XBE_CODEGEN_TOOL} ${configs} ${XBE_SHA1_FILE}
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
@@ -362,8 +364,8 @@ function(add_xbe_player_kit target title)
         COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:xbe_recomp> ${kit}/bin/
         COMMAND ${CMAKE_COMMAND} -DMODE=kit -DSHA=${sha1_file} -DALSO=${XBE_ALSO_SHA1_ARG} -DIN=${CMAKE_BINARY_DIR}/${target}_kit.toml.in
             -DOUT=${kit}/kit.toml -P ${XBE_ROOT_DIR}/cmake/xbe_sha1.cmake
-        COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_CURRENT_SOURCE_DIR}/config/${config} ${kit}/config/
-        COMMAND ${CMAKE_COMMAND} -E copy_directory ${XBE_ROOT_DIR}/xdk ${kit}/xdk
+        COMMAND ${CMAKE_COMMAND} -E copy ${XBE_GAME_SRC}/${config} ${kit}/config/
+        COMMAND ${CMAKE_COMMAND} -E copy_directory ${XBE_XDK_DIR} ${kit}/xdk
         COMMAND ${CMAKE_COMMAND} -E copy ${XBE_ROOT_DIR}/src/runtime/cpu/x86_ops.h ${XBE_ROOT_DIR}/src/runtime/cpu/x86_context.h
             ${kit}/include/cpu/
         COMMAND ${CMAKE_COMMAND} -E copy ${gen}/image_symbols.h ${kit}/include/
