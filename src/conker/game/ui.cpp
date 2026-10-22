@@ -396,12 +396,11 @@ void Draw(double fps) {
                 const std::vector<app::Mode>& modes = Modes();
                 std::string res = "Desktop";
                 int res_idx = 0;
-                if (pending_w && pending_h)
-                    for (size_t i = 0; i < modes.size(); i++) {
-                        res += '\0';
-                        res += std::to_string(modes[i].width) + "x" + std::to_string(modes[i].height);
-                        if (modes[i].width == pending_w && modes[i].height == pending_h) res_idx = int(i) + 1;
-                    }
+                for (size_t i = 0; i < modes.size(); i++) {
+                    res += '\0';
+                    res += std::to_string(modes[i].width) + "x" + std::to_string(modes[i].height);
+                    if (modes[i].width == pending_w && modes[i].height == pending_h) res_idx = int(i) + 1;
+                }
                 res += '\0';
                 if (ImGui::Combo("Resolution", &res_idx, res.c_str())) {
                     if (res_idx == 0) pending_w = pending_h = 0;
