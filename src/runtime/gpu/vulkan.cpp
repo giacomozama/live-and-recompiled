@@ -1192,6 +1192,16 @@ private:
     // were drawn, the copies they read, and each vertex program's PositionWSource by hash
     uint32_t post_rt_ = 0;
     bool post_done_ = false;
+    // XBE_POST_TRACE: what the picture's draws did to the effects, logged in FinishFront when it changes
+    struct PostTrace {
+        uint32_t solid = 0, other = 0, other_rt = 0, ow = 0, oh = 0;  // 3D draws on the frame's size, on others
+        uint32_t flat_elsewhere = 0, flat_reads = 0, no_target = 0;
+        const char* applied = nullptr;  // where ApplyPost was called
+        const char* outcome = nullptr;  // how it ended
+    } post_trace_;
+    std::string post_trace_key_;
+    uint32_t post_trace_lines_ = 0;
+    void PostTraceEnd(const Target& front);
     ImageRef post_tmp_[4];
     ImageRef smaa_area_, smaa_search_;  // SMAA's lookups (gpu/smaa_tex.h)
     std::unordered_map<uint64_t, int> pos_w_;
@@ -3704,13 +3714,35 @@ bool VulkanBackend::ReadsTarget(const State& s) {
 // a 3D draw onto the frame-sized target marks it; the first screen space one after that draws the effects under it
 void VulkanBackend::TrackPost(const State& s, bool flat) {
     if (post_done_ || !PostWanted()) return;
+    PostTrace& pt = post_trace_;
     Target* rt = FindTarget(s.rt, false);
-    if (!rt || rt->gw != guest_w_ || rt->gh != guest_h_) return;
+    if (!rt) {
+        pt.no_target++;
+        return;
+    }
+    if (rt->gw != guest_w_ || rt->gh != guest_h_) {
+        if (!flat) {
+            pt.other++;
+            pt.other_rt = rt->data;
+            pt.ow = rt->gw;
+            pt.oh = rt->gh;
+        }
+        return;
+    }
     if (!flat) {
+        pt.solid++;
         post_rt_ = s.rt.data;
         return;
     }
-    if (post_rt_ != s.rt.data || ReadsTarget(s)) return;
+    if (post_rt_ != s.rt.data) {
+        pt.flat_elsewhere++;
+        return;
+    }
+    if (ReadsTarget(s)) {
+        pt.flat_reads++;
+        return;
+    }
+    pt.applied = "at a 2D draw";
     ApplyPost(*rt);
 }
 
@@ -3743,7 +3775,9 @@ void VulkanBackend::ApplyPost(Target& t) {
     const app::Settings& set = app::Get();
     bool grade = set.film_grain || set.chromatic_aberration;
     bool smaa = set.smaa;
+    post_trace_.outcome = "stopped: no SMAA textures";
     if (smaa && !EnsureSmaaTextures()) return;
+    post_trace_.outcome = "stopped: no copy of the picture";
     // the picture's copy, SMAA's result when grade follows, then its edges and blending weights
     for (size_t i = 0; i < (smaa ? 4u : 1u); i++) {
         ImageRef& im = post_tmp_[i];
@@ -3789,6 +3823,7 @@ void VulkanBackend::ApplyPost(Target& t) {
         src = &dst;
     }
     if (grade) run(kPostHlsl, "grade", *t.res, {src});
+    post_trace_.outcome = "drawn";
 }
 
 void VulkanBackend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t count, const uint8_t* indices) {
@@ -4394,11 +4429,42 @@ void VulkanBackend::DrawFrame(VkImageView picture, uint32_t bi) {
 // the front buffer's picture done: the effects under the 2D, when no 2D came to draw them, samples resolved, readable;
 // the next picture's effects start afresh
 void VulkanBackend::FinishFront(Target& t) {
-    if (!post_done_ && post_rt_ == t.data && PostWanted()) ApplyPost(t);
+    if (!post_done_ && post_rt_ == t.data && PostWanted()) {
+        post_trace_.applied = "at the front buffer";
+        ApplyPost(t);
+    }
+    PostTraceEnd(t);
     post_rt_ = 0;
     post_done_ = false;
     ResolveSamples(t);
     Transition(*t.res, kRead);
+}
+
+// XBE_POST_TRACE: the picture's effects, where they were drawn or why not, logged when that changes from the picture
+// before (the counts and addresses left out of the comparison)
+void VulkanBackend::PostTraceEnd(const Target& front) {
+    static const bool trace = std::getenv("XBE_POST_TRACE") != nullptr;
+    PostTrace pt = std::exchange(post_trace_, {});
+    if (!trace || post_trace_lines_ >= 400) return;
+    char why[96];
+    if (!PostWanted())
+        snprintf(why, sizeof(why), "effects off");
+    else if (pt.applied)
+        snprintf(why, sizeof(why), "applied %s, %s", pt.applied, pt.outcome ? pt.outcome : "?");
+    else if (!post_rt_)
+        snprintf(why, sizeof(why), "not applied: no 3D on a %ux%u target", guest_w_, guest_h_);
+    else
+        snprintf(why, sizeof(why), "not applied: 3D there, no 2D after it there");
+    // the addresses left out too: the game flips between two front buffers
+    char key[192];
+    snprintf(key, sizeof(key), "%s 3D on the front %d", why, post_rt_ == front.data);
+    if (key == post_trace_key_) return;
+    post_trace_key_ = key;
+    post_trace_lines_++;
+    LOGR("post: picture %llu, %s; front %08X %ux%u; 3D draws %u on %08X, %u on other sizes (last %08X %ux%u); 2D "
+         "draws %u on other targets, %u reading a target, %u on none",
+         (unsigned long long)presents_, why, front.data, front.gw, front.gh, pt.solid, post_rt_, pt.other,
+         pt.other_rt, pt.ow, pt.oh, pt.flat_elsewhere, pt.flat_reads, pt.no_target);
 }
 
 // frame generation: the front buffer's picture copied into gen_pics_[slot], the frame's pictures one per slot
