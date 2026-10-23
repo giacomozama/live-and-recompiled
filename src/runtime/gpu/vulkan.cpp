@@ -2913,14 +2913,11 @@ bool VulkanBackend::CreateTexture(Tex& tx, const TextureDesc& d, const FormatInf
     if (tx.res) Retire(tx.res);
     tx = Tex{};
     tx.d = d;
+    // a DXT texture smaller than a block keeps its size: padded to 4x4, texcoords 0..1 would stretch over the
+    // padding (the multiplayer menu's 2x2 scanline mask faded out halfway)
     uint32_t w = d.width;
     uint32_t h = d.height;
     tx.levels = d.levels;
-    if (fi.compressed && ((w & 3) || (h & 3))) {
-        w = (w + 3) & ~3u;
-        h = (h + 3) & ~3u;
-        tx.levels = 1;
-    }
     ImageSpec sp;
     switch (fi.host) {
         case Host::BC1: sp.fmt = VK_FORMAT_BC1_RGBA_UNORM_BLOCK; break;
