@@ -10,6 +10,10 @@ namespace fur {
 // applies it live.
 extern bool g_shading;
 
+// settings.toml fur_distant: a furry object past the near range keeps all its shells, instead of losing them with
+// distance as on the console until only the skin is left (src/conker/game/hooks.cpp). Read on each object.
+extern bool g_distant;
+
 // hands the renderer the shading; after the settings load, before boot
 void Init();
 

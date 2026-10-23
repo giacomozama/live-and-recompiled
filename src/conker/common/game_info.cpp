@@ -42,6 +42,7 @@ const app::GameInfo app::kGame = {
                 {"grass_wind", &grass::g_wind, nullptr},  // distant grass sways too (hooks.cpp)
                 {"grass_distant", nullptr, &grass::g_distant},  // distant grass thinned, faded or as near (hooks.cpp)
                 {"fur_shading", &fur::g_shading, nullptr},  // lit, soft edged fur shells (src/conker/common/fur.cpp)
+                {"fur_distant", &fur::g_distant, nullptr},  // distant fur keeps all its shells (hooks.cpp)
                 {"dynamic_water", &water::g_dynamic, nullptr},  // flowing, rippling water (src/conker/common/water.cpp)
                 {"glass_shading", &glass::g_shading, nullptr}},  // glowing, glinting bottles (src/conker/common/glass.cpp)
     // the [playerN] tables: each player's keyboard bindings and mouse look (src/conker/game/keyboard.cpp, mouse.cpp)

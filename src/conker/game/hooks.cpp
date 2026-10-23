@@ -18,6 +18,7 @@
 
 #include "common/bulb.h"
 #include "common/cutscenes.h"
+#include "common/fur.h"
 #include "common/grass.h"
 
 namespace {
@@ -174,6 +175,21 @@ void ConkerGrassNear(X86Context& ctx, uint8_t* base) {
 void ConkerGrassFull(X86Context& ctx, uint8_t* base) {
     (void)base;
     if (GrassDistant() == grass::kFullFading) kernel::W32(ctx.ebx + 0x64, kernel::R32(ctx.ebx + 0x60));
+}
+
+// 0x81FC0 (edi the object, its player's index, and where it writes the shells' length scale): how many fur shells an
+// object draws ([0x750340], run by 0x3F0270). Most take R = 1000 (type 0x6D 3000) and at most 8; past 0.4 R the count
+// falls linearly from that to 1, all but the skin gone by R plus a share for the model's own count. Closer, the full
+// count, and the length scale grows from 0.5 at 100 to 1 at 0.4 R. A few types and levels return a fixed count first.
+// fur::g_distant (or XBE_FUR_DISTANT=0 off) weighs a farther object as at 0.4 R: every shell, at full length.
+bool fur::g_distant = true;
+
+// [[hook]] at 0x8210C, xmm0 the object's distance from the player and xmm3 R
+void ConkerFurDistant(X86Context& ctx, uint8_t* base) {
+    (void)base;
+    static const char* env = std::getenv("XBE_FUR_DISTANT");
+    if (!(env ? env[0] != '0' : fur::g_distant)) return;
+    ctx.xmm[0].f[0] = std::min(ctx.xmm[0].f[0], ctx.xmm[3].f[0] * 0.4f);
 }
 
 // 0x4C950: the controller layer's init. It first opens the pads XGetDevices reports (0x3D19C0, which marks each

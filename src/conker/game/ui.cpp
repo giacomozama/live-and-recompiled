@@ -555,6 +555,9 @@ void Draw(double fps) {
                 ImGui::Checkbox("Fur shading", &fur::g_shading);
                 ImGui::SameLine();
                 ImGui::TextDisabled("soft strand edges, shadowed roots, sheen");
+                ImGui::Checkbox("Full distant fur", &fur::g_distant);
+                ImGui::SameLine();
+                ImGui::TextDisabled("every shell however far; the console drops them with distance");
                 ImGui::Checkbox("Dynamic water", &water::g_dynamic);
                 ImGui::SameLine();
                 ImGui::TextDisabled("ripples and wakes");
