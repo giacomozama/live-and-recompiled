@@ -3731,10 +3731,10 @@ void VulkanBackend::TrackPost(const State& s, bool flat) {
     }
     if (!flat) {
         pt.solid++;
-        post_rt_ = s.rt.data;
+        post_rt_ = rt->data;
         return;
     }
-    if (post_rt_ != s.rt.data) {
+    if (post_rt_ != rt->data) {
         pt.flat_elsewhere++;
         return;
     }
