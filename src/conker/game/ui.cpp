@@ -563,6 +563,12 @@ void Draw(double fps) {
                 ImGui::Checkbox("Skippable cutscenes", &cutscenes::g_skippable);
                 ImGui::SameLine();
                 ImGui::TextDisabled("LT skips any cutscene, seen or not");
+                int split = display::g_side_by_side;
+                if (ImGui::Combo("Two player split", &split, "Top and bottom\0Side by side (experimental)\0"))
+                    display::g_side_by_side = split != 0;
+                ImGui::SameLine();
+                ImGui::TextDisabled(split ? "from the next match; some HUD pieces stay where top and bottom puts them"
+                                          : "from the next match");
                 end_tab();
             }
 
