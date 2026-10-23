@@ -22,18 +22,6 @@ namespace {
 // programs build oT1 that way. Registers in the HLSL are hardware order, D3D's + 96.
 constexpr const char* kMatch = "(mac_mul(((R6).xyzw), ((c[112]).yyyy)) + ((c[112]).yyyy))";
 
-// four waves at once over xz at time t, deep water's (their speed grows with their length, g 981 units/s^2): h the
-// height they lift the surface by, dh its slope along x and z. Each crest spans five or more of the river's vertices,
-// some 30 units apart, and together they rise at most 5.7 units, under a tenth of Conker's height
-constexpr const char* kWaves = R"(
-#define WAVE(dx, dz, len, amp) { float k = 6.2831853 / (len), ph = k * dot(xz, float2(dx, dz)) - sqrt(981 * k) * t; \
-    h += (amp) * sin(ph); dh += (amp) * k * cos(ph) * float2(dx, dz); }
-        WAVE(0.799, 0.602, 520, 2.5)
-        WAVE(-0.292, 0.956, 340, 1.6)
-        WAVE(-0.940, -0.342, 230, 1.0)
-        WAVE(0.342, -0.940, 170, 0.6)
-)";
-
 // The game's ripples are rings drawn as flat quads on the water by a particle program (BAFEC7FDD6E09DA9), the only
 // one of its kind that hands v4 on, bump mapping the copy of the screen at stage 1: v0 are the corners in the level's
 // space, the water's. Conker landing and swimming spreads them around him, drops falling back small ones, in pairs a
@@ -91,60 +79,7 @@ constexpr const char* kField = R"(
     h += fc * fe; dh += float2(fx, fz) * xs[1].x * fe; } }
 )";
 
-// The water at rest is a calm river's: smooth gradient noise in two octaves some 73 and 32 units across, slowly
-// changing as it goes, laid out in the swirl's texture coordinates (oT0, a tile some 510 units, scrolled downstream)
-// and stretched kStretch times along the current, which carries it kFlowBoost times as fast as the swirl's slow
-// scroll. The current is how fast the water draw's texture offset (c108.w, c109.w) moves, smoothed; the distance it
-// carried the noise is summed here frame by frame, and its direction held until it turns by more than kTurn (another
-// river), since a turn of the noise about the texture's origin moves the whole surface. The slope along u and v is
-// taken to x and z by how the triangle (DS) or the pixel (PS) lays the texture on the level: e1 e2 two steps in x z,
-// u1 u2 the coordinate's steps along them.
-constexpr float kRestHeight = 4;  // units the noise is scaled by: it reaches about 0.4 of that either way
-constexpr float kFlowBoost = 8;
-constexpr float kStretch = 2.5f;
-constexpr float kTurn = 0.94f;    // cosine, some 20 degrees
-constexpr const char* kNoise = R"(
-uint3 WaterHash(int3 i) {
-    uint3 v = uint3(i) * 1664525u + 1013904223u;
-    v.x += v.y * v.z; v.y += v.z * v.x; v.z += v.x * v.y;
-    v ^= v >> 16u;
-    v.x += v.y * v.z; v.y += v.z * v.x; v.z += v.x * v.y;
-    return v;
-}
-float3 WaterGrad(int3 i) { return float3(WaterHash(i) >> 8u) / 8388608.0 - 1; }
-// gradient noise, about -1 to 1
-float WaterNoise(float3 p) {
-    int3 i = int3(floor(p));
-    float3 f = p - floor(p), u = f * f * f * (f * (f * 6 - 15) + 10);
-    float n[8];
-    [unroll] for (int k = 0; k < 8; k++) {
-        int3 o = int3(k & 1, (k >> 1) & 1, k >> 2);
-        n[k] = dot(WaterGrad(i + o), f - float3(o));
-    }
-    return lerp(lerp(lerp(n[0], n[1], u.x), lerp(n[2], n[3], u.x), u.y),
-                lerp(lerp(n[4], n[5], u.x), lerp(n[6], n[7], u.x), u.y), u.z);
-}
-// drift: how far the current has carried the noise, in texture coordinates (xs[1].yz); along: the current's direction
-// (xs[2].xy), stretch how much longer the noise is along it (xs[2].z)
-float WaterRest(float2 uv, float t, float2 drift, float2 along, float stretch) {
-    float2 p = uv - drift;
-    float2 q = float2(dot(p, along) / stretch, dot(p, float2(-along.y, along.x)));
-    return WaterNoise(float3(q * 7, t * 0.3)) * 0.65 +
-           WaterNoise(float3(mul(float2x2(0.8, -0.6, 0.6, 0.8), q) * 16 + 17.3, t * 0.5)) * 0.35;
-}
-)";
-constexpr const char* kRest = R"(
-#define REST(uv, e1, e2, u1, u2, amp) { float2 ru = (uv); float re = 1.0 / 512; \
-    float rc = WaterRest(ru, t, xs[1].yz, xs[2].xy, xs[2].z); \
-    float2 rg = float2(WaterRest(ru + float2(re, 0), t, xs[1].yz, xs[2].xy, xs[2].z) - rc, \
-                       WaterRest(ru + float2(0, re), t, xs[1].yz, xs[2].xy, xs[2].z) - rc) / re; \
-    float2x2 se = float2x2((e1).x, (e2).x, (e1).y, (e2).y), sut = float2x2((u1).x, (u2).x, (u1).y, (u2).y); \
-    float sdet = determinant(se); sdet = abs(sdet) > 1e-8 ? sdet : 1e-8; \
-    float2x2 sj = mul(sut, float2x2(se[1][1], -se[0][1], -se[1][0], se[0][0]) / sdet); \
-    h += rc * (amp); dh += mul(rg, sj) * (amp); }
-)";
-
-// mp, the level's position the waves and the sheet lift by h, taken to the screen again as the program does; the copy of
+// mp, the level's position the sheet lifts by h, taken to the screen again as the program does; the copy of
 // the screen is read where the lifted surface lies (the pixel shader bends it)
 constexpr const char* kProject = R"(
         float4 m = float4(mp.x, mp.y + h, mp.z, 1);
@@ -155,57 +90,50 @@ constexpr const char* kProject = R"(
         o.pos = float4((sp.x * 2 / surf.x - 1) * w, (1 - sp.y * 2 / surf.y) * w, sp.z * surf.z * w, w);
         o.tc1.xy = (cp.xy / w * float2(1, -1)) * c[112].y + c[112].y;)";
 
-// The vertex shader lifts the river's own vertices, some 30 units apart, by plain waves: what the water shows where
-// the GPU can't tessellate, too coarse for the noise and the ripples. It hands on the level's position in x0 for the domain
-// shader, which lifts the tessellated surface again, a few units between vertices near the eye, and the ripples with
-// it, and for the pixel shader.
+// The vertex shader leaves the river's own vertices, some 30 units apart, where they are: what the water shows where
+// the GPU can't tessellate, too coarse for the ripples. It hands on the level's position in x0 for the domain shader,
+// which lifts the tessellated surface by the ripples, a few units between vertices near the eye, and for the pixel
+// shader.
 constexpr const char* kVsHead = R"(    {
         float3 mp = R3.xyz;
-        float t = xc.y, h = 0;
-        float2 xz = mp.xz, dh = 0;)";
+        float h = 0;)";
 constexpr const char* kVsTail = R"(
         o.x0 = float4(mp, 1);
         o.x1 = 0;
     })";
 constexpr const char* kDsHead = R"(    {
         float3 mp = o.x0.xyz;
-        float t = xc.y, h = 0;
+        float h = 0;
         float2 xz = mp.xz, dh = 0;)";
-constexpr const char* kDsRest = R"(
-        {
-            float2 uv0 = p[0].tc0.xy / p[0].tc0.w;
-            REST(o.tc0.xy / o.tc0.w, p[1].x0.xz - p[0].x0.xz, p[2].x0.xz - p[0].x0.xz,
-                 p[1].tc0.xy / p[1].tc0.w - uv0, p[2].tc0.xy / p[2].tc0.w - uv0, REST_HEIGHT)
-        }
-)";
 
-// Per pixel, the surface's own slope (the rest's and the ripples') drives what the swirl drove on the console: the
-// combiners read the copy of the screen (t1) bumped by the swirl (t0) as much as a tenth of the screen, which buries
-// any movement of the surface under the riverbed's, and mix it with the water's colour by r0.a (stage 4, then times
-// c10 of the final stage). Here it is read again bent by the surface's tilt in view space and put in its place, so the
-// surface shows as it moves; the slopes are shaded a little, lighter facing a light from +x+z; and the surface catches
-// the sky at grazing angles (Schlick's Fresnel) and a glint of a high sun, seen from above or from under it.
+// Per pixel, the ripples' slope drives what the swirl drove on the console: the combiners read the copy of the screen
+// (t1) bumped by the swirl (t0) as much as a tenth of the screen, which buries any movement of the surface under the
+// riverbed's, and mix it with the water's colour by r0.a (stage 4, then times c10 of the final stage). Here it is read
+// again where the swirl bent it (duv1 through bumpmat[1]), kSwirlKeep of that, and bent further by the surface's tilt in
+// view space, and the difference put in its place, so the surface shows as it moves over the swirl's look; the slopes
+// are shaded a little, lighter facing a light from +x+z; and the surface catches the sky at grazing angles (Schlick's
+// Fresnel) and a glint of a high sun, seen from above or from under it, less what a flat surface would, which the
+// console's colour already holds: still water is as bright as it was.
 constexpr float kRefract = 0.15f;  // screen widths of bend per unit of slope
+constexpr float kSwirlKeep = 1;  // the share of the console's swirl bend kept under the surface's
 constexpr const char* kPsHead = R"({
-    float t = xc.y, h = 0;
+    float h = 0;
     float2 xz = i.x0.xz, dh = 0;)";
 constexpr const char* kPsTail = R"(
-    {
-        float2 uv = tc0.xy / tc0.w;
-        REST(uv, ddx(xz), ddy(xz), ddx(uv), ddy(uv), REST_HEIGHT)
-    }
     FIELD(1)
     {
         float3 tilt = float3(-dh.x, 0, -dh.y);
         float2 bend = float2(dot(tilt, c[96].xyz), -dot(tilt, c[97].xyz)) * REFRACT;
-        float4 under = tex1.Sample(smp1, tc1.xy + texsize[1].zw + bend);
-        r0.rgb += (1 - saturate(r0.a)) * (under.rgb - t1.rgb) * pc[10].rgb;
+        float2 swirl = float2(dot(bumpmat[1].xz, duv1), dot(bumpmat[1].yw, duv1)), at = tc1.xy + texsize[1].zw;
+        float4 under = tex1.Sample(smp1, at + SWIRL_KEEP * swirl + bend), was = tex1.Sample(smp1, at + swirl);
+        r0.rgb += (1 - saturate(r0.a)) * (under.rgb - was.rgb) * pc[10].rgb;
         r0.rgb *= 1 - clamp(0.8 * dot(dh, float2(0.6, 0.8)), -0.15, 0.15);
         float3 eye = -(c[96].xyz * c[96].w + c[97].xyz * c[97].w + c[98].xyz * c[98].w);
         float3 e = normalize(eye - float3(xz.x, i.x0.y + h, xz.y)), n = normalize(float3(-dh.x, 1, -dh.y));
-        if (e.y < 0) n = -n;
-        float fresnel = pow(1 - saturate(dot(n, e)), 5);
-        float glint = pow(saturate(dot(reflect(-e, n), normalize(float3(0.4, 0.8, 0.45)))), 80);
+        float3 flat = float3(0, 1, 0), sun = normalize(float3(0.4, 0.8, 0.45));
+        if (e.y < 0) { n = -n; flat = -flat; }
+        float fresnel = pow(1 - saturate(dot(n, e)), 5) - pow(1 - saturate(dot(flat, e)), 5);
+        float glint = pow(saturate(dot(reflect(-e, n), sun)), 80) - pow(saturate(dot(reflect(-e, flat), sun)), 80);
         r0.rgb += (0.25 * fresnel + 0.4 * glint) * float3(0.9, 0.95, 1);
     }
 })";
@@ -215,12 +143,6 @@ struct Drop {
 };
 std::vector<Drop> g_seen, g_last;  // this frame's rings' centres, last frame's
 std::unordered_map<uint64_t, float> g_surface;  // the water's height by square
-float g_offset[2] = {}, g_offset_last[2] = {};  // the water's texture offset this frame and the last one it was seen
-bool g_offset_seen = false, g_offset_had = false;
-float g_flow[2] = {};   // texture coordinates a second
-float g_drift[2] = {};  // texture coordinates the current carried the noise
-float g_along[2] = {1, 0};
-bool g_flowing = false;  // g_along is a current's
 float g_clock = 0;  // seconds of frames
 std::vector<std::array<float, 3>> g_body;  // this frame's skin points
 
@@ -309,11 +231,6 @@ void SeenWater(const gpu::WatchedDraw& d) {
     const float (*v)[4] = d.v[0];
     if (!v) return;
     if (g_surface.size() > kSurfaceCells) g_surface.clear();
-    if (!g_offset_seen) {
-        g_offset[0] = d.c[108][3];
-        g_offset[1] = d.c[109][3];
-        g_offset_seen = true;
-    }
     float scale = d.c[114][0];
     for (uint32_t k = 0; k < d.vertices; k++) {
         int i = int(std::floor(v[k][0] * scale / kSurfaceCell)), j = int(std::floor(v[k][2] * scale / kSurfaceCell));
@@ -470,27 +387,6 @@ void Frame() {
     float dt = g_then.time_since_epoch().count() ? std::chrono::duration<float>(now - g_then).count() : 0;
     g_then = now;
     g_clock += dt;
-    if (g_offset_seen && g_offset_had && dt > 0) {
-        float du = g_offset[0] - g_offset_last[0], dv = g_offset[1] - g_offset_last[1];
-        if (std::abs(du) < 0.25f && std::abs(dv) < 0.25f) {  // not wrapped
-            g_flow[0] += (du / dt - g_flow[0]) * 0.1f;
-            g_flow[1] += (dv / dt - g_flow[1]) * 0.1f;
-        }
-    }
-    float speed = std::hypot(g_flow[0], g_flow[1]);
-    if (speed > 1e-5f) {
-        float fx = g_flow[0] / speed, fy = g_flow[1] / speed;
-        if (!g_flowing || fx * g_along[0] + fy * g_along[1] < kTurn) {
-            g_along[0] = fx;
-            g_along[1] = fy;
-            g_flowing = true;
-        }
-    }
-    g_drift[0] += g_flow[0] * kFlowBoost * dt;
-    g_drift[1] += g_flow[1] * kFlowBoost * dt;
-    if (g_offset_seen) std::copy(g_offset, g_offset + 2, g_offset_last);
-    g_offset_had = g_offset_seen;
-    g_offset_seen = false;
     for (const Drop& d : g_seen) {
         bool old = std::any_of(g_last.begin(), g_last.end(),
                                [&](const Drop& o) { return std::abs(o.x - d.x) < 3 && std::abs(o.z - d.z) < 3; });
@@ -521,11 +417,6 @@ void Fill(float (*xs)[4]) {
     xs[0][2] = 1 / kExtent;
     xs[0][3] = 1.0f / kGrid;
     xs[1][0] = 1 / (2 * kCell);
-    xs[1][1] = g_drift[0];
-    xs[1][2] = g_drift[1];
-    xs[2][0] = g_along[0];
-    xs[2][1] = g_along[1];
-    xs[2][2] = g_flowing ? kStretch : 1;
 }
 
 gpu::ShadingField Field() {
@@ -536,19 +427,17 @@ gpu::ShadingField Field() {
 }  // namespace
 
 void water::Init() {
-    static const std::string vs = std::string(kVsHead) + kWaves + kProject + kVsTail;
-    static const std::string rest = "\n#define REST_HEIGHT " + std::to_string(kRestHeight) + "\n#define REFRACT " +
-                                    std::to_string(kRefract) + "\n" + kRest;
-    static const std::string ds = std::string(kDsHead) + rest + kDsRest + kField + "        FIELD(1)" + kProject + "\n    }";
-    static const std::string ps = std::string(kPsHead) + rest + kField + kPsTail;
+    static const std::string vs = std::string(kVsHead) + kProject + kVsTail;
+    static const std::string ds = std::string(kDsHead) + kField + "        FIELD(1)" + kProject + "\n    }";
+    static const std::string ps = std::string(kPsHead) + "\n#define REFRACT " + std::to_string(kRefract) +
+                                  "\n#define SWIRL_KEEP " + std::to_string(kSwirlKeep) + "\n" + kField + kPsTail;
     gpu::g_program_shading.push_back({.match = kMatch,
                                       .on = &g_dynamic,
                                       .vs = vs.c_str(),
                                       .ps = ps.c_str(),
                                       .fill = Fill,
                                       .tess = ds.c_str(),
-                                      .field = Field,
-                                      .functions = kNoise});
+                                      .field = Field});
     gpu::g_program_watch.push_back({.match = kRingMatch, .seen = Seen, .frame = Frame});
     gpu::g_program_watch.push_back({.match = kMatch, .seen = SeenWater, .spread = true, .vertices = kSurfaceSamples});
     gpu::g_program_watch.push_back({.match = kSkinMatch, .seen = SeenSkin, .regs = 0xF, .spread = true});

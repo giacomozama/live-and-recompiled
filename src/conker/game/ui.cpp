@@ -549,7 +549,7 @@ void Draw(double fps) {
                 ImGui::TextDisabled("soft strand edges, shadowed roots, sheen");
                 ImGui::Checkbox("Dynamic water", &water::g_dynamic);
                 ImGui::SameLine();
-                ImGui::TextDisabled("currents, ripples and wakes");
+                ImGui::TextDisabled("ripples and wakes");
                 ImGui::Checkbox("Metal shading", &metal::g_shading);
                 ImGui::SameLine();
                 ImGui::TextDisabled("armour catches highlights and reflections");
