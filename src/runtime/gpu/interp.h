@@ -41,14 +41,16 @@ struct Undo {
 };
 enum class Blended { kNotFound, kJumped, kBorrowed, kYes };
 Blended Blend(uint32_t n, float t, State& s, Undo& undo);
-// XBE_INTERP_HIDE: whether a draw that came out so is left out of the picture drawn again
+// XBE_INTERP_HIDE: whether a draw that came out so is left out of the picture drawn again; 16 leaves out the
+// suspects too (likely found wrong or missed, interp.cpp's Suspicion), of the draw Blend did last
 bool Hidden(Blended how);
 
 // XBE_INTERP_RECORD=<pictures>: the pictures last shown are kept (at the console's size) with a note each, and F4
 // (gpu::g_record_dump) saves them; 0 when off
 uint32_t Recording();
 // a picture's drawing again, when recording: Blend counts what it did between these, EndPass sums it up as the note
-// for the picture's slot (Note)
+// for the picture's slot (Note). With XBE_INTERP_SUSPECT too: the picture's suspects, logged, noted, and saved with
+// XBE_INTERP_AUTO
 void BeginPass(float t);
 void EndPass(uint32_t slot);
 const std::string& Note(uint32_t slot);

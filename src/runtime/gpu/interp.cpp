@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "core/log.h"
+#include "gpu/backend.h"
 #include "gpu/draw.h"
 #include "gpu/shaders.h"
 #include "gpu/texture.h"
@@ -157,6 +158,8 @@ struct Snap {
     std::bitset<192> stale;  // palette registers (Reads::relative up) another draw left: none of this one's (Stale)
     int32_t found = -1;  // the draw of the frame before it was found as
     float distance = 0;  // from it, per value read (Distance)
+    float next = INFINITY;  // the runner-up's, per value: as near as distance, the draw was a toss-up (Suspect)
+    float gone = -1;        // not found: the nearest draw of its program no draw found, per value; -1 not yet weighed
     uint32_t candidates = 0;  // draws it was found among
     bool by_exact = false;
     bool second = false;  // found only as another detail's draw (Match)
@@ -224,7 +227,7 @@ bool Nearest(const Frame& prev, const Frame& cur, const std::unordered_map<uint6
     if (it == by.end()) return false;
     const std::vector<uint32_t>& list = it->second;
     int32_t best = -1;
-    float best_d = 0;
+    float best_d = 0, next_d = INFINITY;
     bool best_same = false;
     uint32_t n = 0;
     size_t from = std::min(turn, list.size() - 1);
@@ -235,15 +238,21 @@ bool Nearest(const Frame& prev, const Frame& cur, const std::unordered_map<uint6
         uint32_t i = list[step % 2 ? from + off : from - off];
         if (prev.taken[i]) continue;
         n++;
-        float d = Distance(prev, prev.snaps[i], cur, sn, best < 0 ? INFINITY : best_d);
+        float d = Distance(prev, prev.snaps[i], cur, sn, next_d);
         bool same = prev.snaps[i].parts[kAddresses] == sn.parts[kAddresses];
-        if (best < 0 || d < best_d || (d == best_d && same && !best_same)) best = int32_t(i), best_d = d, best_same = same;
+        if (best < 0 || d < best_d || (d == best_d && same && !best_same)) {
+            if (best >= 0) next_d = best_d;
+            best = int32_t(i), best_d = d, best_same = same;
+        } else if (d < next_d) {
+            next_d = d;
+        }
         if (best_d == 0 && best_same) break;
     }
     if (best < 0) return false;
     size_t values = sn.reads ? sn.reads->regs.size() * 4 : kXf * 16;
     sn.found = best;
     sn.distance = values ? best_d / float(values) : 0;
+    sn.next = values ? next_d / float(values) : INFINITY;
     sn.candidates = n;
     return true;
 }
@@ -300,6 +309,10 @@ struct Pass {
 };
 Pass g_pass;
 std::string g_notes[8];
+// frames ended; the frame scored (Suspects::first), logged; pictures drawn again this frame. XBE_INTERP_AUTO's saves
+// done, pictures to wait before the next, the frame it may come from
+uint32_t g_frame = 0, g_scored = ~0u, g_logged = 0, g_passes = 0;
+uint32_t g_saves = 0, g_save_in = 0, g_save_after = 0;
 
 uint64_t ProgramOf(const State& s) {
     return (s.vs_handle & 1) && s.vs && !s.vs->program.empty() ? s.vs->hash : s.vs_handle;
@@ -543,6 +556,9 @@ void Match() {
     };
     static std::vector<Pair> pairs;
     static std::vector<bool> used;
+    // each draw's two nearest, at the same addresses ([0], [1]) and at others ([2], [3]): its runner-up is the
+    // nearer of those alike to the one it took (Snap::next)
+    static std::vector<std::array<float, 4>> two;
     for (const auto& [key, list] : cur.loose) {
         auto it = prev.loose.find(key);
         if (it == prev.loose.end()) continue;
@@ -561,12 +577,16 @@ void Match() {
             continue;
         }
         pairs.clear();
+        two.assign(list.size(), {INFINITY, INFINITY, INFINITY, INFINITY});
         for (uint32_t c = 0; c < list.size(); c++)
             for (uint32_t p = 0; p < before.size(); p++) {
                 const Snap& sn = cur.snaps[list[c]];
                 const Snap& o = prev.snaps[before[p]];
-                pairs.push_back({Distance(prev, o, cur, sn, INFINITY), o.parts[kAddresses] == sn.parts[kAddresses],
-                                 c > p ? c - p : p - c, c, p});
+                const Pair& pr = pairs.emplace_back(Pair{Distance(prev, o, cur, sn, INFINITY),
+                                                         o.parts[kAddresses] == sn.parts[kAddresses], c > p ? c - p : p - c, c, p});
+                float* t = two[c].data() + (pr.same ? 0 : 2);
+                if (pr.d < t[0]) t[1] = t[0], t[0] = pr.d;
+                else if (pr.d < t[1]) t[1] = pr.d;
             }
         // at other addresses a pair counts kLooseCost times as far: a static mesh's copies (grass clumps) are told
         // apart by their buffers, at distances among them like their own's a frame on; one at other addresses still
@@ -589,6 +609,9 @@ void Match() {
             prev.taken[p] = true;
             sn.found = int32_t(p);
             sn.distance = values ? pr.d / float(values) : 0;
+            const float* t = two[pr.c].data() + (pr.same ? 0 : 2);
+            float next = pr.d == t[0] ? t[1] : t[0];
+            sn.next = values ? next / float(values) : INFINITY;
             sn.candidates = uint32_t(before.size());
         }
     }
@@ -599,12 +622,13 @@ void Match() {
         if (sn.leader >= 0 || sn.found >= 0) continue;
         auto it = prev.lod.find(sn.lod);
         if (it == prev.lod.end()) continue;
-        float best = INFINITY;
+        float best = INFINITY, next = INFINITY;
         int32_t at = -1;
         for (uint32_t p : it->second) {
             if (prev.taken[p]) continue;
-            float d = Distance(prev, prev.snaps[p], cur, sn, best);
-            if (d < best) best = d, at = int32_t(p);
+            float d = Distance(prev, prev.snaps[p], cur, sn, next);
+            if (d < best) next = best, best = d, at = int32_t(p);
+            else if (d < next) next = d;
         }
         size_t values = sn.reads ? sn.reads->regs.size() * 4 : kXf * 16;
         // as near as kLooseDistance: a dynamic buffer's ring can put another draw at the same addresses
@@ -612,6 +636,7 @@ void Match() {
         prev.taken[size_t(at)] = true;
         sn.found = at;
         sn.distance = values ? best / float(values) : 0;
+        sn.next = values ? next / float(values) : INFINITY;
         sn.candidates = uint32_t(it->second.size());
         sn.second = true;
     }
@@ -638,6 +663,7 @@ void Match() {
         if (at < 0 || best / float(values) > kSecondDistance || best > kSecondMargin * next) continue;
         sn.found = at;
         sn.distance = best / float(values);
+        sn.next = next / float(values);
         sn.candidates = uint32_t(it->second.size());
         sn.second = true;
     }
@@ -662,6 +688,14 @@ void EndFrame() {
             g_t = {};
         }
     }
+    // a save waits for the pictures after the suspect one: the frame's own and those drawn again
+    if (g_save_in) {
+        uint32_t pictures = g_passes + 1;
+        g_save_in = g_save_in > pictures ? g_save_in - pictures : 0;
+        if (!g_save_in) gpu::g_record_dump = true;
+    }
+    g_passes = 0;
+    g_frame++;
     g_cur ^= 1;
     g_frames[g_cur].Clear();
     g_frames[g_cur ^ 1].taken.assign(g_frames[g_cur ^ 1].snaps.size(), false);
@@ -686,6 +720,168 @@ void Watch(uint32_t n, const Snap& sn, Blended how, const std::string& jumped, c
     if (!jumped.empty()) g_pass.watched += "\n      jumped:" + jumped;
     if (!kept.empty()) g_pass.watched += "\n      left, jumped, kept:" + kept;
     if (how == Blended::kNotFound && !sn.why.empty()) g_pass.watched += "\n      " + sn.why;
+}
+
+// XBE_INTERP_HIDE: draws left out of the pictures drawn again, to see which are which: 1 not found, 2 jumped,
+// 4 borrowed (Borrow), 8 blended, 16 suspects (Suspicion, those of XBE_INTERP_SUSPECT_MASK); summed
+constexpr uint32_t kHideSuspects = 16;
+uint32_t HideMask() {
+    static const uint32_t mask = [] {
+        const char* e = std::getenv("XBE_INTERP_HIDE");
+        return e ? uint32_t(std::strtoul(e, nullptr, 0)) : 0u;
+    }();
+    return mask;
+}
+
+// Draws likely found wrong, or not found though they were there, told during play (XBE_INTERP_SUSPECT=1, or
+// recording, or hiding them). Why, as bits:
+//   1 a toss-up: its runner-up nearly as near (Snap::next). Look-alikes (fur shells, clumps) often are, found right
+//   2 a spike: far from what it was found as, though that draw was near its own a frame before: an object on its way
+//     moves alike frame to frame, another object's draw doesn't. Many at once are the camera starting to turn; the
+//     only draw it could be found as is no spike, but something starting to move
+//   4 not found, near a draw of its program in the frame before that no draw found: there, but its keys changed;
+//     drawn as the frame has it, it pops
+//   8 jumped while nearly all the picture's draws blended: a cut jumps them all
+// A program suspect of a kind most frames is the game's way, no one-picture glitch, and left out (Habitual): a view
+// the game draws every other frame, a value look-alikes trade each frame
+// XBE_INTERP_SUSPECT_MASK picks the bits that make a picture suspect (2 | 4 | 8 by default). A suspect picture is
+// logged (one in kLogGap frames at most) and its note lists the suspects; XBE_INTERP_AUTO=<n> saves the pictures
+// kept (as F4 does, with XBE_INTERP_RECORD) up to n times a run, once the suspect picture is mid-way through them
+enum SuspectKind : uint32_t { kTossUp = 1, kSpike = 2, kBesideGone = 4, kLoneJump = 8 };
+constexpr const char* kSuspicionNames[] = {"toss-ups", "spikes", "not found beside a gone draw", "lone jumps"};
+constexpr float kSeen = 0.002f;       // per value: draws nearer than this look the same
+constexpr float kTossUpShare = 0.5f;  // the nearest at least this of the runner-up
+constexpr float kSpikeTimes = 4.0f;   // farther than its draw a frame before, at least kSeen
+constexpr float kGoneNear = 0.03f;    // another object's draw is past 0.03
+constexpr uint32_t kCrowd = 20;       // spikes or jumps in more than one in kCrowd found draws: the camera's
+constexpr uint32_t kLines = 3;        // draws listed per kind
+constexpr uint32_t kLogGap = 30;      // frames
+constexpr uint32_t kSaveGap = 600;    // frames
+constexpr float kHabitFade = 0.9f;    // a frame
+constexpr float kHabit = 2.0f;        // suspect frames, faded: about one in five frames of late
+
+bool SuspectOn() {
+    static const bool on = [] {
+        const char* e = std::getenv("XBE_INTERP_SUSPECT");
+        return e && *e && *e != '0';
+    }();
+    return on;
+}
+bool Suspecting() { return SuspectOn() || Recording() || (HideMask() & kHideSuspects); }
+uint32_t SuspectMask() {
+    static const uint32_t mask = [] {
+        const char* e = std::getenv("XBE_INTERP_SUSPECT_MASK");
+        return e ? uint32_t(std::strtoul(e, nullptr, 0)) : uint32_t(kSpike | kBesideGone | kLoneJump);
+    }();
+    return mask;
+}
+uint32_t AutoSaves() {
+    static const uint32_t n = [] {
+        const char* e = std::getenv("XBE_INTERP_AUTO");
+        return e ? uint32_t(std::strtoul(e, nullptr, 10)) : 0u;
+    }();
+    return n;
+}
+
+// a picture's suspects, as it is drawn again
+struct Suspects {
+    bool on = false;
+    bool first = false;  // the frame's first picture drawn again: it logs and saves, the frame's others only note
+    bool last = false;   // the draw Blend did last is a suspect, of the mask's kinds (Hidden)
+    uint32_t blended = 0, jumped = 0, habitual = 0;
+    std::array<uint32_t, 4> by{};
+    std::array<std::string, 4> lines;
+};
+Suspects g_sus;
+
+// whether a program has been suspect of a kind in many frames of late, those before this one; counts this frame's
+std::unordered_map<uint64_t, std::pair<uint32_t, float>> g_habits;  // the last frame suspect, the frames faded
+bool Habitual(uint64_t program, uint32_t kind) {
+    auto& [last, level] = g_habits[Mix(program, kind)];
+    float before = last == g_frame ? level - 1.0f : level * std::pow(kHabitFade, float(g_frame - last));
+    if (last != g_frame) last = g_frame, level = before + 1.0f;
+    return before > kHabit;
+}
+
+// a draw not found: per value, the nearest draw of its program in the frame before that no draw found
+float Gone(const Frame& prev, const Frame& cur, const Snap& sn) {
+    auto it = prev.programs.find(sn.program);
+    if (it == prev.programs.end()) return INFINITY;
+    float best = INFINITY;
+    uint32_t tries = 0;
+    for (uint32_t p : it->second) {
+        if (prev.taken[p]) continue;
+        if (tries++ >= kSecondTries) break;
+        best = std::min(best, Distance(prev, prev.snaps[p], cur, sn, best));
+    }
+    size_t values = sn.reads ? sn.reads->regs.size() * 4 : kXf * 16;
+    return values ? best / float(values) : INFINITY;
+}
+
+uint32_t Suspicion(const Frame& cur, const Frame& prev, Snap& sn, Blended how) {
+    uint32_t why = 0;
+    if (sn.found >= 0) {
+        if (sn.distance > kSeen && sn.distance >= kTossUpShare * sn.next) why |= kTossUp;
+        const Snap& was = prev.snaps[size_t(sn.found)];
+        // with another draw to take it for: found among one, it is that one (a cup lifted after standing still)
+        if (was.found >= 0 && std::isfinite(sn.next) && sn.distance > kSpikeTimes * std::max(was.distance, kSeen))
+            why |= kSpike;
+    } else if (how == Blended::kNotFound) {
+        if (sn.gone < 0) sn.gone = Gone(prev, cur, sn);
+        if (sn.gone > kSeen && sn.gone <= kGoneNear) why |= kBesideGone;
+    }
+    return why;
+}
+
+std::string SuspectLine(uint32_t n, const Frame& prev, const Snap& sn) {
+    char b[200];
+    float was = sn.found >= 0 ? prev.snaps[size_t(sn.found)].distance : 0.0f;
+    if (sn.found >= 0)
+        snprintf(b, sizeof(b), "\n    draw %u program %016llX: distance %.4f, runner-up %.4f, as %d, which was %.4f from its own",
+                 n, (unsigned long long)sn.program, sn.distance, sn.next, sn.found, was);
+    else
+        snprintf(b, sizeof(b), "\n    draw %u program %016llX: not found, a gone draw of its program at %.4f", n,
+                 (unsigned long long)sn.program, sn.gone);
+    return b;
+}
+
+// the picture's suspects, summed up: what the note gets. Logs and saves on the frame's first picture
+std::string Score() {
+    if (!g_sus.on) return {};
+    uint32_t found = g_sus.blended + g_sus.jumped;
+    if (g_sus.by[1] * kCrowd > found) g_sus.by[1] = 0, g_sus.lines[1].clear();
+    if (g_sus.jumped * kCrowd > found) g_sus.by[3] = 0, g_sus.lines[3].clear();
+    uint32_t mask = SuspectMask(), counted = 0;
+    std::string o;
+    for (size_t i = 0; i < 4; i++) {
+        if (!g_sus.by[i]) continue;
+        if (mask >> i & 1) counted += g_sus.by[i];
+        o += (o.empty() ? "" : ", ") + std::to_string(g_sus.by[i]) + " " + kSuspicionNames[i];
+    }
+    if (g_sus.habitual) o += (o.empty() ? "" : ", ") + std::to_string(g_sus.habitual) + " habitual, left out";
+    if (o.empty()) return {};
+    std::string lines;
+    for (size_t i = 0; i < 4; i++)
+        if (g_sus.by[i] && (mask >> i & 1)) lines += g_sus.lines[i];
+    if (counted && g_sus.first) {
+        if (g_frame - g_logged >= kLogGap || !g_logged) {
+            g_logged = g_frame;
+            LOGR("interp: frame %u suspect: %s%s", g_frame, o.c_str(), lines.substr(0, lines.find('\n', 1)).c_str());
+        }
+        if (g_saves < AutoSaves() && !g_save_in && g_frame >= g_save_after) {
+            if (!Recording()) {
+                LOGR("interp: XBE_INTERP_AUTO saves the pictures XBE_INTERP_RECORD keeps: set it too");
+                g_saves = AutoSaves();
+            } else {
+                g_saves++;
+                g_save_in = std::max(Recording() / 2, 1u);
+                g_save_after = g_frame + kSaveGap;
+                LOGR("interp: frame %u suspect, the pictures kept saved %u pictures on (%u of %u)", g_frame, g_save_in,
+                     g_saves, AutoSaves());
+            }
+        }
+    }
+    return "\n  suspects: " + o + (counted ? "" : " (none of XBE_INTERP_SUSPECT_MASK)") + lines;
 }
 
 // a draw not found (a ground's piece drawn only this frame, beside pieces drawn in both) moves as a found draw of its
@@ -741,7 +937,7 @@ bool Borrow(const Frame& cur, const Frame& prev, uint32_t n, std::vector<std::ar
     return false;
 }
 
-Blended Blend(uint32_t n, float t, State& s, Undo& undo) {
+Blended BlendDraw(uint32_t n, float t, State& s, Undo& undo) {
     const Frame& cur = g_frames[g_cur];
     const Frame& prev = g_frames[g_cur ^ 1];
     if (g_pass.on) g_pass.draws++;
@@ -874,14 +1070,36 @@ Blended Blend(uint32_t n, float t, State& s, Undo& undo) {
     return how;
 }
 
+Blended Blend(uint32_t n, float t, State& s, Undo& undo) {
+    Blended how = BlendDraw(n, t, s, undo);
+    g_sus.last = false;
+    Frame& cur = g_frames[g_cur];
+    if (!g_sus.on || n >= cur.snaps.size()) return how;
+    // a draw in the state of the one before it is judged, and counted, as that one
+    bool follows = cur.snaps[n].leader >= 0;
+    uint32_t at = follows ? uint32_t(cur.snaps[n].leader) : n;
+    const Frame& prev = g_frames[g_cur ^ 1];
+    Snap& sn = cur.snaps[at];
+    uint32_t why = Suspicion(cur, prev, sn, how);
+    if (how == Blended::kJumped) why |= kLoneJump;  // whether lone, Score tells
+    uint32_t habits = 0;
+    for (uint32_t i = 0; i < 4; i++)
+        if ((why >> i & 1) && Habitual(sn.program, i)) habits |= 1u << i;
+    why &= ~habits;
+    g_sus.last = (why & SuspectMask() & ~uint32_t(kLoneJump)) != 0;
+    if (follows) return how;
+    if (habits) g_sus.habitual++;
+    if (how == Blended::kJumped) g_sus.jumped++;
+    else if (how != Blended::kNotFound) g_sus.blended++;
+    for (size_t i = 0; i < 4; i++)
+        if ((why >> i & 1) && g_sus.by[i]++ < kLines)
+            g_sus.lines[i] += SuspectLine(at, prev, sn) + (i == 3 ? ", jumped" : "");
+    return how;
+}
+
 bool Hidden(Blended how) {
-    // XBE_INTERP_HIDE: draws left out of the pictures drawn again, to see which are which: 1 not found, 2 jumped,
-    // 4 borrowed (Borrow), 8 blended; summed
-    static const uint32_t mask = [] {
-        const char* e = std::getenv("XBE_INTERP_HIDE");
-        return e ? uint32_t(std::strtoul(e, nullptr, 0)) : 0u;
-    }();
-    return mask >> uint32_t(how) & 1;
+    uint32_t mask = HideMask();
+    return (mask >> uint32_t(how) & 1) || ((mask & kHideSuspects) && g_sus.last);
 }
 
 void CheckVertices(uint32_t n, const State& s, uint32_t prim, uint32_t start, uint32_t count, const uint8_t* indices) {
@@ -905,9 +1123,15 @@ void BeginPass(float t) {
     g_pass = {};
     g_pass.on = Recording() != 0;
     g_pass.t = t;
+    g_sus = {};
+    g_sus.on = Suspecting();
+    g_sus.first = g_scored != g_frame;
+    g_scored = g_frame;
+    g_passes++;
 }
 
 void EndPass(uint32_t slot) {
+    std::string suspects = Score();
     if (!g_pass.on || slot >= std::size(g_notes)) return;
     char b[256];
     snprintf(b, sizeof(b),
@@ -915,7 +1139,7 @@ void EndPass(uint32_t slot) {
              "%u with registers that jumped, "
              "%u palette registers another draw left that jumped",
              g_pass.t, g_pass.draws, g_pass.unfound, g_pass.second, g_pass.borrowed, g_pass.jumped, g_pass.kept);
-    std::string note = b;
+    std::string note = b + suspects;
     std::vector<std::pair<uint64_t, std::pair<uint32_t, std::string>>> top(g_pass.unfound_programs.begin(),
                                                                            g_pass.unfound_programs.end());
     std::sort(top.begin(), top.end(), [](const auto& a, const auto& b) { return a.second.first > b.second.first; });
