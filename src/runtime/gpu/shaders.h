@@ -68,10 +68,10 @@ struct PixelKey {
 // and clamped: i.pos.xy over its size is the pixel's own spot, what the draw covers. Not with field. textures, when
 // set, limits it to the draws whose stage texture_stage texture's data lies at one of those guest addresses (the
 // list ends at 0), for a program that draws more than what the shading is for; the others draw as the title made them.
-// skip_textures turns it around: the listed textures' draws don't take it. depth_alpha, when above 0, splits each
-// of its draws that blends and writes depth in two: the colour without the depth write, then a depth pass (no colour,
-// no stencil) where the output's alpha reaches depth_alpha, so what blends in fainter leaves the depth behind it;
-// with top set, only the draws whose x there is above 0 (the shells, not the skin under them).
+// depth_alpha, when above 0, splits each of its draws that blends and writes depth in two: the colour without the
+// depth write, then a depth pass (no colour, no stencil) where the output's alpha reaches depth_alpha, so what blends
+// in fainter leaves the depth behind it; with top set, only the draws whose x there is above 0 (the shells, not the
+// skin under them).
 struct ShadingField {
     const float* data = nullptr;  // w x h, rows of w
     uint32_t w = 0, h = 0;
@@ -92,7 +92,6 @@ struct ProgramShading {
     bool screen = false;
     const uint32_t* textures = nullptr;
     int texture_stage = 0;
-    bool skip_textures = false;
     float depth_alpha = 0;
 };
 inline std::vector<ProgramShading> g_program_shading;  // filled before the title boots, unchanged after

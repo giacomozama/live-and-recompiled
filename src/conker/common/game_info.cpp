@@ -6,19 +6,17 @@
 #include "common/glass.h"
 #include "common/grass.h"
 #include "common/keyboard.h"
-#include "common/metal.h"
 #include "common/ui.h"
 #include "common/water.h"
 
 namespace {
 
-// after the settings load: the fps cap follows frame_rate, the fur, water, metal and glass programs get their shading
+// after the settings load: the fps cap follows frame_rate, the fur, water and glass programs get their shading
 void Init() {
     display::Init();
     fur::Init();
     water::Init();
-    glass::Init();  // before metal: the skinned bottles' program has metal's match too
-    metal::Init();
+    glass::Init();
 }
 
 }  // namespace
@@ -42,12 +40,11 @@ const app::GameInfo app::kGame = {
                 {"grass_wind", &grass::g_wind, nullptr},  // distant grass sways too (hooks.cpp)
                 {"fur_shading", &fur::g_shading, nullptr},  // lit, soft edged fur shells (src/conker/common/fur.cpp)
                 {"dynamic_water", &water::g_dynamic, nullptr},  // flowing, rippling water (src/conker/common/water.cpp)
-                {"metal_shading", &metal::g_shading, nullptr},  // shiny, dented armour (src/conker/common/metal.cpp)
                 {"glass_shading", &glass::g_shading, nullptr}},  // glowing, glinting bottles (src/conker/common/glass.cpp)
     // the [playerN] tables: each player's keyboard bindings and mouse look (src/conker/game/keyboard.cpp, mouse.cpp)
     .load = keyboard::Load,
     .save = keyboard::Save,               // writes them
-    .init = Init,                         // after the settings load: the fps cap, fur, waves, metal and glass
+    .init = Init,                         // after the settings load: the fps cap, fur, waves and glass
     .loaded = nullptr,                    // image in memory, before its entry point runs
     .window = nullptr,                    // the game window is up
     .message = ui::Message,               // window messages first; true takes one

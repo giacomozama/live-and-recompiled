@@ -28,7 +28,6 @@
 #include "common/glass.h"
 #include "common/grass.h"
 #include "common/keyboard.h"
-#include "common/metal.h"
 #include "common/mouse.h"
 #include "common/warp.h"
 #include "common/water.h"
@@ -551,9 +550,6 @@ void Draw(double fps) {
                 ImGui::Checkbox("Dynamic water", &water::g_dynamic);
                 ImGui::SameLine();
                 ImGui::TextDisabled("ripples and wakes");
-                ImGui::Checkbox("Metal shading", &metal::g_shading);
-                ImGui::SameLine();
-                ImGui::TextDisabled("armour catches highlights and reflections");
                 ImGui::Checkbox("Glass shading", &glass::g_shading);
                 ImGui::SameLine();
                 ImGui::TextDisabled("bottles glow through, glint and reflect");
