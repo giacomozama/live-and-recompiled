@@ -3,6 +3,8 @@
 
 #include "gpu/state.h"
 
+struct X86Context;
+
 namespace d3d {
 
 gpu::State& State();
@@ -15,5 +17,11 @@ void DeferredFlush(uint32_t dirty);
 // Reads every command the title has pushed so far. A title that patches a push buffer it already queued (the
 // library's RunPushBuffer fixups) calls this first: the chip ran the earlier runs before the patch landed.
 void FlushPending();
+
+// XBE_LOD_TRACE set: draws that switch detail between frames are logged with the push buffer or caller they came
+// from. A title calls LodTraceRun as it runs a push buffer (its data address, as the command stream jumps to it), to
+// log the call chain that first ran it.
+bool LodTrace();
+void LodTraceRun(X86Context& ctx, uint32_t data);
 
 }  // namespace d3d

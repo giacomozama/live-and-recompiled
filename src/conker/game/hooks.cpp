@@ -273,6 +273,15 @@ X86_FUNC(sub_0053AD90) {
     __imp__sub_0053AD90(ctx, base);
 }
 
+// 0x53AE30: RunPushBuffer(push buffer, fixup), stdcall; the D3DPushBuffer's data at +4. XBE_LOD_TRACE logs who first
+// ran each buffer, to tie a model's detail switch (the walk's push buffer) to the code that picked it
+X86_EXTERN_FUNC(__imp__sub_0053AE30);
+X86_FUNC(sub_0053AE30) {
+    if (d3d::LodTrace())
+        if (uint32_t pb = kernel::R32(ctx.esp + 4)) d3d::LodTraceRun(ctx, kernel::R32(pb + 4));
+    __imp__sub_0053AE30(ctx, base);
+}
+
 // 0x123290 updates a player's idea bulb (type 0x6B, the list at 0x77168C; esi the bulb, edi the player), by its state
 // [bulb+0x2F]: 0 arms it when the player stands on a B pad ([[player+0x568]+0x97]), with [bulb+0x2C] twice the
 // refresh rate in ticks (two seconds) and state 1; 1 shows it and counts that down by the frame's ticks ([0x7FA20C]),

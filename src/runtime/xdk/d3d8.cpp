@@ -4,6 +4,7 @@
 #include <atomic>
 #include <chrono>
 #include <map>
+#include <string>
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
@@ -430,6 +431,116 @@ void FlushPending() {
     Walk(Dev(kDevPush));
 }
 
+// XBE_LOD_TRACE: where a title switches a mesh's detail. A draw read off a static push buffer is told by the buffer
+// the walk jumped to from the scratch buffer, an HLE'd draw by its return address. Each frame, a mesh (program,
+// primitive, first texture, vertex buffer) drawn at other counts than the frame before is logged, and so is a look
+// (the same but for the vertex buffer) drawn once in both frames from another push buffer or vertex buffer: the
+// detail picked another mesh. LodTraceRun says where a push buffer first ran from, the code that picked it.
+bool LodTrace() {
+    static const bool on = [] {
+        const char* e = std::getenv("XBE_LOD_TRACE");
+        return e && *e && *e != '0';
+    }();
+    return on;
+}
+
+namespace {
+uint32_t g_lod_source = 0;  // the push buffer the walk jumped to out of the scratch buffer, 0 while in it
+uint32_t g_lod_caller = 0;  // an HLE'd draw's return address
+bool g_lod_up = false;      // a draw of the title's own array, copied to a vertex buffer of its own each time
+
+struct LodDraw {
+    uint32_t vs = 0, tex = 0, prim = 0, vb = 0, source = 0, caller = 0, count = 0, n = 0;
+    bool up = false;
+    std::vector<uint32_t> counts;
+};
+struct LodFrame {
+    std::unordered_map<uint64_t, LodDraw> looks, meshes;
+};
+LodFrame g_lod[2];
+uint32_t g_lod_cur = 0, g_lod_frame = 0, g_lod_lines = 0;
+constexpr uint32_t kLodLines = 20000;
+
+std::string LodCounts(const std::vector<uint32_t>& c) {
+    std::string s;
+    for (size_t i = 0; i < c.size() && i < 12; i++) s += (i ? "," : "") + std::to_string(c[i]);
+    if (c.size() > 12) s += ",... (" + std::to_string(c.size()) + ")";
+    return s;
+}
+
+void LodNote(uint32_t prim, uint32_t count) {
+    if (!LodTrace()) return;
+    const auto& st = g_state.streams[0];
+    uint32_t vb = st.vb ? R32(st.vb + 4) : 0;
+    uint64_t look = (uint64_t(g_state.vs_handle) << 32 | g_state.textures[0]) ^ uint64_t(prim) * 0x9E3779B97F4A7C15ull;
+    uint64_t mesh = look ^ (uint64_t(vb) + 1) * 0xC2B2AE3D27D4EB4Full;
+    LodFrame& f = g_lod[g_lod_cur];
+    for (auto [key, map] : {std::pair{look, &f.looks}, std::pair{mesh, &f.meshes}}) {
+        LodDraw& d = (*map)[key];
+        if (!d.n++) {
+            d.vs = g_state.vs_handle;
+            d.tex = g_state.textures[0];
+            d.prim = prim;
+            d.vb = vb;
+            d.source = g_lod_source;
+            d.caller = g_lod_caller;
+            d.count = count;
+            d.up = g_lod_up;
+        }
+        if (map == &f.meshes) d.counts.push_back(count);
+    }
+}
+
+void LodEndFrame() {
+    if (!LodTrace()) return;
+    LodFrame &cur = g_lod[g_lod_cur], &prev = g_lod[g_lod_cur ^ 1];
+    g_lod_frame++;
+    for (auto& [key, d] : cur.meshes) {
+        std::sort(d.counts.begin(), d.counts.end());
+        auto it = prev.meshes.find(key);
+        if (it == prev.meshes.end() || it->second.counts == d.counts || g_lod_lines >= kLodLines) continue;
+        g_lod_lines++;
+        LOGR("lod: frame %u mesh vs %08X tex %08X prim %u vb %08X counts %s -> %s, push buffer %08X caller %08X",
+             g_lod_frame, d.vs, d.tex, d.prim, d.vb, LodCounts(it->second.counts).c_str(), LodCounts(d.counts).c_str(),
+             d.source, d.caller);
+    }
+    for (auto& [key, d] : cur.looks) {
+        auto it = prev.looks.find(key);
+        if (it == prev.looks.end() || d.n != 1 || it->second.n != 1 || g_lod_lines >= kLodLines) continue;
+        const LodDraw& p = it->second;
+        if (d.source == p.source && (d.vb == p.vb || d.up)) continue;
+        g_lod_lines++;
+        LOGR("lod: frame %u swap vs %08X tex %08X prim %u push buffer %08X -> %08X vb %08X -> %08X count %u -> %u "
+             "caller %08X -> %08X",
+             g_lod_frame, d.vs, d.tex, d.prim, p.source, d.source, p.vb, d.vb, p.count, d.count, p.caller, d.caller);
+    }
+    prev.looks.clear();
+    prev.meshes.clear();
+    g_lod_cur ^= 1;
+}
+}  // namespace
+
+void LodTraceRun(X86Context& ctx, uint32_t data) {
+    if (!LodTrace() || g_lod_lines >= kLodLines) return;
+    if (data < 0x80000000u) data = mem::PhysicalFromVirtual(data) | 0x80000000u;  // as the walk jumps to it
+    static std::unordered_set<uint32_t> seen;
+    if (!seen.insert(data).second) return;
+    // the return addresses on the guest stack: the first is exact, the rest may hold a stale one
+    std::string chain;
+    int found = 0;
+    for (uint32_t i = 0; i < 256 && found < 8; i++) {
+        uint32_t a = ctx.esp + i * 4;
+        if (!mem::IsCommitted(a)) break;
+        uint32_t v = R32(a);
+        if (v < X86CodeBase || v >= X86CodeEnd) continue;
+        char text[24];
+        std::snprintf(text, sizeof(text), "%s%08X", found++ ? " < " : "", v);
+        chain += text;
+    }
+    g_lod_lines++;
+    LOGR("lod: frame %u push buffer %08X first run from %s", g_lod_frame, data, chain.c_str());
+}
+
 }  // namespace d3d
 
 using namespace d3d;
@@ -753,6 +864,7 @@ HLE_STDCALL(D3DDevice_Swap, 1) {
         }
     }
     Walk(Dev(kDevPush));  // reports asked for at the end of the frame
+    LodEndFrame();
     if (g_backend) g_backend->Present(SurfaceOf(g_buffers[1]));
     // D3DPRESENT_INTERVAL_ONE 1, TWO 2, THREE 4, FOUR 8, IMMEDIATE bit 31; DEFAULT 0 is ONE. The render state, when
     // the title sets one, replaces the device's.
@@ -1304,6 +1416,7 @@ void NoteStencil(const char* how, uint32_t v, uint32_t from) {
 
 void BackendDraw(uint32_t prim, uint32_t start, uint32_t count, const uint8_t* indices) {
     if (!g_backend) return;
+    LodNote(prim, count);
     if (!g_chip_program) {
         g_backend->Draw(g_state, prim, start, count, indices);
         return;
@@ -1344,6 +1457,7 @@ void BackendDraw(uint32_t prim, uint32_t start, uint32_t count, const uint8_t* i
 
 // XBE_DUMP_METHODS: where in the title each draw comes from, to map the frame's passes
 void LogDrawCaller(const char* kind, uint32_t prim, uint32_t count, uint32_t caller) {
+    g_lod_caller = caller;
     if (!diag::DumpMethods()) return;
     static std::unordered_map<uint64_t, uint32_t> seen;
     uint64_t key = uint64_t(caller) << 32 | prim;
@@ -1479,7 +1593,9 @@ void DrawUp(uint32_t prim, uint32_t count, const void* vertices, uint32_t stride
     auto streams = g_state.streams;
     for (auto& st : g_state.streams) st.fmt = 0;
     g_state.streams[0] = {UpVertices(vertices, count * stride), stride};
+    g_lod_up = true;
     BackendDraw(prim, 0, count, nullptr);
+    g_lod_up = false;
     g_state.streams = streams;
 }
 
@@ -1714,6 +1830,7 @@ void Walk(uint32_t end) {
     // so they carry the 0x80000000 view the rest of this file uses for guest data. Without this, the first jump
     // ended the walk and every command after it in that buffer was silently dropped.
     uint32_t p = g_walk, limit = end, ret[16], sp = 0, guard = 0, jumps = 0, home = 0, resyncs = 0;
+    g_lod_source = g_lod_caller = 0;
     // jump targets land on real blocks (vertex-program words, prebuilt stream bindings), so following them is the
     // xemu behaviour; XBE_NO_WALK_JUMPS restores the old "stop at the first jump" for comparison
     static const bool follow = std::getenv("XBE_NO_WALK_JUMPS") == nullptr;
@@ -1728,9 +1845,12 @@ void Walk(uint32_t end) {
             return true;
         }
         if (t >= g_scratch_push && t < g_scratch_push + g_scratch_size && t > end) return false;
+        bool from_scratch = p - 4 >= g_scratch_push && p - 4 < end;
         if (t >= g_scratch_push && t < end) limit = end;
         else if (t >= 0x80000000u && t < 0x84000000u) limit = 0x84000000u;
         else return false;
+        if (limit == end) g_lod_source = 0;
+        else if (from_scratch) g_lod_source = t;
         p = t;
         jumps++;
         return true;
@@ -1743,6 +1863,7 @@ void Walk(uint32_t end) {
         p = home;
         limit = end;
         home = 0;
+        g_lod_source = 0;
         return true;
     };
     // the last few jumps, so a stop can show how the walk got there
@@ -1776,6 +1897,7 @@ void Walk(uint32_t end) {
             if (sp < 2) break;
             limit = ret[--sp];
             p = ret[--sp];
+            if (p >= g_scratch_push && p < end) g_lod_source = 0;
             continue;
         }
         if (follow && (head & 3) == 2) {  // call
@@ -1805,6 +1927,7 @@ void Walk(uint32_t end) {
                 p = home;
                 limit = end;
                 home = 0;
+                g_lod_source = 0;
                 continue;
             }
             if (trace) {
