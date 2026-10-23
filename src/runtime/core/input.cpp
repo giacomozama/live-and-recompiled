@@ -262,6 +262,13 @@ bool KeyDown(int port, int vk) {
     if (vk == 0x12) codes[0] = 0xA4, codes[1] = 0xA5;
     const Kind kind = vk < 7 ? Kind::Mouse : Kind::Keyboard;
     std::lock_guard lock(g_lock);
+    // a button the system holds up is up: the click that brings the window back sends its press but not always its
+    // release, and the button stayed held until clicked again
+    if (kind == Kind::Mouse && !app::KeyDown(vk)) {
+        for (Dev& d : g_devices)
+            if (d.kind == Kind::Mouse) d.down[size_t(vk)] = false;
+        return false;
+    }
     for (const Dev& d : g_devices)
         if (d.kind == kind && (d.down[size_t(codes[0])] || (codes[1] && d.down[size_t(codes[1])])) && OwnerOf(d) == port)
             return true;
