@@ -21,6 +21,7 @@
 #include <imgui.h>
 
 #include "app/app.h"
+#include "common/bulb.h"
 #include "common/cutscenes.h"
 #include "common/display.h"
 #include "common/fur.h"
@@ -563,6 +564,9 @@ void Draw(double fps) {
                 ImGui::Checkbox("Skippable cutscenes", &cutscenes::g_skippable);
                 ImGui::SameLine();
                 ImGui::TextDisabled("LT skips any cutscene, seen or not");
+                ImGui::Checkbox("Lasting idea bulb", &bulb::g_lasting);
+                ImGui::SameLine();
+                ImGui::TextDisabled("stays over Conker while he stands on a B pad, not two seconds");
                 int split = display::g_side_by_side;
                 if (ImGui::Combo("Two player split", &split, "Top and bottom\0Side by side (experimental)\0"))
                     display::g_side_by_side = split != 0;

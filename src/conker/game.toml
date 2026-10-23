@@ -410,3 +410,7 @@ call = "ConkerScopeEdgeBelow"
 [[hook]]
 at = 0x1CF1AB
 call = "ConkerScopeEdgeNone"
+
+[[hook]]
+at = 0x12338E  # the idea bulb's countdown: kept while Conker stands on the B pad (bulb::g_lasting)
+call = "ConkerBulbLasting"
