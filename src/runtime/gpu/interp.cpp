@@ -548,21 +548,38 @@ bool OwnElsewhere(const Frame& prev, const Snap& sn) {
 }
 // per value, the farthest a draw at other addresses (a dynamic buffer's) is taken as: such draws found right are
 // under 0.02; a string of text fading out took the one fading in (0.037) and was drawn over it, in a still menu. As
-// far as kMotionSlack times the frame's motion (Motion) when the camera moves: in a fast pan, draws found at their own
-// addresses were 0.03 apart, and a ground whose buffers all moved that frame (0.027) was drawn unblended, sky showing
-// through its seams
+// far as kMotionSlack times how far its program's draws found at their own addresses moved (Motion), or the frame's
+// for a program with none: in a fast pan, draws found at their own addresses were 0.03 apart, and a ground whose
+// buffers all moved that frame (0.027) was drawn unblended, sky showing through its seams. Not the frame's for all:
+// in the menu its draws that moved most (a view drawn every other frame, characters) took it to 0.11, and text took
+// another string again
 constexpr float kLooseDistance = 0.025f;
 constexpr float kMotionSlack = 1.25f;
-constexpr size_t kMotionSamples = 256;
 float g_loose = kLooseDistance;  // the frame's (Match), for the notes
-// how far the frame's draws moved: per value, the 90th percentile of the draws (a sample) the frame before has at the
-// same addresses, in every part; those that didn't move (a HUD) say nothing of the camera
-float Motion(const Frame& prev, const Frame& cur) {
-    static std::vector<float> d;
-    d.clear();
-    size_t step = std::max<size_t>(cur.snaps.size() / kMotionSamples, 1);
-    for (size_t i = 0; i < cur.snaps.size(); i += step) {
-        const Snap& sn = cur.snaps[i];
+// how far the frame's draws moved, per value: the median of those the frame before has at the same addresses, in
+// every part, its draws that moved (a HUD that didn't says nothing of the camera); and each program's, the median of
+// all of its such draws, those that stayed too
+struct Motion {
+    float frame = 0;
+    std::unordered_map<uint64_t, float> program;
+    float Of(uint64_t p) const {
+        auto it = program.find(p);
+        return it != program.end() ? it->second : frame;
+    }
+};
+float Median(std::vector<float>& d) {
+    if (d.empty()) return 0;
+    auto at = d.begin() + ptrdiff_t(d.size() / 2);
+    std::nth_element(d.begin(), at, d.end());
+    return *at;
+}
+void Measure(const Frame& prev, const Frame& cur, Motion& m) {
+    static std::vector<float> moved;
+    static std::unordered_map<uint64_t, std::vector<float>> by;
+    moved.clear();
+    for (auto& [p, d] : by) d.clear();
+    m.program.clear();
+    for (const Snap& sn : cur.snaps) {
         if (sn.leader >= 0) continue;
         auto it = prev.lod.find(sn.lod);
         if (it == prev.lod.end()) continue;
@@ -570,14 +587,14 @@ float Motion(const Frame& prev, const Frame& cur) {
             if (prev.snaps[p].parts != sn.parts) continue;
             size_t values = sn.reads ? sn.reads->regs.size() * 4 : kXf * 16;
             float v = values ? Distance(prev, prev.snaps[p], cur, sn, INFINITY) / float(values) : 0;
-            if (v > 0) d.push_back(v);
+            if (v > 0) moved.push_back(v);
+            by[sn.program].push_back(v);
             break;
         }
     }
-    if (d.empty()) return 0;
-    auto at = d.begin() + ptrdiff_t(d.size() * 9 / 10);
-    std::nth_element(d.begin(), at, d.end());
-    return *at;
+    m.frame = Median(moved);
+    for (auto& [p, d] : by)
+        if (!d.empty()) m.program[p] = Median(d);
 }
 constexpr size_t kSecondTries = 256;
 constexpr float kSecondDistance = 0.01f;
@@ -587,7 +604,10 @@ void Match() {
     Frame& prev = g_frames[g_cur ^ 1];
     if (cur.matched) return;
     cur.matched = true;
-    const float loose = g_loose = std::max(kLooseDistance, kMotionSlack * Motion(prev, cur));
+    static Motion motion;
+    Measure(prev, cur, motion);
+    g_loose = std::max(kLooseDistance, kMotionSlack * motion.frame);
+    auto loose = [&](const Snap& sn) { return std::max(kLooseDistance, kMotionSlack * motion.Of(sn.program)); };
     struct Pair {
         float d;
         bool same;
@@ -607,7 +627,7 @@ void Match() {
                 Snap& sn = cur.snaps[list[k]];
                 if (!Nearest(prev, cur, prev.loose, key, k, sn)) continue;
                 if (prev.snaps[size_t(sn.found)].parts[kAddresses] != sn.parts[kAddresses] &&
-                    sn.distance > loose) {
+                    sn.distance > loose(sn)) {
                     sn.found = -1;
                     continue;
                 }
@@ -642,7 +662,7 @@ void Match() {
             if (used[pr.c] || prev.taken[p]) continue;
             Snap& sn = cur.snaps[list[pr.c]];
             size_t values = sn.reads ? sn.reads->regs.size() * 4 : kXf * 16;
-            if (!pr.same && values && pr.d / float(values) > loose) continue;
+            if (!pr.same && values && pr.d / float(values) > loose(sn)) continue;
             if (!pr.same && OwnElsewhere(prev, sn)) continue;
             used[pr.c] = true;
             prev.taken[p] = true;
@@ -674,7 +694,7 @@ void Match() {
             }
             size_t values = sn.reads ? sn.reads->regs.size() * 4 : kXf * 16;
             // as near as loose: a dynamic buffer's ring can put another draw at the same addresses
-            if (at < 0 || (values && best / float(values) > loose)) continue;
+            if (at < 0 || (values && best / float(values) > loose(sn))) continue;
             prev.taken[size_t(at)] = true;
             sn.found = at;
             sn.distance = values ? best / float(values) : 0;
@@ -1230,7 +1250,7 @@ void EndPass(uint32_t slot) {
     snprintf(b, sizeof(b),
              "drawn again at t %.2f: %u draws, %u not found, %u found as another detail's, %u moved as a neighbour found, "
              "%u as another program's, %u with registers that jumped, "
-             "%u palette registers another draw left that jumped; at other addresses found within %.4f",
+             "%u palette registers another draw left that jumped; at other addresses found within %.4f (by the frame)",
              g_pass.t, g_pass.draws, g_pass.unfound, g_pass.second, g_pass.borrowed, g_pass.across, g_pass.jumped, g_pass.kept,
              g_loose);
     std::string note = b + suspects;
