@@ -552,6 +552,9 @@ void Draw(double fps) {
                 ImGui::TextDisabled(distant == grass::kNear      ? "every patch as a near one, however far"
                                     : distant == grass::kFullFading ? "all the blades as it fades out"
                                                                     : "thins and fades out past a short range");
+                ImGui::Checkbox("Gentle grass wake", &grass::g_wake);
+                ImGui::SameLine();
+                ImGui::TextDisabled("the console throws blades across the screen past a fast rider");
                 ImGui::Checkbox("Fur shading", &fur::g_shading);
                 ImGui::SameLine();
                 ImGui::TextDisabled("soft strand edges, shadowed roots, sheen");

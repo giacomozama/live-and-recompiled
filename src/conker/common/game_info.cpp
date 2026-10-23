@@ -12,12 +12,13 @@
 
 namespace {
 
-// after the settings load: the fps cap follows frame_rate, the fur, water and glass programs get their shading
+// after the settings load: the fps cap follows frame_rate, the fur, water, glass and grass programs get their shading
 void Init() {
     display::Init();
     fur::Init();
     water::Init();
     glass::Init();
+    grass::Init();
 }
 
 }  // namespace
@@ -41,6 +42,7 @@ const app::GameInfo app::kGame = {
                 {"rope_physics", &rope::g_physics, nullptr},  // ropes swing as a weighted chain (rope.cpp)
                 {"grass_wind", &grass::g_wind, nullptr},  // distant grass sways too (hooks.cpp)
                 {"grass_distant", nullptr, &grass::g_distant},  // distant grass thinned, faded or as near (hooks.cpp)
+                {"grass_wake", &grass::g_wake, nullptr},  // blades passed close bend, not fly (src/conker/common/grass.cpp)
                 {"fur_shading", &fur::g_shading, nullptr},  // lit, soft edged fur shells (src/conker/common/fur.cpp)
                 {"fur_distant", &fur::g_distant, nullptr},  // distant fur keeps all its shells (hooks.cpp)
                 {"dynamic_water", &water::g_dynamic, nullptr},  // flowing, rippling water (src/conker/common/water.cpp)
