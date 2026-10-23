@@ -412,6 +412,14 @@ at = 0x1CF1AB
 call = "ConkerScopeEdgeNone"
 
 [[hook]]
+at = 0x1A95DD  # grass patch: drawn as a near one however far (grass::g_distant)
+call = "ConkerGrassNear"
+
+[[hook]]
+at = 0x1A968F  # grass patch: all its blades however far, the fade kept (grass::g_distant)
+call = "ConkerGrassFull"
+
+[[hook]]
 at = 0x12338E  # the idea bulb's countdown: kept while Conker stands on the B pad (bulb::g_lasting)
 call = "ConkerBulbLasting"
 

@@ -40,6 +40,7 @@ const app::GameInfo app::kGame = {
                 {"lasting_bulb", &bulb::g_lasting, nullptr},  // the B pad's bulb stays while Conker is on it (hooks.cpp)
                 {"rope_physics", &rope::g_physics, nullptr},  // ropes swing as a weighted chain (rope.cpp)
                 {"grass_wind", &grass::g_wind, nullptr},  // distant grass sways too (hooks.cpp)
+                {"grass_distant", nullptr, &grass::g_distant},  // distant grass thinned, faded or as near (hooks.cpp)
                 {"fur_shading", &fur::g_shading, nullptr},  // lit, soft edged fur shells (src/conker/common/fur.cpp)
                 {"dynamic_water", &water::g_dynamic, nullptr},  // flowing, rippling water (src/conker/common/water.cpp)
                 {"glass_shading", &glass::g_shading, nullptr}},  // glowing, glinting bottles (src/conker/common/glass.cpp)

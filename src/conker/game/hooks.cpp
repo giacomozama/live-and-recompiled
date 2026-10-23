@@ -150,6 +150,32 @@ X86_FUNC(sub_001A9540) {
     kernel::W32(kFade, fade);
 }
 
+// The patch's detail, in 0x1A9540: d its distance from the player ([esp+0x20] at 0x1A95DD), past 2500 it isn't drawn;
+// to 800 it draws all [patch+0x60] blades at full strength; past that f = 1 - (d - 800) / 1700 is both its fade
+// (alpha f * 255 at [patch+0x5C], with the plain program) and the share of its blades drawn ([patch+0x64], at least
+// 1). grass::g_distant (or XBE_GRASS_DISTANT=0..2): 1 keeps the fade and draws them all, 2 draws every patch as a
+// near one, however far.
+uint32_t grass::g_distant = grass::kNear;
+
+namespace {
+uint32_t GrassDistant() {
+    static const char* env = std::getenv("XBE_GRASS_DISTANT");
+    return env ? uint32_t(std::atoi(env)) : grass::g_distant;
+}
+}  // namespace
+
+// [[hook]] at 0x1A95DD, before d is weighed
+void ConkerGrassNear(X86Context& ctx, uint8_t* base) {
+    (void)base;
+    if (GrassDistant() == grass::kNear) kernel::W32(ctx.esp + 0x20, 0);  // 0.0f
+}
+
+// [[hook]] at 0x1A968F, where the near and fading paths join with the count set
+void ConkerGrassFull(X86Context& ctx, uint8_t* base) {
+    (void)base;
+    if (GrassDistant() == grass::kFullFading) kernel::W32(ctx.ebx + 0x64, kernel::R32(ctx.ebx + 0x60));
+}
+
 // 0x4C950: the controller layer's init. It first opens the pads XGetDevices reports (0x3D19C0, which marks each
 // one inserted at byte 0x13C of its 0x140-byte record in the table at [0x806FD8]), then replaces that table with a
 // zeroed one. The stick filter (0x4CF80) zeroes both sticks of a pad not marked inserted, while buttons pass. On

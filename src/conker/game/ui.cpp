@@ -545,6 +545,13 @@ void Draw(double fps) {
                 ImGui::Checkbox("Wind on distant grass", &grass::g_wind);
                 ImGui::SameLine();
                 ImGui::TextDisabled("the console keeps it still");
+                int distant = int(std::min<uint32_t>(grass::g_distant, grass::kNear));
+                if (ImGui::Combo("Distant grass", &distant, "Console\0Full, fading\0Full, no fade\0"))
+                    grass::g_distant = uint32_t(distant);
+                ImGui::SameLine();
+                ImGui::TextDisabled(distant == grass::kNear      ? "every patch as a near one, however far"
+                                    : distant == grass::kFullFading ? "all the blades as it fades out"
+                                                                    : "thins and fades out past a short range");
                 ImGui::Checkbox("Fur shading", &fur::g_shading);
                 ImGui::SameLine();
                 ImGui::TextDisabled("soft strand edges, shadowed roots, sheen");
