@@ -59,7 +59,8 @@ struct PixelKey {
 // tessellates, draws the entry's triangles as patches (TessHlsl), each edge split in pieces some 6 console pixels long
 // on the screen, up to 16: the domain shader fills o with what the vertex shader handed on, interpolated across the
 // triangle, then runs tess, which sets o.pos (and anything else that is no straight blend of the corners'); p holds
-// the corners, and the draw's stages are there as Texture2D tex0..tex3 with smp0..smp3. field,
+// the corners, and the draw's stages are there as Texture2D tex0..tex3 with smp0..smp3. ps sees each stage's
+// PS_TEXTUREMODES mode as STAGE0_MODE..STAGE3_MODE, for a program whose draws set their stages up more than one way. field,
 // when set, hands a grid of floats its shaders read as Texture2D<float> xfield (t4) with SamplerState xfield_smp (s4),
 // linear and clamped; it is uploaded again when its version moves on. functions is HLSL at the top of its shaders,
 // after the constants, for vs, ps and tess to call. screen, when set, hands its draws a copy of their colour target as

@@ -1007,7 +1007,10 @@ std::string PixelHlsl(const PixelKey& k) {
             ps.code += wc + wa + "}\n";
         }
         combiners += ps.code;
-        if (k.shading) combiners += std::string(Shading(k.shading).ps) + "\n";
+        if (k.shading) {
+            for (int i = 0; i < 4; i++) combiners += F("#define STAGE%d_MODE %u\n", i, (k.tex_modes >> (i * 5)) & 0x1F);
+            combiners += std::string(Shading(k.shading).ps) + "\n";
+        }
         if (k.final_abcd || k.final_efg) {
             ps.stage = 8;
             uint32_t fl = k.final_efg & 0xFF;

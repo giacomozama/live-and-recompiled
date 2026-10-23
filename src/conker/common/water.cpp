@@ -21,6 +21,9 @@ namespace {
 // w moved to 0..1 by c112.y, where it reads the copy of the screen through the water, oT2 a mask. Only these
 // programs build oT1 that way. Registers in the HLSL are hardware order, D3D's + 96.
 constexpr const char* kMatch = "(mac_mul(((R6).xyzw), ((c[112]).yyyy)) + ((c[112]).yyyy))";
+// The sewer's sludge (D90817ED2CB8CC09) builds the same spot the same way but hands it on in oT1.z and oT2.z, for the
+// pixel shader's dot products: oT1.x and oT2.y are the bump's scale, v4.x times c112.w, which only it reads.
+constexpr const char* kSludgeMatch = "mac_mul(((c[112]).wwww), ((i.v4).xxxx))";
 
 // The game's ripples are rings drawn as flat quads on the water by a particle program (BAFEC7FDD6E09DA9), the only
 // one of its kind that hands v4 on, bump mapping the copy of the screen at stage 1: v0 are the corners in the level's
@@ -88,7 +91,12 @@ constexpr const char* kProject = R"(
         float w = magclamp(cp.w);
         float3 sp = cp.xyz * c[58].xyz / w + c[59].xyz;
         o.pos = float4((sp.x * 2 / surf.x - 1) * w, (1 - sp.y * 2 / surf.y) * w, sp.z * surf.z * w, w);
-        o.tc1.xy = (cp.xy / w * float2(1, -1)) * c[112].y + c[112].y;)";
+        float2 screen = (cp.xy / w * float2(1, -1)) * c[112].y + c[112].y;)";
+constexpr const char* kScreen = R"(
+        o.tc1.xy = screen;)";
+constexpr const char* kSludgeScreen = R"(
+        o.tc1.z = screen.x;
+        o.tc2.z = screen.y;)";
 
 // The vertex shader leaves the river's own vertices, some 30 units apart, where they are: what the water shows where
 // the GPU can't tessellate, too coarse for the ripples. It hands on the level's position in x0 for the domain shader,
@@ -113,7 +121,9 @@ constexpr const char* kDsHead = R"(    {
 // view space, and the difference put in its place, so the surface shows as it moves over the swirl's look; the slopes
 // are shaded a little, lighter facing a light from +x+z; and the surface catches the sky at grazing angles (Schlick's
 // Fresnel) and a glint of a high sun, seen from above or from under it, less what a flat surface would, which the
-// console's colour already holds: still water is as bright as it was.
+// console's colour already holds: still water is as bright as it was. Some water draws (the sewer's sludge) set their
+// stages up otherwise, a dot product reading the copy at stage 2 and no swirl: those are shaded and lit by the
+// surface the same, but not read again.
 constexpr float kRefract = 0.15f;  // screen widths of bend per unit of slope
 constexpr float kSwirlKeep = 1;  // the share of the console's swirl bend kept under the surface's
 constexpr const char* kPsHead = R"({
@@ -122,11 +132,13 @@ constexpr const char* kPsHead = R"({
 constexpr const char* kPsTail = R"(
     FIELD(1)
     {
+#if STAGE1_MODE == 6 || STAGE1_MODE == 7
         float3 tilt = float3(-dh.x, 0, -dh.y);
         float2 bend = float2(dot(tilt, c[96].xyz), -dot(tilt, c[97].xyz)) * REFRACT;
         float2 swirl = float2(dot(bumpmat[1].xz, duv1), dot(bumpmat[1].yw, duv1)), at = tc1.xy + texsize[1].zw;
         float4 under = tex1.Sample(smp1, at + SWIRL_KEEP * swirl + bend), was = tex1.Sample(smp1, at + swirl);
         r0.rgb += (1 - saturate(r0.a)) * (under.rgb - was.rgb) * pc[10].rgb;
+#endif
         r0.rgb *= 1 - clamp(0.8 * dot(dh, float2(0.6, 0.8)), -0.15, 0.15);
         float3 eye = -(c[96].xyz * c[96].w + c[97].xyz * c[97].w + c[98].xyz * c[98].w);
         float3 e = normalize(eye - float3(xz.x, i.x0.y + h, xz.y)), n = normalize(float3(-dh.x, 1, -dh.y));
@@ -427,10 +439,20 @@ gpu::ShadingField Field() {
 }  // namespace
 
 void water::Init() {
-    static const std::string vs = std::string(kVsHead) + kProject + kVsTail;
-    static const std::string ds = std::string(kDsHead) + kField + "        FIELD(1)" + kProject + "\n    }";
+    static const std::string vs = std::string(kVsHead) + kProject + kScreen + kVsTail;
+    static const std::string ds = std::string(kDsHead) + kField + "        FIELD(1)" + kProject + kScreen + "\n    }";
+    static const std::string sludge_vs = std::string(kVsHead) + kProject + kSludgeScreen + kVsTail;
+    static const std::string sludge_ds =
+        std::string(kDsHead) + kField + "        FIELD(1)" + kProject + kSludgeScreen + "\n    }";
     static const std::string ps = std::string(kPsHead) + "\n#define REFRACT " + std::to_string(kRefract) +
                                   "\n#define SWIRL_KEEP " + std::to_string(kSwirlKeep) + "\n" + kField + kPsTail;
+    gpu::g_program_shading.push_back({.match = kSludgeMatch,  // before the river's, which it matches too
+                                      .on = &g_dynamic,
+                                      .vs = sludge_vs.c_str(),
+                                      .ps = ps.c_str(),
+                                      .fill = Fill,
+                                      .tess = sludge_ds.c_str(),
+                                      .field = Field});
     gpu::g_program_shading.push_back({.match = kMatch,
                                       .on = &g_dynamic,
                                       .vs = vs.c_str(),
