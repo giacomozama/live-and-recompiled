@@ -94,4 +94,8 @@ void Rumble(int port, uint16_t left, uint16_t right) {
     if (app::kGame.rumble) app::kGame.rumble(port, left, right);
 }
 
+// no keyboards or mice: the script is port 0's controller
+bool Has(int, Kind) { return false; }
+bool KeyDown(int, int) { return false; }
+
 }  // namespace input

@@ -6,7 +6,6 @@
 #include "common/grass.h"
 #include "common/keyboard.h"
 #include "common/metal.h"
-#include "common/mouse.h"
 #include "common/ui.h"
 #include "common/water.h"
 
@@ -41,19 +40,16 @@ const app::GameInfo app::kGame = {
                 {"fur_shading", &fur::g_shading, nullptr},  // lit, soft edged fur shells (src/conker/common/fur.cpp)
                 {"dynamic_water", &water::g_dynamic, nullptr},  // flowing, rippling water (src/conker/common/water.cpp)
                 {"metal_shading", &metal::g_shading, nullptr},  // shiny, dented armour (src/conker/common/metal.cpp)
-                {"glass_shading", &glass::g_shading, nullptr},  // glowing, glinting bottles (src/conker/common/glass.cpp)
-                {"mouse_look", &mouse::g_look, nullptr},  // the mouse turns the camera (src/conker/game/mouse.cpp)
-                {"mouse_sensitivity", nullptr, &mouse::g_sensitivity},  // percent, horizontal
-                {"mouse_sensitivity_y", nullptr, &mouse::g_sensitivity_y},  // percent, vertical
-                {"mouse_invert_y", &mouse::g_invert_y, nullptr}},
-    .load = keyboard::Load,               // the [keys] table: keyboard bindings (src/conker/game/keyboard.cpp)
-    .save = keyboard::Save,               // writes it
+                {"glass_shading", &glass::g_shading, nullptr}},  // glowing, glinting bottles (src/conker/common/glass.cpp)
+    // the [playerN] tables: each player's keyboard bindings and mouse look (src/conker/game/keyboard.cpp, mouse.cpp)
+    .load = keyboard::Load,
+    .save = keyboard::Save,               // writes them
     .init = Init,                         // after the settings load: the fps cap, fur, waves, metal and glass
     .loaded = nullptr,                    // image in memory, before its entry point runs
     .window = nullptr,                    // the game window is up
     .message = ui::Message,               // window messages first; true takes one
     .ui = ui::Draw,                       // ImGui drawing each frame
-    .pad = keyboard::Pad,                 // keyboard as a pad on port 0 (src/conker/game/keyboard.cpp)
+    .pad = keyboard::Pad,                 // each player's keyboard and mouse as their pad (src/conker/game/keyboard.cpp)
     .rumble = nullptr,                    // changes a rumble before it is set
     .aspect = display::Aspect,            // the camera patch draws the display's shape (src/conker/game/display.cpp)
 };

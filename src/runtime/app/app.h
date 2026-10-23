@@ -80,8 +80,11 @@ enum : uint32_t {
     kMsgActivate = 0x0006,
     kMsgKeyDown = 0x0100,
     kMsgApp = 0x8000,                  // WM_APP: a game's own from here
-    kMsgMouseMotion = kMsgApp + 0x3F,  // SDL only, while HoldMouse holds it: relative motion, int32 dx in wp, dy in lp
+    // raw relative motion: int32 dx in wp's low half and dy in its high half (MotionWp), the mouse's input::Device id
+    // in lp; on the SDL window only while HoldMouse holds it
+    kMsgMouseMotion = kMsgApp + 0x3F,
 };
+inline uintptr_t MotionWp(int32_t dx, int32_t dy) { return uintptr_t(uint32_t(dx)) | uintptr_t(uint32_t(dy)) << 32; }
 // a key or mouse button held, by Windows virtual-key code (the codes settings.toml's key names stand for); any thread
 bool KeyDown(int vk);
 void Post(uint32_t msg);                    // any thread: msg to GameInfo::message on the window thread

@@ -71,6 +71,39 @@ const std::array<SDL_Scancode, 256>& ScancodeOf() {
     return table;
 }
 
+// the virtual-key code a mouse button stands for: 1 left, 2 right, 4 middle, 5 and 6 the side ones; 0 for the rest
+int VkOfButton(uint8_t button) {
+    switch (button) {
+        case SDL_BUTTON_LEFT: return 1;
+        case SDL_BUTTON_RIGHT: return 2;
+        case SDL_BUTTON_MIDDLE: return 4;
+        case SDL_BUTTON_X1: return 5;
+        case SDL_BUTTON_X2: return 6;
+        default: return 0;
+    }
+}
+
+// the players' keyboards and mice (input.h): SDL names each, the Wayland seat's as one
+void AddKeyboard(SDL_KeyboardID id) {
+    const char* name = SDL_GetKeyboardNameForID(id);
+    input::AddDevice(input::Kind::Keyboard, id, name ? name : "");
+}
+void AddMouse(SDL_MouseID id) {
+    const char* name = SDL_GetMouseNameForID(id);
+    input::AddDevice(input::Kind::Mouse, id, name ? name : "");
+}
+void AddInputDevices() {
+    int n = 0;
+    if (SDL_KeyboardID* ids = SDL_GetKeyboards(&n)) {
+        for (int i = 0; i < n; i++) AddKeyboard(ids[i]);
+        SDL_free(ids);
+    }
+    if (SDL_MouseID* ids = SDL_GetMice(&n)) {
+        for (int i = 0; i < n; i++) AddMouse(ids[i]);
+        SDL_free(ids);
+    }
+}
+
 // the virtual-key code a key event names, 0 for a key without one
 int VkOf(SDL_Scancode sc) {
     static const auto table = [] {
@@ -167,8 +200,12 @@ bool Handle(const SDL_Event& e) {
         case SDL_EVENT_QUIT:
         case SDL_EVENT_WINDOW_CLOSE_REQUESTED:
             return false;
+        case SDL_EVENT_KEY_UP:
+            input::Key(e.key.which, VkOf(e.key.scancode), false);
+            break;
         case SDL_EVENT_KEY_DOWN: {
             int vk = VkOf(e.key.scancode);
+            input::Key(e.key.which, vk, true);
             if (!vk || Send(kMsgKeyDown, uintptr_t(vk), e.key.repeat ? 1 << 30 : 0)) break;
             if (vk == kVkF3) DumpThreads();
             if (vk == kVkF4 && !e.key.repeat) gpu::g_record_dump = true;
@@ -179,7 +216,25 @@ bool Handle(const SDL_Event& e) {
             Send(kMsgActivate, 1);
             break;
         case SDL_EVENT_WINDOW_FOCUS_LOST:
+            input::ReleaseAll();  // SDL lets the keys go as no device's
             Send(kMsgActivate, 0);
+            break;
+        case SDL_EVENT_MOUSE_BUTTON_DOWN:
+        case SDL_EVENT_MOUSE_BUTTON_UP:
+            if (e.button.which != SDL_TOUCH_MOUSEID && e.button.which != SDL_PEN_MOUSEID)
+                input::Button(e.button.which, VkOfButton(e.button.button), e.type == SDL_EVENT_MOUSE_BUTTON_DOWN);
+            break;
+        case SDL_EVENT_KEYBOARD_ADDED:
+            AddKeyboard(e.kdevice.which);
+            break;
+        case SDL_EVENT_KEYBOARD_REMOVED:
+            input::RemoveDevice(input::Kind::Keyboard, e.kdevice.which);
+            break;
+        case SDL_EVENT_MOUSE_ADDED:
+            AddMouse(e.mdevice.which);
+            break;
+        case SDL_EVENT_MOUSE_REMOVED:
+            input::RemoveDevice(input::Kind::Mouse, e.mdevice.which);
             break;
         case SDL_EVENT_WINDOW_RESIZED:
         case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED:
@@ -195,15 +250,21 @@ bool Handle(const SDL_Event& e) {
             StoreDesktop();
             break;
         case SDL_EVENT_MOUSE_MOTION: {
-            // relative motion in counts, which may come as fractions: the rest is kept for the next event
-            static float fx = 0, fy = 0;
-            if (!SDL_GetWindowRelativeMouseMode(g_window)) break;
+            // relative motion in counts, which may come as fractions: each mouse's rest is kept for its next event
+            static std::vector<std::pair<SDL_MouseID, std::array<float, 2>>> rests;
+            if (!SDL_GetWindowRelativeMouseMode(g_window) || e.motion.which == SDL_TOUCH_MOUSEID ||
+                e.motion.which == SDL_PEN_MOUSEID)
+                break;
+            auto it = std::find_if(rests.begin(), rests.end(), [&](const auto& r) { return r.first == e.motion.which; });
+            if (it == rests.end()) it = rests.insert(rests.end(), {e.motion.which, {0.0f, 0.0f}});
+            float& fx = it->second[0];
+            float& fy = it->second[1];
             fx += e.motion.xrel;
             fy += e.motion.yrel;
             int32_t dx = int32_t(fx), dy = int32_t(fy);
             fx -= float(dx);
             fy -= float(dy);
-            if (dx || dy) Send(kMsgMouseMotion, uintptr_t(intptr_t(dx)), intptr_t(dy));
+            if (dx || dy) Send(kMsgMouseMotion, MotionWp(dx, dy), intptr_t(e.motion.which));
             break;
         }
         case SDL_EVENT_GAMEPAD_ADDED:
@@ -427,6 +488,7 @@ int main(int argc, char** argv) {
     ImGui_ImplSDL3_InitForVulkan(app::g_window);
 
     input::Init();
+    app::AddInputDevices();
     if (app::kGame.window) app::kGame.window(app::g_window);
     std::string hdd = app::Instance() > 1 ? "hdd" + std::to_string(app::Instance()) : "hdd";
     if (!kernel::Boot(std::move(game.xbe), IMAGE_XBE, game.dir.string(), (app::ExeDir() / hdd).string())) {

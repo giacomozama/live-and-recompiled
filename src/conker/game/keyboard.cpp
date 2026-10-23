@@ -1,10 +1,10 @@
 // Keyboard controls, so Conker can be played without a gamepad.
 //
 // The runtime polls the pad on the guest's threads and hands the result to GameInfo::pad (see
-// app.h), the hook a title gets to change a polled pad. This fills port 0 from the host keyboard
-// and reports it connected, so the frontend and the game accept input with no controller plugged
-// in. A real gamepad on port 0 keeps working: the keyboard only overrides the axes and buttons it
-// is actually driving.
+// app.h), the hook a title gets to change a polled pad. This fills each port from the keyboards and
+// mouse buttons its player has (input.h) and reports it connected, so the frontend and the game
+// accept input with no controller plugged in; port 0 always is. A player's controller keeps
+// working: the keys only override the axes and buttons they are actually driving.
 //
 // The default layout, around WASD and the mouse (mouse look is on by default):
 //
@@ -15,8 +15,8 @@
 //   start        enter            back                   backspace
 //   stick clicks left shift (left) / left alt (right)
 //
-// Every action can be rebound, to up to two keys or mouse buttons: in the menu (Esc), or in settings.toml's [keys]
-// table by key name (move_up = 'W', a = ['Space', 'Mouse 1'], 'none' unbinds).
+// Every player's actions can be rebound, to up to two keys or mouse buttons each: in the menu (Esc), or in
+// settings.toml's [playerN.keys] tables by key name (move_up = 'W', a = ['Space', 'Mouse 1'], 'none' unbinds).
 //
 // With mouse look on (src/conker/game/mouse.cpp) the mouse also turns the camera, over the camera keys while it moves.
 #include <algorithm>
@@ -44,7 +44,7 @@
 
 namespace keyboard {
 
-int g_keys[kActions][kSlots];
+int g_keys[input::kPorts][kActions][kSlots];
 
 namespace {
 
@@ -125,10 +125,9 @@ bool SameName(const char* a, const char* b) {
     return *a == *b;
 }
 
-bool Down(int vk) { return vk && app::KeyDown(vk); }
-bool Down(Action a) {
-    for (int vk : g_keys[a])
-        if (Down(vk)) return true;
+bool Down(int port, Action a) {
+    for (int vk : g_keys[port][a])
+        if (vk && input::KeyDown(port, vk)) return true;
     return false;
 }
 
@@ -147,7 +146,10 @@ int16_t Axis(bool negative, bool positive) {
     return int16_t((positive ? kFull : 0) - (negative ? kFull : 0));
 }
 
-[[maybe_unused]] const bool g_defaults = (ResetKeys(), true);  // before Load, at static init
+[[maybe_unused]] const bool g_defaults = [] {  // before Load, at static init
+    for (int p = 0; p < input::kPorts; p++) ResetKeys(p);
+    return true;
+}();
 
 }  // namespace
 
@@ -164,26 +166,27 @@ const char* KeyName(int vk) { return vk ? Named(vk) : "-"; }
 
 bool Bindable(int vk) { return vk > 0 && vk < 0x100 && vk != kEscape && vk != kInsert && Named(vk); }
 
-void ResetKey(int action) {
-    if (action < 0 || action >= kActions) return;
-    g_keys[action][0] = kInfo[action].vk;
-    g_keys[action][1] = kInfo[action].vk2;
+void ResetKey(int player, int action) {
+    if (player < 0 || player >= input::kPorts || action < 0 || action >= kActions) return;
+    g_keys[player][action][0] = kInfo[action].vk;
+    g_keys[player][action][1] = kInfo[action].vk2;
 }
 
-void ResetKeys() {
-    for (int a = 0; a < kActions; a++) ResetKey(a);
+void ResetKeys(int player) {
+    for (int a = 0; a < kActions; a++) ResetKey(player, a);
 }
 
-bool IsDefault(int action) {
-    return action >= 0 && action < kActions && g_keys[action][0] == kInfo[action].vk &&
-           g_keys[action][1] == kInfo[action].vk2;
+bool IsDefault(int player, int action) {
+    return player >= 0 && player < input::kPorts && action >= 0 && action < kActions &&
+           g_keys[player][action][0] == kInfo[action].vk && g_keys[player][action][1] == kInfo[action].vk2;
 }
 
 #ifdef KEYBOARD_TOML
 
+namespace {
+
 // an action is one name ('W') or a list of up to kSlots (['W', 'Up']); a bad name keeps the action as it was
-void Load(const void* table) {
-    const toml::table* keys = (*static_cast<const toml::table*>(table))["keys"].as_table();
+void LoadKeys(const toml::table* keys, int (&player)[kActions][kSlots]) {
     if (!keys) return;
     for (int a = 0; a < kActions; a++) {
         const toml::node* node = keys->get(kInfo[a].key);
@@ -202,20 +205,20 @@ void Load(const void* table) {
         for (size_t s = 0; s < names.size() && s < size_t(kSlots); s++) {
             if (Parse(names[s], vks[s])) continue;
             LOGW("input: settings [keys] %s: '%s' is not a key name, keeping %s", kInfo[a].key, names[s].c_str(),
-                 KeyName(g_keys[a][0]));
+                 KeyName(player[a][0]));
             ok = false;
         }
-        if (ok) std::copy(vks, vks + kSlots, g_keys[a]);
+        if (ok) std::copy(vks, vks + kSlots, player[a]);
     }
 }
 
 // one name for an action with a single key, else the list: 'W', ['W', 'Up'], 'none'
-void Save(void* table) {
+toml::table SaveKeys(const int (&player)[kActions][kSlots]) {
     toml::table keys;
     for (int a = 0; a < kActions; a++) {
         const char* names[kSlots];
         int n = 0;
-        for (int vk : g_keys[a])
+        for (int vk : player[a])
             if (vk) names[n++] = Named(vk);
         if (n == 0) {
             keys.insert(kInfo[a].key, "none");
@@ -227,7 +230,47 @@ void Save(void* table) {
             keys.insert(kInfo[a].key, std::move(list));
         }
     }
-    static_cast<toml::table*>(table)->insert_or_assign("keys", std::move(keys));
+    return keys;
+}
+
+// a player's mouse settings, from their table (or the file's top level, where player 1's were before)
+void LoadMouse(const toml::table& t, int p) {
+    mouse::g_look[p] = t["mouse_look"].value_or(mouse::g_look[p]);
+    mouse::g_sensitivity[p] = t["mouse_sensitivity"].value_or(mouse::g_sensitivity[p]);
+    mouse::g_sensitivity_y[p] = t["mouse_sensitivity_y"].value_or(mouse::g_sensitivity_y[p]);
+    mouse::g_invert_y[p] = t["mouse_invert_y"].value_or(mouse::g_invert_y[p]);
+}
+
+std::string PlayerTable(int p) { return "player" + std::to_string(p + 1); }
+
+}  // namespace
+
+void Load(const void* table) {
+    const toml::table& t = *static_cast<const toml::table*>(table);
+    for (int p = 0; p < input::kPorts; p++) {
+        const toml::table* player = t[PlayerTable(p)].as_table();
+        const bool keys = player && (*player)["keys"].as_table();
+        const bool look = player && (*player)["mouse_look"];
+        if (p == 0 && !keys) LoadKeys(t["keys"].as_table(), g_keys[0]);
+        if (p == 0 && !look) LoadMouse(t, 0);
+        if (!player) continue;
+        LoadKeys((*player)["keys"].as_table(), g_keys[p]);
+        LoadMouse(*player, p);
+    }
+}
+
+// into the [playerN] tables the runtime writes the devices in
+void Save(void* table) {
+    toml::table& t = *static_cast<toml::table*>(table);
+    for (int p = 0; p < input::kPorts; p++) {
+        toml::table* player = t[PlayerTable(p)].as_table();
+        if (!player) player = t.insert_or_assign(PlayerTable(p), toml::table{}).first->second.as_table();
+        player->insert_or_assign("mouse_look", mouse::g_look[p]);
+        player->insert_or_assign("mouse_sensitivity", int64_t(mouse::g_sensitivity[p]));
+        player->insert_or_assign("mouse_sensitivity_y", int64_t(mouse::g_sensitivity_y[p]));
+        player->insert_or_assign("mouse_invert_y", mouse::g_invert_y[p]);
+        player->insert_or_assign("keys", SaveKeys(g_keys[p]));
+    }
 }
 
 #else  // no toml++ (the headless harness): the defaults only
@@ -238,11 +281,12 @@ void Save(void*) {}
 #endif
 
 void Pad(int port, input::Pad& pad) {
-    if (port != 0) return;
-    // the keyboard is always present: without this the game sees no controller and ignores input
-    pad.connected = true;
+    if (port < 0 || port >= input::kPorts) return;
+    // player 1's keyboard is always present: without this the game sees no controller and ignores input
+    if (port == 0 || input::Has(port, input::Kind::Keyboard) || input::Has(port, input::Kind::Mouse))
+        pad.connected = true;
 
-    // the settings menu is up: hand the game a neutral pad so it stands still while the player is in the UI
+    // the settings menu is up: hand the game neutral pads so every player stands still while one is in the UI
     if (ui::Open()) {
         pad.buttons = 0;
         pad.lx = pad.ly = pad.rx = pad.ry = 0;
@@ -250,40 +294,41 @@ void Pad(int port, input::Pad& pad) {
         return;
     }
 
-    if (Down(kMoveUp) || Down(kMoveDown) || Down(kMoveLeft) || Down(kMoveRight)) {
-        pad.lx = Axis(Down(kMoveLeft), Down(kMoveRight));
-        pad.ly = Axis(Down(kMoveDown), Down(kMoveUp));
+    if (Down(port, kMoveUp) || Down(port, kMoveDown) || Down(port, kMoveLeft) || Down(port, kMoveRight)) {
+        pad.lx = Axis(Down(port, kMoveLeft), Down(port, kMoveRight));
+        pad.ly = Axis(Down(port, kMoveDown), Down(port, kMoveUp));
     }
-    if (Down(kCamUp) || Down(kCamDown) || Down(kCamLeft) || Down(kCamRight)) {
-        pad.rx = Axis(Down(kCamLeft), Down(kCamRight));
-        pad.ry = Axis(Down(kCamDown), Down(kCamUp));
+    if (Down(port, kCamUp) || Down(port, kCamDown) || Down(port, kCamLeft) || Down(port, kCamRight)) {
+        pad.rx = Axis(Down(port, kCamLeft), Down(port, kCamRight));
+        pad.ry = Axis(Down(port, kCamDown), Down(port, kCamUp));
     }
 
-    if (Down(kDpadUp)) pad.buttons |= kPadUp;
-    if (Down(kDpadDown)) pad.buttons |= kPadDown;
-    if (Down(kDpadLeft)) pad.buttons |= kPadLeft;
-    if (Down(kDpadRight)) pad.buttons |= kPadRight;
-    if (Down(kStart)) pad.buttons |= kPadStart;
-    if (Down(kBack)) pad.buttons |= kPadBack;
-    if (Down(kLS)) pad.buttons |= kPadLS;
-    if (Down(kRS)) pad.buttons |= kPadRS;
+    if (Down(port, kDpadUp)) pad.buttons |= kPadUp;
+    if (Down(port, kDpadDown)) pad.buttons |= kPadDown;
+    if (Down(port, kDpadLeft)) pad.buttons |= kPadLeft;
+    if (Down(port, kDpadRight)) pad.buttons |= kPadRight;
+    if (Down(port, kStart)) pad.buttons |= kPadStart;
+    if (Down(port, kBack)) pad.buttons |= kPadBack;
+    if (Down(port, kLS)) pad.buttons |= kPadLS;
+    if (Down(port, kRS)) pad.buttons |= kPadRS;
 
     // analog face buttons: A B X Y black(RB) white(LB) LT RT
-    if (Down(kA)) pad.analog[0] = 0xFF;
-    if (Down(kB)) pad.analog[1] = 0xFF;
-    if (Down(kX)) pad.analog[2] = 0xFF;
-    if (Down(kY)) pad.analog[3] = 0xFF;
-    if (Down(kRB)) pad.analog[4] = 0xFF;  // black / right bumper
-    if (Down(kLB)) pad.analog[5] = 0xFF;  // white / left bumper
-    if (Down(kLT)) pad.analog[6] = 0xFF;  // left trigger
-    if (Down(kRT)) pad.analog[7] = 0xFF;  // right trigger
+    if (Down(port, kA)) pad.analog[0] = 0xFF;
+    if (Down(port, kB)) pad.analog[1] = 0xFF;
+    if (Down(port, kX)) pad.analog[2] = 0xFF;
+    if (Down(port, kY)) pad.analog[3] = 0xFF;
+    if (Down(port, kRB)) pad.analog[4] = 0xFF;  // black / right bumper
+    if (Down(port, kLB)) pad.analog[5] = 0xFF;  // white / left bumper
+    if (Down(port, kLT)) pad.analog[6] = 0xFF;  // left trigger
+    if (Down(port, kRT)) pad.analog[7] = 0xFF;  // right trigger
 
-    mouse::Pad(pad);  // the mouse, while it looks, takes the right stick
+    mouse::Pad(port, pad);  // the mouse, while it looks, takes the right stick
+    if (port != 0) return;
     camscan::Tick(pad);  // XBE_CAMSCAN: the camera angle search watches the stick the game gets
     stickwatch::Tick();  // XBE_STICK_WATCH: F11 finds the code that reads the right stick
 
     // the first key of each: the rest are in the settings log
-    auto key = [](Action a) { return KeyName(g_keys[a][0]); };
+    auto key = [](Action a) { return KeyName(g_keys[0][a][0]); };
     LOG_FIRST(1, "input: keyboard controls active (move %s%s%s%s, camera %s%s%s%s, A %s, B %s, X %s, Y %s)",
               key(kMoveUp), key(kMoveLeft), key(kMoveDown), key(kMoveRight), key(kCamUp), key(kCamLeft),
               key(kCamDown), key(kCamRight), key(kA), key(kB), key(kX), key(kY));

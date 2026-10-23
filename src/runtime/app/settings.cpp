@@ -8,6 +8,7 @@
 #include <toml++/toml.hpp>
 
 #include "app/app.h"
+#include "core/input.h"
 #include "core/log.h"
 
 namespace app {
@@ -15,6 +16,8 @@ namespace app {
 namespace {
 
 const char* kModes[] = {"fullscreen", "borderless", "windowed"};
+// a player's devices: [player1] to [player4], keyboard, mouse and controller (input.h), the game adding its own
+const char* kSlotKeys[input::kKinds] = {"keyboard", "mouse", "controller"};
 
 std::filesystem::path File() { return ExeDir() / kGame.settings; }
 
@@ -53,6 +56,14 @@ void Load() {
     s.renderer = t["renderer"].value_or(s.renderer);
     s.aspect = t["aspect"].value_or(s.aspect);
     s.join_ip = t["join_ip"].value_or(s.join_ip);
+    input::SetAutoAssign(t["auto_controllers"].value_or(input::AutoAssign()));
+    for (int p = 0; p < input::kPorts; p++) {
+        const toml::table* player = t["player" + std::to_string(p + 1)].as_table();
+        if (!player) continue;
+        for (int k = 0; k < input::kKinds; k++)
+            if (std::optional<std::string> key = (*player)[kSlotKeys[k]].value<std::string>())
+                input::Assign(p, input::Kind(k), *key);
+    }
     for (const Option& o : kGame.options) {
         if (o.flag) *o.flag = t[o.key].value_or(*o.flag);
         else *o.value = t[o.key].value_or(*o.value);
@@ -79,7 +90,13 @@ toml::table Table() {
                   {"shader_warmup", s.shader_warmup},
                   {"renderer", s.renderer},
                   {"aspect", s.aspect},
-                  {"join_ip", s.join_ip}};
+                  {"join_ip", s.join_ip},
+                  {"auto_controllers", input::AutoAssign()}};
+    for (int p = 0; p < input::kPorts; p++) {
+        toml::table player;
+        for (int k = 0; k < input::kKinds; k++) player.insert(kSlotKeys[k], input::Assigned(p, input::Kind(k)));
+        t.insert("player" + std::to_string(p + 1), std::move(player));
+    }
     for (const Option& o : kGame.options) {
         if (o.flag) t.insert(o.key, *o.flag);
         else t.insert(o.key, int64_t(*o.value));

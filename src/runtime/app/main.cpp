@@ -10,8 +10,12 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstring>
 #include <cwchar>
+#include <cwctype>
+#include <string>
 #include <thread>
+#include <vector>
 
 #include <imgui.h>
 #include <backends/imgui_impl_win32.h>
@@ -87,6 +91,100 @@ void ApplyNow() {
     }
 }
 
+// Raw input, foreground only (no RIDEV_INPUTSINK): every keyboard and mouse apart, for the players' devices (input.h).
+// The usual key and mouse messages still come, for ImGui and the menu.
+std::string Utf8(const wchar_t* w) {
+    int n = WideCharToMultiByte(CP_UTF8, 0, w, -1, nullptr, 0, nullptr, nullptr);
+    std::string s(size_t(std::max(n, 1)), '\0');
+    if (n > 0) WideCharToMultiByte(CP_UTF8, 0, w, -1, s.data(), n, nullptr, nullptr);
+    s.resize(std::strlen(s.c_str()));
+    return s;
+}
+
+// the device's product name as it reports it, else its vendor and product ids, else what it is
+std::string RawName(HANDLE device, input::Kind kind) {
+    const char* what = kind == input::Kind::Keyboard ? "Keyboard" : "Mouse";
+    UINT n = 0;
+    GetRawInputDeviceInfoW(device, RIDI_DEVICENAME, nullptr, &n);
+    if (!n) return what;
+    std::wstring path(n, L'\0');
+    if (GetRawInputDeviceInfoW(device, RIDI_DEVICENAME, path.data(), &n) == UINT(-1)) return what;
+    path.resize(std::wcslen(path.c_str()));
+    using ProductString = BOOLEAN(WINAPI*)(HANDLE, PVOID, ULONG);
+    static const ProductString product = [] {
+        HMODULE hid = LoadLibraryW(L"hid.dll");
+        return hid ? reinterpret_cast<ProductString>(reinterpret_cast<void*>(GetProcAddress(hid, "HidD_GetProductString")))
+                   : nullptr;
+    }();
+    HANDLE f = CreateFileW(path.c_str(), 0, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, 0, nullptr);
+    if (f != INVALID_HANDLE_VALUE) {
+        wchar_t name[127] = {};
+        const bool ok = product && product(f, name, sizeof(name)) && name[0];
+        CloseHandle(f);
+        if (ok) return Utf8(name);
+    }
+    for (wchar_t& c : path) c = wchar_t(std::towupper(c));
+    size_t vid = path.find(L"VID_"), pid = path.find(L"PID_");
+    if (vid == std::wstring::npos || pid == std::wstring::npos) return what;
+    return std::string(what) + " (" + Utf8(path.substr(vid + 4, 4).c_str()) + ":" + Utf8(path.substr(pid + 4, 4).c_str()) + ")";
+}
+
+void RawDevice(HANDLE device, bool arrived) {
+    const uint64_t id = uint64_t(uintptr_t(device));
+    if (!arrived) {
+        input::RemoveDevice(input::Kind::Keyboard, id);
+        input::RemoveDevice(input::Kind::Mouse, id);
+        return;
+    }
+    RID_DEVICE_INFO info{};
+    info.cbSize = sizeof(info);
+    UINT size = sizeof(info);
+    if (GetRawInputDeviceInfoW(device, RIDI_DEVICEINFO, &info, &size) == UINT(-1)) return;
+    if (info.dwType != RIM_TYPEKEYBOARD && info.dwType != RIM_TYPEMOUSE) return;
+    const input::Kind kind = info.dwType == RIM_TYPEKEYBOARD ? input::Kind::Keyboard : input::Kind::Mouse;
+    input::AddDevice(kind, id, RawName(device, kind));
+}
+
+void RegisterRawInput(HWND hwnd) {
+    // generic desktop keyboards and mice, told of arrivals and removals
+    const RAWINPUTDEVICE rid[2] = {{0x01, 0x06, RIDEV_DEVNOTIFY, hwnd}, {0x01, 0x02, RIDEV_DEVNOTIFY, hwnd}};
+    if (!RegisterRawInputDevices(rid, 2, sizeof(rid[0]))) LOGE("input: raw input registration failed (%lu)", GetLastError());
+    UINT count = 0;
+    if (GetRawInputDeviceList(nullptr, &count, sizeof(RAWINPUTDEVICELIST)) == UINT(-1) || !count) return;
+    std::vector<RAWINPUTDEVICELIST> list(count);
+    count = GetRawInputDeviceList(list.data(), &count, sizeof(RAWINPUTDEVICELIST));
+    for (UINT i = 0; i < count && count != UINT(-1); i++) RawDevice(list[i].hDevice, true);
+}
+
+void RawInput(HWND hwnd, HRAWINPUT handle) {
+    RAWINPUT raw;
+    UINT size = sizeof(raw);
+    if (GetRawInputData(handle, RID_INPUT, &raw, &size, sizeof(RAWINPUTHEADER)) == UINT(-1)) return;
+    // input sent by a program (an on-screen keyboard, a remote desktop) has no device: it is one of its own, 0
+    const uint64_t id = uint64_t(uintptr_t(raw.header.hDevice));
+    if (raw.header.dwType == RIM_TYPEKEYBOARD) {
+        const RAWKEYBOARD& k = raw.data.keyboard;
+        int vk = k.VKey;
+        if (vk == VK_SHIFT) vk = k.MakeCode == 0x36 ? VK_RSHIFT : VK_LSHIFT;
+        else if (vk == VK_CONTROL) vk = (k.Flags & RI_KEY_E0) ? VK_RCONTROL : VK_LCONTROL;
+        else if (vk == VK_MENU) vk = (k.Flags & RI_KEY_E0) ? VK_RMENU : VK_LMENU;
+        if (vk > 0 && vk < 0xFF) input::Key(id, vk, !(k.Flags & RI_KEY_BREAK));
+        return;
+    }
+    if (raw.header.dwType != RIM_TYPEMOUSE) return;
+    const RAWMOUSE& m = raw.data.mouse;
+    // down and up flags, a pair a button: left, right, middle, then the side ones
+    constexpr int kVk[5] = {1, 2, 4, 5, 6};
+    for (int b = 0; b < 5; b++) {
+        if (m.usButtonFlags & (1u << (2 * b))) input::Button(id, kVk[b], true);
+        if (m.usButtonFlags & (2u << (2 * b))) input::Button(id, kVk[b], false);
+    }
+    // absolute motion is a tablet or a remote desktop, not a mouse to look with
+    if ((m.usFlags & MOUSE_MOVE_ABSOLUTE) || (!m.lLastX && !m.lLastY) || !kGame.message) return;
+    intptr_t result = 0;
+    kGame.message(hwnd, kMsgMouseMotion, MotionWp(int32_t(m.lLastX), int32_t(m.lLastY)), intptr_t(id), &result);
+}
+
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     {
         std::lock_guard lock(UiLock());
@@ -99,8 +197,15 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             if (wp == VK_F4 && !(lp & (1 << 30))) gpu::g_record_dump = true;
             if (wp == VK_F5 && !(lp & (1 << 30))) x86_profile_dump();  // not on auto repeat
             return 0;
+        case WM_INPUT:
+            RawInput(hwnd, reinterpret_cast<HRAWINPUT>(lp));
+            break;  // DefWindowProc cleans up after it
+        case WM_INPUT_DEVICE_CHANGE:
+            RawDevice(reinterpret_cast<HANDLE>(lp), wp == GIDC_ARRIVAL);
+            return 0;
         case WM_ACTIVATE:
             if (LOWORD(wp) == WA_INACTIVE) {
+                input::ReleaseAll();  // the keys let go while another window has them never come
                 // a changed display mode steps aside for the desktop, minimized, and comes back on return; not while
                 // handing over to the next instance, which runs in the same mode
                 if (g_mode_changed && !kernel::g_relaunching) {
@@ -274,6 +379,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
     ImGui_ImplWin32_Init(app::g_hwnd);
 
     input::Init();
+    app::RegisterRawInput(app::g_hwnd);
     if (app::kGame.window) app::kGame.window(app::g_hwnd);
     std::wstring hdd = app::Instance() > 1 ? L"hdd" + std::to_wstring(app::Instance()) : L"hdd";
     if (app::Instance())

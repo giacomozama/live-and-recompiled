@@ -1,7 +1,10 @@
-// controllers through SDL: Xbox, PlayStation and Switch pads read into the console controller's report
+// controllers through SDL: Xbox, PlayStation and Switch pads read into the console controller's report; the players'
+// keyboards and mice from the window thread, each device's keys and buttons apart
 #include "core/input.h"
 
 #include <algorithm>
+#include <atomic>
+#include <bitset>
 #include <iterator>
 #include <mutex>
 
@@ -14,28 +17,98 @@ namespace input {
 
 namespace {
 
-// a controller takes the lowest free port when it is plugged in and keeps it until it is unplugged
+// the connected devices, as they came, and what each port's slots name; under g_lock
+struct Dev {
+    Kind kind;
+    uint64_t id;
+    std::string name, key;
+    SDL_Gamepad* pad = nullptr;
+    std::bitset<256> down;  // keys or buttons held, by virtual-key code
+};
 std::mutex g_lock;
 bool g_sdl = false;
-SDL_Gamepad* g_pads[4] = {};
+std::vector<Dev> g_devices;
+std::string g_slots[kPorts][kKinds] = {{kAll, kAll, ""}};  // player 1 has the keyboards and the mice
+std::atomic<bool> g_auto{true};
 
-void AddPad(SDL_JoystickID id) {
-    for (SDL_Gamepad* pad : g_pads)
-        if (pad && SDL_GetGamepadID(pad) == id) return;
-    SDL_Gamepad** slot = std::find(std::begin(g_pads), std::end(g_pads), nullptr);
-    if (slot == std::end(g_pads)) return;
-    *slot = SDL_OpenGamepad(id);
-    const char* name = *slot ? SDL_GetGamepadName(*slot) : SDL_GetError();
-    LOGI("input: controller %d %s: %s", int(slot - g_pads) + 1, *slot ? "plugged in" : "failed to open", name ? name : "");
+const char* KindName(Kind k) { return k == Kind::Keyboard ? "keyboard" : k == Kind::Mouse ? "mouse" : "controller"; }
+
+std::string& Slot(int port, Kind kind) { return g_slots[port][int(kind)]; }
+
+Dev* Find(Kind kind, uint64_t id) {
+    for (Dev& d : g_devices)
+        if (d.kind == kind && d.id == id) return &d;
+    return nullptr;
 }
 
-void RemovePad(SDL_JoystickID id) {
-    for (int i = 0; i < 4; i++) {
-        if (!g_pads[i] || SDL_GetGamepadID(g_pads[i]) != id) continue;
-        SDL_CloseGamepad(g_pads[i]);
-        g_pads[i] = nullptr;
-        LOGI("input: controller %d unplugged", i + 1);
+// name#n, the lowest n no connected device of the kind and name has
+std::string NewKey(Kind kind, const std::string& name) {
+    for (int n = 1;; n++) {
+        std::string key = name + "#" + std::to_string(n);
+        if (std::none_of(g_devices.begin(), g_devices.end(), [&](const Dev& d) { return d.kind == kind && d.key == key; }))
+            return key;
     }
+}
+
+int OwnerOf(const Dev& d) {
+    int all = -1;
+    for (int p = 0; p < kPorts; p++) {
+        if (Slot(p, d.kind) == d.key) return p;
+        if (Slot(p, d.kind) == kAll) all = p;
+    }
+    return d.kind == Kind::Controller ? -1 : all;
+}
+
+bool HasLocked(int port, Kind kind) {
+    return std::any_of(g_devices.begin(), g_devices.end(),
+                       [&](const Dev& d) { return d.kind == kind && OwnerOf(d) == port; });
+}
+
+Dev& Add(Kind kind, uint64_t id, const std::string& name) {
+    if (Dev* d = Find(kind, id)) return *d;
+    Dev d{kind, id, name.empty() ? std::string(kind == Kind::Keyboard ? "Keyboard" : "Mouse") : name, ""};
+    d.key = NewKey(kind, d.name);
+    g_devices.push_back(std::move(d));
+    LOGI("input: %s %s connected", KindName(kind), g_devices.back().key.c_str());
+    return g_devices.back();
+}
+
+void AddPad(SDL_JoystickID id) {
+    if (Find(Kind::Controller, id)) return;
+    SDL_Gamepad* pad = SDL_OpenGamepad(id);
+    if (!pad) {
+        LOGI("input: controller failed to open: %s", SDL_GetError());
+        return;
+    }
+    const char* name = SDL_GetGamepadName(pad);
+    Dev& d = Add(Kind::Controller, id, name && *name ? name : "Controller");
+    d.pad = pad;
+    if (!g_auto.load() || std::any_of(std::begin(g_slots), std::end(g_slots), [&](const std::string(&s)[kKinds]) {
+            return s[int(Kind::Controller)] == d.key;
+        }))
+        return;
+    for (int p = 0; p < kPorts; p++) {
+        if (HasLocked(p, Kind::Controller)) continue;
+        Slot(p, Kind::Controller) = d.key;
+        LOGI("input: controller %s goes to player %d", d.key.c_str(), p + 1);
+        return;
+    }
+}
+
+void Remove(Kind kind, uint64_t id) {
+    auto it = std::find_if(g_devices.begin(), g_devices.end(), [&](const Dev& d) { return d.kind == kind && d.id == id; });
+    if (it == g_devices.end()) return;
+    if (it->pad) SDL_CloseGamepad(it->pad);
+    LOGI("input: %s %s disconnected", KindName(kind), it->key.c_str());
+    g_devices.erase(it);
+}
+
+SDL_Gamepad* PadOf(int port) {
+    if (port < 0 || port >= kPorts) return nullptr;
+    const std::string& key = Slot(port, Kind::Controller);
+    for (const Dev& d : g_devices)
+        if (d.kind == Kind::Controller && d.key == key) return d.pad;
+    return nullptr;
 }
 
 // once a millisecond at most, however many ports and threads read. With an SDL window (XBE_SDL) its thread pumps the
@@ -50,7 +123,7 @@ void UpdatePads() {
     SDL_Event e;
     while (SDL_PeepEvents(&e, 1, SDL_GETEVENT, SDL_EVENT_FIRST, SDL_EVENT_LAST) == 1) {
         if (e.type == SDL_EVENT_GAMEPAD_ADDED) AddPad(e.gdevice.which);
-        else if (e.type == SDL_EVENT_GAMEPAD_REMOVED) RemovePad(e.gdevice.which);
+        else if (e.type == SDL_EVENT_GAMEPAD_REMOVED) Remove(Kind::Controller, e.gdevice.which);
     }
 #endif
 }
@@ -87,7 +160,7 @@ void HandleEvent(const void* sdl_event) {
     std::lock_guard lock(g_lock);
     if (!g_sdl) return;
     if (e.type == SDL_EVENT_GAMEPAD_ADDED) AddPad(e.gdevice.which);
-    else RemovePad(e.gdevice.which);
+    else Remove(Kind::Controller, e.gdevice.which);
 }
 
 thread_local bool t_presence = false;
@@ -97,7 +170,7 @@ Pad Poll(int port) {
     {
         std::lock_guard lock(g_lock);
         UpdatePads();
-        if (SDL_Gamepad* pad = port >= 0 && port < 4 ? g_pads[port] : nullptr) {
+        if (SDL_Gamepad* pad = PadOf(port)) {
             p.connected = true;
             constexpr SDL_GamepadButton kButtons[] = {
                 SDL_GAMEPAD_BUTTON_DPAD_UP,   SDL_GAMEPAD_BUTTON_DPAD_DOWN,  SDL_GAMEPAD_BUTTON_DPAD_LEFT,
@@ -129,7 +202,102 @@ Pad Poll(int port) {
 void Rumble(int port, uint16_t left, uint16_t right) {
     if (app::kGame.rumble) app::kGame.rumble(port, left, right);
     std::lock_guard lock(g_lock);
-    if (port >= 0 && port < 4 && g_pads[port]) SDL_RumbleGamepad(g_pads[port], left, right, 0);
+    if (SDL_Gamepad* pad = PadOf(port)) SDL_RumbleGamepad(pad, left, right, 0);
+}
+
+std::vector<Device> Devices(Kind kind) {
+    std::vector<Device> v;
+    std::lock_guard lock(g_lock);
+    for (const Dev& d : g_devices) {
+        if (d.kind != kind) continue;
+        const std::string n = d.key.substr(d.key.rfind('#') + 1);
+        v.push_back({d.kind, d.id, d.name, d.key, n == "1" ? d.name : d.name + " (" + n + ")"});
+    }
+    return v;
+}
+
+std::string Assigned(int port, Kind kind) {
+    if (port < 0 || port >= kPorts) return "";
+    std::lock_guard lock(g_lock);
+    return Slot(port, kind);
+}
+
+void Assign(int port, Kind kind, const std::string& key) {
+    if (port < 0 || port >= kPorts || (kind == Kind::Controller && key == kAll)) return;
+    std::lock_guard lock(g_lock);
+    if (Slot(port, kind) == key) return;
+    for (int p = 0; p < kPorts; p++)
+        if (p != port && !key.empty() && Slot(p, kind) == key) {
+            Slot(p, kind).clear();
+            LOGI("input: player %d's %s %s goes to player %d", p + 1, KindName(kind), key.c_str(), port + 1);
+        }
+    Slot(port, kind) = key;
+}
+
+int Holder(Kind kind, const std::string& key) {
+    if (key.empty()) return -1;
+    std::lock_guard lock(g_lock);
+    for (int p = 0; p < kPorts; p++)
+        if (Slot(p, kind) == key) return p;
+    return -1;
+}
+
+int Owner(Kind kind, uint64_t id) {
+    std::lock_guard lock(g_lock);
+    const Dev* d = Find(kind, id);
+    return d ? OwnerOf(*d) : -1;
+}
+
+bool Has(int port, Kind kind) {
+    std::lock_guard lock(g_lock);
+    return HasLocked(port, kind);
+}
+
+bool KeyDown(int port, int vk) {
+    if (vk <= 0 || vk > 0xFF) return false;
+    // the generic Shift, Ctrl and Alt are either side's
+    int codes[2] = {vk, 0};
+    if (vk == 0x10) codes[0] = 0xA0, codes[1] = 0xA1;
+    if (vk == 0x11) codes[0] = 0xA2, codes[1] = 0xA3;
+    if (vk == 0x12) codes[0] = 0xA4, codes[1] = 0xA5;
+    const Kind kind = vk < 7 ? Kind::Mouse : Kind::Keyboard;
+    std::lock_guard lock(g_lock);
+    for (const Dev& d : g_devices)
+        if (d.kind == kind && (d.down[size_t(codes[0])] || (codes[1] && d.down[size_t(codes[1])])) && OwnerOf(d) == port)
+            return true;
+    return false;
+}
+
+bool AutoAssign() { return g_auto.load(); }
+void SetAutoAssign(bool on) { g_auto.store(on); }
+
+void AddDevice(Kind kind, uint64_t id, const std::string& name) {
+    if (kind == Kind::Controller) return;
+    std::lock_guard lock(g_lock);
+    Add(kind, id, name);
+}
+
+void RemoveDevice(Kind kind, uint64_t id) {
+    if (kind == Kind::Controller) return;
+    std::lock_guard lock(g_lock);
+    Remove(kind, id);
+}
+
+void Key(uint64_t keyboard, int vk, bool down) {
+    if (vk <= 0 || vk > 0xFF) return;
+    std::lock_guard lock(g_lock);
+    Add(Kind::Keyboard, keyboard, "").down[size_t(vk)] = down;
+}
+
+void Button(uint64_t mouse, int vk, bool down) {
+    if (vk <= 0 || vk >= 7) return;
+    std::lock_guard lock(g_lock);
+    Add(Kind::Mouse, mouse, "").down[size_t(vk)] = down;
+}
+
+void ReleaseAll() {
+    std::lock_guard lock(g_lock);
+    for (Dev& d : g_devices) d.down.reset();
 }
 
 }  // namespace input

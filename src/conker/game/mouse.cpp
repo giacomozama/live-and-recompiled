@@ -1,6 +1,7 @@
-// Mouse look: the mouse turns the camera where the game turns it by the right stick.
+// Mouse look: each player's mouse turns their camera where the game turns it by the right stick.
 //
-// The window thread adds raw mouse motion (WM_INPUT, unaccelerated counts, or SDL's relative motion) up. The third
+// The window thread adds raw mouse motion (app::kMsgMouseMotion: WM_INPUT's unaccelerated counts, or SDL's relative
+// motion) up for the player whose mouse it came from (input::Owner). The third
 // person, first person and weapon cameras all turn by the stick in 0x2F99A0 (hooked at the end of the file): Turn
 // adds the motion, in degrees, to the turn it works out each frame, so each camera takes the mouse as it takes the
 // stick, inside its own limits.
@@ -17,8 +18,8 @@
 // held. With XBE_MOUSE_CALIBRATE set, F9 steps the stick through them while logging how fast the player camera
 // turns (see Calibrate and Probe).
 //
-// While mouse look is on (the default), the game window has the focus and the menu is shut, the cursor is hidden and
-// held inside the window. Alt-tab or Esc (the menu) lets it go. The SDL window (not Windows) holds it in relative mode and sends the
+// While mouse look is on (the default) for a player who has a mouse, the game window has the focus and the menu is
+// shut, the cursor is hidden and held inside the window. Alt-tab or Esc (the menu) lets it go. The SDL window (not Windows) holds it in relative mode and sends the
 // motion as app::kMsgMouseMotion instead.
 //
 // On the headless harness there is no window and no mouse, so everything but the option globals compiles out.
@@ -57,12 +58,15 @@
 
 namespace mouse {
 
-bool g_look = true;
-uint32_t g_sensitivity = kDefaultSensitivity;
-uint32_t g_sensitivity_y = kDefaultSensitivity;
-bool g_invert_y = false;
+bool g_look[input::kPorts] = {true, true, true, true};
+uint32_t g_sensitivity[input::kPorts] = {kDefaultSensitivity, kDefaultSensitivity, kDefaultSensitivity, kDefaultSensitivity};
+uint32_t g_sensitivity_y[input::kPorts] = {kDefaultSensitivity, kDefaultSensitivity, kDefaultSensitivity,
+                                           kDefaultSensitivity};
+bool g_invert_y[input::kPorts] = {};
 
 namespace {
+
+constexpr int kPorts = input::kPorts;
 
 // degrees a count turns the camera at 100% sensitivity: 800 counts (an inch at 800 dpi) is 32 degrees
 constexpr float kDegreesPerCount = 0.04f;
@@ -128,26 +132,40 @@ int64_t Now() {
     return duration_cast<microseconds>(steady_clock::now().time_since_epoch()).count();
 }
 
-// the motion the window thread has not handed over yet, under g_lock
+// each player's motion the window thread has not handed over yet, under g_lock
 std::mutex g_lock;
-int64_t g_dx = 0, g_dy = 0;
-int64_t g_moved_us = 0;  // the last motion
+struct Motion {
+    int64_t dx = 0, dy = 0;
+    int64_t moved_us = 0;  // the last motion
+};
+Motion g_motion[kPorts];
 
-void Clear() {
+void Clear(int port) {
     std::lock_guard lock(g_lock);
-    g_dx = g_dy = 0;
+    g_motion[port].dx = g_motion[port].dy = 0;
 }
 
-void Record(int32_t dx, int32_t dy) {
+void Clear() {
+    for (int p = 0; p < kPorts; p++) Clear(p);
+}
+
+void Record(int port, int32_t dx, int32_t dy) {
     if (!dx && !dy) return;
     std::lock_guard lock(g_lock);
-    g_dx += dx, g_dy += dy;
-    g_moved_us = Now();
+    Motion& m = g_motion[port];
+    m.dx += dx, m.dy += dy;
+    m.moved_us = Now();
+}
+
+// a player looks with a mouse they have
+bool AnyLook() {
+    for (int p = 0; p < kPorts; p++)
+        if (g_look[p] && input::Has(p, input::Kind::Mouse)) return true;
+    return false;
 }
 
 #ifdef _WIN32
 
-bool g_registered = false;
 bool g_hidden = false;
 
 void Hold(HWND hwnd) {
@@ -177,18 +195,12 @@ void Release() { app::HoldMouse(false); }
 void Refresh(void* window) {
 #ifdef _WIN32
     HWND hwnd = static_cast<HWND>(window);
-    const bool want = g_look && !ui::Open() && hwnd && GetForegroundWindow() == hwnd && !IsIconic(hwnd);
-    if (want && !g_registered) {
-        // only foreground motion (no RIDEV_INPUTSINK); the usual mouse messages still come, for ImGui
-        RAWINPUTDEVICE rid{0x01, 0x02, 0, hwnd};  // generic desktop, mouse
-        g_registered = RegisterRawInputDevices(&rid, 1, sizeof(rid)) != 0;
-        if (!g_registered) LOGE("mouse: raw input registration failed (%lu)", GetLastError());
-    }
+    const bool want = AnyLook() && !ui::Open() && hwnd && GetForegroundWindow() == hwnd && !IsIconic(hwnd);
     if (want) Hold(hwnd);  // again while held: the window may have moved or changed size
     else if (g_held.load()) Release();
 #else
     (void)window;
-    const bool want = g_look && !ui::Open() && app::Focused();
+    const bool want = AnyLook() && !ui::Open() && app::Focused();
     if (want || g_held.load()) app::HoldMouse(want);
 #endif
     if (want != g_held.exchange(want)) {
@@ -199,23 +211,12 @@ void Refresh(void* window) {
 
 void Message(void* hwnd, uint32_t msg, uintptr_t wp, intptr_t lp) {
     switch (msg) {
-#ifdef _WIN32
-        case WM_INPUT: {
+        case app::kMsgMouseMotion: {
             if (!g_held.load()) break;
-            RAWINPUT raw;
-            UINT size = sizeof(raw);
-            if (GetRawInputData(reinterpret_cast<HRAWINPUT>(lp), RID_INPUT, &raw, &size, sizeof(RAWINPUTHEADER)) ==
-                    UINT(-1) ||
-                raw.header.dwType != RIM_TYPEMOUSE || (raw.data.mouse.usFlags & MOUSE_MOVE_ABSOLUTE))
-                break;  // absolute motion is a tablet or a remote desktop, not a mouse to look with
-            Record(int32_t(raw.data.mouse.lLastX), int32_t(raw.data.mouse.lLastY));
+            const int port = input::Owner(input::Kind::Mouse, uint64_t(lp));
+            if (port >= 0 && g_look[port]) Record(port, int32_t(uint32_t(wp)), int32_t(uint32_t(uint64_t(wp) >> 32)));
             break;
         }
-#else
-        case app::kMsgMouseMotion:
-            if (g_held.load()) Record(int32_t(wp), int32_t(lp));
-            break;
-#endif
         case app::kMsgActivate:
             if ((wp & 0xFFFF) == 0) {  // WA_INACTIVE
                 if (g_held.exchange(false)) Release(), Clear();
@@ -235,7 +236,7 @@ void Message(void* hwnd, uint32_t msg, uintptr_t wp, intptr_t lp) {
 
 namespace {
 
-// the guest's side, under g_pad_lock: the debt in seconds of the stick's full turn, and this frame's step
+// the guest's side, under g_pad_lock, per player: the debt in seconds of the stick's full turn, and this frame's step
 std::mutex g_pad_lock;
 struct Axis {
     const std::array<float, kSteps>& rate;
@@ -246,9 +247,12 @@ struct Axis {
     float fast_s = 0;  // how long the fast turn has run
     void Reset() { debt = 0, step = 0, fast_s = 0; }
 };
-Axis g_x{kYawRate, true, kMaxYawDebt}, g_y{kPitchRate, false, kMaxPitchDebt};
-int64_t g_frame_us = 0;  // when this frame's first poll came
-float g_frame = 1.0f / 30.0f;  // seconds a frame lasts, smoothed
+struct Look {
+    Axis x{kYawRate, true, kMaxYawDebt}, y{kPitchRate, false, kMaxPitchDebt};
+    int64_t frame_us = 0;  // when this frame's first poll came
+    float frame = 1.0f / 30.0f;  // seconds a frame lasts, smoothed
+};
+Look g_looks[kPorts];
 
 // a step on each axis as a right stick, aimed at the middle of the step so the game's truncations land on it
 void Stick(input::Pad& pad, int x, int y) {
@@ -262,21 +266,21 @@ void Stick(input::Pad& pad, int x, int y) {
 }
 
 // the step whose turn this frame comes nearest the debt, and the debt it leaves
-void Pay(Axis& a, bool resting) {
-    const float want = std::fabs(a.debt) / g_frame;
+void Pay(Axis& a, float frame, bool resting) {
+    const float want = std::fabs(a.debt) / frame;
     auto rate = [&](int k) { return a.fast && k >= kFastStep ? FastRate(k, a.fast_s) : a.rate[k]; };
     int k = 0;
     for (int i = 1; i < kSteps; i++)
         if (std::fabs(want - rate(i)) < std::fabs(want - rate(k))) k = i;
     const float turn = rate(k);
-    a.fast_s = a.fast && k >= kFastStep ? a.fast_s + g_frame : 0.0f;
+    a.fast_s = a.fast && k >= kFastStep ? a.fast_s + frame : 0.0f;
     if (k == 0) {
         a.step = 0;
         if (resting) a.debt = 0;
         return;
     }
     a.step = a.debt < 0 ? -k : k;
-    a.debt -= std::copysign(turn * g_frame, a.debt);
+    a.debt -= std::copysign(turn * frame, a.debt);
 }
 
 // XBE_MOUSE_CALIBRATE and F9: holds the stick at a run of steps, x and then y, kHoldUs each with kGapUs between,
@@ -497,14 +501,15 @@ bool Calibrate(input::Pad& pad, int64_t now) {
 
 void WF(uint32_t va, float f) { std::memcpy(mem::Base() + va, &f, 4); }
 
-// when Turn last turned a camera; while it does, Pad leaves the stick alone
-std::atomic<int64_t> g_turned_us{0};
+// when Turn last turned a player's camera; while it does, Pad leaves their stick alone
+std::atomic<int64_t> g_turned_us[kPorts] = {};
 constexpr int64_t kTurnedUs = 250000;
 
 }  // namespace
 
 // 0x2F99A0, the camera's turn by the stick (see the hook at the end of the file), after it has run: this frame's
-// motion, for player 1's actions, added to the turn it worked out. The callers take that turn two ways. Most apply
+// motion of the player whose actions they are (the first four of the actions structs, one a port), added to the turn
+// it worked out. The callers take that turn two ways. Most apply
 // the frame's turns, the yaw's at +0x08 (taken off their yaw) and the pitch's at +0x44, to angles of their own (the
 // third person camera at [player+4]+0x5C, and others with their own limits); the mouse is added there, in degrees.
 // The rest keep the angles 0x2F99A0 turns, the yaw at +0x04 and the pitch at +0x40 (the weapon camera's pitch): the
@@ -512,44 +517,50 @@ constexpr int64_t kTurnedUs = 250000;
 // (+0x10, +0x4C) as far, so the mouse turns at once while the stick's turn eases as the game has it. A caller takes
 // one or the other, never both. The motion is taken once a frame, and every camera turned in that frame gets it.
 void Turn(uint32_t actions, uint32_t turn) {
-    constexpr uint32_t kPlayer1Actions = 0x763260;
+    constexpr uint32_t kPlayer1Actions = 0x763260, kActionsSize = 0x1B0;
     constexpr uint32_t kYaw = 0x04, kYawTurn = 0x08, kYawEased = 0x10;
     constexpr uint32_t kPitch = 0x40, kPitchTurn = 0x44, kPitchEased = 0x4C;
     constexpr uint32_t kPitchMin = 0x18, kPitchMax = 0x1C;  // in the camera's settings, [turn]
-    if (actions != kPlayer1Actions || !g_look || !g_held.load() || !Readable(turn, kPitchEased + 4)) return;
+    if (actions < kPlayer1Actions || (actions - kPlayer1Actions) % kActionsSize) return;
+    const uint32_t port = (actions - kPlayer1Actions) / kActionsSize;
+    if (port >= uint32_t(kPorts) || !g_look[port] || !g_held.load() || !Readable(turn, kPitchEased + 4)) return;
     const uint32_t settings = R32(turn);
     if (!Readable(settings, kPitchMax + 4)) return;
 
     // a new frame takes the motion since the last; the cameras turned within it share it
     static std::mutex frame_lock;
-    static int64_t frame_us = 0;
-    static int64_t frame_dx = 0, frame_dy = 0;
-    static uint32_t served[8] = {};
-    static int served_count = 0;
+    struct Frame {
+        int64_t us = 0;
+        int64_t dx = 0, dy = 0;
+        uint32_t served[8] = {};
+        int served_count = 0;
+    };
+    static Frame frames[kPorts];
     int64_t dx, dy;
     {
-        std::lock_guard frame(frame_lock);
+        std::lock_guard frame_guard(frame_lock);
+        Frame& f = frames[port];
         const int64_t now = Now();
-        g_turned_us.store(now, std::memory_order_relaxed);
-        if (now - frame_us >= 4000) {
+        g_turned_us[port].store(now, std::memory_order_relaxed);
+        if (now - f.us >= 4000) {
             std::lock_guard motion(g_lock);
-            frame_dx = g_dx, frame_dy = g_dy;
-            g_dx = g_dy = 0;
-            frame_us = now;
-            served_count = 0;
+            f.dx = g_motion[port].dx, f.dy = g_motion[port].dy;
+            g_motion[port].dx = g_motion[port].dy = 0;
+            f.us = now;
+            f.served_count = 0;
         }
-        for (int i = 0; i < served_count; i++)
-            if (served[i] == turn) return;
-        if (served_count < int(std::size(served))) served[served_count++] = turn;
-        dx = frame_dx, dy = frame_dy;
+        for (int i = 0; i < f.served_count; i++)
+            if (f.served[i] == turn) return;
+        if (f.served_count < int(std::size(f.served))) f.served[f.served_count++] = turn;
+        dx = f.dx, dy = f.dy;
     }
     if (!dx && !dy) return;
     LOG_FIRST(1, "mouse: look turns the camera");
 
     // counts into degrees: right lowers the yaw, up raises the pitch (as the stick does); raw y grows downward
-    const float yaw = float(dx) * kDegreesPerCount * float(g_sensitivity) / 100.0f;
-    float pitch = float(-dy) * kDegreesPerCount * float(g_sensitivity_y) / 100.0f;
-    if (g_invert_y) pitch = -pitch;
+    const float yaw = float(dx) * kDegreesPerCount * float(g_sensitivity[port]) / 100.0f;
+    float pitch = float(-dy) * kDegreesPerCount * float(g_sensitivity_y[port]) / 100.0f;
+    if (g_invert_y[port]) pitch = -pitch;
     // the frame's turns, which come off the yaw and the pitch
     WF(turn + kYawTurn, RF(turn + kYawTurn) + yaw);
     WF(turn + kPitchTurn, RF(turn + kPitchTurn) - pitch);
@@ -569,45 +580,48 @@ namespace {
 
 }  // namespace
 
-void Pad(input::Pad& pad) {
-    if (input::t_presence) return;
+void Pad(int port, input::Pad& pad) {
+    if (input::t_presence || port < 0 || port >= kPorts) return;
     const int64_t now = Now();
     std::lock_guard lock(g_pad_lock);
-    const bool calibrating = Calibrate(pad, now);
-    if (calibrating || !g_look || !g_held.load()) {
-        g_x.Reset(), g_y.Reset();
-        if (!calibrating) Clear();
+    Look& l = g_looks[port];
+    const bool calibrating = port == 0 && Calibrate(pad, now);
+    if (calibrating || !g_look[port] || !g_held.load()) {
+        l.x.Reset(), l.y.Reset();
+        if (!calibrating) Clear(port);
         return;
     }
     // a camera Turn reaches takes the motion itself; the stick is for the rest
-    if (now - g_turned_us.load(std::memory_order_relaxed) < kTurnedUs) {
-        g_x.Reset(), g_y.Reset();
+    if (now - g_turned_us[port].load(std::memory_order_relaxed) < kTurnedUs) {
+        l.x.Reset(), l.y.Reset();
         return;
     }
 
     // the first poll of a frame: hand this frame's motion over and take its steps
     const float expect = 1.0f / float(display::GameRate());
-    if (now - g_frame_us >= int64_t(expect * 0.5e6f)) {
-        if (g_frame_us) g_frame += (std::clamp(float(now - g_frame_us) * 1e-6f, expect * 0.5f, 0.1f) - g_frame) * 0.1f;
-        g_frame_us = now;
+    if (now - l.frame_us >= int64_t(expect * 0.5e6f)) {
+        if (l.frame_us) l.frame += (std::clamp(float(now - l.frame_us) * 1e-6f, expect * 0.5f, 0.1f) - l.frame) * 0.1f;
+        l.frame_us = now;
         int64_t dx, dy;
         bool resting;
         {
             std::lock_guard motion(g_lock);
-            dx = g_dx, dy = g_dy;
-            g_dx = g_dy = 0;
-            resting = now - g_moved_us > kRestUs;
+            Motion& m = g_motion[port];
+            dx = m.dx, dy = m.dy;
+            m.dx = m.dy = 0;
+            resting = now - m.moved_us > kRestUs;
         }
         // counts into degrees; raw y grows downward
-        float y = float(-dy) * kDegreesPerCount * float(g_sensitivity_y) / 100.0f;
-        if (g_invert_y) y = -y;
-        g_x.debt = std::clamp(g_x.debt + float(dx) * kDegreesPerCount * float(g_sensitivity) / 100.0f, -g_x.max_debt, g_x.max_debt);
-        g_y.debt = std::clamp(g_y.debt + y, -g_y.max_debt, g_y.max_debt);
-        Pay(g_x, resting);
-        Pay(g_y, resting);
+        float y = float(-dy) * kDegreesPerCount * float(g_sensitivity_y[port]) / 100.0f;
+        if (g_invert_y[port]) y = -y;
+        l.x.debt = std::clamp(l.x.debt + float(dx) * kDegreesPerCount * float(g_sensitivity[port]) / 100.0f,
+                              -l.x.max_debt, l.x.max_debt);
+        l.y.debt = std::clamp(l.y.debt + y, -l.y.max_debt, l.y.max_debt);
+        Pay(l.x, l.frame, resting);
+        Pay(l.y, l.frame, resting);
     }
-    if (!g_x.step && !g_y.step) return;  // still: the keyboard's or a gamepad's right stick stands
-    Stick(pad, g_x.step, g_y.step);
+    if (!l.x.step && !l.y.step) return;  // still: the keyboard's or a gamepad's right stick stands
+    Stick(pad, l.x.step, l.y.step);
     LOG_FIRST(1, "mouse: look drives the right stick");
 }
 
@@ -617,16 +631,17 @@ void Pad(input::Pad& pad) {
 
 namespace mouse {
 
-bool g_look = false;
-uint32_t g_sensitivity = kDefaultSensitivity;
-uint32_t g_sensitivity_y = kDefaultSensitivity;
-bool g_invert_y = false;
+bool g_look[input::kPorts] = {};
+uint32_t g_sensitivity[input::kPorts] = {kDefaultSensitivity, kDefaultSensitivity, kDefaultSensitivity, kDefaultSensitivity};
+uint32_t g_sensitivity_y[input::kPorts] = {kDefaultSensitivity, kDefaultSensitivity, kDefaultSensitivity,
+                                           kDefaultSensitivity};
+bool g_invert_y[input::kPorts] = {};
 
 void Message(void*, uint32_t, uintptr_t, intptr_t) {}
 
 void Refresh(void*) {}
 
-void Pad(input::Pad&) {}
+void Pad(int, input::Pad&) {}
 
 void Turn(uint32_t, uint32_t) {}
 

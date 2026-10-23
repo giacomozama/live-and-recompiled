@@ -31,6 +31,7 @@
 #include "common/mouse.h"
 #include "common/warp.h"
 #include "common/water.h"
+#include "core/input.h"
 
 namespace ui {
 
@@ -58,8 +59,9 @@ const std::vector<app::Mode>& Modes() {
     return modes;
 }
 
-// the keyboard action waiting for its new key, -1 none, and which of its keys; render thread only
+// the keyboard action waiting for its new key, -1 none, whose and which of its keys; render thread only
 int g_rebind = -1;
+int g_rebind_player = 0;
 int g_rebind_slot = 0;
 // a rebind waits for every key to be up before it takes one, so the click that started it is not the key
 bool g_rebind_armed = false;
@@ -106,10 +108,10 @@ void PollRebind() {
             g_rebind_settle = kSettleFrames;
             return;
         }
-        // a key drives one action once: wherever it was, it swaps with the key it replaces (this action's other
-        // slot included)
-        int& target = keyboard::g_keys[g_rebind][g_rebind_slot];
-        for (auto& keys : keyboard::g_keys)
+        // a key drives one of the player's actions once: wherever it was, it swaps with the key it replaces (this
+        // action's other slot included)
+        int& target = keyboard::g_keys[g_rebind_player][g_rebind][g_rebind_slot];
+        for (auto& keys : keyboard::g_keys[g_rebind_player])
             for (int& k : keys)
                 if (&k != &target && k == vk) k = target;
         target = vk;
@@ -134,7 +136,69 @@ void Slider(const char* label, uint32_t* v, uint32_t min, uint32_t max, uint32_t
     ImGui::PopID();
 }
 
-void DrawKeys() {
+// the device in a player's keyboard, mouse or controller slot; picking one another player has moves it here
+void DeviceCombo(int player, input::Kind kind) {
+    using input::Kind;
+    const std::vector<input::Device> devices = input::Devices(kind);
+    const std::string held = input::Assigned(player, kind);
+    const char* all = kind == Kind::Keyboard ? "All other keyboards" : "All other mice";
+    // a device no longer connected keeps its name, without the #n
+    auto label = [&](const std::string& key) -> std::string {
+        if (key.empty()) return "None";
+        if (key == input::kAll) return all;
+        for (const input::Device& d : devices)
+            if (d.key == key) return d.label;
+        return key.substr(0, key.rfind('#')) + " (not connected)";
+    };
+    // whose it is now, when another player's
+    auto whose = [&](const std::string& key) -> std::string {
+        const int p = input::Holder(kind, key);
+        return p >= 0 && p != player ? "  (player " + std::to_string(p + 1) + ")" : "";
+    };
+    ImGui::PushID(int(kind));
+    ImGui::SetNextItemWidth(-FLT_MIN);
+    if (ImGui::BeginCombo("##device", label(held).c_str())) {
+        auto option = [&](const std::string& key, const std::string& text) {
+            if (ImGui::Selectable((text + whose(key) + "##" + key).c_str(), held == key)) input::Assign(player, kind, key);
+        };
+        option("", "None");
+        if (kind != Kind::Controller) option(input::kAll, all);
+        for (const input::Device& d : devices) option(d.key, d.label);
+        ImGui::EndCombo();
+    }
+    if (kind != Kind::Controller && held == input::kAll && ImGui::IsItemHovered())
+        ImGui::SetTooltip("every %s no other player has", kind == Kind::Keyboard ? "keyboard" : "mouse");
+    ImGui::PopID();
+}
+
+// a player's devices, and whether new controllers find a player on their own (shared by all, under each tab)
+void DrawDevices(int player) {
+    ImGui::SeparatorText("Devices");
+    for (input::Kind kind : {input::Kind::Keyboard, input::Kind::Mouse, input::Kind::Controller}) {
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextUnformatted(kind == input::Kind::Keyboard ? "Keyboard" : kind == input::Kind::Mouse ? "Mouse" : "Controller");
+        ImGui::SameLine(ImGui::GetContentRegionAvail().x * 0.2f);
+        DeviceCombo(player, kind);
+    }
+    bool auto_assign = input::AutoAssign();
+    if (ImGui::Checkbox("New controllers go to the first player without one", &auto_assign))
+        input::SetAutoAssign(auto_assign);
+}
+
+// a player's mouse look
+void DrawMouse(int player) {
+    ImGui::SeparatorText("Mouse");
+    ImGui::Checkbox("Mouse look", &mouse::g_look[player]);
+    ImGui::SameLine();
+    ImGui::TextDisabled("turns the camera; Esc or alt-tab frees the cursor");
+    Slider("Horizontal %", &mouse::g_sensitivity[player], 10, 500, mouse::kDefaultSensitivity);
+    Slider("Vertical %", &mouse::g_sensitivity_y[player], 10, 500, mouse::kDefaultSensitivity);
+    ImGui::Checkbox("Invert Y", &mouse::g_invert_y[player]);
+}
+
+// a player's keys
+void DrawKeys(int player) {
+    if (g_rebind >= 0 && g_rebind_player != player) g_rebind = -1;  // another player's tab: its rebind is done
     PollRebind();
     g_cancel_hovered = false;  // the waiting row sets it again as it draws
     ImGui::SeparatorText("Keyboard");
@@ -183,16 +247,17 @@ void DrawKeys() {
                 if (s) ImGui::SameLine(0, spacing);
                 ImGui::PushID(s);
                 const bool waiting = g_rebind == r.action && g_rebind_slot == s;
-                if (ImGui::Button(waiting ? "press..." : KeyName(g_keys[r.action][s]), ImVec2(key_w, 0)) &&
+                if (ImGui::Button(waiting ? "press..." : KeyName(g_keys[player][r.action][s]), ImVec2(key_w, 0)) &&
                     !g_rebind_settle) {
                     g_rebind = r.action;
+                    g_rebind_player = player;
                     g_rebind_slot = s;
                     g_rebind_armed = false;
                 }
                 // right click unbinds, but not while a rebind waits or has just taken its key: then the click is
                 // Mouse 2 being bound, which PollRebind takes before this button sees it
                 if (ImGui::IsItemClicked(ImGuiMouseButton_Right) && g_rebind < 0 && !g_rebind_settle)
-                    g_keys[r.action][s] = 0;
+                    g_keys[player][r.action][s] = 0;
                 ImGui::PopID();
             }
             ImGui::SameLine(0, spacing);
@@ -201,8 +266,8 @@ void DrawKeys() {
                 ImGui::Button("Cancel", ImVec2(reset, 0));
                 g_cancel_hovered = ImGui::IsItemHovered();
             } else {
-                ImGui::BeginDisabled(IsDefault(r.action));
-                if (ImGui::Button("Reset", ImVec2(reset, 0))) ResetKey(r.action);
+                ImGui::BeginDisabled(IsDefault(player, r.action));
+                if (ImGui::Button("Reset", ImVec2(reset, 0))) ResetKey(player, r.action);
                 ImGui::EndDisabled();
                 if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
                     ImGui::SetTooltip("default: %s", ActionDefault(r.action).c_str());
@@ -214,7 +279,7 @@ void DrawKeys() {
     }
     ImGui::EndTable();
     if (ImGui::Button("Default keys")) {
-        keyboard::ResetKeys();
+        keyboard::ResetKeys(player);
         g_rebind = -1;
     }
 }
@@ -313,7 +378,7 @@ void Draw(double fps) {
     static bool was_open = false;
     static double last_fps = -1.0;
     static bool last_title = !g_fps_title;
-    static bool last_look = mouse::g_look;
+    static int last_look = -1;
     const bool open = g_open.load();
     if (open && !was_open) {
         pending_mode = app::Get().display_mode;
@@ -344,9 +409,13 @@ void Draw(double fps) {
         app::Post(kFpsTitle);
     }
 
-    // the window thread takes or lets go of the cursor
-    if (mouse::g_look != last_look) {
-        last_look = mouse::g_look;
+    // the window thread takes or lets go of the cursor, as a player with a mouse turns mouse look on or off, or gets
+    // or loses the mouse
+    int look = 0;
+    for (int p = 0; p < input::kPorts; p++)
+        if (mouse::g_look[p] && input::Has(p, input::Kind::Mouse)) look |= 1 << p;
+    if (look != last_look) {
+        last_look = look;
         app::Post(mouse::kRefresh);
     }
 
@@ -498,16 +567,20 @@ void Draw(double fps) {
             }
 
             if (tab("Controls")) {
-                ImGui::SeparatorText("Mouse");
-                ImGui::Checkbox("Mouse look", &mouse::g_look);
-                ImGui::SameLine();
-                ImGui::TextDisabled("turns the camera; Esc or alt-tab frees the cursor");
-                Slider("Horizontal %", &mouse::g_sensitivity, 10, 500, mouse::kDefaultSensitivity);
-                Slider("Vertical %", &mouse::g_sensitivity_y, 10, 500, mouse::kDefaultSensitivity);
-                ImGui::Checkbox("Invert Y", &mouse::g_invert_y);
-
-                DrawKeys();
-                keys_shown = true;
+                if (ImGui::BeginTabBar("##player")) {
+                    for (int p = 0; p < input::kPorts; p++) {
+                        const std::string name = "Player " + std::to_string(p + 1);
+                        if (!ImGui::BeginTabItem(name.c_str())) continue;
+                        ImGui::PushID(p);
+                        DrawDevices(p);
+                        DrawMouse(p);
+                        DrawKeys(p);
+                        keys_shown = true;
+                        ImGui::PopID();
+                        ImGui::EndTabItem();
+                    }
+                    ImGui::EndTabBar();
+                }
                 end_tab();
             }
 
