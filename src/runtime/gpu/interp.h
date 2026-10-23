@@ -26,7 +26,8 @@ void Match();
 // the frame's draws are done: it becomes the frame before
 void EndFrame();
 // the frame's draw n drawn again at t between the frame before (0) and this one (1): its vertex constants and
-// transforms in s taken that far from the draw it was found as (or that a neighbour found moved from, kBorrowed).
+// transforms in s taken that far from the draw it was found as (or that a neighbour found, of its program or
+// another, moved from: kBorrowed).
 // s untouched for a draw not found, or one with anything that jumped (a cut, a teleport). What it changed goes into
 // undo, which puts it back
 struct Undo {

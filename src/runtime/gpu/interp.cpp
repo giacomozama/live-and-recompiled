@@ -56,6 +56,7 @@ constexpr const char* kPartNames[kParts] = {"combiner", "target", "depth target"
 struct Keys {
     uint64_t loose = 0;  // program, combiner, targets' shape, the draw's shape
     uint64_t lod = 0;    // all but the draw's count, its addresses too: the same mesh at any detail
+    uint64_t mesh = 0;   // all but its count, start and indices: the same buffers drawn with other indices
     uint64_t data = 0;   // the start of each stream's bytes, when tracing or recording
     uint64_t program = 0;
     std::array<uint64_t, kParts> parts{};
@@ -120,6 +121,9 @@ Keys MakeKeys(const State& s, uint32_t prim, uint32_t start, uint32_t count, con
     uint64_t l = Mix(0, k.program);
     for (int i = 0; i < kParts; i++) l = Mix(l, i == kShape ? k.parts[size_t(i)] >> 32 : k.parts[size_t(i)]);
     k.lod = l;
+    uint64_t m = Mix(0, k.program);
+    for (int i : {kCombiner, kTarget, kDepth, kAddresses}) m = Mix(m, k.parts[size_t(i)]);
+    k.mesh = Mix(m, k.parts[kShape] >> 32);
     k.data = d;
     return k;
 }
@@ -164,11 +168,12 @@ struct Snap {
     bool by_exact = false;
     bool second = false;  // found only as another detail's draw (Match)
     uint64_t lod = 0;     // Keys::lod
+    uint64_t mesh = 0;    // Keys::mesh
     std::string why;     // not found, when recording or tracing: what keeps it from the nearest draw of its program
 };
 
 struct Frame {
-    std::unordered_map<uint64_t, std::vector<uint32_t>> loose, programs, lod;  // the draws of each key
+    std::unordered_map<uint64_t, std::vector<uint32_t>> loose, programs, lod, mesh;  // the draws of each key
     std::vector<Snap> snaps;
     std::vector<std::array<float, 4>> values;  // the snaps' constants
     std::vector<bool> taken;  // found by a draw of the frame after
@@ -179,6 +184,7 @@ struct Frame {
         loose.clear();
         programs.clear();
         lod.clear();
+        mesh.clear();
         snaps.clear();
         values.clear();
         taken.clear();
@@ -298,7 +304,7 @@ Totals g_t;
 struct Pass {
     bool on = false;
     float t = 0;
-    uint32_t draws = 0, unfound = 0, jumped = 0, borrowed = 0, kept = 0, second = 0;
+    uint32_t draws = 0, unfound = 0, jumped = 0, borrowed = 0, across = 0, kept = 0, second = 0;
     std::unordered_map<uint64_t, std::pair<uint32_t, std::string>> unfound_programs;  // count, the first's reason
     std::string jumps;  // the first draws with a jump: draw, program, registers
     std::string watched;  // XBE_INTERP_WATCH's program's draws (Watch)
@@ -517,9 +523,11 @@ void Draw(const State& s, bool same, uint32_t prim, uint32_t start, uint32_t cou
     sn.program = k.program;
     sn.parts = k.parts;
     sn.lod = k.lod;
+    sn.mesh = k.mesh;
     cur.loose[k.loose].push_back(n);
     cur.programs[k.program].push_back(n);
     cur.lod[k.lod].push_back(n);
+    cur.mesh[k.mesh].push_back(n);
 }
 
 // the frame's draws found in the frame before, once its draws are all in: among the draws alike but for their
@@ -539,8 +547,38 @@ bool OwnElsewhere(const Frame& prev, const Snap& sn) {
     return false;
 }
 // per value, the farthest a draw at other addresses (a dynamic buffer's) is taken as: such draws found right are
-// under 0.02; a string of text fading out took the one fading in (0.037) and was drawn over it
+// under 0.02; a string of text fading out took the one fading in (0.037) and was drawn over it, in a still menu. As
+// far as kMotionSlack times the frame's motion (Motion) when the camera moves: in a fast pan, draws found at their own
+// addresses were 0.03 apart, and a ground whose buffers all moved that frame (0.027) was drawn unblended, sky showing
+// through its seams
 constexpr float kLooseDistance = 0.025f;
+constexpr float kMotionSlack = 1.25f;
+constexpr size_t kMotionSamples = 256;
+float g_loose = kLooseDistance;  // the frame's (Match), for the notes
+// how far the frame's draws moved: per value, the 90th percentile of the draws (a sample) the frame before has at the
+// same addresses, in every part; those that didn't move (a HUD) say nothing of the camera
+float Motion(const Frame& prev, const Frame& cur) {
+    static std::vector<float> d;
+    d.clear();
+    size_t step = std::max<size_t>(cur.snaps.size() / kMotionSamples, 1);
+    for (size_t i = 0; i < cur.snaps.size(); i += step) {
+        const Snap& sn = cur.snaps[i];
+        if (sn.leader >= 0) continue;
+        auto it = prev.lod.find(sn.lod);
+        if (it == prev.lod.end()) continue;
+        for (uint32_t p : it->second) {
+            if (prev.snaps[p].parts != sn.parts) continue;
+            size_t values = sn.reads ? sn.reads->regs.size() * 4 : kXf * 16;
+            float v = values ? Distance(prev, prev.snaps[p], cur, sn, INFINITY) / float(values) : 0;
+            if (v > 0) d.push_back(v);
+            break;
+        }
+    }
+    if (d.empty()) return 0;
+    auto at = d.begin() + ptrdiff_t(d.size() * 9 / 10);
+    std::nth_element(d.begin(), at, d.end());
+    return *at;
+}
 constexpr size_t kSecondTries = 256;
 constexpr float kSecondDistance = 0.01f;
 constexpr float kSecondMargin = 0.5f;  // the nearest at most this of the next nearest  // per value; a draw found right is under 0.01, another object's past 0.03
@@ -549,6 +587,7 @@ void Match() {
     Frame& prev = g_frames[g_cur ^ 1];
     if (cur.matched) return;
     cur.matched = true;
+    const float loose = g_loose = std::max(kLooseDistance, kMotionSlack * Motion(prev, cur));
     struct Pair {
         float d;
         bool same;
@@ -568,7 +607,7 @@ void Match() {
                 Snap& sn = cur.snaps[list[k]];
                 if (!Nearest(prev, cur, prev.loose, key, k, sn)) continue;
                 if (prev.snaps[size_t(sn.found)].parts[kAddresses] != sn.parts[kAddresses] &&
-                    sn.distance > kLooseDistance) {
+                    sn.distance > loose) {
                     sn.found = -1;
                     continue;
                 }
@@ -603,7 +642,7 @@ void Match() {
             if (used[pr.c] || prev.taken[p]) continue;
             Snap& sn = cur.snaps[list[pr.c]];
             size_t values = sn.reads ? sn.reads->regs.size() * 4 : kXf * 16;
-            if (!pr.same && values && pr.d / float(values) > kLooseDistance) continue;
+            if (!pr.same && values && pr.d / float(values) > loose) continue;
             if (!pr.same && OwnElsewhere(prev, sn)) continue;
             used[pr.c] = true;
             prev.taken[p] = true;
@@ -617,29 +656,35 @@ void Match() {
     }
     // a draw still not found that is a draw of the frame before but for its count (the same buffers, start, first
     // indices and kind of primitive) is that draw at another detail: a grass clump drawing fewer blades as the camera
-    // moves off. The nearest such that no draw found
-    for (Snap& sn : cur.snaps) {
-        if (sn.leader >= 0 || sn.found >= 0) continue;
-        auto it = prev.lod.find(sn.lod);
-        if (it == prev.lod.end()) continue;
-        float best = INFINITY, next = INFINITY;
-        int32_t at = -1;
-        for (uint32_t p : it->second) {
-            if (prev.taken[p]) continue;
-            float d = Distance(prev, prev.snaps[p], cur, sn, next);
-            if (d < best) next = best, best = d, at = int32_t(p);
-            else if (d < next) next = d;
+    // moves off. The nearest such that no draw found. Then, as well, one that is but for its count, start and indices:
+    // the same buffers drawn with an index list built again, a ground's pieces as the camera turns (cracked from the
+    // pieces found beside them). Pieces sharing buffers are told apart by distance; alike, any is drawn the same
+    auto by_detail = [&](const std::unordered_map<uint64_t, std::vector<uint32_t>>& by, uint64_t Snap::*key) {
+        for (Snap& sn : cur.snaps) {
+            if (sn.leader >= 0 || sn.found >= 0) continue;
+            auto it = by.find(sn.*key);
+            if (it == by.end()) continue;
+            float best = INFINITY, next = INFINITY;
+            int32_t at = -1;
+            for (uint32_t p : it->second) {
+                if (prev.taken[p]) continue;
+                float d = Distance(prev, prev.snaps[p], cur, sn, next);
+                if (d < best) next = best, best = d, at = int32_t(p);
+                else if (d < next) next = d;
+            }
+            size_t values = sn.reads ? sn.reads->regs.size() * 4 : kXf * 16;
+            // as near as loose: a dynamic buffer's ring can put another draw at the same addresses
+            if (at < 0 || (values && best / float(values) > loose)) continue;
+            prev.taken[size_t(at)] = true;
+            sn.found = at;
+            sn.distance = values ? best / float(values) : 0;
+            sn.next = values ? next / float(values) : INFINITY;
+            sn.candidates = uint32_t(it->second.size());
+            sn.second = true;
         }
-        size_t values = sn.reads ? sn.reads->regs.size() * 4 : kXf * 16;
-        // as near as kLooseDistance: a dynamic buffer's ring can put another draw at the same addresses
-        if (at < 0 || (values && best / float(values) > kLooseDistance)) continue;
-        prev.taken[size_t(at)] = true;
-        sn.found = at;
-        sn.distance = values ? best / float(values) : 0;
-        sn.next = values ? next / float(values) : INFINITY;
-        sn.candidates = uint32_t(it->second.size());
-        sn.second = true;
-    }
+    };
+    by_detail(prev.lod, &Snap::lod);
+    by_detail(prev.mesh, &Snap::mesh);
     // a draw still not found takes the nearest draw of its program that no draw found, if it is near: a skinned
     // mesh drawn at another detail (a grass clump's blades, a character's other vertices, the same bones) leaves the
     // draws of the detail before unfound. Only a skinned draw (a palette, Reads::relative), and near by its own bones
@@ -937,6 +982,51 @@ bool Borrow(const Frame& cur, const Frame& prev, uint32_t n, std::vector<std::ar
     return false;
 }
 
+// a draw not found with no found draw of its program near it (a ground whose pieces all changed their index lists
+// that frame, beside a wall that didn't, cracked apart at their seam): as Borrow, from a found draw of another program
+// near it in the frame, register by register number: a scene's programs keep the camera in the same registers. A draw
+// that moved a register this one reads to another value (its own object moving) is passed over
+bool BorrowAcross(const Frame& cur, const Frame& prev, uint32_t n, std::vector<std::array<float, 4>>& old) {
+    const Snap& sn = cur.snaps[n];
+    if (!sn.reads) return false;
+    const std::array<float, 4>* v = cur.Values(sn);
+    static std::array<int16_t, 192> at;  // the other draw's value for each register, or -1
+    uint32_t tries = 0;
+    for (size_t step = 1; tries < kTries && step < 2 * cur.snaps.size(); step++) {
+        // n + 1, n - 1, n + 2, ...
+        size_t off = (step + 1) / 2;
+        if (step % 2 ? n + off >= cur.snaps.size() : off > n) continue;
+        const Snap& o = cur.snaps[step % 2 ? n + off : n - off];
+        if (o.leader >= 0 || o.found < 0 || !o.reads || o.reads == sn.reads) continue;
+        tries++;
+        const Snap& was = prev.snaps[size_t(o.found)];
+        const std::array<float, 4>* x = cur.Values(o);
+        const std::array<float, 4>* y = prev.Values(was);
+        at.fill(-1);
+        for (size_t j = 0; j < o.reads->regs.size(); j++) at[o.reads->regs[j]] = int16_t(j);
+        bool moved = false, same = true;
+        for (size_t j = 0; same && j < sn.reads->regs.size(); j++) {
+            uint8_t r = sn.reads->regs[j];
+            int k = at[r];
+            if (k < 0 || sn.stale[r] || o.stale[r] || std::memcmp(&x[k], &y[k], 16) == 0) continue;
+            for (size_t c = 0; same && c < 4; c++)
+                same = std::memcmp(&x[k][c], &y[k][c], 4) == 0 || std::memcmp(&v[j][c], &x[k][c], 4) == 0;
+            moved |= std::memcmp(&v[j], &x[k], 16) == 0;
+        }
+        if (!moved || !same) continue;
+        old.assign(v, v + sn.reads->regs.size());
+        for (size_t j = 0; j < old.size(); j++) {
+            uint8_t r = sn.reads->regs[j];
+            int k = at[r];
+            if (k < 0 || sn.stale[r] || o.stale[r]) continue;
+            for (size_t c = 0; c < 4; c++)
+                if (std::memcmp(&x[k][c], &y[k][c], 4) != 0) old[j][c] = y[k][c];
+        }
+        return true;
+    }
+    return false;
+}
+
 Blended BlendDraw(uint32_t n, float t, State& s, Undo& undo) {
     const Frame& cur = g_frames[g_cur];
     const Frame& prev = g_frames[g_cur ^ 1];
@@ -956,6 +1046,9 @@ Blended BlendDraw(uint32_t n, float t, State& s, Undo& undo) {
         old = borrowed.data();
         old_xf = &borrowed_xf;
         if (g_pass.on) g_pass.borrowed++;
+    } else if (n < cur.snaps.size() && BorrowAcross(cur, prev, n, borrowed)) {
+        old = borrowed.data();
+        if (g_pass.on) g_pass.across++;
     } else {
         if (g_pass.on) {
             g_pass.unfound++;
@@ -1133,12 +1226,13 @@ void BeginPass(float t) {
 void EndPass(uint32_t slot) {
     std::string suspects = Score();
     if (!g_pass.on || slot >= std::size(g_notes)) return;
-    char b[256];
+    char b[384];
     snprintf(b, sizeof(b),
              "drawn again at t %.2f: %u draws, %u not found, %u found as another detail's, %u moved as a neighbour found, "
-             "%u with registers that jumped, "
-             "%u palette registers another draw left that jumped",
-             g_pass.t, g_pass.draws, g_pass.unfound, g_pass.second, g_pass.borrowed, g_pass.jumped, g_pass.kept);
+             "%u as another program's, %u with registers that jumped, "
+             "%u palette registers another draw left that jumped; at other addresses found within %.4f",
+             g_pass.t, g_pass.draws, g_pass.unfound, g_pass.second, g_pass.borrowed, g_pass.across, g_pass.jumped, g_pass.kept,
+             g_loose);
     std::string note = b + suspects;
     std::vector<std::pair<uint64_t, std::pair<uint32_t, std::string>>> top(g_pass.unfound_programs.begin(),
                                                                            g_pass.unfound_programs.end());
