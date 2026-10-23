@@ -313,8 +313,7 @@ constexpr uint64_t kPixelKeySalt = 0x9E3779B97F4A7C15ull;
 
 void KeyBlend(const State& s, PsoKey& k);
 constexpr float kDepth24Max = 16777215.0f;  // 2^24 minus 1: a 24 bit depth buffer's units per 1.0
-// ds_scale: host pixels per console pixel of the bound depth target
-void KeyDepthStencil(const State& s, const Assembled& a, float ds_scale, PsoKey& k);
+void KeyDepthStencil(const State& s, const Assembled& a, PsoKey& k);
 void KeyRasterizer(const State& s, const Assembled& a, PsoKey& k);
 
 // alpha test off: compare always, in CmpIndex terms like the enabled test

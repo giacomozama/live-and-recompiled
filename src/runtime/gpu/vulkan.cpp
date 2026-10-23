@@ -3217,7 +3217,7 @@ void VulkanBackend::BuildPipelineKey(const State& s, const Assembled& a, uint64_
     k.rtfmt = bound_rt_ ? DxgiOf(bound_rt_->fmt) : 0;
     k.samples = bound_ms_ ? msaa_ : 1;
     KeyBlend(s, k);
-    if (k.has_ds) KeyDepthStencil(s, a, float(bound_ds_->w) / bound_ds_->gw, k);
+    if (k.has_ds) KeyDepthStencil(s, a, k);
     KeyRasterizer(s, a, k);
 }
 

@@ -333,7 +333,7 @@ void KeyBlend(const State& s, PsoKey& k) {
     k.wmask = ((cw >> 16) & 1) | ((cw >> 8) & 1) << 1 | (cw & 1) << 2 | ((cw >> 24) & 1) << 3;
 }
 
-void KeyDepthStencil(const State& s, const Assembled& a, float ds_scale, PsoKey& k) {
+void KeyDepthStencil(const State& s, const Assembled& a, PsoKey& k) {
     k.zen = s.rs[kRsZEnable] != 0;
     if (k.zen) {
         k.zwrite = SimpleState(s, kMZWriteEnable) != 0;
@@ -348,11 +348,11 @@ void KeyDepthStencil(const State& s, const Assembled& a, float ds_scale, PsoKey&
         k.szfail = SimpleState(s, kMStencilZFail);
         k.spass = SimpleState(s, kMStencilPass);
     }
-    // polygon offset: bias in depth buffer units, the target is always 24 bit; the slope is per console pixel,
-    // and an upscaled target's pixels are smaller
+    // polygon offset: bias in depth buffer units, the target is always 24 bit; the slope stays per host pixel, so an
+    // upscaled target pulls a decal in by less, and the projected shadows climb less far up the feet standing in them
     if ((a.topology == Topology::Triangles || a.topology == Topology::Patches) && SimpleState(s, kMSolidOffsetEnable)) {
         k.zbias = int32_t(std::lround(Bits(SimpleState(s, kMDepthOffset)) * kDepth24Max / s.zscale));
-        k.zslope = Bits(SimpleState(s, kMSlopeScale)) * ds_scale;
+        k.zslope = Bits(SimpleState(s, kMSlopeScale));
     }
 }
 
