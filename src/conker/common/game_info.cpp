@@ -6,6 +6,7 @@
 #include "common/glass.h"
 #include "common/grass.h"
 #include "common/keyboard.h"
+#include "common/rope.h"
 #include "common/ui.h"
 #include "common/water.h"
 
@@ -37,6 +38,7 @@ const app::GameInfo app::kGame = {
                 {"side_by_side", &display::g_side_by_side, nullptr},  // two players split left and right (display.cpp)
                 {"skippable_cutscenes", &cutscenes::g_skippable, nullptr},  // LT skips any cutscene (hooks.cpp)
                 {"lasting_bulb", &bulb::g_lasting, nullptr},  // the B pad's bulb stays while Conker is on it (hooks.cpp)
+                {"rope_physics", &rope::g_physics, nullptr},  // ropes swing as a weighted chain (rope.cpp)
                 {"grass_wind", &grass::g_wind, nullptr},  // distant grass sways too (hooks.cpp)
                 {"fur_shading", &fur::g_shading, nullptr},  // lit, soft edged fur shells (src/conker/common/fur.cpp)
                 {"dynamic_water", &water::g_dynamic, nullptr},  // flowing, rippling water (src/conker/common/water.cpp)

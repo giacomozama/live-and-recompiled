@@ -29,6 +29,7 @@
 #include "common/grass.h"
 #include "common/keyboard.h"
 #include "common/mouse.h"
+#include "common/rope.h"
 #include "common/warp.h"
 #include "common/water.h"
 #include "core/input.h"
@@ -563,6 +564,9 @@ void Draw(double fps) {
                 ImGui::Checkbox("Lasting idea bulb", &bulb::g_lasting);
                 ImGui::SameLine();
                 ImGui::TextDisabled("stays over Conker while he stands on a B pad, not two seconds");
+                ImGui::Checkbox("Rope physics", &rope::g_physics);
+                ImGui::SameLine();
+                ImGui::TextDisabled("ropes swing under Conker's weight instead of writhing");
                 int split = display::g_side_by_side;
                 if (ImGui::Combo("Two player split", &split, "Top and bottom\0Side by side (experimental)\0"))
                     display::g_side_by_side = split != 0;
