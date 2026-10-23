@@ -454,8 +454,13 @@ struct LodDraw {
     bool up = false;
     std::vector<uint32_t> counts;
 };
+struct LodRun {
+    uint32_t owner = 0;
+    std::string chain;
+};
 struct LodFrame {
     std::unordered_map<uint64_t, LodDraw> looks, meshes;
+    std::unordered_map<uint32_t, LodRun> runs;  // the push buffers run, by their data
 };
 LodFrame g_lod[2];
 uint32_t g_lod_cur = 0, g_lod_frame = 0, g_lod_lines = 0;
@@ -514,17 +519,43 @@ void LodEndFrame() {
              "caller %08X -> %08X",
              g_lod_frame, d.vs, d.tex, d.prim, p.source, d.source, p.vb, d.vb, p.count, d.count, p.caller, d.caller);
     }
+    // push buffers that stopped running and others that started: a model swapped for another of its details, or
+    // objects come into view or gone out of it. A frame with many is a turn of the camera or a new scene, left out.
+    if (!prev.runs.empty()) {
+        std::vector<const std::pair<const uint32_t, LodRun>*> started, stopped;
+        for (const auto& r : cur.runs)
+            if (!prev.runs.count(r.first)) started.push_back(&r);
+        for (const auto& r : prev.runs)
+            if (!cur.runs.count(r.first)) stopped.push_back(&r);
+        if ((!started.empty() || !stopped.empty()) && started.size() + stopped.size() <= 16) {
+            for (auto* r : stopped)
+                if (g_lod_lines++ < kLodLines)
+                    LOGR("lod: frame %u push buffer %08X stopped (owner %08X, from %s)", g_lod_frame, r->first,
+                         r->second.owner, r->second.chain.c_str());
+            for (auto* r : started)
+                if (g_lod_lines++ < kLodLines)
+                    LOGR("lod: frame %u push buffer %08X started (owner %08X, from %s)", g_lod_frame, r->first,
+                         r->second.owner, r->second.chain.c_str());
+        }
+    }
     prev.looks.clear();
     prev.meshes.clear();
+    prev.runs.clear();
     g_lod_cur ^= 1;
 }
 }  // namespace
 
-void LodTraceRun(X86Context& ctx, uint32_t data) {
+void LodTraceRun(X86Context& ctx, uint32_t data, uint32_t owner) {
     if (!LodTrace() || g_lod_lines >= kLodLines) return;
     if (data < 0x80000000u) data = mem::PhysicalFromVirtual(data) | 0x80000000u;  // as the walk jumps to it
     static std::unordered_set<uint32_t> seen;
-    if (!seen.insert(data).second) return;
+    bool first = seen.insert(data).second;
+    LodRun* run = nullptr;
+    if (auto [it, fresh] = g_lod[g_lod_cur].runs.try_emplace(data); fresh) {
+        run = &it->second;
+        run->owner = owner;
+    }
+    if (!first && !run) return;
     // the return addresses on the guest stack: the first is exact, the rest may hold a stale one
     std::string chain;
     int found = 0;
@@ -537,8 +568,10 @@ void LodTraceRun(X86Context& ctx, uint32_t data) {
         std::snprintf(text, sizeof(text), "%s%08X", found++ ? " < " : "", v);
         chain += text;
     }
+    if (run) run->chain = chain;
+    if (!first) return;
     g_lod_lines++;
-    LOGR("lod: frame %u push buffer %08X first run from %s", g_lod_frame, data, chain.c_str());
+    LOGR("lod: frame %u push buffer %08X first run from %s (owner %08X)", g_lod_frame, data, chain.c_str(), owner);
 }
 
 }  // namespace d3d

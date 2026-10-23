@@ -19,9 +19,10 @@ void DeferredFlush(uint32_t dirty);
 void FlushPending();
 
 // XBE_LOD_TRACE set: draws that switch detail between frames are logged with the push buffer or caller they came
-// from. A title calls LodTraceRun as it runs a push buffer (its data address, as the command stream jumps to it), to
-// log the call chain that first ran it.
+// from. A title calls LodTraceRun as it runs a push buffer (its data address, as the command stream jumps to it, and
+// whatever it knows of the object drawing it), to log the call chain that first ran it and the push buffers that
+// stop and start running from one frame to the next.
 bool LodTrace();
-void LodTraceRun(X86Context& ctx, uint32_t data);
+void LodTraceRun(X86Context& ctx, uint32_t data, uint32_t owner = 0);
 
 }  // namespace d3d

@@ -300,11 +300,13 @@ X86_FUNC(sub_0053AD90) {
 }
 
 // 0x53AE30: RunPushBuffer(push buffer, fixup), stdcall; the D3DPushBuffer's data at +4. XBE_LOD_TRACE logs who first
-// ran each buffer, to tie a model's detail switch (the walk's push buffer) to the code that picked it
+// ran each buffer and which stop and start from frame to frame, to tie a model's detail switch (the walk's push
+// buffer) to the code that picked it. From the model node renderer (0x3F3510, returning to 0x3F3602) esi is the node.
 X86_EXTERN_FUNC(__imp__sub_0053AE30);
 X86_FUNC(sub_0053AE30) {
     if (d3d::LodTrace())
-        if (uint32_t pb = kernel::R32(ctx.esp + 4)) d3d::LodTraceRun(ctx, kernel::R32(pb + 4));
+        if (uint32_t pb = kernel::R32(ctx.esp + 4))
+            d3d::LodTraceRun(ctx, kernel::R32(pb + 4), kernel::R32(ctx.esp) == 0x3F3602 ? ctx.esi : 0);
     __imp__sub_0053AE30(ctx, base);
 }
 
