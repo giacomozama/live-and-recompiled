@@ -161,6 +161,7 @@ struct Voice {
     bool calc3d = false;  // the title's own 3D calculator drives the voice (dsound::SetVoice3d)
     float att3d = 1, pan3d = 0;
     double energy = 0;  // XBE_TRACE_DSOUND: sum of squares mixed since the last report
+    int64_t fed = 0, done = 0, born = 0;  // F3: steady ms of the last packet in, the last packet out, creation
     // ADPCM block cache
     int64_t block = -1;
     int16_t decoded[65 * 8];
@@ -179,6 +180,8 @@ std::deque<Done> g_done;
 std::condition_variable_any g_done_cv;
 thread_local std::vector<Done> t_flushed;  // run by the STREAM call that flushed them, once g_lock is let go
 std::atomic<int64_t> g_pumped{0};          // the last DirectSoundDoWork, steady ms
+std::atomic<int64_t> g_mixed{0};           // the last Render, steady ms
+std::atomic<int64_t> g_ran{0};             // the last callback run, steady ms
 bool g_started = false;
 uint32_t g_ds = 0;
 
@@ -245,7 +248,10 @@ float Sample(Voice& v, uint32_t data, uint32_t f, int c) {
     return s / 32768.0f;
 }
 
+int64_t NowMs();
+
 void Complete(Voice& v, Packet& pk, uint32_t status) {
+    v.done = NowMs();
     if (pk.completed_ptr) W32(pk.completed_ptr, status == 0 ? pk.size : pk.used);
     if (pk.status_ptr) W32(pk.status_ptr, status);
     if (v.callback) {
@@ -317,6 +323,7 @@ void Deactivate(Voice& v) {
 void Render(float* out, uint32_t frames) {
     std::memset(out, 0, frames * 2 * sizeof(float));
     std::lock_guard<std::recursive_mutex> lock(g_lock);
+    g_mixed = NowMs();
     for (auto& [obj, v] : g_voices) {
         if (v.paused || v.sync || v.hold || v.flushing || (!v.stream && !v.playing)) continue;
         float g[2][2];
@@ -422,7 +429,10 @@ void FinishFlushes() {
 }
 
 void Run(X86Context& ctx, const std::vector<Done>& done) {
-    for (const Done& d : done) CallGuest(ctx, d.callback, {d.context, d.packet_context, d.status});
+    for (const Done& d : done) {
+        CallGuest(ctx, d.callback, {d.context, d.packet_context, d.status});
+        g_ran = NowMs();
+    }
 }
 
 void Start() {
@@ -502,6 +512,7 @@ uint32_t NewBuffer(uint32_t desc, uint32_t out) {
     std::memset(HostPtr(obj), 0, 0x40);
     Voice& v = g_voices[obj];
     v.obj = obj;
+    v.born = NowMs();
     uint32_t flags = R32(desc + 4), bytes = R32(desc + 8);  // DSBUFFERDESC: size, flags, bytes, format, mix bins
     // a descriptor whose dwSize is not a DSBUFFERDESC, or a bogus byte count, would ask mem::AllocContiguous
     // for a multi-GB block; only trust a byte count from a well-formed descriptor
@@ -531,6 +542,7 @@ uint32_t NewStream(uint32_t desc, uint32_t out) {
     W32(obj + XDK_CDirectSoundStream_Vtable2, kStreamVtable2);
     Voice& v = g_voices[obj];
     v.obj = obj;
+    v.born = NowMs();
     v.stream = true;
     uint32_t flags = R32(desc);
     v.max_packets = std::max<uint32_t>(R32(desc + 4), 1);
@@ -561,6 +573,33 @@ void dsound::SetVoice3d(uint32_t obj, int32_t attenuation_mb, float azimuth) {
     v->calc3d = true;
     v->att3d = Db(attenuation_mb);
     v->pan3d = std::sin(azimuth * 3.14159265f / 180.0f);
+}
+
+void dsound::LogState() {
+    std::lock_guard<std::recursive_mutex> lock(g_lock);
+    int64_t now = NowMs();
+    auto ago = [&](int64_t t) { return t ? double(now - t) / 1000 : -1.0; };
+    size_t streams = 0, playing = 0;
+    for (auto& [obj, v] : g_voices) {
+        streams += v.stream;
+        playing += v.stream ? v.active : v.playing;
+    }
+    LOGE("dsound: %zu voices (%zu streams), %zu playing; mixed %.2fs ago, DoWork %.2fs ago, callback %.2fs ago, %zu "
+         "callbacks queued", g_voices.size(), streams, playing, ago(g_mixed), ago(g_pumped), ago(g_ran), g_done.size());
+    // seconds since: made, last packet in, last packet out (-1 never)
+    for (auto& [obj, v] : g_voices) {
+        if (!v.stream) {
+            if (v.playing)
+                LOGE("dsound:  %08X buf%s%s pos %u/%u refs %d", obj, v.looping ? " loop" : "", v.sync ? " sync" : "",
+                     uint32_t(v.pos), FramesOf(v, v.play_len), v.refs);
+            continue;
+        }
+        LOGE("dsound:  %08X str %u/%u pk%s%s%s%s%s%s%s%s%s refs %d cb %08X made %.1f in %.1f out %.1f", obj,
+             uint32_t(v.packets.size()), v.max_packets, v.active ? " active" : "", v.paused ? " paused" : "",
+             v.sync ? " sync" : "", v.hold ? " hold" : "", v.starved ? " starved" : "", v.ending ? " ending" : "",
+             v.flushing ? " flushing" : "", v.releasing ? " releasing" : "", v.released ? " released" : "", v.refs,
+             v.callback, ago(v.born), ago(v.fed), ago(v.done));
+    }
 }
 
 // device
@@ -989,6 +1028,7 @@ STREAM(Process, 3) {
     if (pk.status_ptr) W32(pk.status_ptr, kPacketPending);
     if (g_trace) LOGR("dsound: %08X packet %08X %X%s", v.obj, pk.data, pk.size, v.active ? "" : " (starts)");
     v.packets.push_back(pk);
+    v.fed = NowMs();
     v.active = true;
     v.ending = v.released = v.starved = false;
     return 0;

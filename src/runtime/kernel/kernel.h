@@ -133,6 +133,7 @@ void SetSignal(Object& o, int32_t v);
 uint32_t Wait(const std::vector<ObjectRef>& objs, bool wait_all, int64_t timeout_100ns, bool alertable);
 // completes the reads the calling thread left pending on asynchronous handles (files.cpp)
 void FlushPendingIo();
+void LogPendingIo();  // F3: the async reads not yet completed
 int32_t SetEvent(Object& o);
 int32_t ResetEvent(Object& o);
 int32_t PulseEvent(Object& o);

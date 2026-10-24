@@ -9,4 +9,7 @@ namespace dsound {
 // cone and occlusion volumes in hundredths of a dB, and azimuth is in degrees, positive to the listener's right.
 void SetVoice3d(uint32_t obj, int32_t attenuation_mb, float azimuth);
 
+// F3: every voice's state and how long since the mixer, DirectSoundDoWork and each voice last moved
+void LogState();
+
 }  // namespace dsound

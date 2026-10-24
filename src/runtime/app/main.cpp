@@ -26,6 +26,7 @@
 #include "gpu/backend.h"
 #include "image_symbols.h"
 #include "kernel/kernel.h"
+#include "xdk/dsound.h"
 
 void x86_profile_dump();  // cpu/dispatch.cpp
 
@@ -44,9 +45,11 @@ void DumpThreads() {
     gpu::g_capture = true;
     for (auto& t : kernel::Threads())
         if (t->ctx) {
-            LOGI("thread %X", t->id);
+            LOGE("thread %X", t->id);
             kernel::LogGuestStack(*t->ctx, 32);
         }
+    kernel::LogPendingIo();
+    dsound::LogState();
 }
 
 // window thread only

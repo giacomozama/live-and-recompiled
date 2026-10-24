@@ -546,6 +546,15 @@ void FlushPendingIo() {
     for (const PendingIo& p : due) CompleteIo(p);
 }
 
+void LogPendingIo() {
+    std::lock_guard<std::mutex> lock(g_io_lock);
+    auto now = std::chrono::steady_clock::now();
+    double late = g_io.empty() ? 0 : std::chrono::duration<double>(now - g_io.front().due).count();
+    LOGE("files: %zu async reads waiting to complete, the oldest %.2fs past due", g_io.size(), late);
+    for (size_t i = 0; i < g_io.size() && i < 8; i++)
+        LOGE("files:  %s %X bytes, thread %X", g_io[i].f->xbox.c_str(), g_io[i].n, g_io[i].issuer ? g_io[i].issuer->id : 0);
+}
+
 // pages is the FILE_SEGMENT_ELEMENT array for scatter and gather, 0 for one buffer
 static uint32_t Transfer(const Args& a, bool write, uint32_t pages) {
     uint32_t h = a[0], event = a[1], apc = a[2], apc_ctx = a[3], iosb = a[4], buf = a[5], len = a[6], off = a[7];
