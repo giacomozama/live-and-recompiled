@@ -774,14 +774,19 @@ bool Watched(uint64_t program) {
     }();
     return w && program == w;
 }
-void Watch(uint32_t n, const Snap& sn, Blended how, const std::string& jumped, const std::string& kept) {
-    if (g_pass.watched.size() > 12000) return;
+void Watch(uint32_t n, const Snap& sn, Blended how, const std::string& jumped, const std::string& kept,
+           const std::string& moved = "") {
+    if (g_pass.watched.size() > 48000) return;
     static const char* const kHow[] = {"not found", "jumped", "borrowed", "blended"};
-    char b[200];
-    snprintf(b, sizeof(b), "\n    draw %u: %s, as %d of %u, distance %.4f, %zu palette registers left, palette from c%u",
-             n, kHow[size_t(how)], sn.found, sn.candidates, sn.distance, sn.stale.count(),
-             sn.reads ? sn.reads->relative : 192u);
+    char b[256];
+    snprintf(b, sizeof(b),
+             "\n    draw %u: %s, as %d of %u (%s), distance %.4f, runner-up %.4f, %zu palette registers left, palette "
+             "from c%u",
+             n, kHow[size_t(how)], sn.found, sn.candidates,
+             sn.found < 0 ? "-" : sn.second ? "another detail's" : sn.by_exact ? "exact" : "other addresses", sn.distance,
+             sn.next, sn.stale.count(), sn.reads ? sn.reads->relative : 192u);
     g_pass.watched += b;
+    if (!moved.empty()) g_pass.watched += "\n      moved most:" + moved;
     if (!jumped.empty()) g_pass.watched += "\n      jumped:" + jumped;
     if (!kept.empty()) g_pass.watched += "\n      left, jumped, kept:" + kept;
     if (how == Blended::kNotFound && !sn.why.empty()) g_pass.watched += "\n      " + sn.why;
@@ -1163,7 +1168,31 @@ Blended BlendDraw(uint32_t n, float t, State& s, Undo& undo) {
         return !e || *e != '0';
     }();
     Blended how = jumped && whole ? Blended::kJumped : sn.found >= 0 ? Blended::kYes : Blended::kBorrowed;
-    if (watch) Watch(n, sn, how, regs, kept);
+    // the registers that moved most, for telling an object found as its look-alike from one on its way
+    std::string moved;
+    if (watch && sn.reads) {
+        std::array<std::pair<float, size_t>, 3> top{};
+        for (size_t j = 0; j < sn.reads->regs.size(); j++) {
+            const float* a = old[j].data();
+            const float* c = s.vsc.v[sn.reads->regs[j]].data();
+            float d = 0;
+            for (size_t i = 0; i < 4; i++) d += Rel(a[i], c[i]);
+            if (d > top[2].first) {
+                top[2] = {d, j};
+                std::sort(top.begin(), top.end(), [](const auto& x, const auto& y) { return x.first > y.first; });
+            }
+        }
+        for (const auto& [d, j] : top) {
+            if (d <= 0) break;
+            const float* a = old[j].data();
+            const float* c = s.vsc.v[sn.reads->regs[j]].data();
+            char b[160];
+            snprintf(b, sizeof(b), " c%u (%g %g %g %g -> %g %g %g %g)", sn.reads->regs[j], a[0], a[1], a[2], a[3],
+                     c[0], c[1], c[2], c[3]);
+            moved += b;
+        }
+    }
+    if (watch) Watch(n, sn, how, regs, kept, moved);
     if (how == Blended::kJumped) return how;
     if (sn.reads) {
         for (size_t j = 0; j < sn.reads->regs.size(); j++) {
