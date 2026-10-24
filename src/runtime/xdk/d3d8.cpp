@@ -317,6 +317,7 @@ void VerticalBlank(X86Context& ctx) {
             W32(info, count);
             W32(info + 4, swaps);
             W32(info + 8, swaps != shown);
+            DispatchLevel at;
             CallGuest(ctx, callback, {info});
         }
         shown = swaps;

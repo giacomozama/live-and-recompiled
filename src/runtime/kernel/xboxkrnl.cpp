@@ -189,29 +189,32 @@ KERNEL_EXPORT(122, KeLeaveCriticalRegion, 0) { return 0; }
 
 // irql, time
 
-KERNEL_FASTCALL(160, KfRaiseIrql) {
+// one processor: code at dispatch level never overlaps other code there. The thread that crosses into it holds
+// g_dispatch_level until it drops back below.
+static std::recursive_mutex g_dispatch_level;
+
+static uint8_t SetIrql(uint8_t to) {
     uint8_t old = Irql();
-    Irql() = uint8_t(ctx.ecx);
+    if (old < 2 && to >= 2) g_dispatch_level.lock();
+    Irql() = to;
+    if (old >= 2 && to < 2) g_dispatch_level.unlock();
     return old;
 }
 
+DispatchLevel::DispatchLevel() : old_(SetIrql(2)) {}
+DispatchLevel::~DispatchLevel() { SetIrql(old_); }
+
+KERNEL_FASTCALL(160, KfRaiseIrql) { return SetIrql(uint8_t(ctx.ecx)); }
+
 KERNEL_FASTCALL(161, KfLowerIrql) {
-    Irql() = uint8_t(ctx.ecx);
+    SetIrql(uint8_t(ctx.ecx));
     return 0;
 }
 
-KERNEL_EXPORT(129, KeRaiseIrqlToDpcLevel, 0) {
-    uint8_t old = Irql();
-    Irql() = 2;
-    return old;
-}
+KERNEL_EXPORT(129, KeRaiseIrqlToDpcLevel, 0) { return SetIrql(2); }
 
 // one processor: synch level is dispatch level
-KERNEL_EXPORT(130, KeRaiseIrqlToSynchLevel, 0) {
-    uint8_t old = Irql();
-    Irql() = 2;
-    return old;
-}
+KERNEL_EXPORT(130, KeRaiseIrqlToSynchLevel, 0) { return SetIrql(2); }
 
 KERNEL_EXPORT(103, KeGetCurrentIrql, 0) { return Irql(); }
 KERNEL_EXPORT(121, KeIsExecutingDpc, 0) { return 0; }

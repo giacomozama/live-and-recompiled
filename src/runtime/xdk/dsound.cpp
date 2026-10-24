@@ -463,6 +463,8 @@ void Start() {
                 done.assign(g_done.begin(), g_done.end());
                 g_done.clear();
             }
+            // as the console's DSOUND DPC: never inside the title's own XACT calls, which lock by raising the IRQL
+            DispatchLevel at;
             Run(ctx, done);
         }
     });

@@ -134,6 +134,19 @@ uint32_t Wait(const std::vector<ObjectRef>& objs, bool wait_all, int64_t timeout
 // completes the reads the calling thread left pending on asynchronous handles (files.cpp)
 void FlushPendingIo();
 void LogPendingIo();  // F3: the async reads not yet completed
+// A host thread runs guest code the console runs as a DPC (DPCs, packet callbacks, the vertical blank callback) at
+// dispatch level: the thread's IRQL reads 2 and no guest thread at dispatch level runs beside it. The XDK's
+// libraries lock by raising the IRQL (XACT's engine lock), which the console's one processor makes exclusive.
+class DispatchLevel {
+public:
+    DispatchLevel();
+    ~DispatchLevel();
+    DispatchLevel(const DispatchLevel&) = delete;
+    DispatchLevel& operator=(const DispatchLevel&) = delete;
+
+private:
+    uint8_t old_;
+};
 int32_t SetEvent(Object& o);
 int32_t ResetEvent(Object& o);
 int32_t PulseEvent(Object& o);
