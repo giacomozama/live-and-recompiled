@@ -446,6 +446,21 @@ bool RowJumped(const float* a, const float* b, float reach) {
     return std::fabs(b[3] - a[3]) > 1.0f + std::max({std::fabs(a[3]), std::fabs(b[3]), reach});
 }
 
+// a constant register holding a counter the game wraps: one value of it moved by a whole number, nearly, the rest
+// stayed. Its program can't tell the two apart (or the frame would pop), but taken part way it goes the long way
+// round: the tunnel walls' phase (A7E3951C c114.w, -0.25 up to 0.75 and back by 1) lit them flat for a picture
+bool Wrapped(const float* a, const float* b) {
+    int moved = -1;
+    for (int i = 0; i < 4; i++) {
+        if (std::memcmp(&a[i], &b[i], 4) == 0) continue;
+        if (moved >= 0) return false;
+        moved = i;
+    }
+    if (moved < 0 || std::fabs(a[moved]) > 1.0f || std::fabs(b[moved]) > 1.0f) return false;
+    float d = b[moved] - a[moved], whole = std::round(d);
+    return whole != 0 && std::fabs(d - whole) < 0.05f;
+}
+
 }  // namespace
 
 bool Tracing() {
@@ -1137,6 +1152,11 @@ Blended BlendDraw(uint32_t n, float t, State& s, Undo& undo) {
             for (size_t i = 0; i < 4; i++) packed |= std::memcmp(&a[i], &c[i], 4) != 0 && (Packed(a[i]) || Packed(c[i]));
             if (packed) {
                 keep[j] = 1;
+                continue;
+            }
+            if (Wrapped(a, c)) {
+                keep[j] = 1;
+                if (watch) kept += " c" + std::to_string(r) + " (wrapped)";
                 continue;
             }
             if (!RowJumped(a, c, reach)) continue;
