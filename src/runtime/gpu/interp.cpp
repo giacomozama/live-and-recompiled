@@ -538,12 +538,14 @@ void Draw(const State& s, bool same, uint32_t prim, uint32_t start, uint32_t cou
 constexpr size_t kPairs = 4096;
 constexpr float kLooseCost = 3.0f;
 // whether the frame before has a draw of the same mesh at its addresses, at any detail, no draw took yet: the draw is
-// that one, not another's at other addresses (a clump drawing fewer blades took a clump of that many)
+// that one, not another's at other addresses (a clump drawing fewer blades took a clump of that many). Only one that
+// kept its addresses from the frame before it (Snap::by_exact): a dynamic buffer's addresses say nothing, a fly cloud
+// written where the other cloud was a frame before missed its own and the two clouds were drawn averaged
 bool OwnElsewhere(const Frame& prev, const Snap& sn) {
     auto it = prev.lod.find(sn.lod);
     if (it == prev.lod.end()) return false;
     for (uint32_t p : it->second)
-        if (!prev.taken[p]) return true;
+        if (!prev.taken[p] && prev.snaps[p].by_exact) return true;
     return false;
 }
 // per value, the farthest a draw at other addresses (a dynamic buffer's) is taken as: such draws found right are
