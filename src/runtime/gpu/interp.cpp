@@ -548,6 +548,25 @@ bool OwnElsewhere(const Frame& prev, const Snap& sn) {
         if (!prev.taken[p] && prev.snaps[p].by_exact) return true;
     return false;
 }
+constexpr size_t kSecondTries = 256;
+constexpr float kSecondDistance = 0.01f;
+constexpr float kSecondMargin = 0.5f;  // the nearest at most this of the next nearest  // per value; a draw found right is under 0.01, another object's past 0.03
+// whether the frame before has a draw of the program that no draw found yet, of another kind than those weighed with
+// it (another count: Keys::loose), much nearer than d: the draw is that one at another detail, found by the passes
+// after (another detail's). Two fly clouds in dynamic buffers each change their count; one took the other cloud's of
+// its own count, and the two were drawn averaged
+bool NearerElsewhere(const Frame& prev, const Frame& cur, const Snap& sn, float d) {
+    auto it = prev.programs.find(sn.program);
+    if (it == prev.programs.end()) return false;
+    for (size_t k = 0; k < std::min<size_t>(it->second.size(), kSecondTries); k++) {
+        uint32_t p = it->second[k];
+        const Snap& o = prev.snaps[p];
+        if (prev.taken[p] || o.leader >= 0) continue;
+        if (std::equal(o.parts.begin(), o.parts.begin() + kAddresses, sn.parts.begin())) continue;
+        if (Distance(prev, o, cur, sn, kSecondMargin * d) < kSecondMargin * d) return true;
+    }
+    return false;
+}
 // per value, the farthest a draw at other addresses (a dynamic buffer's) is taken as: such draws found right are
 // under 0.02; a string of text fading out took the one fading in (0.037) and was drawn over it, in a still menu. As
 // far as kMotionSlack times how far its program's draws found at their own addresses moved (Motion), or the frame's
@@ -598,9 +617,6 @@ void Measure(const Frame& prev, const Frame& cur, Motion& m) {
     for (auto& [p, d] : by)
         if (!d.empty()) m.program[p] = Median(d);
 }
-constexpr size_t kSecondTries = 256;
-constexpr float kSecondDistance = 0.01f;
-constexpr float kSecondMargin = 0.5f;  // the nearest at most this of the next nearest  // per value; a draw found right is under 0.01, another object's past 0.03
 void Match() {
     Frame& cur = g_frames[g_cur];
     Frame& prev = g_frames[g_cur ^ 1];
@@ -665,7 +681,7 @@ void Match() {
             Snap& sn = cur.snaps[list[pr.c]];
             size_t values = sn.reads ? sn.reads->regs.size() * 4 : kXf * 16;
             if (!pr.same && values && pr.d / float(values) > loose(sn)) continue;
-            if (!pr.same && OwnElsewhere(prev, sn)) continue;
+            if (!pr.same && (OwnElsewhere(prev, sn) || NearerElsewhere(prev, cur, sn, pr.d))) continue;
             used[pr.c] = true;
             prev.taken[p] = true;
             sn.found = int32_t(p);
