@@ -718,7 +718,8 @@ void WriteBmp(const std::filesystem::path& p, const std::vector<uint8_t>& px, ui
 // A small draw whose every float2 input lies in 0..1: sprites, HUD pieces, text, full screen passes. The console's
 // pixel centres sample such a quad from its first texel to half a texel short of its far edge; upscaled, the far
 // edge's last half texel is drawn too, and wrapped it blends in the opposite edge (thin dark lines on HUD sprites).
-// Clamped, it takes the edge texel instead, which a wrapped texture used once over 0..1 has there anyway.
+// Clamped, it takes the edge texel instead, which a wrapped texture used once over 0..1 has there anyway. Border
+// is read as clamp too: the dung boulders' floor splats drew their quads' outlines in the border colour.
 bool UnitTexcoords(const Assembled& a) {
     constexpr float kLo = -1e-4f;
     constexpr float kHi = 1.0001f;

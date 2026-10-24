@@ -288,6 +288,7 @@ constexpr uint32_t kTexfAnisotropic = 3;
 // D3DTADDRESS values the samplers test
 constexpr uint32_t kTaddressWrap = 1;
 constexpr uint32_t kTaddressClamp = 3;
+constexpr uint32_t kTaddressBorder = 4;
 
 inline uint32_t SimpleState(const State& s, uint32_t method) { return s.simple[method >> 2]; }
 

@@ -665,9 +665,10 @@ SamplerDesc StageSampler(const State& s, int i, const DrawTextures& stages, bool
         sd.mip = VK_SAMPLER_MIPMAP_MODE_LINEAR;
         sd.aniso = std::min<uint32_t>(an, 16);
     }
-    // clamp: the draw's coordinates all lie in 0..1 (UnitTexcoords), so wrap is read as clamp
-    sd.u = Address(clamp && t[kTssAddressU] == kTaddressWrap ? kTaddressClamp : t[kTssAddressU]);
-    sd.v = Address(clamp && t[kTssAddressV] == kTaddressWrap ? kTaddressClamp : t[kTssAddressV]);
+    // clamp: the draw's coordinates all lie in 0..1 (UnitTexcoords), so wrap and border are read as clamp
+    auto unit = [&](uint32_t m) { return clamp && (m == kTaddressWrap || m == kTaddressBorder) ? kTaddressClamp : m; };
+    sd.u = Address(unit(t[kTssAddressU]));
+    sd.v = Address(unit(t[kTssAddressV]));
     sd.w = Address(t[kTssAddressW]);
     sd.bias = Bits(t[kTssMipLodBias]);
     sd.min_lod = float(t[kTssMaxMipLevel]);
@@ -3945,10 +3946,15 @@ void VulkanBackend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t
             fprintf(cap_, "\n     points sprite %u size %g scale %u %g %g %g limits %g %g | raw 318 %X 31C %X 43C %X",
                     s.rs[kRsPointSpriteEnable], c.pts[0], s.rs[kRsPointScaleEnable], c.ptsk[0], c.ptsk[1], c.ptsk[2],
                     c.pts[2], c.pts[3], s.simple[0x318 >> 2], s.simple[0x31C >> 2], s.simple[0x43C >> 2]);
-        for (int i = 0; i < 2; i++) {
+        // the border colour as the title set it (ARGB), with the D3DTADDRESS codes it came with
+        for (int i = 0; i < 4; i++) {
+            if (!stages.res[i] && i >= 2) continue;
             SamplerDesc sd = StageSampler(s, i, stages, UnitTexcoords(a), app::Get().aniso);
-            fprintf(cap_, "\n     s%d filter %u %u %u addr %u %u lod %g..%g bias %g aniso %u mips %u", i, sd.min,
-                    sd.mag, sd.mip, sd.u, sd.v, sd.min_lod, sd.max_lod, sd.bias, sd.aniso, stages.levels[i]);
+            const auto& t = s.tss[size_t(i)];
+            fprintf(cap_,
+                    "\n     s%d filter %u %u %u addr %u %u lod %g..%g bias %g aniso %u mips %u | d3d addr %u %u border %08X",
+                    i, sd.min, sd.mag, sd.mip, sd.u, sd.v, sd.min_lod, sd.max_lod, sd.bias, sd.aniso, stages.levels[i],
+                    t[kTssAddressU], t[kTssAddressV], t[kTssBorderColor]);
         }
         CaptureConstantChanges(cap_, s, cap_vsc_);
         // a program's first draw also lists its constants
