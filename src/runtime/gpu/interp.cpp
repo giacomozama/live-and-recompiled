@@ -596,6 +596,42 @@ bool NearerElsewhere(const Frame& prev, const Frame& cur, const Snap& sn, float 
     }
     return false;
 }
+// whether a pair at other addresses is a toss-up: another draw of the frame before, not the taken one's twin, is about
+// as near (kClear). Dust puffs (2F4A85DC, a dynamic buffer, two quads each, c176 the puff's place) are drawn in a new
+// order each frame, move about as far as they lie apart, and the puffs a dinosaur kicked up took the dying puffs
+// of the other dinosaur's cloud, 1200 units off, and were drawn between the two (capture 093233 pics 16, 34, 42).
+// A twin is a draw all but the same as the taken one, per value (kTwin): a puff's other quad, 10 units over (0.00003;
+// two puffs 50 units apart are 0.002). Not as against how far the pair are apart: the puffs of a cloud 600 units off
+// were all twins then, and a cloud took the other's again (093658 pic 112). Left not found, the draw is drawn as the
+// frame has it
+constexpr float kClear = 0.6f;
+constexpr float kTwin = 0.0005f;
+bool TossUp(const Frame& prev, const std::vector<uint32_t>& before, const float* d, uint32_t p, size_t values) {
+    float twin = kTwin * float(values);
+    for (uint32_t q = 0; q < before.size(); q++) {
+        if (q == p || d[q] * kClear >= d[p]) continue;
+        if (Distance(prev, prev.snaps[before[q]], prev, prev.snaps[before[p]], twin) >= twin) return true;
+    }
+    return false;
+}
+// as TossUp, for a crowd matched a draw at a time (Nearest): its rivals weighed as they come, out from the one taken
+// in the list, kSecondTries of them. The dust puffs of two dinosaurs are such a crowd
+bool TossUpIn(const Frame& prev, const Frame& cur, const Snap& sn, const std::vector<uint32_t>& before, uint32_t at,
+              float d, size_t values) {
+    float twin = kTwin * float(values);
+    size_t from = size_t(std::find(before.begin(), before.end(), at) - before.begin());
+    uint32_t tries = 0;
+    for (size_t step = 1; tries < kSecondTries && step < 2 * before.size(); step++) {
+        // from + 1, from - 1, from + 2, ...
+        size_t off = (step + 1) / 2;
+        if (step % 2 ? from + off >= before.size() : off > from) continue;
+        uint32_t q = before[step % 2 ? from + off : from - off];
+        tries++;
+        if (Distance(prev, prev.snaps[q], cur, sn, d / kClear) * kClear >= d) continue;
+        if (Distance(prev, prev.snaps[q], prev, prev.snaps[at], twin) >= twin) return true;
+    }
+    return false;
+}
 // per value, the farthest a draw at other addresses (a dynamic buffer's) is taken as: such draws found right are
 // under 0.02; a string of text fading out took the one fading in (0.037) and was drawn over it, in a still menu. As
 // far as kMotionSlack times how far its program's draws found at their own addresses moved (Motion), or the frame's
@@ -662,6 +698,7 @@ void Match() {
     };
     static std::vector<Pair> pairs;
     static std::vector<bool> used;
+    static std::vector<float> dist;  // each pair's, by draw then draw of the frame before (TossUp)
     // each draw's two nearest, at the same addresses ([0], [1]) and at others ([2], [3]): its runner-up is the
     // nearer of those alike to the one it took (Snap::next)
     static std::vector<std::array<float, 4>> two;
@@ -673,10 +710,13 @@ void Match() {
             for (size_t k = 0; k < list.size(); k++) {
                 Snap& sn = cur.snaps[list[k]];
                 if (!Nearest(prev, cur, prev.loose, key, k, sn)) continue;
-                if (prev.snaps[size_t(sn.found)].parts[kAddresses] != sn.parts[kAddresses] &&
-                    sn.distance > loose(sn)) {
-                    sn.found = -1;
-                    continue;
+                if (prev.snaps[size_t(sn.found)].parts[kAddresses] != sn.parts[kAddresses]) {
+                    size_t values = sn.reads ? sn.reads->regs.size() * 4 : kXf * 16;
+                    if (sn.distance > loose(sn) ||
+                        TossUpIn(prev, cur, sn, before, uint32_t(sn.found), sn.distance * float(values), values)) {
+                        sn.found = -1;
+                        continue;
+                    }
                 }
                 prev.taken[size_t(sn.found)] = true;
             }
@@ -684,12 +724,14 @@ void Match() {
         }
         pairs.clear();
         two.assign(list.size(), {INFINITY, INFINITY, INFINITY, INFINITY});
+        dist.resize(list.size() * before.size());
         for (uint32_t c = 0; c < list.size(); c++)
             for (uint32_t p = 0; p < before.size(); p++) {
                 const Snap& sn = cur.snaps[list[c]];
                 const Snap& o = prev.snaps[before[p]];
                 const Pair& pr = pairs.emplace_back(Pair{Distance(prev, o, cur, sn, INFINITY),
                                                          o.parts[kAddresses] == sn.parts[kAddresses], c > p ? c - p : p - c, c, p});
+                dist[c * before.size() + p] = pr.d;
                 float* t = two[c].data() + (pr.same ? 0 : 2);
                 if (pr.d < t[0]) t[1] = t[0], t[0] = pr.d;
                 else if (pr.d < t[1]) t[1] = pr.d;
@@ -710,7 +752,9 @@ void Match() {
             Snap& sn = cur.snaps[list[pr.c]];
             size_t values = sn.reads ? sn.reads->regs.size() * 4 : kXf * 16;
             if (!pr.same && values && pr.d / float(values) > loose(sn)) continue;
-            if (!pr.same && (OwnElsewhere(prev, sn) || NearerElsewhere(prev, cur, sn, pr.d))) continue;
+            if (!pr.same && (OwnElsewhere(prev, sn) || NearerElsewhere(prev, cur, sn, pr.d) ||
+                             TossUp(prev, before, &dist[pr.c * before.size()], pr.p, values)))
+                continue;
             used[pr.c] = true;
             prev.taken[p] = true;
             sn.found = int32_t(p);
