@@ -461,6 +461,20 @@ bool Wrapped(const float* a, const float* b) {
     return whole != 0 && std::fabs(d - whole) < 0.05f;
 }
 
+constexpr float kFlipNear = 0.2f;
+constexpr uint8_t kFlip = 2;
+// a row of a matrix the game gave negated: a shadow's projection (5342E94B, a dinosaur's flattened onto the floor),
+// homogeneous, is the same picture either sign, and the game turns it over now and then. Taken part way through zero
+// the shadow went flat and was gone for a picture (captures 160718 pic 52, 092739 pic 14). Its xyz (a turn of 180
+// degrees in a frame, not a move) and its whole row near opposite; taken from the negated row instead
+bool Flipped(const float* a, const float* b) {
+    float sum = std::hypot(a[0] + b[0], a[1] + b[1], a[2] + b[2]);
+    float diff = std::hypot(b[0] - a[0], b[1] - a[1], b[2] - a[2]);
+    if (diff < 1e-3f || sum > kFlipNear * diff) return false;
+    float sum4 = std::hypot(sum, a[3] + b[3]), diff4 = std::hypot(diff, b[3] - a[3]);
+    return sum4 <= kFlipNear * diff4;
+}
+
 }  // namespace
 
 bool Tracing() {
@@ -799,23 +813,29 @@ void EndFrame() {
     g_frames[g_cur ^ 1].taken.assign(g_frames[g_cur ^ 1].snaps.size(), false);
 }
 
-// XBE_INTERP_WATCH=<program, hex>: each of the program's draws in the notes, how it came out and why
+// XBE_INTERP_WATCH=<programs, hex, comma separated>: each of their draws in the notes, how it came out and why
 bool Watched(uint64_t program) {
-    static const uint64_t w = [] {
+    static const std::vector<uint64_t> w = [] {
+        std::vector<uint64_t> v;
         const char* e = std::getenv("XBE_INTERP_WATCH");
-        return e ? uint64_t(std::strtoull(e, nullptr, 16)) : 0ull;
+        for (char* end; e && *e; e = *end ? end + 1 : end) {
+            uint64_t p = std::strtoull(e, &end, 16);
+            if (end == e) break;
+            if (p) v.push_back(p);
+        }
+        return v;
     }();
-    return w && program == w;
+    return std::find(w.begin(), w.end(), program) != w.end();
 }
 void Watch(uint32_t n, const Snap& sn, Blended how, const std::string& jumped, const std::string& kept,
            const std::string& moved = "") {
     if (g_pass.watched.size() > 48000) return;
     static const char* const kHow[] = {"not found", "jumped", "borrowed", "blended"};
-    char b[256];
+    char b[320];
     snprintf(b, sizeof(b),
-             "\n    draw %u: %s, as %d of %u (%s), distance %.4f, runner-up %.4f, %zu palette registers left, palette "
-             "from c%u",
-             n, kHow[size_t(how)], sn.found, sn.candidates,
+             "\n    draw %u program %016llX: %s, as %d of %u (%s), distance %.4f, runner-up %.4f, %zu palette registers "
+             "left, palette from c%u",
+             n, (unsigned long long)sn.program, kHow[size_t(how)], sn.found, sn.candidates,
              sn.found < 0 ? "-" : sn.second ? "another detail's" : sn.by_exact ? "exact" : "other addresses", sn.distance,
              sn.next, sn.stale.count(), sn.reads ? sn.reads->relative : 192u);
     g_pass.watched += b;
@@ -1140,10 +1160,21 @@ Blended BlendDraw(uint32_t n, float t, State& s, Undo& undo) {
     // character's later upload (its eyes, its head) leaves the bones it shares with the body before it looking left
     std::string regs, kept;
     bool jumped = false;
-    static std::vector<uint8_t> keep;
+    static std::vector<uint8_t> keep;  // 1 kept as the frame has it, kFlip taken from the row negated (Flipped)
     if (sn.reads) {
         keep.assign(sn.reads->regs.size(), 0);
+        // the rows turned over: two at least, as a matrix's are, or a row crossing zero is taken for one
+        uint32_t flips = 0;
         for (size_t j = 0; j < sn.reads->regs.size(); j++) {
+            uint8_t r = sn.reads->regs[j];
+            if (sn.stale[r] || !Flipped(old[j].data(), s.vsc.v[r].data())) continue;
+            keep[j] = kFlip;
+            flips++;
+        }
+        if (flips < 2) std::fill(keep.begin(), keep.end(), 0);
+        else if (watch) kept += " " + std::to_string(flips) + " rows (negated)";
+        for (size_t j = 0; j < sn.reads->regs.size(); j++) {
+            if (keep[j] == kFlip) continue;
             uint8_t r = sn.reads->regs[j];
             const float* a = old[j].data();
             const float* c = s.vsc.v[r].data();
@@ -1235,9 +1266,10 @@ Blended BlendDraw(uint32_t n, float t, State& s, Undo& undo) {
     if (sn.reads) {
         for (size_t j = 0; j < sn.reads->regs.size(); j++) {
             uint8_t r = sn.reads->regs[j];
-            if (keep[j] || std::memcmp(&old[j], &s.vsc.v[r], 16) == 0) continue;
+            if (keep[j] == 1 || std::memcmp(&old[j], &s.vsc.v[r], 16) == 0) continue;
             undo.vsc.emplace_back(uint32_t(r), s.vsc.v[r]);
-            for (size_t i = 0; i < 4; i++) s.vsc.v[r][i] = old[j][i] + (s.vsc.v[r][i] - old[j][i]) * t;
+            float sign = keep[j] == kFlip ? -1.0f : 1.0f;
+            for (size_t i = 0; i < 4; i++) s.vsc.v[r][i] = sign * old[j][i] + (s.vsc.v[r][i] - sign * old[j][i]) * t;
         }
         return how;
     }
