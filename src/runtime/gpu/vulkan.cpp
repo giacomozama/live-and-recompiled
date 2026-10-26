@@ -1229,9 +1229,6 @@ private:
     };
     std::vector<FieldImage> fields_;
     VkImageView FieldView(uint32_t shading);
-    // ProgramShading::screen: a copy of the draw's colour target as it stands, the one its stages reading the target
-    // share; null for the dummy without one
-    VkImageView ScreenView();
     // one frame capture: every draw in a text file, each target as the frame leaves it, the textures it read
     FILE* cap_ = nullptr;
     std::filesystem::path cap_dir_;
@@ -2908,7 +2905,7 @@ VkPipeline VulkanBackend::FindPipeline(const PsoKey& k, const DrawShaders& sh) {
 
 void VulkanBackend::StartWarmUp() {
     // a second instance on this PC shares the files: it reads them only
-    record_.Open(app::ExeDir(), kRecordLayout, app::Instance() <= 1);
+    record_.Open(app::ExeDir(), RecordLayout(), app::Instance() <= 1);
     std::vector<shader_record::Entry> entries = record_.TakeEntries();
     shader_record::Programs programs = record_.TakePrograms();
     if (!app::Get().shader_warmup || entries.empty()) return;
@@ -2941,12 +2938,14 @@ void VulkanBackend::WarmShaders(const std::vector<const shader_record::Entry*>& 
         if (e.kind == shader_record::kVertex && e.bytes.size() == sizeof(shader_record::VertexEntry)) {
             shader_record::VertexEntry v;
             std::memcpy(&v, e.bytes.data(), sizeof(v));
+            if (v.shading > g_program_shading.size()) return;
             auto p = programs.find(v.program);
             if (v.program && p == programs.end()) return;
             src = VertexHlsl(v, v.program ? p->second : none);
         } else if (e.kind == shader_record::kPixel && e.bytes.size() == sizeof(PixelKey)) {
             PixelKey pk;
             std::memcpy(&pk, e.bytes.data(), sizeof(pk));
+            if (pk.shading > g_program_shading.size()) return;
             src = PixelHlsl(pk);
             profile = "ps_5_0";
         } else {
@@ -3440,7 +3439,6 @@ void VulkanBackend::UploadConstants(const State& s, const DrawShaders& sh, const
     }
     if (sh.shading) FillShadingConstants(s, sh.shading, c);
     if (sh.shading && g_program_shading[sh.shading - 1].field) b.view[4] = FieldView(sh.shading);
-    if (sh.shading && g_program_shading[sh.shading - 1].screen) b.view[4] = ScreenView();
     if (!last_dc_ok_ || std::memcmp(&c, &last_c_, sizeof(c)) != 0) {
         last_dc_ = Upload(sizeof(DrawConstants));
         std::memcpy(last_dc_.cpu, &c, sizeof(c));
@@ -4660,16 +4658,6 @@ VkImageView VulkanBackend::FieldView(uint32_t shading) {
         Transition(*fi.im, kRead);
     }
     return fi.im->view;
-}
-
-VkImageView VulkanBackend::ScreenView() {
-    Target* t = draw_rt_;
-    if (!t) return VK_NULL_HANDLE;
-    if (!t->fb || t->fb_draw != draw_serial_) {
-        t->fb_draw = draw_serial_;
-        if (!Feedback(*t)) return VK_NULL_HANDLE;
-    }
-    return t->fb->view;
 }
 
 void VulkanBackend::UploadGammaRamp() {

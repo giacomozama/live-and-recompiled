@@ -3,7 +3,6 @@
 #include "common/cutscenes.h"
 #include "common/display.h"
 #include "common/fur.h"
-#include "common/glass.h"
 #include "common/grass.h"
 #include "common/keyboard.h"
 #include "common/lighting.h"
@@ -14,13 +13,12 @@
 
 namespace {
 
-// after the settings load: the fps cap follows frame_rate, the fur, water, glass and grass programs get their shading,
+// after the settings load: the fps cap follows frame_rate, the fur, water and grass programs get their shading,
 // then the lit programs theirs, reflective floors their depth
 void Init() {
     display::Init();
     fur::Init();
     water::Init();
-    glass::Init();
     grass::Init();
     lighting::Init();
     reflection::Init();
@@ -51,13 +49,12 @@ const app::GameInfo app::kGame = {
                 {"fur_shading", &fur::g_shading, nullptr},  // lit, soft edged fur shells (src/conker/common/fur.cpp)
                 {"fur_distant", &fur::g_distant, nullptr},  // distant fur keeps all its shells (hooks.cpp)
                 {"dynamic_water", &water::g_dynamic, nullptr},  // flowing, rippling water (src/conker/common/water.cpp)
-                {"glass_shading", &glass::g_shading, nullptr},  // glowing, glinting bottles (src/conker/common/glass.cpp)
                 {"per_pixel_lighting", &lighting::g_per_pixel, nullptr},  // lit per pixel (src/conker/common/lighting.cpp)
                 {"floor_depth", &reflection::g_floor_depth, nullptr}},  // floors over reflections blur by their own depth (reflection.cpp)
     // the [playerN] tables: each player's keyboard bindings and mouse look (src/conker/game/keyboard.cpp, mouse.cpp)
     .load = keyboard::Load,
     .save = keyboard::Save,               // writes them
-    .init = Init,                         // after the settings load: the fps cap, fur, waves and glass
+    .init = Init,                         // after the settings load: the fps cap, fur and waves
     .loaded = nullptr,                    // image in memory, before its entry point runs
     .window = nullptr,                    // the game window is up
     .message = ui::Message,               // window messages first; true takes one

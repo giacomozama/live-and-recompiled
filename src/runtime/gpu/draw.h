@@ -211,6 +211,9 @@ struct PipelineEntry {
 constexpr uint64_t kRecordRevision = 1;
 constexpr uint64_t kRecordLayout = kRecordRevision << 48 | uint64_t(sizeof(PixelKey)) << 32 |
                                    uint64_t(sizeof(PipelineEntry)) << 16 | sizeof(shader_record::VertexEntry);
+// kRecordLayout mixed with the game's g_program_shading entries: records name an entry by its place in the list, so
+// a list that changed starts shaders.rec over. After the game's init has filled the list
+uint64_t RecordLayout();
 // program: the words v.program names, unused without one
 std::string VertexHlsl(const shader_record::VertexEntry& v, const std::vector<uint32_t>& program);
 

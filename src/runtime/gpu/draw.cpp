@@ -16,6 +16,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdlib>
+#include <cstring>
 #include <unordered_map>
 #include <utility>
 
@@ -168,17 +169,10 @@ uint32_t DrawShading(const State& s, const ShaderChoice& sh) {
     static std::unordered_map<uint64_t, uint64_t> matched;
     auto [it, fresh] = matched.try_emplace(s.vs->hash, 0);
     if (fresh) it->second = MatchProgramShading(s.vs->program);
-    // the first entry the program matches that is on and, with textures, takes the draw's
+    // the first entry the program matches that is on
     for (uint64_t m = it->second; m; m &= m - 1) {
         const ProgramShading& e = g_program_shading[size_t(std::countr_zero(m))];
         if (!e.on || !*e.on) continue;
-        if (const uint32_t* t = e.textures) {
-            TextureDesc d;
-            uint32_t header = s.textures[size_t(e.texture_stage)];
-            if (!header || !Describe(header, d)) continue;
-            while (*t && *t != d.data) t++;
-            if (!*t) continue;
-        }
         return uint32_t(std::countr_zero(m)) + 1;
     }
     return 0;
@@ -315,6 +309,21 @@ void ShadingReplay(bool begin, float t) {
         top.before = -1;
     }
     g_shading_clock = g_shading_clock_before + (g_shading_clock - g_shading_clock_before) * t;
+}
+
+uint64_t RecordLayout() {
+    uint64_t h = 0xCBF29CE484222325ull;  // FNV-1a over each entry's HLSL and settings
+    auto mix = [&h](const void* p, size_t n) {
+        for (size_t i = 0; i < n; i++) h = (h ^ static_cast<const uint8_t*>(p)[i]) * 0x100000001B3ull;
+    };
+    auto text = [&mix](const char* s) { mix(s ? s : "", s ? std::strlen(s) + 1 : 1); };
+    for (const ProgramShading& e : g_program_shading) {
+        for (const char* s : {e.match, e.vs, e.ps, e.tess, e.functions, e.pre, e.also[0], e.also[1], e.also[2]}) text(s);
+        const int ints[] = {e.top, e.between, e.soft, e.fill != nullptr, e.field != nullptr, e.plain};
+        mix(ints, sizeof(ints));
+        mix(&e.depth_alpha, sizeof(e.depth_alpha));
+    }
+    return h == 0xCBF29CE484222325ull ? kRecordLayout : kRecordLayout ^ h;
 }
 
 std::string VertexHlsl(const shader_record::VertexEntry& v, const std::vector<uint32_t>& program) {

@@ -45,8 +45,7 @@ struct PixelKey {
 };
 
 // A game's own shading over vertex programs of the title's, while *on holds: its HLSL goes into the shaders of the
-// draws that run one. A draw takes the first entry whose match its program's translation contains, that is on and,
-// with textures (below), takes the draw. vs runs at the end of the vertex shader, after o is filled from the
+// draws that run one. A draw takes the first entry whose match its program's translation contains, that is on. vs runs at the end of the vertex shader, after o is filled from the
 // program's registers, and sets o.x0 and o.x1; ps runs in a programmable pixel shader after the combiner stages,
 // before the final combiner, and may change r0 (t0..t3, v0, v1, i.x0, i.x1 and xc are there too). xc.x is 1 over the largest x the frame and the one before it set in vertex
 // constant top (hardware order) for the draw's run of the entry's draws, 0 before one did: a draw whose x is 0
@@ -63,11 +62,7 @@ struct PixelKey {
 // PS_TEXTUREMODES mode as STAGE0_MODE..STAGE3_MODE, for a program whose draws set their stages up more than one way. field,
 // when set, hands a grid of floats its shaders read as Texture2D<float> xfield (t4) with SamplerState xfield_smp (s4),
 // linear and clamped; it is uploaded again when its version moves on. functions is HLSL at the top of its shaders,
-// after the constants, for vs, ps and tess to call. screen, when set, hands its draws a copy of their colour target as
-// it stood before each, at the target's own size, as Texture2D xscreen (t4) with SamplerState xscreen_smp (s4), linear
-// and clamped: i.pos.xy over its size is the pixel's own spot, what the draw covers. Not with field. textures, when
-// set, limits it to the draws whose stage texture_stage texture's data lies at one of those guest addresses (the
-// list ends at 0), for a program that draws more than what the shading is for; the others draw as the title made them.
+// after the constants, for vs, ps and tess to call.
 // depth_alpha, when above 0, splits each of its draws that blends and writes depth in two: the colour without the
 // depth write, then a depth pass (no colour, no stencil) where the output's alpha reaches depth_alpha, so what blends
 // in fainter leaves the depth behind it; with top set, only the draws whose x there is above 0 (the shells, not the
@@ -92,9 +87,6 @@ struct ProgramShading {
     const char* tess = "";
     ShadingField (*field)() = nullptr;
     const char* functions = "";
-    bool screen = false;
-    const uint32_t* textures = nullptr;
-    int texture_stage = 0;
     float depth_alpha = 0;
     const char* also[3] = {};
     const char* pre = "";

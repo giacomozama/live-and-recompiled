@@ -79,7 +79,6 @@ std::string Common(uint32_t shading = 0) {
     if (shading) s += "    float4 xc;\n    float4 xs[16];\n";
     s += "};\n";
     if (shading && Shading(shading).field) s += "Texture2D<float> xfield : register(t4);\nSamplerState xfield_smp : register(s4);\n";
-    if (shading && Shading(shading).screen) s += "Texture2D xscreen : register(t4);\nSamplerState xscreen_smp : register(s4);\n";
     if (shading) s += Shading(shading).functions;
     return s;
 }

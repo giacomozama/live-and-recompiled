@@ -25,7 +25,6 @@
 #include "common/cutscenes.h"
 #include "common/display.h"
 #include "common/fur.h"
-#include "common/glass.h"
 #include "common/grass.h"
 #include "common/keyboard.h"
 #include "common/lighting.h"
@@ -587,9 +586,6 @@ void Draw(double fps) {
                 ImGui::Checkbox("Dynamic water", &water::g_dynamic);
                 ImGui::SameLine();
                 ImGui::TextDisabled("ripples and wakes");
-                ImGui::Checkbox("Glass shading", &glass::g_shading);
-                ImGui::SameLine();
-                ImGui::TextDisabled("bottles glow through, glint and reflect");
                 ImGui::Checkbox("Floor depth of field", &reflection::g_floor_depth);
                 ImGui::SameLine();
                 ImGui::TextDisabled("a reflective floor blurs by its own distance, not by what it reflects");

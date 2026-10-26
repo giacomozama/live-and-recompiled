@@ -10,8 +10,8 @@ namespace lighting {
 // on each draw, so the F1 menu applies it live.
 extern bool g_per_pixel;
 
-// hands the renderer the shading; after the settings load, before boot, after fur::Init and glass::Init (their
-// entries go first)
+// hands the renderer the shading; after the settings load, before boot, after fur::Init (its entries go
+// first)
 void Init();
 
 }  // namespace lighting

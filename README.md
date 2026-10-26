@@ -37,7 +37,7 @@ If you notice frame interpolation glitches at high FPS, run the game with `XBE_I
 - **High frame rates** - 60, 120, 180 or 240 FPS instead of the original 30 (experimental).
 - **Any aspect ratio** - Ultrawide and other displays get a wider view, with the HUD stretched to fit.
 - **Better graphics** - Anti-aliasing, additional post-processing effects, improved fur, flowing and rippling water, 
-shiny armour, see-through glass and swaying distant grass.
+shiny armour and swaying distant grass.
 - **Controls** - Xbox, PlayStation and Switch controllers with rumble, or keyboard and mouse with mouse look; all
   rebindable.
 - **Skippable cutscenes** - Skip any in-engine cutscene without having seen them once first.
