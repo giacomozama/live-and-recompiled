@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cctype>
+#include <cmath>
 #include <cstdio>
 #include <cwchar>
 #include <string>
@@ -137,6 +138,20 @@ void PollRebind() {
     }
 }
 
+// a hint under the setting before it: smaller, dimmed and wrapped, lined up with a checkbox's label
+void Hint(const char* text, bool checkbox = false) {
+    const ImGuiStyle& style = ImGui::GetStyle();
+    const float indent = checkbox ? ImGui::GetFrameHeight() + style.ItemInnerSpacing.x : 0.0f;
+    ImGui::PushFont(nullptr, std::max(std::round(style.FontSizeBase * 0.8f), 11.0f));
+    ImGui::SetCursorPosY(ImGui::GetCursorPosY() - style.ItemSpacing.y * 0.5f);  // close to its setting
+    if (indent > 0) ImGui::Indent(indent);
+    ImGui::PushStyleColor(ImGuiCol_Text, style.Colors[ImGuiCol_TextDisabled]);
+    ImGui::TextWrapped("%s", text);
+    ImGui::PopStyleColor();
+    if (indent > 0) ImGui::Unindent(indent);
+    ImGui::PopFont();
+}
+
 // a percent slider with a Reset beside it, greyed out while the value is its default
 void Slider(const char* label, uint32_t* v, uint32_t min, uint32_t max, uint32_t def) {
     ImGui::PushID(label);
@@ -183,7 +198,7 @@ void DeviceCombo(int player, input::Kind kind) {
         ImGui::EndCombo();
     }
     if (kind != Kind::Controller && held == input::kAll && ImGui::IsItemHovered())
-        ImGui::SetTooltip("every %s no other player has", kind == Kind::Keyboard ? "keyboard" : "mouse");
+        ImGui::SetTooltip("Uses every %s not given to another player", kind == Kind::Keyboard ? "keyboard" : "mouse");
     ImGui::PopID();
 }
 
@@ -205,8 +220,7 @@ void DrawDevices(int player) {
 void DrawMouse(int player) {
     ImGui::SeparatorText("Mouse");
     ImGui::Checkbox("Mouse look", &mouse::g_look[player]);
-    ImGui::SameLine();
-    ImGui::TextDisabled("turns the camera; Esc or alt-tab frees the cursor");
+    Hint("Move the mouse to look around. Press Esc or Alt+Tab to get the cursor back.", true);
     Slider("Horizontal %", &mouse::g_sensitivity[player], 10, 500, mouse::kDefaultSensitivity);
     Slider("Vertical %", &mouse::g_sensitivity_y[player], 10, 500, mouse::kDefaultSensitivity);
     ImGui::Checkbox("Invert Y", &mouse::g_invert_y[player]);
@@ -218,8 +232,8 @@ void DrawKeys(int player) {
     PollRebind();
     g_cancel_hovered = false;  // the waiting row sets it again as it draws
     ImGui::SeparatorText("Keyboard");
-    ImGui::TextDisabled("two keys or mouse buttons each: click one, then press the key or button");
-    ImGui::TextDisabled("Cancel stops a rebind, right click unbinds; a key in use swaps");
+    Hint("Each action can have two keys or mouse buttons. Click a slot, then press the key you want.");
+    Hint("Right-click a slot to clear it. Picking a key that is already used swaps the two.");
     // a frame per part of the controller; the frame names the part, so a row only names its action
     struct Row {
         int action;
@@ -245,7 +259,7 @@ void DrawKeys(int player) {
     for (const Group& g : kGroups) {
         ImGui::TableNextColumn();
         ImGui::PushID(g.title);
-        ImGui::BeginChild("##group", ImVec2(0, 0), ImGuiChildFlags_Border | ImGuiChildFlags_AutoResizeY);
+        ImGui::BeginChild("##group", ImVec2(0, 0), ImGuiChildFlags_Borders | ImGuiChildFlags_AutoResizeY);
         ImGui::SeparatorText(g.title);
         // label, the action's keys side by side, then its Reset; the keys line up down the frame
         const float spacing = ImGui::GetStyle().ItemInnerSpacing.x;
@@ -311,7 +325,7 @@ void DrawWarp() {
     ImGui::Text("Level: %d %s", current, current_name ? current_name : "");
     const std::string status = warp::Status();
     if (!status.empty()) ImGui::TextDisabled("%s", status.c_str());
-    ImGui::TextDisabled("A checkpoint or level starts a new game: save after it only to a slot you can lose");
+    Hint("Warning: these start a new game. Don't save afterwards over a save you want to keep.");
 
     ImGui::SeparatorText("Checkpoints");
     ImGui::InputTextWithHint("##filter", "filter by name or level", filter, sizeof filter);
@@ -340,8 +354,7 @@ void DrawWarp() {
     ImGui::BeginDisabled(checkpoint < 0);
     if (ImGui::Button("Start at checkpoint") && warp::GoCheckpoint(checkpoint)) Close();
     ImGui::EndDisabled();
-    ImGui::SameLine();
-    ImGui::TextDisabled("or double-click; earlier checkpoints count as done");
+    Hint("Or double-click one. Earlier checkpoints count as completed.");
 
     // the levels that exist, for the combos
     std::string items;
@@ -364,8 +377,7 @@ void DrawWarp() {
     ImGui::InputInt("Spawn", &spawn);
     spawn = std::clamp(spawn, 0, 255);
     if (ImGui::Button("Load level") && warp::GoLevel(level, spawn)) Close();
-    ImGui::SameLine();
-    ImGui::TextDisabled("a fresh game, nothing done");
+    Hint("Starts with no progress.");
 
     ImGui::SeparatorText("Cutscenes");
     int found_level = -1;
@@ -383,8 +395,7 @@ void DrawWarp() {
     ImGui::InputInt("Cutscene", &cut_index);
     cut_index = std::clamp(cut_index, 0, 255);
     if (ImGui::Button("Play cutscene") && warp::PlayCutscene(cut_level, cut_index)) Close();
-    ImGui::SameLine();
-    ImGui::TextDisabled("loads its level first; one it lacks is refused there");
+    Hint("Loads the level first. Nothing plays if that level doesn't have it.");
 }
 
 }  // namespace
@@ -473,7 +484,7 @@ void Draw(double fps) {
                 ImGui::EndTabItem();
             };
 
-            if (tab("Display")) {
+            if (tab("Graphics")) {
                 ImGui::SeparatorText("Display");
                 int mode = int(pending_mode);
                 if (ImGui::Combo("Mode", &mode, "Fullscreen\0Borderless\0Windowed\0"))
@@ -498,8 +509,6 @@ void Draw(double fps) {
                     s.height = pending_h;
                     app::ApplyDisplay();
                 }
-
-                ImGui::SeparatorText("Aspect");
                 // the camera follows the setting live; only the TV type the console reports waits for a restart
                 const char* aspects[] = {"auto", "4:3", "16:10", "16:9", "21:9", "32:9"};
                 constexpr int kAspects = 6;
@@ -511,18 +520,8 @@ void Draw(double fps) {
                 if (aspect < 0) items += s.aspect + '\0', aspect = kAspects;  // a custom W:H from settings.toml
                 items += '\0';
                 if (ImGui::Combo("Aspect", &aspect, items.c_str()) && aspect < kAspects) s.aspect = aspects[aspect];
-                ImGui::SameLine();
-                ImGui::TextDisabled("(%.2f:1)", app::FrameAspect());
 
-                ImGui::SeparatorText("FPS");
-                ImGui::Checkbox("Overlay", &g_fps_overlay);
-                ImGui::SameLine();
-                ImGui::Checkbox("Window title", &g_fps_title);
-                end_tab();
-            }
-
-            if (tab("Graphics")) {
-                ImGui::SeparatorText("Rendering");
+                ImGui::SeparatorText("Quality");
                 Slider("Render %", &s.render_percent, 25, 400, app::Settings{}.render_percent);
                 ImGui::Checkbox("V-Sync", &s.vsync);
 
@@ -532,12 +531,7 @@ void Draw(double fps) {
                     if (kRates[i] == display::g_frame_rate) rate = i;
                 if (ImGui::Combo("Frame rate", &rate, "30 (original)\0 60\0 120\0 180\0 240\0"))
                     display::SetFrameRate(kRates[rate]);
-                if (display::g_frame_rate > 60) {
-                    ImGui::SameLine();
-                    ImGui::TextDisabled("(the game at 60, the frames between drawn again)");
-                }
 
-                ImGui::SeparatorText("Quality");
                 constexpr uint32_t kAniso[] = {0, 2, 4, 8, 16};
                 int aniso = 0;
                 for (int i = 0; i < 5; i++)
@@ -551,8 +545,7 @@ void Draw(double fps) {
                     if (kMsaa[i] == s.msaa) msaa = i;
                 if (ImGui::Combo("MSAA", &msaa, "Off\0 2x\0 4x\0 8x\0")) s.msaa = kMsaa[msaa];
 
-                ImGui::SeparatorText("Effects");
-                ImGui::TextDisabled("over the 3D picture, not the menus and text drawn over it");
+                ImGui::SeparatorText("Post-processing");
                 ImGui::Checkbox("SMAA", &s.smaa);
                 Slider("Film grain %", &s.film_grain, 0, 100, app::Settings{}.film_grain);
                 Slider("Chromatic aberration %", &s.chromatic_aberration, 0, 100, app::Settings{}.chromatic_aberration);
@@ -560,54 +553,50 @@ void Draw(double fps) {
                 if (s.ambient_occlusion)
                     Slider("Ambient occlusion reach", &s.ambient_occlusion_radius, 5, 200,
                            app::Settings{}.ambient_occlusion_radius);
-
-                ImGui::Checkbox("Wind on distant grass", &grass::g_wind);
-                ImGui::SameLine();
-                ImGui::TextDisabled("the console keeps it still");
-                int distant = int(std::min<uint32_t>(grass::g_distant, grass::kNear));
-                if (ImGui::Combo("Distant grass", &distant, "Console\0Full, fading\0Full, no fade\0"))
-                    grass::g_distant = uint32_t(distant);
-                ImGui::SameLine();
-                ImGui::TextDisabled(distant == grass::kNear      ? "every patch as a near one, however far"
-                                    : distant == grass::kFullFading ? "all the blades as it fades out"
-                                                                    : "thins and fades out past a short range");
-                ImGui::Checkbox("Gentle grass wake", &grass::g_wake);
-                ImGui::SameLine();
-                ImGui::TextDisabled("the console throws blades across the screen past a fast rider");
-                ImGui::Checkbox("Per-pixel lighting", &lighting::g_per_pixel);
-                ImGui::SameLine();
-                ImGui::TextDisabled("the console lights each vertex: shadows crawl along long triangles");
-                ImGui::Checkbox("Fur shading", &fur::g_shading);
-                ImGui::SameLine();
-                ImGui::TextDisabled("soft strand edges, shadowed roots, sheen");
-                ImGui::Checkbox("Full distant fur", &fur::g_distant);
-                ImGui::SameLine();
-                ImGui::TextDisabled("every shell however far; the console drops them with distance");
-                ImGui::Checkbox("Dynamic water", &water::g_dynamic);
-                ImGui::SameLine();
-                ImGui::TextDisabled("ripples and wakes");
-                ImGui::Checkbox("Floor depth of field", &reflection::g_floor_depth);
-                ImGui::SameLine();
-                ImGui::TextDisabled("a reflective floor blurs by its own distance, not by what it reflects");
                 end_tab();
             }
 
-            if (tab("Gameplay")) {
+            if (tab("Enhancements")) {
+                ImGui::SeparatorText("Lighting");
+                ImGui::Checkbox("Per-pixel lighting", &lighting::g_per_pixel);
+                Hint("Smoother light and shadows on characters and objects.", true);
+
+                ImGui::SeparatorText("Fur");
+                ImGui::Checkbox("Fur shading", &fur::g_shading);
+                Hint("Softer, more natural-looking fur.", true);
+                ImGui::Checkbox("Full distant fur", &fur::g_distant);
+                Hint("Fur stays thick far away instead of thinning out.", true);
+
+                ImGui::SeparatorText("Grass");
+                ImGui::Checkbox("Wind on distant grass", &grass::g_wind);
+                Hint("Faraway grass sways in the wind too.", true);
+                int distant = int(std::min<uint32_t>(grass::g_distant, grass::kNear));
+                if (ImGui::Combo("Distant grass", &distant, "Console\0Full, fading\0Full, no fade\0"))
+                    grass::g_distant = uint32_t(distant);
+                Hint(distant == grass::kNear      ? "All grass is drawn, however far away."
+                                    : distant == grass::kFullFading ? "All grass is drawn, fading out in the distance."
+                                                                    : "Original: faraway grass thins out and fades.");
+                ImGui::Checkbox("Gentle grass wake", &grass::g_wake);
+                Hint("Grass bends when you speed through it, instead of flying across the screen.", true);
+
+                ImGui::SeparatorText("Water and reflections");
+                ImGui::Checkbox("Dynamic water", &water::g_dynamic);
+                Hint("Water ripples and makes waves as things move through it.", true);
+                ImGui::Checkbox("Floor depth of field", &reflection::g_floor_depth);
+                Hint("Fixes the blur on shiny, reflective floors.", true);
+
+                ImGui::SeparatorText("Gameplay");
                 ImGui::Checkbox("Skippable cutscenes", &cutscenes::g_skippable);
-                ImGui::SameLine();
-                ImGui::TextDisabled("LT skips any cutscene, seen or not");
+                Hint("Press LT to skip any cutscene, even ones you haven't seen.", true);
                 ImGui::Checkbox("Lasting idea bulb", &bulb::g_lasting);
-                ImGui::SameLine();
-                ImGui::TextDisabled("stays over Conker while he stands on a B pad, not two seconds");
+                Hint("The lightbulb over Conker stays as long as he stands on a B pad, not just 2 seconds.", true);
                 ImGui::Checkbox("Rope physics", &rope::g_physics);
-                ImGui::SameLine();
-                ImGui::TextDisabled("ropes swing under Conker's weight instead of writhing");
+                Hint("Ropes swing realistically when Conker hangs on them.", true);
                 int split = display::g_side_by_side;
                 if (ImGui::Combo("Two player split", &split, "Top and bottom\0Side by side (experimental)\0"))
                     display::g_side_by_side = split != 0;
-                ImGui::SameLine();
-                ImGui::TextDisabled(split ? "from the next match; some HUD pieces stay where top and bottom puts them"
-                                          : "from the next match");
+                Hint(split ? "Starts from the next match. Some on-screen info may be in the wrong place."
+                                          : "Starts from the next match.");
                 end_tab();
             }
 
@@ -630,6 +619,10 @@ void Draw(double fps) {
             }
 
             if (tab("Debug")) {
+                ImGui::SeparatorText("FPS");
+                ImGui::Checkbox("Overlay", &g_fps_overlay);
+                ImGui::SameLine();
+                ImGui::Checkbox("Window title", &g_fps_title);
                 DrawWarp();
                 end_tab();
             }
@@ -639,7 +632,7 @@ void Draw(double fps) {
 
         ImGui::Separator();
         ImGui::AlignTextToFramePadding();
-        ImGui::TextDisabled("Esc toggles this menu; changes save as they are made");
+        ImGui::TextDisabled("Press Esc to open or close this menu. Changes are saved automatically.");
         const char* quit = "Quit game";
         ImGui::SameLine(ImGui::GetContentRegionMax().x - ImGui::CalcTextSize(quit).x -
                         ImGui::GetStyle().FramePadding.x * 2.0f);

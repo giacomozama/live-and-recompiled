@@ -11,7 +11,7 @@ set(ZYDIS_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(ZYDIS_BUILD_DOXYGEN OFF CACHE BOOL "" FORCE)
 FetchContent_Declare(zydis GIT_REPOSITORY https://github.com/zyantific/zydis.git GIT_TAG v4.1.1 GIT_SHALLOW TRUE)
 FetchContent_Declare(tomlplusplus GIT_REPOSITORY https://github.com/marzer/tomlplusplus.git GIT_TAG v3.4.0 GIT_SHALLOW TRUE)
-FetchContent_Declare(imgui GIT_REPOSITORY https://github.com/ocornut/imgui.git GIT_TAG v1.91.9b GIT_SHALLOW TRUE)
+FetchContent_Declare(imgui GIT_REPOSITORY https://github.com/ocornut/imgui.git GIT_TAG v1.93.0 GIT_SHALLOW TRUE)
 # Roboto Regular for the overlay, from the static fonts' last release (ImGui ships only Medium)
 FetchContent_Declare(roboto URL https://github.com/googlefonts/roboto-2/releases/download/v2.138/roboto-unhinted.zip
     URL_HASH SHA256=70f64c718510a601fbcf752aafe644314dacaeb85474dc689c89787c4a72a728 DOWNLOAD_EXTRACT_TIMESTAMP TRUE)

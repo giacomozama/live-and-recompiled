@@ -1,4 +1,4 @@
-// the overlay's font: Roboto Regular, rasterized again at a size that follows the window's height
+// the overlay's font: Roboto Regular, at a size that follows the window's height
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
@@ -23,21 +23,22 @@ float g_px = 0.0f;
 
 }  // namespace
 
-void UiFont() { g_base = ImGui::GetStyle(); }
-
-bool UiFontResize() {
-    ImGuiIO& io = ImGui::GetIO();
-    const float px = std::max(std::round(io.DisplaySize.y / kLinesPerHeight), kMinPx);
-    if (px == g_px) return false;
-    g_px = px;
+// ImGui rasterizes the font's glyphs as each size first needs them
+void UiFont() {
+    g_base = ImGui::GetStyle();
     ImFontConfig cfg;
     cfg.FontDataOwnedByAtlas = false;  // the bytes are the executable's
-    io.Fonts->Clear();
-    io.Fonts->AddFontFromMemoryTTF(const_cast<unsigned char*>(kUiFont), int(kUiFontSize), px, &cfg);
+    ImGui::GetIO().Fonts->AddFontFromMemoryTTF(const_cast<unsigned char*>(kUiFont), int(kUiFontSize), 0.0f, &cfg);
+}
+
+void UiFontResize() {
+    const float px = std::max(std::round(ImGui::GetIO().DisplaySize.y / kLinesPerHeight), kMinPx);
+    if (px == g_px) return;
+    g_px = px;
     ImGuiStyle& style = ImGui::GetStyle();
     style = g_base;
     style.ScaleAllSizes(px / kDefaultPx);
-    return true;
+    style.FontSizeBase = px;
 }
 
 }  // namespace app

@@ -1868,6 +1868,7 @@ bool VulkanBackend::InitUi() {
     pi.pPoolSizes = &ps;
     if (vkCreateDescriptorPool(dev_, &pi, nullptr, &ui_pool_) != VK_SUCCESS) return false;
     ImGui_ImplVulkan_InitInfo ii{};
+    ii.ApiVersion = VK_API_VERSION_1_3;
     ii.Instance = inst_;
     ii.PhysicalDevice = phys_;
     ii.Device = dev_;
@@ -1877,11 +1878,11 @@ bool VulkanBackend::InitUi() {
     ii.MinImageCount = 2;
     // its vertex buffers go round per draw: one per picture, kMaxGen a frame with frame generation, kFrames in flight
     ii.ImageCount = std::max<uint32_t>(uint32_t(bb_.size()), kFrames * kMaxGen + 1);
-    ii.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
+    ii.PipelineInfoMain.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
     ii.UseDynamicRendering = true;
-    ii.PipelineRenderingCreateInfo = {VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
-    ii.PipelineRenderingCreateInfo.colorAttachmentCount = 1;
-    ii.PipelineRenderingCreateInfo.pColorAttachmentFormats = &swap_fmt_;
+    ii.PipelineInfoMain.PipelineRenderingCreateInfo = {VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
+    ii.PipelineInfoMain.PipelineRenderingCreateInfo.colorAttachmentCount = 1;
+    ii.PipelineInfoMain.PipelineRenderingCreateInfo.pColorAttachmentFormats = &swap_fmt_;
     ui_ = ImGui_ImplVulkan_Init(&ii);
     if (!ui_) LOGE("vulkan: the overlay could not start");
     return ui_;
@@ -4718,8 +4719,9 @@ void VulkanBackend::BuildUi() {
 #else
     app::UiNewFrame();
 #endif
-    // the window's size is known now; a new font waits for the queue to go idle, on a resize alone
-    if (app::UiFontResize()) ImGui_ImplVulkan_CreateFontsTexture();
+    // the window's size is known now. Glyphs a size needs for the first time go up from the first DrawUi, which waits
+    // for the queue to go idle
+    app::UiFontResize();
     ImGui_ImplVulkan_NewFrame();
     ImGui::NewFrame();
     if (app::kGame.ui) app::kGame.ui(fps_);
