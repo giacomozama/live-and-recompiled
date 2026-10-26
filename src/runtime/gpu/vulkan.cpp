@@ -42,6 +42,7 @@
 #include <memory>
 #include <mutex>
 #include <thread>
+#include <type_traits>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -53,6 +54,8 @@
 #ifdef _WIN32
 #include <backends/imgui_impl_win32.h>
 #endif
+
+#include <smmintrin.h>
 
 #include "app/app.h"
 #include "core/diag.h"
@@ -71,6 +74,28 @@
 namespace gpu {
 
 namespace {
+
+// a and b the same, byte for byte, as memcmp says; inline, 16 bytes at a time. Sizes past what the compiler inlines
+// (a sampler's description, a draw's bindings) were a libc call each, some 17 a draw: 4% of a cutscene's render thread
+template <typename T>
+bool SameBytes(const T& a, const T& b) {
+    static_assert(std::is_trivially_copyable_v<T>);
+    const uint8_t* x = reinterpret_cast<const uint8_t*>(&a);
+    const uint8_t* y = reinterpret_cast<const uint8_t*>(&b);
+    __m128i diff = _mm_setzero_si128();
+    size_t i = 0;
+    for (; i + 16 <= sizeof(T); i += 16)
+        diff = _mm_or_si128(diff, _mm_xor_si128(_mm_loadu_si128(reinterpret_cast<const __m128i*>(x + i)),
+                                                _mm_loadu_si128(reinterpret_cast<const __m128i*>(y + i))));
+    if (!_mm_testz_si128(diff, diff)) return false;
+    for (; i + 4 <= sizeof(T); i += 4) {
+        uint32_t u, v;
+        std::memcpy(&u, x + i, 4);
+        std::memcpy(&v, y + i, 4);
+        if (u != v) return false;
+    }
+    return i == sizeof(T) || std::memcmp(x + i, y + i, sizeof(T) - i) == 0;
+}
 
 constexpr int kFrames = 3;
 constexpr uint32_t kMaxGen = 4;  // app::Settings::frame_generation's most: pictures per frame
@@ -3120,7 +3145,7 @@ VkSampler VulkanBackend::MakeSampler(const SamplerDesc& sd) {
 
 VkSampler VulkanBackend::EnsureSampler(const SamplerDesc& sd) {
     for (const LastSampler& l : last_smp_)
-        if (l.smp && std::memcmp(&l.sd, &sd, sizeof(sd)) == 0) return l.smp;
+        if (l.smp && SameBytes(l.sd, sd)) return l.smp;
     VkSampler smp = FindSampler(sd);
     last_smp_[last_smp_next_++ % last_smp_.size()] = {sd, smp};
     return smp;
@@ -3338,7 +3363,7 @@ void VulkanBackend::SetTextureViewsAndSamplers(const State& s, const Assembled& 
         b.view[i] = v;
         b.smp[i] = EnsureSampler(StageSampler(s, i, stages, clamp, aniso));
     }
-    if (drawn_.bound && std::memcmp(&b, &drawn_.b, sizeof(b)) == 0) return;
+    if (drawn_.bound && SameBytes(b, drawn_.b)) return;
     FlushRun();
     PushRaw(b);
     drawn_.b = b;
@@ -3574,7 +3599,7 @@ bool VulkanBackend::ReuseRun(const State& s) {
     Bindings b = kept_.b;
     std::copy(r.view, r.view + kBindViews, b.view);
     std::copy(r.smp, r.smp + kBindViews, b.smp);
-    if (!drawn_.bound || std::memcmp(&b, &drawn_.b, sizeof(b)) != 0) {
+    if (!drawn_.bound || !SameBytes(b, drawn_.b)) {
         PushRaw(b);
         drawn_.b = b;
         drawn_.bound = true;
