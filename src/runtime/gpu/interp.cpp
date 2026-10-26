@@ -505,16 +505,21 @@ bool Tracing() {
 // its draws pick before them, all at once: the registers that changed since the draw before, along with the last of
 // the palette to change. Those that changed before then hold another character's bones, which move unlike this one's
 // (or by a different camera) and say nothing of whether the draw was found right or moved too far. Every draw of the
-// frame, followed or not, sees the changes
+// frame, followed or not, sees the changes: in the blocks written since the draw before (s.vsc.dirty, the render
+// thread's), not all 192 each draw, which was most of the matching's time with a battle's 16000 draws
 std::bitset<192> Stale(const State& s, const Reads* reads) {
     static std::array<std::array<float, 4>, 192> last{};
     static std::array<uint32_t, 192> changed{};
     static uint32_t draw = 0;
     draw++;
-    for (size_t r = 0; r < 192; r++) {
-        if (std::memcmp(&last[r], &s.vsc.v[r], 16) == 0) continue;
-        last[r] = s.vsc.v[r];
-        changed[r] = draw;
+    using Vsc = decltype(s.vsc);
+    for (uint64_t dirty = std::exchange(s.vsc.dirty, 0) & Vsc::kAll; dirty; dirty &= dirty - 1) {
+        size_t lo = size_t(__builtin_ctzll(dirty)) * Vsc::kBlock;
+        for (size_t r = lo; r < std::min(lo + Vsc::kBlock, Vsc::size()); r++) {
+            if (std::memcmp(&last[r], &s.vsc.v[r], 16) == 0) continue;
+            last[r] = s.vsc.v[r];
+            changed[r] = draw;
+        }
     }
     std::bitset<192> stale;
     if (!reads || reads->relative >= 192) return stale;

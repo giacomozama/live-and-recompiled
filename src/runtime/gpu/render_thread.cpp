@@ -89,6 +89,13 @@ std::vector<Range> StateRanges() {
     };
 }
 
+// where State's vertex program constants are, in bytes
+const size_t kVscAt = [] {
+    static const State s;
+    return At(s, s.vsc.data());
+}();
+constexpr size_t kVscBytes = sizeof(State{}.vsc.v), kVscBlockBytes = decltype(State::vsc)::kBlock * sizeof(State{}.vsc.v[0]);
+
 // equal bytes, 16 at a time: most of the state is compared on every draw
 bool Same(const uint8_t* a, const uint8_t* b, size_t n) {
     size_t i = 0;
@@ -555,6 +562,13 @@ private:
             uint32_t head[2];
             std::memcpy(head, p, 8);
             if (changed && !*changed) *changed = ChangesState(s + head[0], p + 8, head[0], head[1]);
+            // the constants' blocks written, for frame generation (interp.cpp's Stale): the title's dirty bits
+            // don't come over, the render thread's are its own
+            if (head[0] < kVscAt + kVscBytes && head[0] + head[1] > kVscAt) {
+                size_t lo = std::max<size_t>(head[0], kVscAt) - kVscAt;
+                size_t hi = std::min<size_t>(head[0] + head[1], kVscAt + kVscBytes) - kVscAt;
+                for (size_t b = lo / kVscBlockBytes; b * kVscBlockBytes < hi; b++) st.vsc.dirty |= 1ull << b;
+            }
             std::memcpy(s + head[0], p + 8, head[1]);
             p += 8 + head[1];
         }
