@@ -799,6 +799,7 @@ public:
     void Changed(bool any) override { same_state_ = !any; }
     void Copy(const Surface& src, const Surface& dst, uint32_t count, uint32_t src_rects, uint32_t dst_points) override;
     void Present(const Surface& front) override;
+    void Redisplay() override;
     bool Due(std::chrono::steady_clock::time_point& at) override {
         if (held_.empty()) return false;
         at = held_.front().at;
@@ -1327,6 +1328,7 @@ private:
     // bit for each taken this frame; whether the draws are the frame's again (Replaying); the pictures past a frame's
     // first, held until their time (Due, Show); the time between frames, smoothed, which the pictures share out
     std::vector<ImageRef> gen_pics_;
+    ImageRef shown_;  // the picture Present showed last, for Redisplay
     uint32_t gen_taken_ = 0;
     bool replay_ = false;
     struct Run {
@@ -4924,12 +4926,14 @@ void VulkanBackend::Present(const Surface& front) {
     std::vector<VkImageView> pictures;
     std::vector<Image*> sources;
     std::vector<std::string> notes;
+    ImageRef last;
     if (!gen_pics_.empty() && (gen_taken_ >> (gen_pics_.size() - 1) & 1)) {
         for (size_t i = 0; i < gen_pics_.size(); i++) {
             if (!(gen_taken_ >> i & 1)) continue;
             pictures.push_back(gen_pics_[i]->view);
             sources.push_back(gen_pics_[i].get());
             notes.push_back(i + 1 < gen_pics_.size() ? interp::Note(uint32_t(i)) : "the frame's own");
+            last = gen_pics_[i];
         }
     }
     gen_taken_ = 0;
@@ -4941,7 +4945,11 @@ void VulkanBackend::Present(const Surface& front) {
         pictures.push_back(t->res->view);
         sources.push_back(t->res.get());
         notes.push_back("the frame's own, alone");
+        last = t->res;
     }
+    // kept past a remade target or frame generation's pictures going, for Redisplay; the one before goes with this
+    // frame's garbage, once the GPU is done with it
+    if (shown_ != last) Retire(std::exchange(shown_, std::move(last)));
     post_rt_ = 0;
     post_done_ = false;
     occlusion_done_ = view_ok_ = false;
@@ -4989,6 +4997,29 @@ void VulkanBackend::Present(const Surface& front) {
     ResetFrame();
     CountFps(std::max(shown, 1u));
     if (diag::Perf()) LogPerf();
+    ApplySettings();
+}
+
+// the title held: its last picture again under the overlay, a frame with no draws of its own
+void VulkanBackend::Redisplay() {
+    ShowHeld();
+    ResizeSwap();
+    Submit(false);
+    BuildUi();
+    Frame& f = CurrentFrame();
+    uint32_t bi = 0;
+    uint32_t shown = 0;
+    if (AcquireImage(bi, f.acquired[0])) {
+        BeginCommands(f.present[0]);
+        if (shown_) Transition(*shown_, kRead);  // a remade target copied its picture out of it
+        DrawFrame(shown_ ? shown_->view : VK_NULL_HANDLE, bi);
+        Submit(false, f.acquired[0], present_sem_[bi]);
+        QueuePresent(bi);
+        shown = 1;
+    }
+    frame_++;
+    ResetFrame();
+    CountFps(shown);
     ApplySettings();
 }
 

@@ -440,6 +440,7 @@ void Render(float* out, uint32_t frames) {
     static std::vector<float> bus, ab;
     static std::vector<Voice*> order;
     std::memset(out, 0, frames * 2 * sizeof(float));
+    if (Held()) return;  // a host menu is up: nothing plays on, nothing is used up
     bus.assign(size_t(kBins) * frames, 0.0f);
     ab.resize(frames * kChannels);
     std::lock_guard<std::recursive_mutex> lock(g_lock);
@@ -568,10 +569,8 @@ void Start() {
     // with the scratch register left at 0 its clock never moved and timed events never ended
     std::thread([] {
         auto* counter = static_cast<volatile uint32_t*>(HostPtr(0xFE80200C));
-        auto start = std::chrono::steady_clock::now();
         for (;;) {
-            auto us = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - start).count();
-            *counter = uint32_t(uint64_t(us) * audio::kRate / 1000000);
+            *counter = uint32_t(uint64_t(ClockNs() / 1000) * audio::kRate / 1000000);
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
     }).detach();

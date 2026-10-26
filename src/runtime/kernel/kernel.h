@@ -194,6 +194,13 @@ bool RunApcs(Thread& t);
 void QueueApc(Thread& t, uint32_t routine, uint32_t a1, uint32_t a2, uint32_t a3);
 std::vector<ThreadRef> Threads();
 
+// the guest's clocks (tick count, interrupt time, performance counter, time stamp counter, the APU's sample counter)
+// in nanoseconds from the first read. Hold stops them, the title thread held at its next Swap (d3d8.cpp) and the
+// audio silent, as a host menu is up; let go, they run on from where they stopped. Any thread
+int64_t ClockNs();
+void Hold(bool on);
+bool Held();
+
 // files
 void MountDefaults(const std::string& game_dir, const std::string& data_dir);
 bool CreateSymbolicLink(const std::string& link, const std::string& target);

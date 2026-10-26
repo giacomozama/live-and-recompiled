@@ -288,9 +288,7 @@ void x86_priv(X86Context& ctx, uint32_t va, const char* what) {
 
 // the guest measured time against a 733.33 MHz time stamp counter
 uint64_t x86_rdtsc() {
-    using namespace std::chrono;
-    static const auto start = steady_clock::now();
-    auto ns = duration_cast<nanoseconds>(steady_clock::now() - start).count();
+    int64_t ns = kernel::ClockNs();
     uint64_t sec = uint64_t(ns) / 1000000000ull, rem = uint64_t(ns) % 1000000000ull;
     return sec * 733333333ull + rem * 733333333ull / 1000000000ull;
 }

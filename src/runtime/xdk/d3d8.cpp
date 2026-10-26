@@ -906,6 +906,13 @@ HLE_STDCALL(D3DDevice_Swap, 1) {
     if (!interval) interval = g_interval;
     uint32_t vblanks = interval & 0x80000000u ? 1 : interval & 8 ? 4 : interval & 4 ? 3 : interval & 2 ? 2 : 1;
     app::Pace(vblanks);
+    // a host menu is up (kernel::Hold): the title waits here, its clocks stopped, its last picture shown again under
+    // the menu
+    while (kernel::Held() && g_backend) {
+        g_backend->Redisplay();
+        app::Pace(1);
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));  // no cap and no vsync: not a core spun on a menu
+    }
     // like the XDK, the surfaces stay put and their memory rotates: titles keep back buffer pointers and copy its data
     uint32_t last = g_buffers[g_buffer_count - 1], data = R32(last + 4), lk = R32(last + 8);
     for (uint32_t i = g_buffer_count - 1; i > 0; i--) {

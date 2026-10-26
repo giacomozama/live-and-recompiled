@@ -67,13 +67,42 @@ void PutSystemTime(uint32_t va, uint64_t t) {
     W32(va + 4, uint32_t(t >> 32));
 }
 
-uint64_t InterruptTime() {
+uint64_t InterruptTime() { return uint64_t(ClockNs() / 100); }
+
+// ClockNs: the host's time less the time held, or the time it stopped at (-1 while running)
+std::atomic<int64_t> g_clock_offset{0}, g_clock_frozen{-1};
+
+int64_t HostNs() {
     using namespace std::chrono;
     static const auto start = steady_clock::now();
-    return uint64_t(duration_cast<nanoseconds>(steady_clock::now() - start).count() / 100);
+    return duration_cast<nanoseconds>(steady_clock::now() - start).count();
 }
 
 }  // namespace
+
+int64_t ClockNs() {
+    int64_t f = g_clock_frozen.load();
+    if (f >= 0) return f;
+    int64_t v = HostNs() - g_clock_offset.load();
+    // held since the first look: never past where it stopped
+    f = g_clock_frozen.load();
+    return f >= 0 ? std::min(v, f) : v;
+}
+
+void Hold(bool on) {
+    static std::mutex m;
+    std::lock_guard lock(m);
+    int64_t f = g_clock_frozen.load();
+    if (on && f < 0) {
+        // a little ahead, so a reader that looked just before is not past it
+        g_clock_frozen.store(HostNs() - g_clock_offset.load() + 1000);
+    } else if (!on && f >= 0) {
+        g_clock_offset.store(HostNs() - f);
+        g_clock_frozen.store(-1);
+    }
+}
+
+bool Held() { return g_clock_frozen.load() >= 0; }
 
 uint32_t g_tick_count_va = 0;
 uint32_t g_launch_data_page_va = 0;
@@ -104,10 +133,8 @@ void InitKernelData() {
     W32(DataAddress(157), 10000);  // 1 ms in 100 ns units
     // the start of the clock
     std::thread([] {
-        auto start = std::chrono::steady_clock::now();
         for (;;) {
-            auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count();
-            W32(g_tick_count_va, uint32_t(ms));
+            W32(g_tick_count_va, uint32_t(ClockNs() / 1000000));
             PutSystemTime(DataAddress(120), InterruptTime());
             PutSystemTime(DataAddress(154), uint64_t(Now100ns()));
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
@@ -239,9 +266,7 @@ KERNEL_EXPORT(228, NtSetSystemTime, 2) {
 constexpr uint64_t kPerfFrequency = 3375000;
 
 KERNEL_EXPORT(126, KeQueryPerformanceCounter, 0) {
-    using namespace std::chrono;
-    static const auto start = steady_clock::now();
-    uint64_t ns = uint64_t(duration_cast<nanoseconds>(steady_clock::now() - start).count());
+    uint64_t ns = uint64_t(ClockNs());
     uint64_t v = ns / 1000000000ull * kPerfFrequency + ns % 1000000000ull * kPerfFrequency / 1000000000ull;
     ctx.edx = uint32_t(v >> 32);
     return uint32_t(v);

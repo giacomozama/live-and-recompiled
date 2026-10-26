@@ -28,6 +28,9 @@ public:
     virtual void Copy(const Surface& src, const Surface& dst, uint32_t count, uint32_t src_rects_va,
                       uint32_t dst_points_va) = 0;
     virtual void Present(const Surface& front) = 0;
+    // the last picture Present showed, shown again with the overlay over it: the title is held (kernel::Hold) and
+    // draws nothing, the menu still has to. A backend without a window does nothing
+    virtual void Redisplay() {}
     // frame generation: Present shows the first of a frame's pictures and holds the rest for later; Due says when the
     // next held one is to be shown (false when none is held), Show shows those due by now. Present itself shows any
     // still held from the frame before first

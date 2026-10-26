@@ -35,6 +35,7 @@
 #include "common/warp.h"
 #include "common/water.h"
 #include "core/input.h"
+#include "kernel/kernel.h"
 
 namespace ui {
 
@@ -50,6 +51,19 @@ constexpr uint32_t kFpsTitle = app::kMsgApp + 0x40;
 constexpr int kMouse1 = 0x01, kInsert = 0x2D, kEscape = 0x1B;
 
 std::atomic<bool> g_open{false};
+
+// the menu shows or goes; the game is held while it is up (kernel::Hold)
+void SetOpen(bool open) {
+    g_open.store(open);
+    kernel::Hold(open);
+}
+
+// the menu shut from the render thread (its X): the window thread takes the cursor back as Message does
+void Close() {
+    SetOpen(false);
+    app::Post(mouse::kRefresh);
+}
+
 std::atomic<double> g_fps{0.0};
 
 // the display settings while the menu is editing them; copied back on Apply
@@ -643,7 +657,7 @@ void Draw(double fps) {
         }
     }
     ImGui::End();
-    if (!keep_open) g_open.store(false);  // the window's X
+    if (!keep_open) Close();  // the window's X
 }
 
 bool Message(void* hwnd, uint32_t msg, uintptr_t wp, intptr_t lp, intptr_t* result) {
@@ -652,7 +666,7 @@ bool Message(void* hwnd, uint32_t msg, uintptr_t wp, intptr_t lp, intptr_t* resu
             // not on auto repeat; the menu window and the game both take the key, the menu only when open
             // Escape cancels a rebind waiting for its key instead (PollRebind)
             if ((wp == kEscape || wp == kInsert) && !(lp & (1 << 30)) && !(wp == kEscape && g_rebinding.load())) {
-                g_open.store(!g_open.load());
+                SetOpen(!g_open.load());
                 mouse::Refresh(hwnd);  // the cursor is free while the menu is up
                 if (result) *result = 0;
                 return true;

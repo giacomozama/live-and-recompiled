@@ -22,6 +22,7 @@
 #include <cstring>
 #include <deque>
 #include <mutex>
+#include <string>
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
@@ -43,6 +44,9 @@ namespace {
 
 // commands handed over at once, so the render thread keeps close behind and a wait is short
 constexpr uint32_t kBatchCommands = 64;
+// batches of a frame kept for Redisplay without frame generation; a frame past this (a long load with no Present) is
+// not kept
+constexpr size_t kKeptBatches = 4096;
 
 // resource headers the render thread reads: common, data, lock, format, size
 constexpr uint32_t kHeaderBytes = 20, kHeaderSlot = 32;
@@ -50,7 +54,7 @@ constexpr uint32_t kHeaderRing = 1u << 20;  // guest memory for header copies; a
 
 enum class WaitFor : uint8_t { ReadBack, Resource, Fence, Flush, Copy, Frame, Count };
 
-enum class Op : uint8_t { State, Draw, Clear, Copy, Present, Sync, RecordLate, Flush, Gamma, ClearReport, GetReport, Note };
+enum class Op : uint8_t { State, Draw, Clear, Copy, Present, Redisplay, Sync, RecordLate, Flush, Gamma, ClearReport, GetReport, Note };
 
 struct Cmd {
     Op op;
@@ -241,6 +245,11 @@ public:
         // the title records one frame while the one before it draws
         Wait(last_present_, WaitFor::Frame, nullptr);
         last_present_ = id;
+    }
+
+    void Redisplay() override {
+        cur_->cmds.push_back(Cmd{Op::Redisplay});
+        Wait(Submit(), WaitFor::Frame, nullptr);
     }
 
     void Sync(uint32_t data, uint32_t) override { ReadBack(data, false); }
@@ -509,17 +518,29 @@ private:
             for (const Cmd& c : b->cmds) Execute(*b, c);
             ShowDue();
             uint64_t id = b->id;
-            // a frame's batches are kept to its Present while frame generation draws it again
+            // a frame's batches are kept to its Present, for frame generation to draw it again, and on to the next
+            // frame's for Redisplay; the frame before goes
             std::vector<Batch*> freed;
             if (frame_over_) {
-                freed.swap(frame_);
-                freed.push_back(b);
+                freed.swap(last_frame_);
+                if (frame_whole_) {
+                    last_frame_.swap(frame_);
+                    last_frame_.push_back(b);
+                } else {
+                    freed.push_back(b);
+                }
+                last_start_ = frame_start_;
                 frame_over_ = false;
                 BeginFrame();
-            } else if (keeping_) {
-                frame_.push_back(b);
-            } else {
+            } else if (b->cmds.size() == 1 && b->cmds[0].op == Op::Redisplay) {
                 freed.push_back(b);
+            } else if (!keeping_ && (!frame_whole_ || frame_.size() >= kKeptBatches)) {
+                freed.insert(freed.end(), frame_.begin(), frame_.end());
+                frame_.clear();
+                freed.push_back(b);
+                frame_whole_ = false;
+            } else {
+                frame_.push_back(b);
             }
             for (Batch* f : freed) {
                 f->cmds.clear();
@@ -577,11 +598,62 @@ private:
         if (changed && (c.vs >= 0 || c.ps >= 0)) *changed = true;
     }
 
-    // a frame starts: kept for drawing again when frame generation is on, from the state it starts with
+    // a frame starts: kept for drawing again, from the state it starts with; frame generation draws it again between
+    // frames when it is on
     void BeginFrame() {
         keeping_ = app::Get().frame_generation > 1;
-        if (keeping_) frame_start_ = state_;
+        frame_start_ = state_;
+        frame_whole_ = true;
         frame_draws_ = 0;
+    }
+
+    // the title held (kernel::Hold): its last frame shown again, and drawn again whole as the settings change, so the
+    // menu's graphics settings show on it. Twice: a target remade at a new scale or samples is remade at the end of
+    // the first one's Present
+    void ShowAgain() {
+        std::string now = app::SettingsText();
+        if (!redisplaying_) {
+            redisplaying_ = true;
+            settings_ = now;
+        }
+        if (now != settings_) {
+            settings_ = std::move(now);
+            again_ = 2;
+        }
+        if (!again_ || last_frame_.empty()) return inner_->Redisplay();
+        again_--;
+        DrawAgain();
+    }
+
+    // the last frame's commands again as they were, its own Present last; the live state is left as it is
+    void DrawAgain() {
+        State& rs = replay_state_;
+        rs = last_start_;
+        bool changed = true;
+        for (const Batch* b : last_frame_)
+            for (const Cmd& c : b->cmds) {
+                const uint8_t* data = b->bytes.data() + c.data;
+                switch (c.op) {
+                    case Op::State: Apply(rs, *b, c, &changed); break;
+                    case Op::Draw:
+                        inner_->Changed(changed);
+                        changed = false;
+                        inner_->Draw(rs, c.a, c.b, c.c, c.d ? data : nullptr);
+                        break;
+                    case Op::Clear:
+                        changed = true;
+                        inner_->Clear(rs, c.a, c.size ? data : nullptr, c.b, c.c, c.f, c.d);
+                        break;
+                    case Op::Copy:
+                        changed = true;
+                        inner_->Copy(c.s1, c.s2, c.a, c.b, c.c);
+                        break;
+                    case Op::ClearReport: inner_->ClearReport(); break;
+                    case Op::GetReport: inner_->GetReport(c.a); break;
+                    case Op::Present: inner_->Present(c.s1); return;
+                    default: changed = true; break;  // nothing written back to the title, which is not running
+                }
+            }
     }
 
     // the frame's commands again, up to its Present in last, with the draws' constants at t from the frame before's;
@@ -668,6 +740,7 @@ private:
         inner_->Present(c.s1);
         interp::EndFrame();  // a frame not tracked leaves none to find draws in
         frame_over_ = true;
+        redisplaying_ = false;
     }
 
     void Execute(const Batch& b, const Cmd& c) {
@@ -690,6 +763,7 @@ private:
             case Op::Clear: inner_->Clear(state_, c.a, c.size ? data : nullptr, c.b, c.c, c.f, c.d); break;
             case Op::Copy: inner_->Copy(c.s1, c.s2, c.a, c.b, c.c); break;
             case Op::Present: Present(b, c); break;
+            case Op::Redisplay: ShowAgain(); break;
             case Op::Sync: inner_->Sync(c.a, 0); break;
             case Op::RecordLate: inner_->RecordLate(c.a); break;
             case Op::Flush: inner_->Flush(); break;
@@ -732,11 +806,18 @@ private:
 
     // the render thread
     State state_;
-    // frame generation: while keeping_, the frame's batches run so far (the one running is not among them) and the
-    // state it started with; frame_over_ once its Present ran
+    // the frame's batches run so far (the one running is not among them) and the state it started with, which
+    // frame generation draws again while keeping_; frame_over_ once its Present ran
     std::vector<Batch*> frame_;
     State frame_start_, replay_state_;
     bool keeping_ = false, frame_over_ = false;
+    // Redisplay: the frame presented last, its batches and the state it started with; the settings it was last drawn
+    // with, and how many times more it is to be drawn again
+    std::vector<Batch*> last_frame_;
+    State last_start_;
+    bool frame_whole_ = true, redisplaying_ = false;
+    std::string settings_;
+    uint32_t again_ = 0;
     uint32_t frame_draws_ = 0;
     uint64_t gen_match_ns_ = 0, gen_replay_ns_ = 0, gen_blend_ns_ = 0;  // XBE_PERF, over gen_frames_
     uint32_t gen_frames_ = 0;
