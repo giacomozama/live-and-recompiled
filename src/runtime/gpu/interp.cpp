@@ -9,6 +9,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include <type_traits>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -178,8 +179,9 @@ struct Snap {
     bool second = false;  // found only as another detail's draw (Match)
     uint64_t lod = 0;     // Keys::lod
     uint64_t mesh = 0;    // Keys::mesh
-    std::string why;     // not found, when recording or tracing: what keeps it from the nearest draw of its program
 };
+
+static_assert(std::is_trivially_destructible_v<Snap>, "a frame's snaps cleared without a destructor each");
 
 // a frame's draws of each key, kept from the last time the frame was used: a battle's frame made and freed tens of
 // thousands of entries each time. Each list cleared, a key no draw had that time taken out
@@ -205,8 +207,15 @@ struct Frame {
     // through each other draw of the run for each, in every picture drawn again
     std::unordered_map<uint64_t, std::vector<uint32_t>> found_turns;
     std::vector<uint32_t> found_programmed;
-    std::vector<Snap> snaps;
+    std::vector<Snap> snaps;  // with nothing to free: a frame's tens of thousands cleared at once
     std::vector<std::array<float, 4>> values;  // the snaps' constants
+    // of each draw not found, when recording or tracing: what keeps it from the nearest draw of its program (Why)
+    std::unordered_map<uint32_t, std::string> why;
+    const std::string& WhyNot(uint32_t n) const {
+        static const std::string none;
+        auto it = why.find(n);
+        return it != why.end() ? it->second : none;
+    }
     std::vector<bool> taken;  // found by a draw of the frame after
     bool matched = false;     // its draws looked for in the frame before (Match)
     const std::array<float, 4>* Values(const Snap& sn) const { return values.data() + sn.at; }
@@ -221,6 +230,7 @@ struct Frame {
         found_programmed.clear();
         snaps.clear();
         values.clear();
+        why.clear();
         taken.clear();
     }
 };
@@ -783,17 +793,24 @@ void Match() {
         pairs.clear();
         two.assign(list.size(), {INFINITY, INFINITY, INFINITY, INFINITY});
         dist.resize(list.size() * before.size());
-        for (uint32_t c = 0; c < list.size(); c++)
+        for (uint32_t c = 0; c < list.size(); c++) {
+            const Snap& sn = cur.snaps[list[c]];
+            // a pair at other addresses past loose is never taken, and TossUp weighs only those within loose / kClear:
+            // past that its distance stops counting (the runner-up, Snap::next, may be such a part sum). Weighed in
+            // full, a cutscene's crowds took most of the matching's time
+            size_t values = sn.reads ? sn.reads->regs.size() * 4 : kXf * 16;
+            float far = values ? 1.01f * loose(sn) * float(values) / kClear : INFINITY;  // clear of rounding
             for (uint32_t p = 0; p < before.size(); p++) {
-                const Snap& sn = cur.snaps[list[c]];
                 const Snap& o = prev.snaps[before[p]];
-                const Pair& pr = pairs.emplace_back(Pair{Distance(prev, o, cur, sn, INFINITY),
-                                                         o.parts[kAddresses] == sn.parts[kAddresses], c > p ? c - p : p - c, c, p});
+                bool same = o.parts[kAddresses] == sn.parts[kAddresses];
+                const Pair& pr = pairs.emplace_back(Pair{Distance(prev, o, cur, sn, same ? INFINITY : far), same,
+                                                         c > p ? c - p : p - c, c, p});
                 dist[c * before.size() + p] = pr.d;
                 float* t = two[c].data() + (pr.same ? 0 : 2);
                 if (pr.d < t[0]) t[1] = t[0], t[0] = pr.d;
                 else if (pr.d < t[1]) t[1] = pr.d;
             }
+        }
         // at other addresses a pair counts kLooseCost times as far: a static mesh's copies (grass clumps) are told
         // apart by their buffers, at distances among them like their own's a frame on; one at other addresses still
         // wins when much nearer, a dynamic buffer's draw moving round the ring
@@ -884,7 +901,7 @@ void Match() {
     for (Snap& sn : cur.snaps) {
         if (sn.leader >= 0) continue;
         sn.by_exact = sn.found >= 0 && prev.snaps[size_t(sn.found)].parts[kAddresses] == sn.parts[kAddresses];
-        if (sn.found < 0 && (Tracing() || Recording())) sn.why = Why(prev, sn);
+        if (sn.found < 0 && (Tracing() || Recording())) cur.why[uint32_t(&sn - cur.snaps.data())] = Why(prev, sn);
         if (Tracing()) {
             g_t.draws++;
             Trace(cur, sn, prev, sn.found >= 0 ? &prev.snaps[size_t(sn.found)] : nullptr, sn.by_exact, sn.program);
@@ -953,7 +970,8 @@ void Watch(uint32_t n, const Snap& sn, Blended how, const std::string& jumped, c
     if (!moved.empty()) g_pass.watched += "\n      moved most:" + moved;
     if (!jumped.empty()) g_pass.watched += "\n      jumped:" + jumped;
     if (!kept.empty()) g_pass.watched += "\n      left, jumped, kept:" + kept;
-    if (how == Blended::kNotFound && !sn.why.empty()) g_pass.watched += "\n      " + sn.why;
+    const std::string& why = g_frames[g_cur].WhyNot(n);
+    if (how == Blended::kNotFound && !why.empty()) g_pass.watched += "\n      " + why;
 }
 
 // XBE_INTERP_HIDE: draws left out of the pictures drawn again, to see which are which: 1 not found, 2 jumped,
@@ -1254,7 +1272,7 @@ Blended BlendLeader(uint32_t n, float t, State& s, Undo& undo) {
         if (g_pass.on) {
             g_pass.unfound++;
             auto& u = g_pass.unfound_programs[ProgramOf(s)];
-            if (!u.first++ && n < cur.snaps.size()) u.second = cur.snaps[n].why;
+            if (!u.first++ && n < cur.snaps.size()) u.second = cur.WhyNot(n);
             if (n < cur.snaps.size() && Watched(ProgramOf(s))) Watch(n, cur.snaps[n], Blended::kNotFound, "", "");
         }
         return Blended::kNotFound;
