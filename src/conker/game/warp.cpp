@@ -18,7 +18,9 @@
 // the load plays it (0x2A9E18). A cutscene the level's packages lack sends the game to its missing-data screen
 // (0x1F04F0), which never returns, so the hook below first asks 0x55790 (ecx level, eax cutscene, esi a name buffer:
 // 5 or 4 the resource type that has it, 0 none). It looks only at loaded resources, so it answers for the running
-// level alone: the hook asks once the cutscene's level is the running one.
+// level alone: the hook asks once the cutscene's level is the running one. From the frontend that kind 1 load stops
+// on the missing-data screen as a level load does (docs/conker.md), so there the level is started from its first
+// checkpoint instead and the cutscene waits until it runs.
 #include <algorithm>
 #include <cctype>
 #include <cstdio>
@@ -43,6 +45,8 @@ constexpr uint32_t kCheckpointTable = 0x59E9A0;
 constexpr int kCheckpointCount = 238;  // the progress walk 0x35DDD0 covers 0xEE
 constexpr int kAnimTest = 8;           // named, but not on the disc
 constexpr int kNightLevels = 73;       // 73, 74: Windmill and BankEntrance at night, which the game picks itself
+// the frontend's levels: Frontend, FrontendTable, Hell, Mp_Frontend, BootCutscene
+constexpr int kFrontendLevels[] = {29, 33, 34, 70, 71};
 
 constexpr uint32_t kLevel = 0x7FA1F8;
 constexpr uint32_t kLoadState = 0x7819D6;
@@ -61,6 +65,7 @@ enum class Kind { Checkpoint, Level, Cutscene };
 struct Request {
     Kind kind;
     int a, b;
+    bool loaded = false;  // a cutscene behind a checkpoint start: waits for its level to be the running one
 };
 
 std::mutex g_lock;
@@ -82,6 +87,16 @@ void SetStatus(std::string s) {
 std::string LevelLabel(int level) {
     const char* n = LevelName(level);
     return std::to_string(level) + " " + (n ? n : "?");
+}
+
+bool InFrontend(int level) { return std::find(std::begin(kFrontendLevels), std::end(kFrontendLevels), level) != std::end(kFrontendLevels); }
+
+// the first checkpoint in the level, -1 none
+int FirstCheckpoint(int level) {
+    const std::vector<Checkpoint>& list = Checkpoints();
+    for (size_t i = 0; i < list.size(); i++)
+        if (list[i].level == level) return int(i);
+    return -1;
 }
 
 bool Idle() {
@@ -160,6 +175,23 @@ void Run(X86Context& ctx, const Request& r) {
                 SetStatus("cutscene: no player yet, start a game first");
                 break;
             }
+            if (r.a != g_level && InFrontend(g_level)) {
+                const int c = FirstCheckpoint(r.a);
+                if (c < 0) {
+                    SetStatus("cutscene: " + LevelLabel(r.a) + " has no checkpoint to start it from the frontend, start "
+                              "a game first");
+                    break;
+                }
+                Run(ctx, {Kind::Checkpoint, c, 0});
+                {
+                    // ahead of anything asked since, so the level started for it is the one it plays in
+                    std::lock_guard<std::mutex> l(g_lock);
+                    g_requests.push_front({Kind::Cutscene, r.a, r.b, true});
+                }
+                SetStatus("cutscene " + std::to_string(r.b) + " of " + LevelLabel(r.a) + ": starting the level from "
+                          "checkpoint " + std::to_string(c));
+                break;
+            }
             g_want_level = r.a;
             g_want_index = r.b;
             SetStatus("cutscene " + std::to_string(r.b) + " of " + LevelLabel(r.a) +
@@ -202,19 +234,22 @@ int CurrentLevel() {
     return g_level;
 }
 
-void GoCheckpoint(int index) {
-    if (index < 0 || index >= kCheckpointCount) return SetStatus("no checkpoint " + std::to_string(index));
+bool GoCheckpoint(int index) {
+    if (index < 0 || index >= kCheckpointCount) return SetStatus("no checkpoint " + std::to_string(index)), false;
     Post({Kind::Checkpoint, index, 0});
+    return true;
 }
 
-void GoLevel(int level, int spawn) {
-    if (!LevelName(level)) return SetStatus("no level " + std::to_string(level));
+bool GoLevel(int level, int spawn) {
+    if (!LevelName(level)) return SetStatus("no level " + std::to_string(level)), false;
     Post({Kind::Level, level, std::clamp(spawn, 0, 255)});
+    return true;
 }
 
-void PlayCutscene(int level, int index) {
-    if (!LevelName(level)) return SetStatus("no level " + std::to_string(level));
+bool PlayCutscene(int level, int index) {
+    if (!LevelName(level)) return SetStatus("no level " + std::to_string(level)), false;
     Post({Kind::Cutscene, level, std::clamp(index, 0, 255)});
+    return true;
 }
 
 std::vector<int> Cutscenes(int* level) {
@@ -249,6 +284,15 @@ void Poll(X86Context& ctx) {
     {
         std::lock_guard<std::mutex> l(g_lock);
         if (g_requests.empty()) return;
+        // a checkpoint start load runs the frontend's level loop a while first: its cutscene waits for its level, and
+        // is dropped when another level came up instead
+        const Request& f = g_requests.front();
+        if (f.loaded && f.a != level) {
+            if (InFrontend(level)) return;
+            g_status = "cutscene " + std::to_string(f.b) + ": " + LevelLabel(level) + " came up, not " + LevelLabel(f.a);
+            g_requests.pop_front();
+            return;
+        }
         r = g_requests.front();
         g_requests.pop_front();
     }

@@ -25,13 +25,14 @@ const char* LevelName(int level);
 // the running level, -1 before the first
 int CurrentLevel();
 
-// start a new game at checkpoint `index`, with the progress of the checkpoints before it
-void GoCheckpoint(int index);
+// start a new game at checkpoint `index`, with the progress of the checkpoints before it. These three are false
+// when refused at once, the reason in Status
+bool GoCheckpoint(int index);
 // a new game in `level` at spawn point `spawn`, no progress
-void GoLevel(int level, int spawn);
+bool GoLevel(int level, int spawn);
 // cutscene `index` of `level`, loading the level first if it isn't the running one; a cutscene the level lacks is
 // refused (the game would otherwise stop on its missing-data screen)
-void PlayCutscene(int level, int index);
+bool PlayCutscene(int level, int index);
 
 // the running level's cutscenes, found when it loaded; `level` says which level they belong to
 std::vector<int> Cutscenes(int* level);

@@ -58,7 +58,7 @@ void SetOpen(bool open) {
     kernel::Hold(open);
 }
 
-// the menu shut from the render thread (its X): the window thread takes the cursor back as Message does
+// the menu shut from the render thread (its X, a warp): the window thread takes the cursor back as Message does
 void Close() {
     SetOpen(false);
     app::Post(mouse::kRefresh);
@@ -333,13 +333,13 @@ void DrawWarp() {
             if (filter[0] && !matches(row)) continue;
             if (ImGui::Selectable(row, checkpoint == i, ImGuiSelectableFlags_AllowDoubleClick)) {
                 checkpoint = i;
-                if (ImGui::IsMouseDoubleClicked(0)) warp::GoCheckpoint(i);
+                if (ImGui::IsMouseDoubleClicked(0) && warp::GoCheckpoint(i)) Close();
             }
         }
         ImGui::EndListBox();
     }
     ImGui::BeginDisabled(checkpoint < 0);
-    if (ImGui::Button("Start at checkpoint")) warp::GoCheckpoint(checkpoint);
+    if (ImGui::Button("Start at checkpoint") && warp::GoCheckpoint(checkpoint)) Close();
     ImGui::EndDisabled();
     ImGui::SameLine();
     ImGui::TextDisabled("or double-click; earlier checkpoints count as done");
@@ -364,7 +364,7 @@ void DrawWarp() {
     level_combo("Level##level", &level);
     ImGui::InputInt("Spawn", &spawn);
     spawn = std::clamp(spawn, 0, 255);
-    if (ImGui::Button("Load level")) warp::GoLevel(level, spawn);
+    if (ImGui::Button("Load level") && warp::GoLevel(level, spawn)) Close();
     ImGui::SameLine();
     ImGui::TextDisabled("a fresh game, nothing done");
 
@@ -377,13 +377,13 @@ void DrawWarp() {
         if (found.empty()) ImGui::TextDisabled("none");
         for (size_t i = 0; i < found.size(); i++) {
             if (i % 10) ImGui::SameLine();
-            if (ImGui::Button(std::to_string(found[i]).c_str())) warp::PlayCutscene(found_level, found[i]);
+            if (ImGui::Button(std::to_string(found[i]).c_str()) && warp::PlayCutscene(found_level, found[i])) Close();
         }
     }
     level_combo("Level##cut", &cut_level);
     ImGui::InputInt("Cutscene", &cut_index);
     cut_index = std::clamp(cut_index, 0, 255);
-    if (ImGui::Button("Play cutscene")) warp::PlayCutscene(cut_level, cut_index);
+    if (ImGui::Button("Play cutscene") && warp::PlayCutscene(cut_level, cut_index)) Close();
     ImGui::SameLine();
     ImGui::TextDisabled("loads its level first; one it lacks is refused there");
 }
