@@ -1367,39 +1367,63 @@ Blended BlendLeader(uint32_t n, float t, State& s, Undo& undo) {
 }
 
 // a draw following its leader (Follows) reads the leader's constants and comes out as it did: the leader's blend
-// kept, set again. Worked out again for each, a battle's thousands of followers took the picture 8 ms (its draws not
-// found looked for a neighbour to borrow from, each time). Recording works each out, to count it in the notes
+// kept, set again, and counted again in the picture's note. Worked out again for each, a battle's thousands of
+// followers took the picture 8 ms (its draws not found looked for a neighbour to borrow from, each time)
+struct Kept {
+    uint32_t pass = ~0u, leader = ~0u;
+    Blended how = Blended::kNotFound;
+    std::vector<std::pair<uint32_t, std::array<float, 4>>> vsc;
+    std::vector<std::pair<uint32_t, std::array<float, 16>>> xf;
+    uint32_t unfound = 0, jumped = 0, borrowed = 0, across = 0, kept = 0, second = 0;  // what it added to Pass
+    bool suspect = false, judged = false;  // Suspects::last, once Blend judged the leader
+};
+Kept g_kept;
 Blended BlendDraw(uint32_t n, float t, State& s, Undo& undo) {
     const Frame& cur = g_frames[g_cur];
-    if (g_pass.on || n >= cur.snaps.size()) return BlendLeader(n, t, s, undo);
+    if (n >= cur.snaps.size()) return BlendLeader(n, t, s, undo);
     uint32_t leader = cur.snaps[n].leader >= 0 ? uint32_t(cur.snaps[n].leader) : n;
-    static struct {
-        uint32_t pass = ~0u, leader = ~0u;
-        Blended how = Blended::kNotFound;
-        std::vector<std::pair<uint32_t, std::array<float, 4>>> vsc;
-        std::vector<std::pair<uint32_t, std::array<float, 16>>> xf;
-    } kept;
-    if (leader != n && kept.pass == g_pass_id && kept.leader == leader) {
-        for (const auto& [r, v] : kept.vsc) {
+    Kept& k = g_kept;
+    if (leader != n && k.pass == g_pass_id && k.leader == leader) {
+        for (const auto& [r, v] : k.vsc) {
             undo.vsc.emplace_back(r, s.vsc.v[r]);
             s.vsc.v[r] = v;
         }
-        for (const auto& [i, m] : kept.xf) {
+        for (const auto& [i, m] : k.xf) {
             undo.xf.emplace_back(i, s.transforms[i]);
             s.transforms[i] = m;
         }
-        return kept.how;
+        if (g_pass.on) {
+            // as the leader counted; its watch lines and farthest distance said already
+            g_pass.draws++;
+            g_pass.unfound += k.unfound;
+            g_pass.jumped += k.jumped;
+            g_pass.borrowed += k.borrowed;
+            g_pass.across += k.across;
+            g_pass.kept += k.kept;
+            g_pass.second += k.second;
+            if (k.unfound) g_pass.unfound_programs[ProgramOf(s)].first++;
+            if (k.jumped) g_pass.jump_lines[ProgramOf(s)]++;
+        }
+        return k.how;
     }
     size_t vsc = undo.vsc.size(), xf = undo.xf.size();
+    uint32_t unfound = g_pass.unfound, jumped = g_pass.jumped, borrowed = g_pass.borrowed, across = g_pass.across,
+             kept = g_pass.kept, second = g_pass.second;
     Blended how = BlendLeader(n, t, s, undo);
-    kept.pass = g_pass_id;
-    kept.leader = leader;
-    kept.how = how;
-    kept.vsc.clear();
-    kept.xf.clear();
-    for (size_t i = vsc; i < undo.vsc.size(); i++) kept.vsc.emplace_back(undo.vsc[i].first, s.vsc.v[undo.vsc[i].first]);
-    for (size_t i = xf; i < undo.xf.size(); i++)
-        kept.xf.emplace_back(undo.xf[i].first, s.transforms[undo.xf[i].first]);
+    k.pass = g_pass_id;
+    k.leader = leader;
+    k.how = how;
+    k.judged = false;
+    k.unfound = g_pass.unfound - unfound;
+    k.jumped = g_pass.jumped - jumped;
+    k.borrowed = g_pass.borrowed - borrowed;
+    k.across = g_pass.across - across;
+    k.kept = g_pass.kept - kept;
+    k.second = g_pass.second - second;
+    k.vsc.clear();
+    k.xf.clear();
+    for (size_t i = vsc; i < undo.vsc.size(); i++) k.vsc.emplace_back(undo.vsc[i].first, s.vsc.v[undo.vsc[i].first]);
+    for (size_t i = xf; i < undo.xf.size(); i++) k.xf.emplace_back(undo.xf[i].first, s.transforms[undo.xf[i].first]);
     return how;
 }
 
@@ -1408,9 +1432,13 @@ Blended Blend(uint32_t n, float t, State& s, Undo& undo) {
     g_sus.last = false;
     Frame& cur = g_frames[g_cur];
     if (!g_sus.on || n >= cur.snaps.size()) return how;
-    // a draw in the state of the one before it is judged, and counted, as that one
+    // a draw in the state of the one before it is judged, and counted, as that one: suspect as it was
     bool follows = cur.snaps[n].leader >= 0;
     uint32_t at = follows ? uint32_t(cur.snaps[n].leader) : n;
+    if (follows && g_kept.judged && g_kept.pass == g_pass_id && g_kept.leader == at) {
+        g_sus.last = g_kept.suspect;
+        return how;
+    }
     const Frame& prev = g_frames[g_cur ^ 1];
     Snap& sn = cur.snaps[at];
     uint32_t why = Suspicion(cur, prev, sn, how);
@@ -1420,6 +1448,7 @@ Blended Blend(uint32_t n, float t, State& s, Undo& undo) {
         if ((why >> i & 1) && Habitual(sn.program, i)) habits |= 1u << i;
     why &= ~habits;
     g_sus.last = (why & SuspectMask() & ~uint32_t(kLoneJump)) != 0;
+    if (g_kept.pass == g_pass_id && g_kept.leader == at) g_kept.suspect = g_sus.last, g_kept.judged = true;
     if (follows) return how;
     if (habits) g_sus.habitual++;
     if (how == Blended::kJumped) g_sus.jumped++;
