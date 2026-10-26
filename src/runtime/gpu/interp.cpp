@@ -66,14 +66,21 @@ struct Keys {
     std::array<uint64_t, kParts> parts{};
 };
 
+// the back buffers' memory, as presented (Presented): their surfaces stay put, their memory rotates every Swap
+std::vector<uint32_t> g_presented;
+
 Keys MakeKeys(const State& s, uint32_t prim, uint32_t start, uint32_t count, const uint8_t* indices) {
     Keys k;
     bool prog = (s.vs_handle & 1) && s.vs && !s.vs->program.empty();
     if (prog) EnsureProgramHash(s);
     k.program = prog ? s.vs->hash : s.vs_handle;
     k.parts[kCombiner] = s.ps ? s.ps->handle : 0;
-    // targets by shape, not address: the back buffers' memory rotates every Swap (d3d8.cpp)
-    k.parts[kTarget] = uint64_t(s.rt.format) << 32 | s.rt.size;
+    // the back buffers by shape, not address: their memory rotates every Swap (d3d8.cpp). Other targets by address
+    // too: each character's 32x32 lighting map (21751DC8, four lights a draw) is drawn by turns, one character's
+    // some frames and another's the next, and found as the other's its lights blended toward another's, dulling a
+    // goblin's armour in every picture drawn again
+    bool back = std::find(g_presented.begin(), g_presented.end(), s.rt.data) != g_presented.end();
+    k.parts[kTarget] = Mix(uint64_t(s.rt.format) << 32 | s.rt.size, back ? 0 : s.rt.data);
     k.parts[kDepth] = uint64_t(s.zs.format) << 32 | s.zs.size;
     k.parts[kShape] = uint64_t(prim) << 32 | count;
     k.parts[kStart] = start;
@@ -920,6 +927,12 @@ void Match() {
         const Snap& sn = cur.snaps[i];
         if (sn.leader < 0 && sn.found >= 0 && sn.reads) cur.found_programmed.push_back(i);
     }
+}
+
+void Presented(uint32_t data) {
+    if (std::find(g_presented.begin(), g_presented.end(), data) != g_presented.end()) return;
+    if (g_presented.size() >= 8) g_presented.erase(g_presented.begin());  // a new swap chain's
+    g_presented.push_back(data);
 }
 
 void EndFrame() {

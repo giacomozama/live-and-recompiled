@@ -632,6 +632,7 @@ private:
 
     // a frame's Present: with frame generation, the pictures between the frame before and it drawn first
     void Present(const Batch& b, const Cmd& c) {
+        interp::Presented(c.s1.data);
         uint32_t pictures = keeping_ ? inner_->Pictures() : 1;
         if (pictures > 1 && frame_draws_) {
             auto match_start = PerfClock::now();

@@ -23,6 +23,9 @@ bool Tracing();
 void Draw(const State& s, bool same, uint32_t prim, uint32_t start, uint32_t count, const uint8_t* indices);
 // the frame's draws are all in: each looked for in the frame before, before the first Blend (EndFrame does it if not)
 void Match();
+// the frame's Present showed the surface whose memory is at data: a back buffer, whose memory rotates, so its draws
+// are found by the target's shape alone, other targets' by their address too
+void Presented(uint32_t data);
 // the frame's draws are done: it becomes the frame before
 void EndFrame();
 // the frame's draw n drawn again at t between the frame before (0) and this one (1): its vertex constants and
