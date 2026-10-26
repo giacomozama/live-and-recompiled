@@ -28,6 +28,7 @@
 #include "common/glass.h"
 #include "common/grass.h"
 #include "common/keyboard.h"
+#include "common/lighting.h"
 #include "common/mouse.h"
 #include "common/reflection.h"
 #include "common/rope.h"
@@ -556,6 +557,9 @@ void Draw(double fps) {
                 ImGui::Checkbox("Gentle grass wake", &grass::g_wake);
                 ImGui::SameLine();
                 ImGui::TextDisabled("the console throws blades across the screen past a fast rider");
+                ImGui::Checkbox("Per-pixel lighting", &lighting::g_per_pixel);
+                ImGui::SameLine();
+                ImGui::TextDisabled("the console lights each vertex: shadows crawl along long triangles");
                 ImGui::Checkbox("Fur shading", &fur::g_shading);
                 ImGui::SameLine();
                 ImGui::TextDisabled("soft strand edges, shadowed roots, sheen");

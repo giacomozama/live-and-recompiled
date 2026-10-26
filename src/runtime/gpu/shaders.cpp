@@ -760,8 +760,13 @@ uint64_t MatchProgramShading(const std::vector<uint32_t>& prog) {
     if (g_program_shading.empty()) return 0;
     std::string s = VertexProgramHlsl(prog, 0xFFFF);
     uint64_t m = 0;
-    for (size_t i = 0; i < g_program_shading.size() && i < 64; i++)
-        if (s.find(g_program_shading[i].match) != std::string::npos) m |= 1ull << i;
+    for (size_t i = 0; i < g_program_shading.size() && i < 64; i++) {
+        const ProgramShading& e = g_program_shading[i];
+        bool all = s.find(e.match) != std::string::npos;
+        for (const char* a : e.also)
+            if (a && s.find(a) == std::string::npos) all = false;
+        if (all) m |= 1ull << i;
+    }
     return m;
 }
 
@@ -989,6 +994,9 @@ std::string PixelHlsl(const PixelKey& k) {
     s += "    if (misc.w == 0) v1 = float4(0, 0, 0, 1);\n";
     s += "    float4 fogin = float4(fogcolor.rgb, saturate(i.fogamt));\n";
     std::string body;
+    std::string pre;
+    if (k.shading && *Shading(k.shading).pre)
+        pre = F("#define PS_TWO_SIDED %d\n", k.two_sided ? 1 : 0) + Shading(k.shading).pre + "\n#undef PS_TWO_SIDED\n";
     if (k.programmable) {
         for (int i = 0; i < 4; i++) {
             body += TexFetch(k, i);
@@ -1000,6 +1008,7 @@ std::string PixelHlsl(const PixelKey& k) {
             bool fetch = m && m != 4 && m != 5 && m != 0xA && m != 0x11;
             if (fetch && ((k.alphakill >> i) & 1)) body += F("if (t%d.a == 0) discard;\n", i);
         }
+        body += pre;
         uint32_t mode0 = k.tex_modes & 0x1F;
         std::string combiners = F("float4 r0 = float4(0, 0, 0, %s), r1 = 0;\n", mode0 ? "t0.a" : "1");
         Ps ps{k};
@@ -1037,6 +1046,7 @@ std::string PixelHlsl(const PixelKey& k) {
         if ((k.tex[0].flags & kTexDepthBytes) && (k.tex_modes & 0x1F) == 1 && !k.shading)
             body += DepthSpread(k.tex[0], combiners);
     } else {
+        body += pre;
         body += "float4 cur = v0, tmp = 0;\n";
         for (int i = 0; i < 4; i++) {
             const uint32_t* f = k.ff[i];

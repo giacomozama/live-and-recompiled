@@ -71,7 +71,9 @@ struct PixelKey {
 // depth_alpha, when above 0, splits each of its draws that blends and writes depth in two: the colour without the
 // depth write, then a depth pass (no colour, no stencil) where the output's alpha reaches depth_alpha, so what blends
 // in fainter leaves the depth behind it; with top set, only the draws whose x there is above 0 (the shells, not the
-// skin under them).
+// skin under them). also lists more text the translation must contain as well as match, for an entry that takes only
+// one shape of a program. pre runs in the pixel shader before the combiner stages, after the textures are fetched (before
+// the fixed function's stages, which fetch as they go), and may change v0 and v1; PS_TWO_SIDED is 1 there when the back faces take the back colours.
 struct ShadingField {
     const float* data = nullptr;  // w x h, rows of w
     uint32_t w = 0, h = 0;
@@ -93,6 +95,8 @@ struct ProgramShading {
     const uint32_t* textures = nullptr;
     int texture_stage = 0;
     float depth_alpha = 0;
+    const char* also[3] = {};
+    const char* pre = "";
 };
 inline std::vector<ProgramShading> g_program_shading;  // filled before the title boots, unchanged after
 
