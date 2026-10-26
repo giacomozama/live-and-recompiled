@@ -51,6 +51,8 @@ constexpr size_t kKeptBatches = 4096;
 // resource headers the render thread reads: common, data, lock, format, size
 constexpr uint32_t kHeaderBytes = 20, kHeaderSlot = 32;
 constexpr uint32_t kHeaderRing = 1u << 20;  // guest memory for header copies; a copy is renewed after half a ring
+// guest memory for the 2D draws frame generation moves part way (interp::MoveVertices): their vertices, their headers
+constexpr uint32_t kMoveRing = 1u << 20, kMoveHeaders = 1u << 16;
 
 enum class WaitFor : uint8_t { ReadBack, Resource, Fence, Flush, Copy, Frame, Count };
 
@@ -63,6 +65,7 @@ struct Cmd {
     uint32_t data = 0, size = 0;  // bytes in Batch::bytes
     int32_t vs = -1, ps = -1;     // index in Batch::vs / ps: the shader changed
     Surface s1, s2;
+    interp::Tag tag;  // a draw's, as the title tagged it
 };
 
 struct Batch {
@@ -148,6 +151,8 @@ public:
     explicit Threaded(std::unique_ptr<Backend> inner)
         : inner_(std::move(inner)), ranges_(StateRanges()), word_kinds_(WordKinds()) {
         ring_ = mem::AllocSystem(kHeaderRing, 64);
+        interp::MoveRing(mem::AllocContiguous(kMoveRing, 0, 0xFFFFFFFF, 0x1000), kMoveRing,
+                         mem::AllocSystem(kMoveHeaders, 64), kMoveHeaders);
         cur_ = NewBatch();
         std::thread([this] { Run(); }).detach();
     }
@@ -174,6 +179,7 @@ public:
         c.a = prim;
         c.b = start;
         c.c = count;
+        c.tag = interp::g_draw_tag;
         if (indices) {
             c.d = 1;
             c.data = Put(indices, size_t(count) * 2);
@@ -676,12 +682,16 @@ private:
                         if (interp::Recording()) interp::CheckVertices(n, rs, c.a, c.b, c.c, c.d ? data : nullptr);
                         static const bool perf = diag::Perf();
                         auto blend_start = perf ? PerfClock::now() : PerfClock::time_point{};
-                        interp::Blended how = interp::Blend(n++, t, rs, undo);
+                        interp::Blended how = interp::Blend(n, t, rs, undo);
+                        uint32_t start = c.b;
+                        // a 2D draw placed on the CPU reads a copy of its vertices moved part way instead
+                        if (interp::MoveVertices(n, t, how, rs, start, undo)) changed = true;
+                        n++;
                         if (perf) gen_blend_ns_ += Ns(blend_start);
                         if (!interp::Hidden(how)) {
                             inner_->Changed(changed);
                             changed = false;
-                            inner_->Draw(rs, c.a, c.b, c.c, c.d ? data : nullptr);
+                            inner_->Draw(rs, c.a, start, c.c, c.d ? data : nullptr);
                         }
                         undo.Restore(rs);  // the draw's own constants and transforms, for the commands after
                         break;
@@ -752,7 +762,7 @@ private:
             case Op::Draw:
                 if (keeping_ || interp::Tracing()) {
                     auto t = PerfClock::now();
-                    interp::Draw(state_, !changed_, c.a, c.b, c.c, c.d ? data : nullptr);
+                    interp::Draw(state_, !changed_, c.tag, c.a, c.b, c.c, c.d ? data : nullptr);
                     gen_match_ns_ += Ns(t);
                     frame_draws_++;
                 }

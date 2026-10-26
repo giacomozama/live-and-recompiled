@@ -604,4 +604,18 @@ bool ReadInput(const State& s, int reg, uint32_t start, const uint8_t* ip, uint3
     return ReadElement(s, in, StrideOf(s, *layout, in), start, ip, vertices, out);
 }
 
+bool InputPlace(const State& s, int reg, InputAt& at) {
+    VertexShader fvf_layout;
+    const VertexShader* layout = PickLayout(s, fvf_layout);
+    if (!layout) return false;
+    const auto& in = layout->inputs[size_t(reg)];
+    if (in.stream < 0 || !in.type || in.type == kTypeNone || !s.streams[size_t(in.stream)].vb) return false;
+    at = {uint32_t(in.stream), in.offset, in.type, StrideOf(s, *layout, in), true};
+    for (const auto& other : layout->inputs)
+        if (other.stream >= 0 && other.type && other.type != kTypeNone && other.stream != in.stream &&
+            s.streams[size_t(other.stream)].vb)
+            at.alone = false;
+    return true;
+}
+
 }  // namespace gpu

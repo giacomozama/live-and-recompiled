@@ -68,4 +68,12 @@ std::string DescribeInputs(const State& s, uint32_t start, const uint8_t* indice
 // input register reg of the draw's first vertices, decoded; false when the draw has none or its stream is unbound
 bool ReadInput(const State& s, int reg, uint32_t start, const uint8_t* indices, uint32_t vertices, float (*out)[4]);
 
+// where the draw reads input register reg: the stream, the byte offset in its vertex, the D3DVSDT type and the stride;
+// alone: every register the draw reads comes from that stream. False when it reads none, or its stream is unbound
+struct InputAt {
+    uint32_t stream = 0, offset = 0, type = 0, stride = 0;
+    bool alone = false;
+};
+bool InputPlace(const State& s, int reg, InputAt& at);
+
 }  // namespace gpu

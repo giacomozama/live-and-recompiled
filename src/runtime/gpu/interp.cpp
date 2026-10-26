@@ -21,6 +21,7 @@
 #include "gpu/draw.h"
 #include "gpu/shaders.h"
 #include "gpu/texture.h"
+#include "gpu/vertex.h"
 #include "kernel/kernel.h"
 #include "kernel/memory.h"
 
@@ -184,8 +185,16 @@ struct Snap {
     uint32_t candidates = 0;  // draws it was found among
     bool by_exact = false;
     bool second = false;  // found only as another detail's draw (Match)
+    bool by_tag = false;  // found by its tag (Match)
     uint64_t lod = 0;     // Keys::lod
     uint64_t mesh = 0;    // Keys::mesh
+    Tag tag;
+    // a small untagged draw's vertices as it read them (Frame::raw, from raw_at): verts of them from vertex first of
+    // its stream, its position (v0) at offset in each (MoveVertices); verts 0 for none kept
+    uint32_t raw_at = 0, verts = 0, first = 0;
+    uint16_t stride = 0, offset = 0;
+    uint8_t stream = 0, type = 0;
+    bool indexed = false;
 };
 
 static_assert(std::is_trivially_destructible_v<Snap>, "a frame's snaps cleared without a destructor each");
@@ -209,6 +218,8 @@ struct Frame {
     // history would change
     std::unordered_map<uint64_t, std::vector<uint32_t>> loose, programs, lod, mesh;
     std::unordered_map<uint64_t, std::vector<uint32_t>> exact;  // of all its parts (Measure)
+    // the tagged draws (Tag::key), a follower's as its leader: the draw with its constants
+    std::unordered_map<uint64_t, uint32_t> tags;
     // once matched, the found draws Borrow and BorrowAcross go out to: of each program, their turns in programs; of
     // the frame, those with a program. A run of draws not found (a battle's blood, in new buffers each frame) went
     // through each other draw of the run for each, in every picture drawn again
@@ -216,6 +227,7 @@ struct Frame {
     std::vector<uint32_t> found_programmed;
     std::vector<Snap> snaps;  // with nothing to free: a frame's tens of thousands cleared at once
     std::vector<std::array<float, 4>> values;  // the snaps' constants
+    std::vector<uint8_t> raw;                  // their vertices, of those kept (Snap::raw_at)
     // of each draw not found, when recording or tracing: what keeps it from the nearest draw of its program (Why)
     std::unordered_map<uint32_t, std::string> why;
     const std::string& WhyNot(uint32_t n) const {
@@ -233,10 +245,12 @@ struct Frame {
         Reuse(lod);
         Reuse(mesh);
         Reuse(exact);
+        tags.clear();
         Reuse(found_turns);
         found_programmed.clear();
         snaps.clear();
         values.clear();
+        raw.clear();
         why.clear();
         taken.clear();
     }
@@ -371,6 +385,8 @@ struct Pass {
     bool on = false;
     float t = 0;
     uint32_t draws = 0, unfound = 0, jumped = 0, borrowed = 0, across = 0, kept = 0, second = 0;
+    uint32_t tagged = 0, by_tag = 0;  // draws the title tagged, those found by their tag (Match)
+    uint32_t moved = 0;               // draws whose vertices were moved part way (MoveVertices)
     std::unordered_map<uint64_t, std::pair<uint32_t, std::string>> unfound_programs;  // count, the first's reason
     std::string jumps;  // the first draws with a jump: draw, program, registers
     std::string watched;  // XBE_INTERP_WATCH's program's draws (Watch)
@@ -616,7 +632,52 @@ bool Follows(const Frame& cur, const State& s, const Reads* reads, int32_t& lead
     return true;
 }
 
-void Draw(const State& s, bool same, uint32_t prim, uint32_t start, uint32_t count, const uint8_t* indices) {
+// A 2D draw the game places on the CPU (a speech bubble over a character, a marker) writes its vertices where they are
+// on the screen each frame, with constants that never change: blended as a model is, it stayed where the frame drew
+// it, at 60 in a picture at 120. Its vertices are kept as it read them, to be moved part way (MoveVertices): an
+// untagged draw (a tagged one is a model's, whose mesh stays put) of at most kMoveVertices vertices from one stream,
+// its position floats. XBE_INTERP_VERTICES=0 keeps none
+constexpr uint32_t kMoveVertices = 64;
+bool Moving() {
+    static const bool on = [] {
+        const char* e = std::getenv("XBE_INTERP_VERTICES");
+        return !e || *e != '0';
+    }();
+    return on;
+}
+void KeepVertices(Frame& cur, Snap& sn, const State& s, uint32_t start, uint32_t count, const uint8_t* indices) {
+    if (sn.tag.key || !count || !Moving() || count > (indices ? 6 * kMoveVertices : kMoveVertices)) return;
+    InputAt at;
+    if (!InputPlace(s, 0, at) || !at.alone || (at.type & 15) != 2 || !(at.type >> 4) || (at.type >> 4) > 4 ||
+        !at.stride || at.stride > 0xFFFF || at.offset + (at.type >> 4) * 4 > at.stride)
+        return;
+    uint32_t first = start, last = start + count - 1;
+    if (indices) {
+        uint16_t lo = 0xFFFF, hi = 0;
+        for (uint32_t i = 0; i < count; i++) {
+            uint16_t v;
+            std::memcpy(&v, indices + i * 2, 2);
+            lo = std::min(lo, v), hi = std::max(hi, v);
+        }
+        first = s.base_vertex + lo, last = s.base_vertex + hi;
+    }
+    if (last - first >= kMoveVertices) return;
+    uint32_t va = mem::VirtualFromPhysical(kernel::R32(s.streams[at.stream].vb + kResData));
+    uint32_t bytes = (last - first + 1) * at.stride;
+    sn.raw_at = uint32_t(cur.raw.size());
+    sn.verts = last - first + 1;
+    sn.first = first;
+    sn.stride = uint16_t(at.stride);
+    sn.offset = uint16_t(at.offset);
+    sn.stream = uint8_t(at.stream);
+    sn.type = uint8_t(at.type);
+    sn.indexed = indices != nullptr;
+    const uint8_t* src = static_cast<const uint8_t*>(kernel::HostPtr(va + first * at.stride));
+    cur.raw.insert(cur.raw.end(), src, src + bytes);
+}
+
+void Draw(const State& s, bool same, const Tag& tag, uint32_t prim, uint32_t start, uint32_t count,
+          const uint8_t* indices) {
     Frame& cur = g_frames[g_cur];
     int32_t leader = -1;
     const Reads* reads = ReadsOf(s);
@@ -624,6 +685,9 @@ void Draw(const State& s, bool same, uint32_t prim, uint32_t start, uint32_t cou
     if (same && !Tracing() && Follows(cur, s, reads, leader)) {
         Snap& f = cur.snaps.emplace_back();
         f.leader = leader;
+        f.tag = tag;
+        if (tag.key) cur.tags.emplace(tag.key, uint32_t(leader));
+        KeepVertices(cur, f, s, start, count, indices);  // a string's letters follow its first
         return;
     }
     Keys k = MakeKeys(s, prim, start, count, indices);
@@ -631,6 +695,9 @@ void Draw(const State& s, bool same, uint32_t prim, uint32_t start, uint32_t cou
     Snap& sn = cur.snaps.emplace_back();
     sn.reads = reads;
     sn.stale = stale;
+    sn.tag = tag;
+    if (tag.key) cur.tags.emplace(tag.key, n);
+    KeepVertices(cur, sn, s, start, count, indices);
     if (sn.reads) {
         sn.at = uint32_t(cur.values.size());
         for (uint8_t r : sn.reads->regs) cur.values.push_back(s.vsc[r]);
@@ -880,6 +947,23 @@ void Match() {
     // nearer of those alike to the one it took (Snap::next)
     static std::vector<std::array<float, 4>> two;
     static std::vector<int32_t> same_found;  // each draw's turn in before, found at the same addresses (InTurns)
+    // a tagged draw is the draw of the frame before with its tag (Tag::key), as the title says, however near another
+    // looks: look-alikes (two squirrels' eyes, a room's lamps) are no longer told apart by distance. Only of the same
+    // program, whose registers it blends. The passes after find the rest: draws the title tags nothing of, a model at
+    // another detail (another piece), an object new to the frame
+    for (Snap& sn : cur.snaps) {
+        if (sn.leader >= 0 || !sn.tag.key) continue;
+        auto it = prev.tags.find(sn.tag.key);
+        if (it == prev.tags.end()) continue;
+        const Snap& o = prev.snaps[it->second];
+        if (o.program != sn.program || o.reads != sn.reads) continue;
+        size_t values = sn.reads ? sn.reads->regs.size() * 4 : kXf * 16;
+        prev.taken[it->second] = true;
+        sn.found = int32_t(it->second);
+        sn.distance = values ? Distance(prev, o, cur, sn, INFINITY) / float(values) : 0;
+        sn.candidates = 1;
+        sn.by_tag = true;
+    }
     for (const auto& [key, list] : cur.loose) {
         auto it = prev.loose.find(key);
         if (it == prev.loose.end()) continue;
@@ -887,7 +971,7 @@ void Match() {
         if (list.size() * before.size() > kPairs) {
             for (size_t k = 0; k < list.size(); k++) {
                 Snap& sn = cur.snaps[list[k]];
-                if (!Nearest(prev, cur, prev.loose, key, k, sn)) continue;
+                if (sn.found >= 0 || !Nearest(prev, cur, prev.loose, key, k, sn)) continue;
                 if (prev.snaps[size_t(sn.found)].parts[kAddresses] != sn.parts[kAddresses]) {
                     size_t values = sn.reads ? sn.reads->regs.size() * 4 : kXf * 16;
                     if (sn.distance > loose(sn) ||
@@ -903,8 +987,13 @@ void Match() {
         pairs.clear();
         two.assign(list.size(), {INFINITY, INFINITY, INFINITY, INFINITY});
         dist.resize(list.size() * before.size());
+        used.assign(list.size(), false);
         for (uint32_t c = 0; c < list.size(); c++) {
             const Snap& sn = cur.snaps[list[c]];
+            if (sn.found >= 0) {  // by its tag
+                used[c] = true;
+                continue;
+            }
             // a pair at other addresses past loose is never taken, and TossUp weighs only those within loose / kClear:
             // past that its distance stops counting (the runner-up, Snap::next, may be such a part sum). Weighed in
             // full, a cutscene's crowds took most of the matching's time
@@ -930,7 +1019,6 @@ void Match() {
             if (a.same != b.same) return a.same;
             return a.turns < b.turns;
         });
-        used.assign(list.size(), false);
         same_found.assign(list.size(), -1);
         for (const Pair& pr : pairs) {
             uint32_t p = before[pr.p];
@@ -1092,9 +1180,25 @@ void Watch(uint32_t n, const Snap& sn, Blended how, const std::string& jumped, c
              "\n    draw %u program %016llX: %s, as %d of %u (%s), distance %.4f, runner-up %.4f, %zu palette registers "
              "left, palette from c%u",
              n, (unsigned long long)sn.program, kHow[size_t(how)], sn.found, sn.candidates,
-             sn.found < 0 ? "-" : sn.second ? "another detail's" : sn.by_exact ? "exact" : "other addresses", sn.distance,
-             sn.next, sn.stale.count(), sn.reads ? sn.reads->relative : 192u);
+             sn.found < 0         ? "-"
+             : sn.by_tag          ? "by tag"
+             : sn.second          ? "another detail's"
+             : sn.by_exact        ? "exact"
+                                  : "other addresses",
+             sn.distance, sn.next, sn.stale.count(), sn.reads ? sn.reads->relative : 192u);
     g_pass.watched += b;
+    // its tag: the object and the piece of its model, and the key; untagged draws were matched by distance alone
+    if (sn.tag.key) {
+        const Frame& prev = g_frames[g_cur ^ 1];
+        snprintf(b, sizeof(b), "\n      tag object %08X piece %08X key %016llX%s", sn.tag.object, sn.tag.piece,
+                 (unsigned long long)sn.tag.key,
+                 sn.by_tag                          ? ""
+                 : prev.tags.count(sn.tag.key) ? " (the frame before's draw of it is another program's)"
+                                               : " (not in the frame before)");
+        g_pass.watched += b;
+    } else {
+        g_pass.watched += "\n      untagged";
+    }
     if (!moved.empty()) g_pass.watched += "\n      moved most:" + moved;
     if (!jumped.empty()) g_pass.watched += "\n      jumped:" + jumped;
     if (!kept.empty()) g_pass.watched += "\n      left, jumped, kept:" + kept;
@@ -1400,6 +1504,10 @@ Blended BlendLeader(uint32_t n, float t, State& s, Undo& undo) {
     const Frame& prev = g_frames[g_cur ^ 1];
     if (g_pass.on) g_pass.draws++;
     if (n < cur.snaps.size() && cur.snaps[n].leader >= 0) n = uint32_t(cur.snaps[n].leader);
+    if (g_pass.on && n < cur.snaps.size() && cur.snaps[n].tag.key) {
+        g_pass.tagged++;
+        if (cur.snaps[n].by_tag) g_pass.by_tag++;
+    }
     // its constants, or the fixed function's transforms, in the frame before: the draw's it was found as, or ones
     // borrowed (Borrow)
     static std::vector<std::array<float, 4>> borrowed;
@@ -1433,7 +1541,8 @@ Blended BlendLeader(uint32_t n, float t, State& s, Undo& undo) {
     if (g_pass.on && sn.found >= 0) {
         char b[128];
         snprintf(b, sizeof(b), "\n    draw %u program %016llX: distance %.4f, nearest of %u, %s", n,
-                 (unsigned long long)program, sn.distance, sn.candidates, sn.second ? "another detail's" : sn.by_exact ? "exact" : "without addresses");
+                 (unsigned long long)program, sn.distance, sn.candidates,
+                 sn.by_tag ? "by tag" : sn.second ? "another detail's" : sn.by_exact ? "exact" : "without addresses");
         auto& f = g_pass.farthest[program];
         if (f.second.empty() || sn.distance > f.first) f = {sn.distance, b};
     }
@@ -1586,6 +1695,7 @@ struct Kept {
     std::vector<std::pair<uint32_t, std::array<float, 4>>> vsc;
     std::vector<std::pair<uint32_t, std::array<float, 16>>> xf;
     uint32_t unfound = 0, jumped = 0, borrowed = 0, across = 0, kept = 0, second = 0;  // what it added to Pass
+    uint32_t tagged = 0, by_tag = 0;
     bool suspect = false, judged = false;  // Suspects::last, once Blend judged the leader
 };
 Kept g_kept;
@@ -1612,6 +1722,8 @@ Blended BlendDraw(uint32_t n, float t, State& s, Undo& undo) {
             g_pass.across += k.across;
             g_pass.kept += k.kept;
             g_pass.second += k.second;
+            g_pass.tagged += k.tagged;
+            g_pass.by_tag += k.by_tag;
             if (k.unfound) g_pass.unfound_programs[ProgramOf(s)].first++;
             if (k.jumped) g_pass.jump_lines[ProgramOf(s)]++;
         }
@@ -1619,7 +1731,7 @@ Blended BlendDraw(uint32_t n, float t, State& s, Undo& undo) {
     }
     size_t vsc = undo.vsc.size(), xf = undo.xf.size();
     uint32_t unfound = g_pass.unfound, jumped = g_pass.jumped, borrowed = g_pass.borrowed, across = g_pass.across,
-             kept = g_pass.kept, second = g_pass.second;
+             kept = g_pass.kept, second = g_pass.second, tagged = g_pass.tagged, by_tag = g_pass.by_tag;
     Blended how = BlendLeader(n, t, s, undo);
     k.pass = g_pass_id;
     k.leader = leader;
@@ -1631,6 +1743,8 @@ Blended BlendDraw(uint32_t n, float t, State& s, Undo& undo) {
     k.across = g_pass.across - across;
     k.kept = g_pass.kept - kept;
     k.second = g_pass.second - second;
+    k.tagged = g_pass.tagged - tagged;
+    k.by_tag = g_pass.by_tag - by_tag;
     k.vsc.clear();
     k.xf.clear();
     for (size_t i = vsc; i < undo.vsc.size(); i++) k.vsc.emplace_back(undo.vsc[i].first, s.vsc.v[undo.vsc[i].first]);
@@ -1670,6 +1784,129 @@ Blended Blend(uint32_t n, float t, State& s, Undo& undo) {
     return how;
 }
 
+// the guest memory MoveVertices writes moved vertices to, and the vertex buffer headers that point at them; the
+// backend copies a draw's vertices as it takes the draw, so a ring is used again once round
+uint32_t g_move_data = 0, g_move_data_size = 0, g_move_data_pos = 0;
+uint32_t g_move_headers = 0, g_move_headers_size = 0, g_move_headers_pos = 0;
+constexpr uint32_t kHeaderBytes = 12;  // a vertex buffer's: common, data, lock
+
+void MoveRing(uint32_t data, uint32_t data_size, uint32_t headers, uint32_t headers_size) {
+    g_move_data = data, g_move_data_size = data_size;
+    g_move_headers = headers, g_move_headers_size = headers_size;
+}
+
+bool MoveVertices(uint32_t n, float t, Blended how, State& s, uint32_t& start, Undo& undo) {
+    const Frame& cur = g_frames[g_cur];
+    const Frame& prev = g_frames[g_cur ^ 1];
+    if (!g_move_data || n >= cur.snaps.size() || how == Blended::kNotFound || how == Blended::kJumped) return false;
+    const Snap& sn = cur.snaps[n];
+    if (!sn.verts) return false;
+    // the draw of the frame before: the one it was found as; a follower's, the draw as far on from its leader's
+    const Snap* was = nullptr;
+    if (sn.leader < 0) {
+        if (sn.found >= 0) was = &prev.snaps[size_t(sn.found)];
+    } else if (int32_t lf = cur.snaps[size_t(sn.leader)].found; lf >= 0) {
+        size_t q = size_t(lf) + (n - uint32_t(sn.leader));
+        if (q < prev.snaps.size() && prev.snaps[q].leader == lf) was = &prev.snaps[q];
+    }
+    if (!was || was->verts != sn.verts || was->stride != sn.stride || was->offset != sn.offset ||
+        was->type != sn.type)
+        return false;
+    // Only the same sprite carried along whole. A 2D draw's constants never change, so it was found by its turn alone,
+    // and that pairs it with another sprite whenever the frame's turns shift: a loading bar's blocks, a block taken
+    // part way toward its neighbour, were drawn scrambled (capture 214722 pics 114-116). So all but its positions the
+    // same, byte for byte (texture coordinates, colours), and every vertex moved by the same step: a sprite that
+    // changes its shape (the peephole's circle, closing) went part way while what fits around it didn't, showing the
+    // scene through the seams (capture 214710 pic 70). A step further than the draw's reach is a jump (a bubble shown
+    // somewhere else). Otherwise the draw is drawn as the frame has it
+    uint32_t comps = sn.type >> 4, pos_end = sn.offset + comps * 4;
+    const uint8_t* ra = prev.raw.data() + was->raw_at;
+    const uint8_t* rb = cur.raw.data() + sn.raw_at;
+    const uint8_t* a = ra + sn.offset;
+    const uint8_t* b = rb + sn.offset;
+    bool watch = g_pass.on && Watched(ProgramOf(s));
+    auto keep = [&](const char* why) {
+        if (watch) {
+            char line[160];
+            snprintf(line, sizeof(line), "\n    draw %u program %016llX: %u vertices kept as the frame has them: %s", n,
+                     (unsigned long long)ProgramOf(s), sn.verts, why);
+            g_pass.watched += line;
+        }
+        return false;
+    };
+    for (uint32_t v = 0; v < sn.verts; v++) {
+        const uint8_t* va = ra + v * sn.stride;
+        const uint8_t* vb = rb + v * sn.stride;
+        if (std::memcmp(va, vb, sn.offset) != 0 || std::memcmp(va + pos_end, vb + pos_end, sn.stride - pos_end) != 0)
+            return keep("other values than its position changed (another sprite)");
+    }
+    float reach = 0;
+    bool moved = false;
+    std::array<float, 4> step{}, lo{}, hi{};
+    for (uint32_t v = 0; v < sn.verts; v++)
+        for (uint32_t c = 0; c < comps; c++) {
+            float x, y;
+            std::memcpy(&x, a + v * sn.stride + c * 4, 4);
+            std::memcpy(&y, b + v * sn.stride + c * 4, 4);
+            if (!std::isfinite(x) || !std::isfinite(y)) return keep("not a number");
+            reach = Reach(Reach(reach, x), y);
+            moved |= x != y;
+            if (!v) step[c] = y - x, lo[c] = hi[c] = y;
+            lo[c] = std::min(lo[c], y), hi[c] = std::max(hi[c], y);
+        }
+    if (!moved) return false;
+    const float slack = 1e-4f * (1.0f + reach);
+    for (uint32_t v = 0; v < sn.verts; v++)
+        for (uint32_t c = 0; c < comps; c++) {
+            float x, y;
+            std::memcpy(&x, a + v * sn.stride + c * 4, 4);
+            std::memcpy(&y, b + v * sn.stride + c * 4, 4);
+            if (std::fabs((y - x) - step[c]) > slack) return keep("not moved whole (its shape changed)");
+            if (Jumped(x, y, reach)) return keep("jumped");
+        }
+    // this frame's vertices with their positions part way, and a header of the stream's pointing at them
+    uint32_t bytes = sn.verts * sn.stride, room = (bytes + 63) & ~63u;
+    if (room > g_move_data_size) return false;
+    if (g_move_data_pos + room > g_move_data_size) g_move_data_pos = 0;
+    if (g_move_headers_pos + 16 > g_move_headers_size) g_move_headers_pos = 0;
+    uint32_t data = g_move_data + g_move_data_pos, header = g_move_headers + g_move_headers_pos;
+    g_move_data_pos += room;
+    g_move_headers_pos += 16;
+    uint8_t* out = static_cast<uint8_t*>(kernel::HostPtr(data));
+    std::memcpy(out, cur.raw.data() + sn.raw_at, bytes);
+    for (uint32_t v = 0; v < sn.verts; v++)
+        for (uint32_t c = 0; c < comps; c++) {
+            float x, y;
+            std::memcpy(&x, a + v * sn.stride + c * 4, 4);
+            std::memcpy(&y, b + v * sn.stride + c * 4, 4);
+            float z = x + (y - x) * t;
+            std::memcpy(out + v * sn.stride + sn.offset + c * 4, &z, 4);
+        }
+    State::Stream& st = s.streams[sn.stream];
+    std::memcpy(kernel::HostPtr(header), kernel::HostPtr(st.vb), kHeaderBytes);
+    kernel::W32(header + kResData, mem::PhysicalFromVirtual(data));
+    undo.stream = sn.stream;
+    undo.vb = st.vb;
+    undo.base_vertex = s.base_vertex;
+    st.vb = header;
+    // vertex first is the copy's first: an indexed draw's indices go from the base vertex, the others from start
+    if (sn.indexed) s.base_vertex -= sn.first;
+    else start -= sn.first;
+    if (g_pass.on) {
+        g_pass.moved++;
+        if (watch) {
+            char line[256];
+            snprintf(line, sizeof(line),
+                     "\n    draw %u program %016llX: %u vertices moved part way, from the frame before's draw %u, by "
+                     "(%g %g), at (%g %g)-(%g %g) in the frame",
+                     n, (unsigned long long)ProgramOf(s), sn.verts, uint32_t(was - prev.snaps.data()), step[0],
+                     step[1], lo[0], lo[1], hi[0], hi[1]);
+            g_pass.watched += line;
+        }
+    }
+    return true;
+}
+
 bool Hidden(Blended how) {
     uint32_t mask = HideMask();
     return (mask >> uint32_t(how) & 1) || ((mask & kHideSuspects) && g_sus.last);
@@ -1707,13 +1944,14 @@ void BeginPass(float t) {
 void EndPass(uint32_t slot) {
     std::string suspects = Score();
     if (!g_pass.on || slot >= std::size(g_notes)) return;
-    char b[384];
+    char b[448];
     snprintf(b, sizeof(b),
-             "drawn again at t %.2f: %u draws, %u not found, %u found as another detail's, %u moved as a neighbour found, "
-             "%u as another program's, %u with registers that jumped, "
-             "%u palette registers another draw left that jumped; at other addresses found within %.4f (by the frame)",
-             g_pass.t, g_pass.draws, g_pass.unfound, g_pass.second, g_pass.borrowed, g_pass.across, g_pass.jumped, g_pass.kept,
-             g_loose);
+             "drawn again at t %.2f: %u draws (%u tagged, %u found by tag, %u with their vertices moved), %u not found, "
+             "%u found as another detail's, %u moved as a neighbour found, %u as another program's, %u with registers "
+             "that jumped, %u palette registers another draw left that jumped; at other addresses found within %.4f "
+             "(by the frame)",
+             g_pass.t, g_pass.draws, g_pass.tagged, g_pass.by_tag, g_pass.moved, g_pass.unfound, g_pass.second,
+             g_pass.borrowed, g_pass.across, g_pass.jumped, g_pass.kept, g_loose);
     std::string note = b + suspects;
     std::vector<std::pair<uint64_t, std::pair<uint32_t, std::string>>> top(g_pass.unfound_programs.begin(),
                                                                            g_pass.unfound_programs.end());

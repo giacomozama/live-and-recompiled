@@ -13,6 +13,7 @@
 #include "app/app.h"
 #include "core/diag.h"
 #include "gpu/backend.h"
+#include "gpu/interp.h"
 #include "gpu/texture.h"
 #include "gpu/vertex.h"
 #include "xdk/d3d8.h"
@@ -430,6 +431,29 @@ void DeferredFlush(uint32_t dirty) {
 void FlushPending() {
     std::lock_guard<std::recursive_mutex> lock(g_lock);
     Walk(Dev(kDevPush));
+}
+
+// The tag SetDrawTag set, and each draw's (gpu::interp::Tag): its object and piece, with where in a static push buffer
+// the walk read the draw's end (g_draw_at; 0 in the scratch buffer, whose places change every frame) and its turn
+// among the frame's draws of that place, a model drawn again (a fur's shells) drawing the same commands each time
+namespace {
+DrawTag g_tag;
+uint32_t g_draw_at = 0;
+std::unordered_map<uint64_t, uint32_t> g_tag_turns;
+
+gpu::interp::Tag TagOfDraw() {
+    if (!g_tag.piece) return {};
+    uint64_t key = (uint64_t(g_tag.object) << 32 | g_tag.piece) * 0x9E3779B97F4A7C15ull ^ g_draw_at;
+    uint32_t turn = g_tag_turns[key]++;
+    key = (key ^ (uint64_t(turn) + 1) * 0xC2B2AE3D27D4EB4Full) * 0xFF51AFD7ED558CCDull;
+    return {key ? key : 1, g_tag.object, g_tag.piece};
+}
+}  // namespace
+
+DrawTag SetDrawTag(DrawTag tag) {
+    std::lock_guard<std::recursive_mutex> lock(g_lock);
+    Walk(Dev(kDevPush));  // the commands pushed so far are the tag's before
+    return std::exchange(g_tag, tag);
 }
 
 // XBE_LOD_TRACE: where a title switches a mesh's detail. A draw read off a static push buffer is told by the buffer
@@ -899,6 +923,7 @@ HLE_STDCALL(D3DDevice_Swap, 1) {
     }
     Walk(Dev(kDevPush));  // reports asked for at the end of the frame
     LodEndFrame();
+    g_tag_turns.clear();
     if (g_backend) g_backend->Present(SurfaceOf(g_buffers[1]));
     // D3DPRESENT_INTERVAL_ONE 1, TWO 2, THREE 4, FOUR 8, IMMEDIATE bit 31; DEFAULT 0 is ONE. The render state, when
     // the title sets one, replaces the device's.
@@ -1458,6 +1483,10 @@ void NoteStencil(const char* how, uint32_t v, uint32_t from) {
 void BackendDraw(uint32_t prim, uint32_t start, uint32_t count, const uint8_t* indices) {
     if (!g_backend) return;
     LodNote(prim, count);
+    gpu::interp::g_draw_tag = TagOfDraw();
+    struct Untag {
+        ~Untag() { gpu::interp::g_draw_tag = {}; }
+    } untag;
     if (!g_chip_program) {
         g_backend->Draw(g_state, prim, start, count, indices);
         return;
@@ -2026,6 +2055,11 @@ void Walk(uint32_t end) {
                 continue;
             }
             if (m == 0x17FC) {  // begin/end, 0 ends
+                // the draw's place, for its tag: a static push buffer's end of it is the same every frame
+                g_draw_at = p >= g_scratch_push && p < g_scratch_push + g_scratch_size ? 0 : p;
+                struct Unplace {
+                    ~Unplace() { g_draw_at = 0; }
+                } unplace;
                 if (v) {
                     g_im_prim = v;
                     g_im_mask = 0;

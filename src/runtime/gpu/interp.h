@@ -18,9 +18,20 @@
 namespace gpu::interp {
 
 bool Tracing();
+// A draw's identity as the title knows it (RT64's interpolation ids): the object drawing it (object: the instance data
+// a Conker model's renderers are handed), the piece of its model (piece: a scenegraph node), and key, those with the
+// draw's place in the piece's push buffer and its turn among the frame's draws of that place. A draw is found by its
+// key in the frame before, ahead of any guess by distance. key 0: the title said nothing (particles, text)
+struct Tag {
+    uint64_t key = 0;
+    uint32_t object = 0, piece = 0;
+};
+// the tag of the draw the title's thread hands the backend next (d3d::SetDrawTag), taken with it as it is recorded
+inline Tag g_draw_tag;
 // a draw of the frame as it is drawn the first time, in order; indices as Backend::Draw takes them. same: nothing
 // changed since the draw before it but vertex sources and constants (Backend::Changed)
-void Draw(const State& s, bool same, uint32_t prim, uint32_t start, uint32_t count, const uint8_t* indices);
+void Draw(const State& s, bool same, const Tag& tag, uint32_t prim, uint32_t start, uint32_t count,
+          const uint8_t* indices);
 // the frame's draws are all in: each looked for in the frame before, before the first Blend (EndFrame does it if not)
 void Match();
 // the frame's Present showed the surface whose memory is at data: a back buffer, whose memory rotates, so its draws
@@ -36,15 +47,28 @@ void EndFrame();
 struct Undo {
     std::vector<std::pair<uint32_t, std::array<float, 4>>> vsc;
     std::vector<std::pair<uint32_t, std::array<float, 16>>> xf;
+    // a stream MoveVertices pointed at vertices moved part way, and the base vertex it had (stream 16: none)
+    uint32_t stream = 16, vb = 0, base_vertex = 0;
     void Restore(State& s) {
         for (const auto& [r, v] : vsc) s.vsc.v[r] = v;
         for (const auto& [i, m] : xf) s.transforms[i] = m;
         vsc.clear();
         xf.clear();
+        if (stream < 16) {
+            s.streams[stream].vb = vb;
+            s.base_vertex = base_vertex;
+            stream = 16;
+        }
     }
 };
 enum class Blended { kNotFound, kJumped, kBorrowed, kYes };
 Blended Blend(uint32_t n, float t, State& s, Undo& undo);
+// A 2D draw the game places on the CPU (a speech bubble, a marker over a character) moves in its vertices, not its
+// constants: the frame's draw n, after Blend came out how, drawn with its positions at t from the draw of the frame
+// before it was found as, when both are small, untagged and laid out alike. s's stream then reads a copy in the ring
+// MoveRing gave (start, or s's base vertex for an indexed draw, made to fit it); undo puts them back. False: untouched
+void MoveRing(uint32_t data, uint32_t data_size, uint32_t headers, uint32_t headers_size);
+bool MoveVertices(uint32_t n, float t, Blended how, State& s, uint32_t& start, Undo& undo);
 // XBE_INTERP_HIDE: whether a draw that came out so is left out of the picture drawn again; 16 leaves out the
 // suspects too (likely found wrong or missed, interp.cpp's Suspicion), of the draw Blend did last
 bool Hidden(Blended how);
