@@ -576,9 +576,13 @@ std::bitset<192> Stale(const State& s, const Reads* reads) {
 }
 
 // a draw in the state of the draw before it (but for vertex sources and constants) whose constants are that draw's
-// too: it moves as that one does (a ground drawn a quad at a time is thousands of these), and is found as it is
-bool Follows(const Frame& cur, const State& s, int32_t& leader) {
-    if (cur.snaps.empty()) return false;
+// too: it moves as that one does (a ground drawn a quad at a time is thousands of these), and is found as it is. Not
+// a skinned draw (a palette, Reads::relative): a character's piece follows the piece before it only in the frames no
+// bone of its own was uploaded between them, and a follower is in no list of its frame, so the frame after had nothing
+// to find it as. Conker's ear pieces (D293CFF5, counts 94/126/128) drew at the frame's own pose, or with a
+// neighbour's bones, for a picture: a crack behind the ear (captures 114704, 120029, 120259)
+bool Follows(const Frame& cur, const State& s, const Reads* reads, int32_t& leader) {
+    if (cur.snaps.empty() || (reads && reads->relative < 192)) return false;
     leader = cur.snaps.back().leader >= 0 ? cur.snaps.back().leader : int32_t(cur.snaps.size() - 1);
     const Snap& l = cur.snaps[size_t(leader)];
     if (l.reads) {
@@ -597,7 +601,7 @@ void Draw(const State& s, bool same, uint32_t prim, uint32_t start, uint32_t cou
     int32_t leader = -1;
     const Reads* reads = ReadsOf(s);
     std::bitset<192> stale = Stale(s, reads);
-    if (same && !Tracing() && Follows(cur, s, leader)) {
+    if (same && !Tracing() && Follows(cur, s, reads, leader)) {
         Snap& f = cur.snaps.emplace_back();
         f.leader = leader;
         return;
@@ -972,6 +976,27 @@ void Watch(uint32_t n, const Snap& sn, Blended how, const std::string& jumped, c
     if (!kept.empty()) g_pass.watched += "\n      left, jumped, kept:" + kept;
     const std::string& why = g_frames[g_cur].WhyNot(n);
     if (how == Blended::kNotFound && !why.empty()) g_pass.watched += "\n      " + why;
+    if (sn.found >= 0) return;
+    // what it could have been found as: its program's draws in the frame before no draw took, nearest first, by
+    // Distance per value as the second chance weighs them (Match)
+    const Frame& cur = g_frames[g_cur];
+    const Frame& prev = g_frames[g_cur ^ 1];
+    auto it = prev.programs.find(sn.program);
+    if (it == prev.programs.end()) return;
+    size_t values = sn.reads ? sn.reads->regs.size() * 4 : kXf * 16;
+    std::vector<std::pair<float, uint32_t>> near;
+    for (uint32_t p : it->second)
+        if (!prev.taken[p]) near.emplace_back(Distance(prev, prev.snaps[p], cur, sn, INFINITY) / float(values), p);
+    std::sort(near.begin(), near.end());
+    snprintf(b, sizeof(b), "\n      count %u; untaken of its program, of %zu:", uint32_t(sn.parts[kShape]),
+             it->second.size());
+    g_pass.watched += b;
+    for (size_t i = 0; i < std::min<size_t>(near.size(), 4); i++) {
+        const Snap& o = prev.snaps[near[i].second];
+        snprintf(b, sizeof(b), " %u at %.4f (count %u%s)", near[i].second, near[i].first, uint32_t(o.parts[kShape]),
+                 o.parts[kAddresses] == sn.parts[kAddresses] ? ", its addresses" : "");
+        g_pass.watched += b;
+    }
 }
 
 // XBE_INTERP_HIDE: draws left out of the pictures drawn again, to see which are which: 1 not found, 2 jumped,
