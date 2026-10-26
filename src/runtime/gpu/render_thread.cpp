@@ -588,7 +588,11 @@ private:
                     case Op::State: Apply(rs, b, c, &changed); break;
                     case Op::Draw: {
                         if (interp::Recording()) interp::CheckVertices(n, rs, c.a, c.b, c.c, c.d ? data : nullptr);
-                        if (!interp::Hidden(interp::Blend(n++, t, rs, undo))) {
+                        static const bool perf = diag::Perf();
+                        auto blend_start = perf ? PerfClock::now() : PerfClock::time_point{};
+                        interp::Blended how = interp::Blend(n++, t, rs, undo);
+                        if (perf) gen_blend_ns_ += Ns(blend_start);
+                        if (!interp::Hidden(how)) {
                             inner_->Changed(changed);
                             changed = false;
                             inner_->Draw(rs, c.a, c.b, c.c, c.d ? data : nullptr);
@@ -639,10 +643,12 @@ private:
         gen_replay_ns_ += Ns(replay_start);
         // XBE_PERF: what frame generation costs the render thread, a frame
         if (diag::Perf() && keeping_ && ++gen_frames_ >= 120) {
-            LOGR("perf: frame generation: matching %.2f ms, drawing again %.2f ms a frame, %u draws, %u pictures",
-                 gen_match_ns_ / 1e6 / gen_frames_, gen_replay_ns_ / 1e6 / gen_frames_, frame_draws_, pictures);
+            LOGR("perf: frame generation: matching %.2f ms, drawing again %.2f ms a frame (blending %.2f), %u draws, "
+                 "%u pictures",
+                 gen_match_ns_ / 1e6 / gen_frames_, gen_replay_ns_ / 1e6 / gen_frames_, gen_blend_ns_ / 1e6 / gen_frames_,
+                 frame_draws_, pictures);
             gen_frames_ = 0;
-            gen_match_ns_ = gen_replay_ns_ = 0;
+            gen_match_ns_ = gen_replay_ns_ = gen_blend_ns_ = 0;
         }
         inner_->Present(c.s1);
         interp::EndFrame();  // a frame not tracked leaves none to find draws in
@@ -717,7 +723,7 @@ private:
     State frame_start_, replay_state_;
     bool keeping_ = false, frame_over_ = false;
     uint32_t frame_draws_ = 0;
-    uint64_t gen_match_ns_ = 0, gen_replay_ns_ = 0;  // XBE_PERF, over gen_frames_
+    uint64_t gen_match_ns_ = 0, gen_replay_ns_ = 0, gen_blend_ns_ = 0;  // XBE_PERF, over gen_frames_
     uint32_t gen_frames_ = 0;
 
     std::mutex m_;
