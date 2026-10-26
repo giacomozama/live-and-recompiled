@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <bitset>
+#include <cfloat>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
@@ -11,6 +12,8 @@
 #include <unordered_map>
 #include <utility>
 #include <vector>
+
+#include <emmintrin.h>
 
 #include "core/log.h"
 #include "gpu/backend.h"
@@ -178,8 +181,24 @@ struct Snap {
     std::string why;     // not found, when recording or tracing: what keeps it from the nearest draw of its program
 };
 
+// a frame's draws of each key, kept from the last time the frame was used: a battle's frame made and freed tens of
+// thousands of entries each time. Each list cleared, a key no draw had that time taken out
+using Lists = std::unordered_map<uint64_t, std::vector<uint32_t>>;
+void Reuse(Lists& m) {
+    for (auto it = m.begin(); it != m.end();) {
+        if (it->second.empty()) {
+            it = m.erase(it);
+        } else {
+            it->second.clear();
+            ++it;
+        }
+    }
+}
+
 struct Frame {
-    std::unordered_map<uint64_t, std::vector<uint32_t>> loose, programs, lod, mesh;  // the draws of each key
+    // the draws of each key. loose made again each time: Match goes through it in its order, which a kept map's
+    // history would change
+    std::unordered_map<uint64_t, std::vector<uint32_t>> loose, programs, lod, mesh;
     std::unordered_map<uint64_t, std::vector<uint32_t>> exact;  // of all its parts (Measure)
     // once matched, the found draws Borrow and BorrowAcross go out to: of each program, their turns in programs; of
     // the frame, those with a program. A run of draws not found (a battle's blood, in new buffers each frame) went
@@ -194,11 +213,11 @@ struct Frame {
     void Clear() {
         matched = false;
         loose.clear();
-        programs.clear();
-        lod.clear();
-        mesh.clear();
-        exact.clear();
-        found_turns.clear();
+        Reuse(programs);
+        Reuse(lod);
+        Reuse(mesh);
+        Reuse(exact);
+        Reuse(found_turns);
         found_programmed.clear();
         snaps.clear();
         values.clear();
@@ -214,6 +233,21 @@ float Rel(float u, float v) {
     if (u == v || !std::isfinite(u) || !std::isfinite(v)) return 0;
     return std::fabs(u - v) / (1.0f + std::fabs(u) + std::fabs(v));
 }
+// Rel of four values at once, each as Rel has it, times w; added into d in turn, as four calls would. Distance was
+// most of the matching's time
+void AddRel4(const float* u, const float* v, float w, float& d) {
+    const __m128 sign = _mm_set1_ps(-0.0f), one = _mm_set1_ps(1.0f), big = _mm_set1_ps(FLT_MAX);
+    __m128 a = _mm_loadu_ps(u), b = _mm_loadu_ps(v);
+    __m128 au = _mm_andnot_ps(sign, a), av = _mm_andnot_ps(sign, b);
+    __m128 q = _mm_div_ps(_mm_andnot_ps(sign, _mm_sub_ps(a, b)), _mm_add_ps(_mm_add_ps(one, au), av));
+    __m128 counted = _mm_and_ps(_mm_cmpneq_ps(a, b), _mm_and_ps(_mm_cmple_ps(au, big), _mm_cmple_ps(av, big)));
+    alignas(16) float r[4];
+    _mm_store_ps(r, _mm_mul_ps(_mm_and_ps(counted, q), _mm_set1_ps(w)));
+    d += r[0];
+    d += r[1];
+    d += r[2];
+    d += r[3];
+}
 // The palette registers another draw left (Stale) count a quarter: whole, another character's bones in them took a
 // character for its look-alike; left out, an eye (its own upload a register, its face's bones left before it) was
 // as near to the other squirrel's eye as to its own. all: they count whole
@@ -226,13 +260,13 @@ float Distance(const Frame& fa, const Snap& a, const Frame& fb, const Snap& b, f
         for (size_t j = 0; j < b.reads->regs.size(); j++) {
             uint8_t r = b.reads->regs[j];
             float w = !all && (a.stale[r] || b.stale[r]) ? kStaleWeight : 1.0f;
-            for (size_t c = 0; c < 4; c++) d += w * Rel(x[j][c], y[j][c]);
+            AddRel4(x[j].data(), y[j].data(), w, d);
             if (d > limit) return d;
         }
         return d;
     }
     for (size_t m = 0; m < kXf; m++)
-        for (size_t i = 0; i < 16; i++) d += Rel(a.xf[m][i], b.xf[m][i]);
+        for (size_t i = 0; i < 16; i += 4) AddRel4(&a.xf[m][i], &b.xf[m][i], 1.0f, d);
     return d;
 }
 
@@ -281,7 +315,7 @@ bool Nearest(const Frame& prev, const Frame& cur, const std::unordered_map<uint6
 // what keeps a draw from the draws of its program in the frame before: the parts the nearest by parts differs in
 std::string Why(const Frame& prev, const Snap& sn) {
     auto it = prev.programs.find(sn.program);
-    if (it == prev.programs.end()) return "its program was not drawn";
+    if (it == prev.programs.end() || it->second.empty()) return "its program was not drawn";
     int best = kParts + 1;
     uint32_t mask = 0;
     bool all_taken = true;
