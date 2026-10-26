@@ -92,6 +92,9 @@ constexpr float kDepthAlpha = 0.75f;
 // Conker's head (its morph targets in v1..v5) draws its shells with a program of its own, the offset c90.x times the
 // fur's length in v9; not lit by fur_shading (its registers differ), only its depth split
 constexpr const char* kHeadMatch = "mac_mul(((c[186]).xxxx), ((i.v9).xxxx))";
+// Berri's (two programs, her head and her body, Heist) offset by c90.x times the length in v5; their skin pass has c90
+// 0 0 0 1. Missed, every strand of hers passing the alpha test wrote depth: a sharp aura around her
+constexpr const char* kC90Match = "mac_mul(((c[186]).xxxx), ((i.v5).xxxx))";
 const bool kAlways = true;
 
 float DepthAlpha() {
@@ -108,5 +111,7 @@ void fur::Init() {
     gpu::g_program_shading.push_back({.match = kMatch, .on = &kAlways, .vs = "    o.x0 = 0;\n    o.x1 = 0;",
                                       .top = 85 + 96, .depth_alpha = depth_alpha});
     gpu::g_program_shading.push_back({.match = kHeadMatch, .on = &kAlways, .vs = "    o.x0 = 0;\n    o.x1 = 0;",
+                                      .top = 90 + 96, .depth_alpha = depth_alpha});
+    gpu::g_program_shading.push_back({.match = kC90Match, .on = &kAlways, .vs = "    o.x0 = 0;\n    o.x1 = 0;",
                                       .top = 90 + 96, .depth_alpha = depth_alpha});
 }
