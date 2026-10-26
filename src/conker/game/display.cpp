@@ -31,6 +31,7 @@
 #include "common/display.h"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -86,6 +87,9 @@ void SetFrameRate(uint32_t rate) {
 }
 
 uint32_t GameRate() { return Rate(); }
+
+std::atomic<uint32_t> g_ticks{0};
+uint32_t Ticks() { return g_ticks.load(std::memory_order_relaxed); }
 
 void Init() { SetFrameRate(g_frame_rate); }
 
@@ -147,6 +151,7 @@ void ConkerFrameTicks(X86Context& ctx, uint8_t* base) {
     static double carry = 0;
     if (Rate() <= 30) {
         carry = 0;
+        display::g_ticks += ctx.ecx;
         return;
     }
     uint64_t us = uint64_t(kernel::R32(ctx.esp + 0x10)) | uint64_t(kernel::R32(ctx.esp + 0x14)) << 32;
@@ -158,6 +163,7 @@ void ConkerFrameTicks(X86Context& ctx, uint8_t* base) {
     static const bool trace = std::getenv("XBE_TRACE_TICKS") != nullptr;
     if (trace) LOGR("display: frame %llu us, %d ticks (console's %u), carry %.2f", (unsigned long long)us, ticks, ctx.ecx, carry);
     ctx.ecx = uint32_t(ticks);
+    display::g_ticks += ctx.ecx;
 }
 
 // [[hook]] before 0x64468 in the camera projection: xmm1 holds the camera's aspect

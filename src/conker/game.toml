@@ -428,6 +428,11 @@ at = 0x12338E  # the idea bulb's countdown: kept while Conker stands on the B pa
 call = "ConkerBulbLasting"
 
 [[hook]]
+at = 0x2D5662  # a character's script timer +0x214: counted in console frames, not frames (the alien's punch window)
+call = "ConkerScriptTimer"
+on_true = 0x2D5674
+
+[[hook]]
 at = 0x158E38  # the rope's step: a weighted chain in substeps of the frame instead of the console's pass (rope::g_physics)
 call = "ConkerRopeStep"
 on_true = 0x15919D

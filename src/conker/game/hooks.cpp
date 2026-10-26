@@ -18,6 +18,7 @@
 
 #include "common/bulb.h"
 #include "common/cutscenes.h"
+#include "common/display.h"
 #include "common/fur.h"
 #include "common/grass.h"
 
@@ -341,4 +342,20 @@ void ConkerBulbLasting(X86Context& ctx, uint8_t* base) {
     int32_t time = int16_t(kernel::R16(ctx.esi + 0x2C));
     int32_t ticks = int32_t(kernel::R32(0x7FA20C));
     if (time > 0) kernel::W16(ctx.esi + 0x2C, uint16_t(std::min(time + ticks, 0x7FFF)));
+}
+
+// 0x2D5540 steps a character's timers each frame (edi the character, dl the frame's ticks [0x7FA250]), most by the
+// ticks, but the byte [character+0x214] by one a frame (0x2D566C). The animation scripts set it (0x30DA30 sets the
+// player's [0x84A5F8] to the command's argument) and branch when it is out (0x2C6A10, the script's jump on +0x214
+// zero): the last boss's scripts time the window in which the alien takes Conker's punches with it. The console runs
+// at 30 FPS, two ticks a frame, so at 60 the window was half as long, and after the second toss too short to land
+// all four punches. It counts console frames here, one each two ticks, as at 30.
+// [[hook]] before 0x2D5662, on_true past the decrement (0x2D5674)
+bool ConkerScriptTimer(X86Context& ctx, uint8_t* base) {
+    uint8_t& left = base[uint32_t(ctx.edi + 0x214)];
+    if (left == 0) return true;
+    const uint32_t now = display::Ticks(), ticks = ctx.edx & 0xFF;
+    const uint32_t frames = now / 2 - (now - ticks) / 2;  // console frames this frame's ticks end
+    left = uint8_t(left > frames ? left - frames : 0);
+    return true;
 }

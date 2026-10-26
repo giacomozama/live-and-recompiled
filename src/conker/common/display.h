@@ -15,6 +15,9 @@ extern uint32_t g_frame_rate;
 void SetFrameRate(uint32_t rate);
 // the frames the game itself runs a second: 30 or 60
 uint32_t GameRate();
+// the 60 Hz ticks the game has stepped since boot, this frame's among them (the frame timer adds them as it hands them
+// out): for counting in console frames, two ticks each, what the game counts in frames
+uint32_t Ticks();
 void Init();
 
 // settings.toml side_by_side: a two player match splits the screen left and right instead of top and bottom, from
