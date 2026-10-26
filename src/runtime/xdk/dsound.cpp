@@ -1,5 +1,6 @@
 // DirectSound (XDK 5849) on a host software mixer. Buffers and streams are read from guest memory as they play.
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -11,6 +12,7 @@
 
 #include "audio/audio.h"
 #include "xbe/xbe.h"
+#include "xdk/dsfx.h"
 #include "xdk/dsound.h"
 #include "xdk/hle.h"
 #include "xdk/layout.h"
@@ -155,6 +157,9 @@ struct Voice {
     uint8_t nbins = 0, bin[8] = {};
     int32_t bin_mb[32] = {};  // by mix bin
     std::vector<float> curve;  // rolloff
+    bool mixin = false;         // DSBCAPS_MIXIN: plays the submix of the voices routed to it
+    uint32_t out = 0;           // SetOutputBuffer: the mixin buffer its multipass sends feed
+    std::vector<float> submix;  // mixin: this render's submix
     bool is3d = false;
     uint32_t mode = 0;  // DS3DMODE: 1 head relative, 2 disabled
     float p[3] = {}, min_dist = 1, max_dist = 1e9f;
@@ -183,6 +188,18 @@ std::atomic<int64_t> g_pumped{0};          // the last DirectSoundDoWork, steady
 std::atomic<int64_t> g_mixed{0};           // the last Render, steady ms
 std::atomic<int64_t> g_ran{0};             // the last callback run, steady ms
 bool g_started = false;
+constexpr uint32_t kGpXmem = 0xFE830000;  // the GP's X memory in the APU window, a dword per word
+constexpr uint32_t kBins = 32, kMultipass = 31;  // XACT sends a voice to its submix through the last bin
+// IDirectSound_SetMixBinHeadroom: the bits the VP takes off what it mixes into each bin. The output stage puts them
+// back on the speaker bins, so only what the effects see changes; Conker's GP kernel outputs bins 0-5 as they are.
+// The library starts every bin at one and the multipass bin at none (0x4C60E0).
+std::array<uint8_t, kBins> DefaultBinHeadroom() {
+    std::array<uint8_t, kBins> h;
+    h.fill(1);
+    h[kMultipass] = 0;
+    return h;
+}
+std::array<uint8_t, kBins> g_bin_headroom = DefaultBinHeadroom();
 uint32_t g_ds = 0;
 
 const bool g_trace = std::getenv("XBE_TRACE_DSOUND") != nullptr;
@@ -262,56 +279,89 @@ void Complete(Voice& v, Packet& pk, uint32_t status) {
     }
 }
 
-// gain of voice channel c on host left and right. A hardware voice holds two channels and owns a run of slots,
-// which alternate left and right.
-void Levels(Voice& v, float g[2][2]) {
-    static const uint8_t kFront[2] = {0, 1};
-    const uint8_t* bin = v.nbins ? v.bin : kFront;
-    uint32_t n = v.nbins ? v.nbins : 2, voices = (std::max<uint32_t>(v.channels, 1) - 1) / 2 + 1;
-    uint32_t per = std::max<uint32_t>(n / voices, 2), step = v.channels == 1 ? 1 : 2;
-    bool speakers = false;
-    for (uint32_t s = 0; s < n; s++) speakers |= bin[s] < 10 && bin[s] != 3;
-    for (uint32_t c = 0; c < 2; c++) {
-        g[c][0] = g[c][1] = 0;
-        for (uint32_t s = c; c < v.channels && s < per && s < n; s += step) {
-            uint32_t b = bin[s];
-            if (speakers && (b == 3 || b > 9)) continue;  // sub and effect sends
-            float x = Db(v.bin_mb[b]) * v.volume * v.headroom * (b == 2 ? 0.707f : 1.0f);
-            // even bins are left, odd right, 2 is the centre
-            if (!speakers || b == 2 || !(b & 1)) g[c][0] = std::max(g[c][0], x);
-            if (!speakers || b == 2 || (b & 1)) g[c][1] = std::max(g[c][1], x);
-        }
-    }
+// the mixin buffer a voice's multipass sends feed, if it has one
+Voice* Submix(const Voice& v) {
+    auto it = v.out ? g_voices.find(v.out) : g_voices.end();
+    return it != g_voices.end() && it->second.mixin && &it->second != &v ? &it->second : nullptr;
+}
+// mixin buffers between the voice and the bins
+int Depth(const Voice& v) {
+    int d = 0;
+    for (const Voice* s = Submix(v); s && d < 8; s = Submix(*s)) d++;
+    return d;
+}
+
+bool Speaker(uint32_t b) { return b < 10 && b != 3; }  // fronts, centre, backs and the crosstalk inputs; 3 is the sub
+
+constexpr uint32_t kChannels = 8;  // the most a voice mixes; a hardware voice holds two
+
+struct Route {
+    uint8_t bin;
+    float g[kChannels];  // each voice channel into the bin
+};
+
+// what the voice puts in each bin, as the VP mixes it: every slot adds its channel at the slot's bin volume, the voice
+// volume and headroom, less the bin's headroom bits. A hardware voice holds two channels and owns a run of slots,
+// which alternate channels; a mono voice sends its one channel to all of them. With no bins given a voice plays its
+// channels on the speakers in WAVE order: front left and right, then centre and sub, then the backs.
+int Routes(const Voice& v, Route* r) {
+    static const uint8_t kSpeakers[6] = {0, 1, 2, 3, 4, 5}, kQuad[4] = {0, 1, 4, 5};
+    uint32_t channels = std::min<uint32_t>(std::max<uint32_t>(v.channels, 1), kChannels);
+    const uint8_t* bin = v.nbins ? v.bin : channels == 4 ? kQuad : kSpeakers;
+    uint32_t n = v.nbins ? v.nbins : std::clamp<uint32_t>(channels, 2, 6), voices = (channels - 1) / 2 + 1;
+    uint32_t per = std::max<uint32_t>(n / voices, 2);
+    float att = 1, pan = 0;
     if (v.calc3d) {
-        for (int c = 0; c < 2; c++) {
-            g[c][0] *= v.att3d * std::min(1.0f, 1.0f - v.pan3d);
-            g[c][1] *= v.att3d * std::min(1.0f, 1.0f + v.pan3d);
+        att = v.att3d;
+        pan = v.pan3d;
+    } else if (v.is3d && v.mode != 2) {
+        bool rel = v.mode == 1;  // the position is already in listener space
+        float d[3] = {v.p[0], v.p[1], v.p[2]};
+        for (int i = 0; i < 3 && !rel; i++) d[i] -= g_listener[i];
+        float dist = std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+        if (dist > v.min_dist && v.curve.empty()) {
+            att = v.min_dist / std::min(dist, v.max_dist);
+        } else if (dist > v.min_dist && v.max_dist > v.min_dist) {
+            // points spread evenly from min to max distance, 1.0 at min
+            float at = (std::min(dist, v.max_dist) - v.min_dist) / (v.max_dist - v.min_dist) * v.curve.size();
+            size_t i = std::min(size_t(at), v.curve.size() - 1);
+            float from = i ? v.curve[i - 1] : 1.0f;
+            att = from + (v.curve[i] - from) * (at - i);
         }
-        return;
+        float right[3] = {g_top[1] * g_front[2] - g_top[2] * g_front[1], g_top[2] * g_front[0] - g_top[0] * g_front[2],
+                          g_top[0] * g_front[1] - g_top[1] * g_front[0]};
+        float side = rel ? d[0] : d[0] * right[0] + d[1] * right[1] + d[2] * right[2];
+        pan = dist > 1e-3f ? side / dist : 0.0f;
     }
-    if (!v.is3d || v.mode == 2) return;
-    bool rel = v.mode == 1;  // the position is already in listener space
-    float d[3] = {v.p[0], v.p[1], v.p[2]};
-    for (int i = 0; i < 3 && !rel; i++) d[i] -= g_listener[i];
-    float dist = std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
-    float att = 1;
-    if (dist > v.min_dist && v.curve.empty()) {
-        att = v.min_dist / std::min(dist, v.max_dist);
-    } else if (dist > v.min_dist && v.max_dist > v.min_dist) {
-        // points spread evenly from min to max distance, 1.0 at min
-        float at = (std::min(dist, v.max_dist) - v.min_dist) / (v.max_dist - v.min_dist) * v.curve.size();
-        size_t i = std::min(size_t(at), v.curve.size() - 1);
-        float from = i ? v.curve[i - 1] : 1.0f;
-        att = from + (v.curve[i] - from) * (at - i);
+    // with no effects image, a voice heard only through effects (or a submix it has no target for) plays dry on the
+    // front pair, at its loudest send
+    bool heard = dsfx::Loaded();
+    for (uint32_t s = 0; s < n; s++) heard |= Speaker(bin[s]) || (bin[s] == kMultipass && Submix(v));
+    int count = 0;
+    auto add = [&](uint32_t b, int c, float x) {
+        int k = 0;
+        while (k < count && r[k].bin != b) k++;
+        if (k == count) r[count++] = {uint8_t(b), {}};
+        x /= float(1 << g_bin_headroom[b]);
+        r[k].g[c] = heard ? r[k].g[c] + x : std::max(r[k].g[c], x);
+    };
+    for (uint32_t c = 0; c < channels; c++) {
+        // channel c is the first or second of hardware voice c / 2, which owns slots [per * (c / 2), per * (c / 2 + 1))
+        uint32_t pair = c / 2 * 2 + 1 < channels ? 2 : 1, end = std::min(per * (c / 2 + 1), n);
+        for (uint32_t s = per * (c / 2) + c % 2; s < end; s += pair) {
+            uint32_t b = bin[s];
+            float x = Db(v.bin_mb[b]) * v.volume * v.headroom * att;
+            float left = std::min(1.0f, 1.0f - pan), right = std::min(1.0f, 1.0f + pan);
+            if (!heard) {
+                add(0, c, x * left);
+                add(1, c, x * right);
+            } else {
+                // even bins are left, odd right, 2 is the centre
+                add(b, c, Speaker(b) && b != 2 ? x * (b & 1 ? right : left) : x);
+            }
+        }
     }
-    float right[3] = {g_top[1] * g_front[2] - g_top[2] * g_front[1], g_top[2] * g_front[0] - g_top[0] * g_front[2],
-                      g_top[0] * g_front[1] - g_top[1] * g_front[0]};
-    float side = rel ? d[0] : d[0] * right[0] + d[1] * right[1] + d[2] * right[2];
-    float pan = dist > 1e-3f ? side / dist : 0.0f;
-    for (int c = 0; c < 2; c++) {
-        g[c][0] *= att * std::min(1.0f, 1.0f - pan);
-        g[c][1] *= att * std::min(1.0f, 1.0f + pan);
-    }
+    return count;
 }
 
 // a stream goes quiet: the synch hold ends, a started one loses its pause as well
@@ -320,74 +370,129 @@ void Deactivate(Voice& v) {
     if (v.active) v.active = v.paused = v.ending = false;
 }
 
+bool Plays(const Voice& v) {
+    return !(v.paused || v.sync || v.hold || v.flushing || (!v.stream && !v.playing));
+}
+
+// the voice's next frames, its channels interleaved (at most kChannels); silence once it runs out. A mixin buffer
+// reads its submix, one channel, as the VP reads the multipass bin.
+void Pull(Voice& v, float* ab, uint32_t frames) {
+    uint32_t ch = std::min<uint32_t>(std::max<uint32_t>(v.channels, 1), kChannels);
+    std::memset(ab, 0, frames * ch * sizeof(float));
+    if (v.mixin) {
+        for (uint32_t i = 0; i < frames && i < v.submix.size(); i++) ab[i * ch] = v.submix[i];
+        return;
+    }
+    uint32_t base = v.data + v.play_start;
+    double step = double(v.freq ? v.freq : v.rate) / audio::kRate;
+    float now[kChannels], next[kChannels];  // this frame and the next, interpolated between
+    for (uint32_t i = 0; i < frames; i++) {
+        uint32_t f = uint32_t(v.pos);
+        if (v.stream) {
+            while (!v.packets.empty() && f >= FramesOf(v, v.packets.front().size)) {
+                Packet pk = v.packets.front();
+                v.packets.pop_front();
+                pk.used = pk.size;
+                Complete(v, pk, 0);
+                v.pos -= FramesOf(v, pk.size);
+                f = uint32_t(v.pos);
+                if (v.packets.empty() && !v.ending) v.starved = true;
+            }
+            if (v.packets.empty()) {
+                v.pos = 0;
+                if (v.ending) Deactivate(v);
+                return;
+            }
+            Packet& pk = v.packets.front();
+            bool last = f + 1 >= FramesOf(v, pk.size);
+            for (uint32_t c = 0; c < ch; c++) {
+                now[c] = Sample(v, pk.data, f, int(c));
+                next[c] = !last                  ? Sample(v, pk.data, f + 1, int(c))
+                          : v.packets.size() > 1 ? Sample(v, v.packets[1].data, 0, int(c))
+                                                 : now[c];
+            }
+        } else {
+            uint32_t start = v.looping ? FramesOf(v, v.loop_start) : 0;
+            uint32_t end = FramesOf(v, v.looping ? v.loop_start + v.loop_len : v.play_len);
+            if (f >= end) {
+                if (!v.looping || end <= start) {
+                    v.playing = false;
+                    v.pos = 0;
+                    return;
+                }
+                v.pos = start + std::fmod(v.pos - start, double(end - start));
+                f = uint32_t(v.pos);
+            }
+            if (!v.data) return;
+            uint32_t after = f + 1 < end ? f + 1 : v.looping ? start : f;
+            for (uint32_t c = 0; c < ch; c++) {
+                now[c] = Sample(v, base, f, int(c));
+                next[c] = Sample(v, base, after, int(c));
+            }
+        }
+        float t = float(v.pos - f);
+        for (uint32_t c = 0; c < ch; c++) ab[i * ch + c] = now[c] + (next[c] - now[c]) * t;
+        v.pos += step;
+    }
+}
+
 void Render(float* out, uint32_t frames) {
+    static std::vector<float> bus, ab;
+    static std::vector<Voice*> order;
     std::memset(out, 0, frames * 2 * sizeof(float));
+    bus.assign(size_t(kBins) * frames, 0.0f);
+    ab.resize(frames * kChannels);
     std::lock_guard<std::recursive_mutex> lock(g_lock);
     g_mixed = NowMs();
+    // a submix plays once every voice routed to it has mixed in, so the deepest go first and the mixins last
+    order.clear();
     for (auto& [obj, v] : g_voices) {
-        if (v.paused || v.sync || v.hold || v.flushing || (!v.stream && !v.playing)) continue;
-        float g[2][2];
-        Levels(v, g);
-        uint32_t base = v.data + v.play_start;
-        double step = double(v.freq ? v.freq : v.rate) / audio::kRate;
-        for (uint32_t i = 0; i < frames; i++) {
-            uint32_t f = uint32_t(v.pos);
-            float a, b, a1, b1;  // this frame and the next, interpolated between
-            if (v.stream) {
-                while (!v.packets.empty() && f >= FramesOf(v, v.packets.front().size)) {
-                    Packet pk = v.packets.front();
-                    v.packets.pop_front();
-                    pk.used = pk.size;
-                    Complete(v, pk, 0);
-                    v.pos -= FramesOf(v, pk.size);
-                    f = uint32_t(v.pos);
-                    if (v.packets.empty() && !v.ending) v.starved = true;
-                }
-                if (v.packets.empty()) {
-                    v.pos = 0;
-                    if (v.ending) Deactivate(v);
-                    break;
-                }
-                Packet& pk = v.packets.front();
-                a = Sample(v, pk.data, f, 0);
-                b = Sample(v, pk.data, f, 1);
-                if (f + 1 < FramesOf(v, pk.size)) {
-                    a1 = Sample(v, pk.data, f + 1, 0);
-                    b1 = Sample(v, pk.data, f + 1, 1);
-                } else if (v.packets.size() > 1) {
-                    a1 = Sample(v, v.packets[1].data, 0, 0);
-                    b1 = Sample(v, v.packets[1].data, 0, 1);
-                } else {
-                    a1 = a;
-                    b1 = b;
-                }
-            } else {
-                uint32_t start = v.looping ? FramesOf(v, v.loop_start) : 0;
-                uint32_t end = FramesOf(v, v.looping ? v.loop_start + v.loop_len : v.play_len);
-                if (f >= end) {
-                    if (!v.looping || end <= start) {
-                        v.playing = false;
-                        v.pos = 0;
-                        break;
-                    }
-                    v.pos = start + std::fmod(v.pos - start, double(end - start));
-                    f = uint32_t(v.pos);
-                }
-                if (!v.data) break;
-                a = Sample(v, base, f, 0);
-                b = Sample(v, base, f, 1);
-                uint32_t next = f + 1 < end ? f + 1 : v.looping ? start : f;
-                a1 = Sample(v, base, next, 0);
-                b1 = Sample(v, base, next, 1);
+        order.push_back(&v);
+        if (v.mixin) v.submix.assign(frames, 0.0f);
+    }
+    std::stable_sort(order.begin(), order.end(), [](const Voice* a, const Voice* b) {
+        if (a->mixin != b->mixin) return b->mixin;
+        return Depth(*a) > Depth(*b);
+    });
+    for (Voice* v : order) {
+        if (!Plays(*v)) continue;
+        Route r[16];
+        int routes = Routes(*v, r);
+        Pull(*v, ab.data(), frames);
+        Voice* sub = Submix(*v);
+        uint32_t ch = std::min<uint32_t>(std::max<uint32_t>(v->channels, 1), kChannels);
+        for (int k = 0; k < routes; k++) {
+            float* dst = r[k].bin == kMultipass && sub ? sub->submix.data() : &bus[size_t(r[k].bin) * frames];
+            for (uint32_t i = 0; i < frames; i++) {
+                float x = 0;
+                for (uint32_t c = 0; c < ch; c++) x += ab[i * ch + c] * r[k].g[c];
+                dst[i] += x;
+                v->energy += x * x;
             }
-            float t = float(v.pos - f);
-            a += (a1 - a) * t;
-            b += (b1 - b) * t;
-            float l = a * g[0][0] + b * g[1][0], r = a * g[0][1] + b * g[1][1];
-            out[i * 2] += l;
-            out[i * 2 + 1] += r;
-            v.energy += l * l + r * r;
-            v.pos += step;
+        }
+    }
+    // the GP's effects, a frame at a time
+    if (dsfx::Loaded()) {
+        static float frame[kBins * dsfx::kFrame];
+        for (uint32_t at = 0; at < frames; at += dsfx::kFrame) {
+            uint32_t n = std::min(dsfx::kFrame, frames - at);
+            for (uint32_t b = 0; b < kBins; b++)
+                std::memcpy(&frame[b * dsfx::kFrame], &bus[size_t(b) * frames + at], n * 4);
+            dsfx::Process(frame, n);
+            for (uint32_t b = 0; b < kBins; b++)
+                std::memcpy(&bus[size_t(b) * frames + at], &frame[b * dsfx::kFrame], n * 4);
+        }
+    }
+    // the GP's output: the speaker bins with their headroom back, the centre at -3 dB to both sides. With an effects
+    // image the GP outputs bins 0-5 and the crosstalk inputs reach them through its canceller; without one they are
+    // heard as the sides they stand for. The sub, the effect sends and a multipass bin nothing reads are not heard.
+    for (uint32_t b = 0; b < kBins; b++) {
+        if (!Speaker(b) || (b > 5 && dsfx::Loaded())) continue;
+        float g = float(1 << g_bin_headroom[b]) * (b == 2 ? 0.707f : 1.0f);
+        const float* src = &bus[size_t(b) * frames];
+        for (uint32_t i = 0; i < frames; i++) {
+            if (b == 2 || !(b & 1)) out[i * 2] += src[i] * g;
+            if (b == 2 || (b & 1)) out[i * 2 + 1] += src[i] * g;
         }
     }
     for (uint32_t i = 0; i < frames * 2; i++) out[i] = std::clamp(out[i], -1.0f, 1.0f);
@@ -402,6 +507,26 @@ void Render(float* out, uint32_t frames) {
             char b[96];
             std::snprintf(b, sizeof b, " %08X%s%s(%.3f)", obj, v.stream ? "s" : "", v.looping ? "L" : "", rms);
             list += b;
+            // how it is routed: volume and headroom in mB, then bin:channel=mB for each channel it takes, before
+            // bin headroom
+            Route r[16];
+            int routes = Routes(v, r);
+            auto mb = [](float x) { return x > 0 ? int(std::lround(2000 * std::log10(x))) : -10000; };
+            std::string bins;
+            for (int k = 0; k < routes; k++) {
+                float hr = float(1 << g_bin_headroom[r[k].bin]);
+                std::snprintf(b, sizeof b, " %u:", r[k].bin);
+                bins += b;
+                for (uint32_t c = 0; c < std::min<uint32_t>(v.channels, kChannels); c++) {
+                    if (r[k].g[c] <= 0) continue;
+                    std::snprintf(b, sizeof b, "%s%u=%d", bins.back() == ':' ? "" : ",", c, mb(r[k].g[c] * hr));
+                    bins += b;
+                }
+            }
+            LOGR("dsound:  %08X %uch %uHz%s out %08X vol %d headroom %d%s bins%s 3d %s att %d pan %.2f", obj,
+                 v.channels, v.freq ? v.freq : v.rate, v.mixin ? " mixin" : "", v.out, mb(v.volume), mb(v.headroom),
+                 v.nbins ? "" : " default", bins.c_str(), v.calc3d ? "calc" : v.is3d ? "ds" : "no", mb(v.att3d),
+                 v.pan3d);
         }
         LOGR("dsound: audible%s", list.c_str());
     }
@@ -521,7 +646,9 @@ uint32_t NewBuffer(uint32_t desc, uint32_t out) {
     if (R32(desc) != 0x18 || bytes > (16u << 20)) bytes = 0;
     ReadFormat(v, R32(desc + 12));
     SetBins(v, R32(desc + 16));
+    DSTRACE("dsound: %08X new buffer flags %X bytes %X", obj, flags, bytes);
     v.is3d = flags & 0x10;  // DSBCAPS_CTRL3D
+    v.mixin = flags & 0x2000;
     v.headroom = DefaultHeadroom(flags);
     if (bytes) {
         v.data = v.owned = mem::AllocContiguous(bytes, 0, 0xFFFFFFFF, 4);
@@ -676,15 +803,39 @@ HLE_STDCALL(IDirectSound_GetSpeakerConfig, 2) {
     W32(a[1], 0);  // DSSPEAKER_STEREO
     return 0;
 }
-HLE_STDCALL(IDirectSound_SetEffectData, 6) { return 0; }
+// (this, effect, byte offset, data, bytes, apply): into the effect's state, as the GP reads it
+HLE_STDCALL(IDirectSound_SetEffectData, 6) {
+    std::lock_guard<std::recursive_mutex> lock(g_lock);
+    DSTRACE("dsound: SetEffectData effect %u offset %X data %08X size %X flags %X", a[1], a[2], a[3], a[4], a[5]);
+    std::vector<uint32_t> words(a[4] / 4);
+    for (uint32_t i = 0; i < words.size(); i++) words[i] = R32(a[3] + i * 4);
+    dsfx::SetData(a[1], a[2], words.data(), uint32_t(words.size()));
+    return 0;
+}
 HLE_STDCALL(IDirectSound_EnableHeadphones, 2) { return 0; }
-HLE_STDCALL(IDirectSound_SetMixBinHeadroom, 3) { return 0; }
+// (this, bin, headroom bits)
+HLE_STDCALL(IDirectSound_SetMixBinHeadroom, 3) {
+    std::lock_guard<std::recursive_mutex> lock(g_lock);
+    DSTRACE("dsound: SetMixBinHeadroom bin %u headroom %u", a[1], a[2]);
+    if (a[1] < kBins) g_bin_headroom[a[1]] = uint8_t(a[2] & 7);
+    return 0;
+}
 HLE_STDCALL(IDirectSound_CommitDeferredSettings, 1) { return 0; }
 HLE_STDCALL(IDirectSound_SetDopplerFactor, 3) { return 0; }
 HLE_STDCALL(IDirectSound_SetRolloffFactor, 3) { return 0; }
 HLE_STDCALL(IDirectSound_SetDistanceFactor, 3) { return 0; }
 HLE_STDCALL(IDirectSound_SetVelocity, 5) { return 0; }
-HLE_STDCALL(IDirectSound_SetI3DL2Listener, 3) { return 0; }
+// (this, DSI3DL2LISTENER, apply): the reverb's room
+HLE_STDCALL(IDirectSound_SetI3DL2Listener, 3) {
+    if (!a[1]) return 0;
+    std::lock_guard<std::recursive_mutex> lock(g_lock);
+    auto i = [&](uint32_t o) { return int32_t(R32(a[1] + o)); };
+    auto f = [&](uint32_t o) { return F32(R32(a[1] + o)); };
+    dsfx::SetI3dl2({i(0), i(4), f(8), f(12), f(16), i(20), f(24), i(28), f(32), f(36), f(40), f(44)});
+    DSTRACE("dsound: I3DL2 room %d hf %d decay %.2f ratio %.2f reflections %d at %.3f reverb %d at %.3f", i(0), i(4),
+            f(12), f(16), i(20), f(24), i(28), f(32));
+    return 0;
+}
 HLE_STDCALL(IDirectSound_SetPosition, 5) {
     std::lock_guard<std::recursive_mutex> lock(g_lock);
     for (int i = 0; i < 3; i++) g_listener[i] = F32(a[1 + i]);
@@ -725,6 +876,8 @@ static uint32_t EffectsDesc(const std::vector<uint8_t>& img, const char* name) {
     size_t t = XDK_EffectsImage_Desc + size_t(u32(XDK_EffectsImage_Skip0) + u32(XDK_EffectsImage_Skip1)) * 4;
     uint32_t count = std::min<uint32_t>(u32(t), 64);
     LOGI("dsound: effects image %s, %u effects", name, count);
+    std::lock_guard<std::recursive_mutex> lock(g_lock);
+    dsfx::Load(img, static_cast<uint32_t*>(HostPtr(kGpXmem)));
     uint32_t desc = mem::AllocSystem(8 + std::max(count, 1u) * 32);
     W32(desc, count);
     W32(desc + 4, u32(t + 4));
@@ -732,9 +885,15 @@ static uint32_t EffectsDesc(const std::vector<uint8_t>& img, const char* name) {
         size_t m = t + 8 + i * 32;
         uint32_t d = desc + 8 + i * 32;
         for (int k = 0; k < 4; k++) {
-            uint32_t size = u32(m + k * 8 + 4);
-            uint32_t seg = mem::AllocSystem(std::max(size, 0x40u));
-            std::memset(HostPtr(seg), 0, std::max(size, 0x40u));
+            uint32_t size = u32(m + k * 8 + 4), seg;
+            if (k == 1 && i < dsfx::Count()) {
+                // the state, in the GP's X memory as the library points the title at it: the title reads its
+                // effects' routing there and changes their parameters in place
+                seg = kGpXmem + dsfx::StateOf(i) * 4;
+            } else {
+                seg = mem::AllocSystem(std::max(size, 0x40u));
+                std::memset(HostPtr(seg), 0, std::max(size, 0x40u));
+            }
             W32(d + k * 8, seg);
             W32(d + k * 8 + 4, size);
         }
@@ -763,9 +922,13 @@ HLE_STDCALL(IDirectSound_DownloadEffectsImage, 5) {
     if (a[4]) W32(a[4], desc);
     return 0;
 }
-// (this, effect, offset, data, size): SetEffectData keeps nothing, so effect memory reads as zero
+// (this, effect, byte offset, data, bytes): the effect's state
 HLE_STDCALL(IDirectSound_GetEffectData, 5) {
-    if (a[3]) std::memset(HostPtr(a[3]), 0, a[4]);
+    if (!a[3]) return 0;
+    std::lock_guard<std::recursive_mutex> lock(g_lock);
+    std::vector<uint32_t> words(a[4] / 4);
+    dsfx::GetData(a[1], a[2], words.data(), uint32_t(words.size()));
+    for (uint32_t i = 0; i < words.size(); i++) W32(a[3] + i * 4, words[i]);
     return 0;
 }
 HLE_STDCALL(IDirectSound_CommitEffectData, 1) { return 0; }
@@ -933,7 +1096,11 @@ BUFFER(SetRolloffCurve, 4) {
     for (uint32_t i = 0; a[1] && i < std::min<uint32_t>(a[2], 64); i++) v.curve.push_back(F32(R32(a[1] + i * 4)));
     return 0;
 }
-BUFFER(SetOutputBuffer, 2) { return 0; }  // the voice keeps its own mix bins
+// (this, mixin buffer or none): where the voice's multipass sends go; the title routes them with its mix bins
+BUFFER(SetOutputBuffer, 2) {
+    v.out = a[1];
+    return 0;
+}
 BUFFER(SetFormat, 2) {
     ReadFormat(v, a[1]);
     v.freq = 0;
@@ -1107,10 +1274,14 @@ STREAM(SetPosition, 5) {
 }
 STREAM(SetVelocity, 5) { return 0; }
 STREAM(SetI3DL2Source, 3) { return 0; }
-// (this, pOutputBuffer): the stream's mix destination. The library body reads a console voice sub-object the
-// host's stream object does not hold (it faulted at stream + 0x14 -> +0xb0), and the host mixer sums every voice
-// to the front pair anyway, so the routing hint is dropped.
-HLE_STDCALL(IDirectSoundStream_SetOutputBuffer, 2) { return 0; }
+// (this, pOutputBuffer): the stream's mixin buffer, as the buffer's. The library body reads a console voice
+// sub-object the host's stream object does not hold (it faulted at stream + 0x14 -> +0xb0).
+HLE_STDCALL(IDirectSoundStream_SetOutputBuffer, 2) {
+    std::lock_guard<std::recursive_mutex> lock(g_lock);
+    Trace("str", "SetOutputBuffer", 2, a);
+    if (Voice* v = Find(a[0])) v->out = a[1];
+    return 0;
+}
 // (this, lPitch / pLfoDesc / pEnvelopeDesc): pitch, LFO and envelope writes all reach a console voice
 // sub-object the host's objects never build. The host mixer plays at the format rate (or the SetFrequency
 // override) and has no envelope or LFO, so these are dropped the way the XDK's own SetEG already is.
