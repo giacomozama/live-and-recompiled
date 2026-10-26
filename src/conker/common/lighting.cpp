@@ -35,16 +35,28 @@ float3 LightAmbient(float3 n) {
                   dot(q, float4(dot(q, c[170]), dot(q, c[171]), dot(q, c[172]), dot(q, c[173]))),
                   dot(q, float4(dot(q, c[174]), dot(q, c[175]), dot(q, c[176]), dot(q, c[177]))));
 }
-float LightBlobs(float3 p) {
+// soft: the program's steps, spread at a vertex over its triangles, would lie as hard edged flat bands at each pixel.
+// Each blob comes in across its own radius (sqrt of its strength, where it alone darkens fully) about the plane it
+// clips at, and the sum of them darkens by a knee, (1 - b / 2)^2, that leaves 1 - b's slope at the light and reaches
+// the dark flat.
+float LightBlobs(float3 p, bool soft) {
     float4 q = float4(p, 1);
     float sx = dot(q, c[159]), sy = dot(q, c[160]), sz = dot(q, c[161]), b = 0;
     [unroll] for (int g = 0; g < LIGHT_GROUPS; g++) {
-        float4 dx = c[146 + 4 * g] - sx, dy = c[147 + 4 * g] - sy;
-        b += dot((float4)(sz >= c[148 + 4 * g]) * c[149 + 4 * g], 1 / max(dx * dx + dy * dy, 1e-6));
+        float4 dx = c[146 + 4 * g] - sx, dy = c[147 + 4 * g] - sy, s = c[149 + 4 * g];
+        float4 r = max(sqrt(abs(s)), 1e-4);
+        float4 above = soft ? smoothstep(-r, r, sz - c[148 + 4 * g]) : (float4)(sz >= c[148 + 4 * g]);
+        b += dot(above * s, 1 / max(dx * dx + dy * dy, 1e-6));
     }
     return b;
 }
-float3 LightKey(float3 n, float3 p) { return c[180].xyz * max(dot(n, -c[179].xyz), 0) * (1 - LightBlobs(p)); }
+float LightShadow(float b, bool soft) {
+    float k = saturate(1 - 0.5 * b);
+    return soft ? k * k : saturate(1 - b);
+}
+float3 LightKey(float3 n, float3 p, bool soft) {
+    return c[180].xyz * max(dot(n, -c[179].xyz), 0) * LightShadow(LightBlobs(p, soft), soft);
+}
 // the scale the program put on the ambient a to make d
 float LightScale(float3 d, float3 a) { return clamp(dot(d, a) / max(dot(a, a), 1e-8), 0, 4); }
 )";
@@ -63,7 +75,7 @@ constexpr const char* kVs = R"(    {
 constexpr const char* kPs = R"({
     float nl = length(i.x0.xyz);
     if ((!PS_TWO_SIDED || front) && nl > 1e-6) {
-        float3 n = i.x0.xyz / nl, a = i.x0.w * LightAmbient(n), k = LightKey(n, i.x1.xyz);
+        float3 n = i.x0.xyz / nl, a = i.x0.w * LightAmbient(n), k = LightKey(n, i.x1.xyz, true);
 %s
     }
 })";
@@ -100,7 +112,7 @@ void lighting::Init() {
             gpu::g_program_shading.push_back({
                 .match = Keep(Format(kAmbientOf, r, "")),
                 .on = &g_per_pixel,
-                .vs = Keep(Format(kVs, r, sh.key_in_d0 ? " - LightKey(n, p)" : "")),
+                .vs = Keep(Format(kVs, r, sh.key_in_d0 ? " - LightKey(n, p, false)" : "")),
                 .functions = functions,
                 .also = {sh.key_in_d0 ? kKeyInD0 : kKeyInD1, sh.groups == 3 ? kThreeGroups : kOneGroup, kPlaced},
                 .pre = pre,
