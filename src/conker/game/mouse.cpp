@@ -6,6 +6,9 @@
 // adds the motion, in degrees, to the turn it works out each frame, so each camera takes the mouse as it takes the
 // stick, inside its own limits.
 //
+// A tank's aim mode goes by the driver's camera instead, which TankAim turns (hooked on 0x3F4E0 at the end of the
+// file).
+//
 // A camera that does not go through 0x2F99A0 gets the mouse as right stick instead, once Turn has not run for
 // kTurnedUs. A stick sets a turn rate and a mouse a distance, so there the motion is kept as a debt that keyboard::Pad
 // pays off a game frame at a time, pushing the stick as far as turns this frame's share. The game reads the stick in
@@ -26,6 +29,8 @@
 #include "common/mouse.h"
 
 #include "cpu/x86_ops.h"
+
+#include <cstring>
 
 #if !defined(XBE_HEADLESS)
 
@@ -504,6 +509,17 @@ void WF(uint32_t va, float f) { std::memcpy(mem::Base() + va, &f, 4); }
 // when Turn last turned a player's camera; while it does, Pad leaves their stick alone
 std::atomic<int64_t> g_turned_us[kPorts] = {};
 constexpr int64_t kTurnedUs = 250000;
+// when the tank (0x2BAEC0, which calls 0x2F99A0 from 0x2BBB4F) last ran for a player, and when TankAim last saw
+// them aiming it; while they aim, the cameras' turns leave the motion alone and TankAim turns the aim (the driver
+// aims it, see there). Out of aim mode the mouse turns the cameras in the tank as anywhere.
+constexpr uint32_t kTankTurnReturn = 0x2BBB54;
+std::atomic<int64_t> g_tank_us[kPorts] = {}, g_aim_us[kPorts] = {};
+constexpr int64_t kAimUs = 100000;
+
+bool InTank(int port, int64_t now) { return now - g_tank_us[port].load(std::memory_order_relaxed) < kTurnedUs; }
+bool Aiming(int port, int64_t now) {
+    return InTank(port, now) && now - g_aim_us[port].load(std::memory_order_relaxed) < kAimUs;
+}
 
 }  // namespace
 
@@ -516,7 +532,7 @@ constexpr int64_t kTurnedUs = 250000;
 // mouse moves those too, the pitch only as far as the camera's limits allow, and the eased values the view follows
 // (+0x10, +0x4C) as far, so the mouse turns at once while the stick's turn eases as the game has it. A caller takes
 // one or the other, never both. The motion is taken once a frame, and every camera turned in that frame gets it.
-void Turn(uint32_t actions, uint32_t turn) {
+void Turn(uint32_t actions, uint32_t turn, uint32_t ret) {
     constexpr uint32_t kPlayer1Actions = 0x763260, kActionsSize = 0x1B0;
     constexpr uint32_t kYaw = 0x04, kYawTurn = 0x08, kYawEased = 0x10;
     constexpr uint32_t kPitch = 0x40, kPitchTurn = 0x44, kPitchEased = 0x4C;
@@ -524,6 +540,8 @@ void Turn(uint32_t actions, uint32_t turn) {
     if (actions < kPlayer1Actions || (actions - kPlayer1Actions) % kActionsSize) return;
     const uint32_t port = (actions - kPlayer1Actions) / kActionsSize;
     if (port >= uint32_t(kPorts) || !g_look[port] || !g_held.load() || !Readable(turn, kPitchEased + 4)) return;
+    if (ret == kTankTurnReturn) g_tank_us[port].store(Now(), std::memory_order_relaxed);
+    if (Aiming(int(port), Now())) return;
     const uint32_t settings = R32(turn);
     if (!Readable(settings, kPitchMax + 4)) return;
 
@@ -576,9 +594,44 @@ void Turn(uint32_t actions, uint32_t turn) {
     WF(turn + kPitchEased, RF(turn + kPitchEased) + (now - was));
 }
 
-namespace {
-
-}  // namespace
+// 0x3F4E0 (the player in eax), before it runs. In a tank the driver aims it: their camera, [player+0x3E4], keeps
+// the aim's yaw at +0x260 and pitch at +0x264 in degrees, and 0x3F4E0 turns them by the right stick (x squared
+// times a rate, at most 3 degrees a frame; the stick's y turns the pitch the other way round to on foot), wraps the
+// yaw, holds the pitch in the vehicle's limits and copies both to +0x258/+0x25C. The tank (0x2BAEC0) then takes its
+// turret's yaw from +0x258. That is aim mode, while [[player+0x04]+0x8CF] is set (0x3F4E0 sets it in a vehicle while
+// the aim button, actions+0x54, is held); out of it the tank's cameras turn by 0x2F99A0 and Turn. The mouse is added
+// before, so the game's wrap and limits hold it; right lowers the yaw, and up lowers the pitch (the tank's view
+// rises as it falls).
+void TankAim(uint32_t player) {
+    constexpr uint32_t kView = 0x04, kAimMode = 0x8CF;
+    constexpr uint32_t kActions = 0x3B4, kCamera = 0x3E4, kYaw = 0x260, kPitch = 0x264;
+    constexpr uint32_t kPlayer1Actions = 0x763260, kActionsSize = 0x1B0;
+    if (!Readable(player + kActions, 4) || !Readable(player + kCamera, 4)) return;
+    const uint32_t actions = R32(player + kActions);
+    if (actions < kPlayer1Actions || (actions - kPlayer1Actions) % kActionsSize) return;
+    const uint32_t port = (actions - kPlayer1Actions) / kActionsSize;
+    const int64_t now = Now();
+    if (port >= uint32_t(kPorts) || !g_look[port] || !g_held.load() || !InTank(int(port), now)) return;
+    if (!Readable(player + kView, 4)) return;
+    const uint32_t view = R32(player + kView);
+    if (!Readable(view + kAimMode, 1) || !mem::Base()[view + kAimMode]) return;
+    g_aim_us[port].store(now, std::memory_order_relaxed);
+    const uint32_t cam = R32(player + kCamera);
+    if (!Readable(cam, kPitch + 4)) return;
+    int64_t dx, dy;
+    {
+        std::lock_guard motion(g_lock);
+        dx = g_motion[port].dx, dy = g_motion[port].dy;
+        g_motion[port].dx = g_motion[port].dy = 0;
+    }
+    if (!dx && !dy) return;
+    LOG_FIRST(1, "mouse: look aims the tank");
+    const float yaw = float(dx) * kDegreesPerCount * float(g_sensitivity[port]) / 100.0f;
+    float pitch = float(-dy) * kDegreesPerCount * float(g_sensitivity_y[port]) / 100.0f;
+    if (g_invert_y[port]) pitch = -pitch;
+    WF(cam + kYaw, RF(cam + kYaw) - yaw);
+    WF(cam + kPitch, RF(cam + kPitch) - pitch);
+}
 
 void Pad(int port, input::Pad& pad) {
     if (input::t_presence || port < 0 || port >= kPorts) return;
@@ -591,8 +644,8 @@ void Pad(int port, input::Pad& pad) {
         if (!calibrating) Clear(port);
         return;
     }
-    // a camera Turn reaches takes the motion itself; the stick is for the rest
-    if (now - g_turned_us[port].load(std::memory_order_relaxed) < kTurnedUs) {
+    // a camera Turn reaches takes the motion itself, the tank's aim TankAim; the stick is for the rest
+    if (Aiming(port, now) || now - g_turned_us[port].load(std::memory_order_relaxed) < kTurnedUs) {
         l.x.Reset(), l.y.Reset();
         return;
     }
@@ -643,7 +696,9 @@ void Refresh(void*) {}
 
 void Pad(int, input::Pad&) {}
 
-void Turn(uint32_t, uint32_t) {}
+void Turn(uint32_t, uint32_t, uint32_t) {}
+
+void TankAim(uint32_t) {}
 
 }  // namespace mouse
 
@@ -658,6 +713,15 @@ void Turn(uint32_t, uint32_t) {}
 X86_EXTERN_FUNC(__imp__sub_002F99A0);
 X86_FUNC(sub_002F99A0) {
     const uint32_t actions = ctx.eax, turn = ctx.ecx;
+    uint32_t ret;
+    std::memcpy(&ret, base + ctx.esp, 4);
     __imp__sub_002F99A0(ctx, base);
-    mouse::Turn(actions, turn);
+    mouse::Turn(actions, turn, ret);
+}
+
+// 0x3F4E0 (the player in eax): the player's camera in a vehicle, among much else; the tank's aim (mouse::TankAim)
+X86_EXTERN_FUNC(__imp__sub_0003F4E0);
+X86_FUNC(sub_0003F4E0) {
+    mouse::TankAim(ctx.eax);
+    __imp__sub_0003F4E0(ctx, base);
 }
