@@ -713,6 +713,7 @@ std::string VertexProgramHlsl(const std::vector<uint32_t>& prog, uint16_t regs, 
     s += kVsHelpers;
     s += VsInputs(regs, decode);
     s += kVsPrologue;
+    bool fog = false;  // the program writes oFog
     for (size_t n = 0; n + 4 <= prog.size(); n += 4) {
         Tok k{&prog[n]};
         uint32_t mac = k.f(1, 21, 4), ilu = k.f(1, 25, 3);
@@ -737,6 +738,7 @@ std::string VertexProgramHlsl(const std::vector<uint32_t>& prog, uint16_t regs, 
             if (omask && k.f(3, 11, 1) && ((use_ilu && ilu) || (!use_ilu && mac && mac != 13))) {
                 uint32_t o = k.f(3, 3, 8) & 0xF;
                 const char* src = use_ilu ? "ir" : "mr";
+                fog |= o == 5;
                 if (kOut[o][0]) {
                     const char* msk = o == 5 ? kLanes[std::popcount(omask)] : kMask[omask];
                     s += F("        %s.%s = %s.%s;\n", kOut[o], msk, src, msk);
@@ -747,6 +749,9 @@ std::string VertexProgramHlsl(const std::vector<uint32_t>& prog, uint16_t regs, 
         if (k.f(3, 0, 1)) break;  // last instruction
     }
     s += kVsEpilogue;
+    // a program that never writes oFog leaves its draws unfogged: Conker's blood drops (point sprites) are drawn with
+    // the vertex fog the library pushes for D3DFOG_NONE, which on a zero oFog came out flat fog colour
+    if (!fog) s += "    o.fogamt = 1;\n";
     if (shading) s += std::string(Shading(shading).vs) + "\n";
     return s + kVsReturn;
 }
