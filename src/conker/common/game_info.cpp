@@ -13,13 +13,12 @@
 
 namespace {
 
-// after the settings load: the fps cap follows frame_rate, the fur, water and grass programs get their shading,
+// after the settings load: the fps cap follows frame_rate, the fur and water programs get their shading,
 // then the lit programs theirs, reflective floors their depth
 void Init() {
     display::Init();
     fur::Init();
     water::Init();
-    grass::Init();
     lighting::Init();
     reflection::Init();
 }
@@ -44,8 +43,8 @@ const app::GameInfo app::kGame = {
                 {"lasting_bulb", &bulb::g_lasting, nullptr},  // the B pad's bulb stays while Conker is on it (hooks.cpp)
                 {"rope_physics", &rope::g_physics, nullptr},  // ropes swing as a weighted chain (rope.cpp)
                 {"grass_wind", &grass::g_wind, nullptr},  // distant grass sways too (hooks.cpp)
-                {"grass_distant", nullptr, &grass::g_distant},  // distant grass thinned, faded or as near (hooks.cpp)
-                {"grass_wake", &grass::g_wake, nullptr},  // blades passed close bend, not fly (src/conker/common/grass.cpp)
+                {"grass_max_lod", &grass::g_max_lod, nullptr},  // distant grass keeps all its blades (hooks.cpp)
+                {"grass_fade", &grass::g_fade, nullptr},  // distant grass fades out, else solid however far (hooks.cpp)
                 {"fur_shading", &fur::g_shading, nullptr},  // lit, soft edged fur shells (src/conker/common/fur.cpp)
                 {"fur_distant", &fur::g_distant, nullptr},  // distant fur keeps all its shells (hooks.cpp)
                 {"dynamic_water", &water::g_dynamic, nullptr},  // flowing, rippling water (src/conker/common/water.cpp)

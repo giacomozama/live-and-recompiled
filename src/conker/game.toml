@@ -428,7 +428,7 @@ at = 0x409364  # after it: the tag before
 call = "ConkerShadowReceiverDrawn"
 
 [[hook]]
-at = 0x1A95DD  # grass patch: drawn as a near one however far (grass::g_distant)
+at = 0x1A95DD  # grass patch: drawn as a near one, or however far (grass::g_max_lod, g_fade)
 call = "ConkerGrassNear"
 
 [[hook]]
@@ -436,7 +436,7 @@ at = 0x8210C   # fur shells: a distant object's count as at the near range's edg
 call = "ConkerFurDistant"
 
 [[hook]]
-at = 0x1A968F  # grass patch: all its blades however far, the fade kept (grass::g_distant)
+at = 0x1A968F  # grass patch: all its blades, solid (grass::g_max_lod, g_fade)
 call = "ConkerGrassFull"
 
 [[hook]]

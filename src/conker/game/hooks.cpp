@@ -5,6 +5,7 @@
 //
 // A strong X86_FUNC replaces the recompiled function at that address.
 #include <cstdio>
+#include <bit>
 #include <cstdlib>
 #include <algorithm>
 #include <chrono>
@@ -155,27 +156,29 @@ X86_FUNC(sub_001A9540) {
 // The patch's detail, in 0x1A9540: d its distance from the player ([esp+0x20] at 0x1A95DD), past 2500 it isn't drawn;
 // to 800 it draws all [patch+0x60] blades at full strength; past that f = 1 - (d - 800) / 1700 is both its fade
 // (alpha f * 255 at [patch+0x5C], with the plain program) and the share of its blades drawn ([patch+0x64], at least
-// 1). grass::g_distant (or XBE_GRASS_DISTANT=0..2): 1 keeps the fade and draws them all, 2 draws every patch as a
-// near one, however far.
-uint32_t grass::g_distant = grass::kNear;
-
-namespace {
-uint32_t GrassDistant() {
-    static const char* env = std::getenv("XBE_GRASS_DISTANT");
-    return env ? uint32_t(std::atoi(env)) : grass::g_distant;
-}
-}  // namespace
+// 1). grass::g_max_lod draws them all; without grass::g_fade a patch is solid (alpha 255) and drawn however far,
+// its d held at the 2500 ([0x649234]) past which it would be culled; with both, every patch is drawn as a near one.
+bool grass::g_max_lod = true;
+bool grass::g_fade = false;
 
 // [[hook]] at 0x1A95DD, before d is weighed
 void ConkerGrassNear(X86Context& ctx, uint8_t* base) {
     (void)base;
-    if (GrassDistant() == grass::kNear) kernel::W32(ctx.esp + 0x20, 0);  // 0.0f
+    if (grass::g_fade) return;
+    if (grass::g_max_lod) {
+        kernel::W32(ctx.esp + 0x20, 0);  // 0.0f
+        return;
+    }
+    const uint32_t cull = kernel::R32(0x649234);
+    if (std::bit_cast<float>(kernel::R32(ctx.esp + 0x20)) > std::bit_cast<float>(cull))
+        kernel::W32(ctx.esp + 0x20, cull);
 }
 
-// [[hook]] at 0x1A968F, where the near and fading paths join with the count set
+// [[hook]] at 0x1A968F, where the near and fading paths join with the count and alpha set
 void ConkerGrassFull(X86Context& ctx, uint8_t* base) {
     (void)base;
-    if (GrassDistant() == grass::kFullFading) kernel::W32(ctx.ebx + 0x64, kernel::R32(ctx.ebx + 0x60));
+    if (grass::g_max_lod) kernel::W32(ctx.ebx + 0x64, kernel::R32(ctx.ebx + 0x60));
+    if (!grass::g_fade) kernel::G<uint8_t>(ctx.ebx + 0x5C) = 0xFF;
 }
 
 // 0x81FC0 (edi the object, its player's index, and where it writes the shells' length scale): how many fur shells an

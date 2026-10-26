@@ -570,14 +570,10 @@ void Draw(double fps) {
                 ImGui::SeparatorText("Grass");
                 ImGui::Checkbox("Wind on distant grass", &grass::g_wind);
                 Hint("Faraway grass sways in the wind too.", true);
-                int distant = int(std::min<uint32_t>(grass::g_distant, grass::kNear));
-                if (ImGui::Combo("Distant grass", &distant, "Console\0Full, fading\0Full, no fade\0"))
-                    grass::g_distant = uint32_t(distant);
-                Hint(distant == grass::kNear      ? "All grass is drawn, however far away."
-                                    : distant == grass::kFullFading ? "All grass is drawn, fading out in the distance."
-                                                                    : "Original: faraway grass thins out and fades.");
-                ImGui::Checkbox("Gentle grass wake", &grass::g_wake);
-                Hint("Grass bends when you speed through it, instead of flying across the screen.", true);
+                ImGui::Checkbox("Force max grass LoD", &grass::g_max_lod);
+                Hint("Faraway grass stays as thick as nearby grass instead of thinning out.", true);
+                ImGui::Checkbox("Fade distant grass", &grass::g_fade);
+                Hint("Faraway grass fades away as on the console. Off: it stays solid, however far.", true);
 
                 ImGui::SeparatorText("Water and reflections");
                 ImGui::Checkbox("Dynamic water", &water::g_dynamic);
