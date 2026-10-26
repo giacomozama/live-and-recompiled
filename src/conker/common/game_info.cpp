@@ -6,19 +6,22 @@
 #include "common/glass.h"
 #include "common/grass.h"
 #include "common/keyboard.h"
+#include "common/reflection.h"
 #include "common/rope.h"
 #include "common/ui.h"
 #include "common/water.h"
 
 namespace {
 
-// after the settings load: the fps cap follows frame_rate, the fur, water, glass and grass programs get their shading
+// after the settings load: the fps cap follows frame_rate, the fur, water, glass and grass programs get their shading,
+// reflective floors their depth
 void Init() {
     display::Init();
     fur::Init();
     water::Init();
     glass::Init();
     grass::Init();
+    reflection::Init();
 }
 
 }  // namespace
@@ -46,7 +49,8 @@ const app::GameInfo app::kGame = {
                 {"fur_shading", &fur::g_shading, nullptr},  // lit, soft edged fur shells (src/conker/common/fur.cpp)
                 {"fur_distant", &fur::g_distant, nullptr},  // distant fur keeps all its shells (hooks.cpp)
                 {"dynamic_water", &water::g_dynamic, nullptr},  // flowing, rippling water (src/conker/common/water.cpp)
-                {"glass_shading", &glass::g_shading, nullptr}},  // glowing, glinting bottles (src/conker/common/glass.cpp)
+                {"glass_shading", &glass::g_shading, nullptr},  // glowing, glinting bottles (src/conker/common/glass.cpp)
+                {"floor_depth", &reflection::g_floor_depth, nullptr}},  // floors over reflections blur by their own depth (reflection.cpp)
     // the [playerN] tables: each player's keyboard bindings and mouse look (src/conker/game/keyboard.cpp, mouse.cpp)
     .load = keyboard::Load,
     .save = keyboard::Save,               // writes them

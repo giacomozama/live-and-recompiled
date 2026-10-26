@@ -221,6 +221,22 @@ void WatchDraw(const State& s, uint32_t start, uint32_t count, const uint8_t* in
     w.seen(d);
 }
 
+bool SurfaceDepth(const State& s, uint32_t start, uint32_t count, const uint8_t* indices) {
+    const SurfaceDepthHook& h = g_surface_depth;
+    if (!h.takes || !h.on || !*h.on || !count) return false;
+    static std::vector<float> in;  // kept, as WatchDraw's
+    WatchedDraw d;
+    d.vertices = std::min(count, h.vertices);
+    in.resize(size_t(d.vertices) * 4);
+    auto out = reinterpret_cast<float (*)[4]>(in.data());
+    for (uint32_t k = 0; k < d.vertices; k++) {
+        uint32_t at = uint32_t(uint64_t(k) * count / d.vertices);
+        if (!ReadInput(s, 0, start + at, indices ? indices + size_t(at) * 2 : nullptr, 1, out + k)) return false;
+    }
+    d.v[0] = out;
+    return h.takes(d);
+}
+
 bool TessellatedDraw(const State& s, uint32_t prim) {
     static const bool any = std::any_of(g_program_shading.begin(), g_program_shading.end(),
                                         [](const ProgramShading& p) { return *p.tess; });

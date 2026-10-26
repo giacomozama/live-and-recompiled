@@ -40,7 +40,7 @@ struct PixelKey {
     uint32_t proj = 0;       // fixed function: bit per stage sampled at coordinates divided by w
     uint32_t quad = 0;       // a screen quad: QuadHlsl
     uint32_t shading = 0;    // g_program_shading's entry for the draw's vertex program, 1 based, 0 none
-    uint32_t depth_pass = 0; // ProgramShading::depth_alpha's depth pass: discards what blends in fainter
+    uint32_t depth_pass = 0; // a depth pass: discards what blends in fainter than the float these are the bits of
     bool operator==(const PixelKey& o) const;
 };
 
@@ -116,6 +116,18 @@ struct ProgramWatch {
     uint32_t vertices = 16;  // at most
 };
 inline std::vector<ProgramWatch> g_program_watch;  // filled before the title boots, unchanged after
+
+// A game's surfaces that blend over what lies under them without writing depth, while *on holds: a floor with the
+// reflection under it, whose depth is the reflection's to a depth of field that reads the depth buffer. takes gets
+// each draw that blends and tests depth but doesn't write it, with v0 at vertices spread over it (WatchedDraw's v[0],
+// the other fields unset); one it takes writes its depth after its colour, where its output's alpha reaches alpha.
+struct SurfaceDepthHook {
+    const bool* on = nullptr;
+    bool (*takes)(const WatchedDraw&) = nullptr;
+    float alpha = 0.5f;
+    uint32_t vertices = 16;  // at most
+};
+inline SurfaceDepthHook g_surface_depth;  // set before the title boots, unchanged after
 
 uint64_t Hash(const void* p, size_t n, uint64_t h = 1469598103934665603ull);
 

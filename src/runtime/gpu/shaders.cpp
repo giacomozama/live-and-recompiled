@@ -1068,7 +1068,7 @@ std::string PixelHlsl(const PixelKey& k) {
         body += "float4 outc = float4(lerp(fogin.rgb, cur.rgb, fogin.a), cur.a);\n";
     }
     body += soft ? "outc.a = softalphatest(outc.a);\n" : "alphatest(outc.a);\n";
-    if (k.depth_pass) body += F("if (outc.a < %g) discard;\n", Shading(k.shading).depth_alpha);
+    if (k.depth_pass) body += F("if (outc.a < %g) discard;\n", std::bit_cast<float>(k.depth_pass));
     body += Hooks().Output() + "return outc;\n}\n";
     s += body;
     return k.quad ? QuadHlsl(std::move(s)) : s;

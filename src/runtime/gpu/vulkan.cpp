@@ -29,6 +29,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <bit>
 #include <bitset>
 #include <cctype>
 #include <chrono>
@@ -1105,6 +1106,7 @@ private:
     // textures, pipeline and constants, past the vertices it assembles itself
     struct KeptDraw {
         bool ok = false;
+        bool surface = false;  // blends and tests depth without writing it: a draw like it may be a g_surface_depth one
         ConstReads reads;
         bool quad = false;
         DrawTextures stages{};
@@ -3931,7 +3933,7 @@ void VulkanBackend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t
     }
     bool same = std::exchange(same_state_, false) && &s != &sprite_;
     bool patches = tess_ && TessellatedDraw(s, prim);
-    if (same && kept_.ok && !cap_ && !PostWanted() &&
+    if (same && kept_.ok && !cap_ && !PostWanted() && !(kept_.surface && SurfaceDepth(s, start, count, indices)) &&
         ((replay_ && ReuseRun(s)) || FastDraw(s, prim, start, count, indices, patches))) {
         g_perf.fast++;
         return;
@@ -3975,13 +3977,20 @@ void VulkanBackend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t
     // pipeline
     PsoKey k;
     BuildPipelineKey(s, a, sh.vh, sh.ph, k);
-    // ProgramShading::depth_alpha: the depth goes in a pass of its own after the colour, where it isn't faint
+    // ProgramShading::depth_alpha: the depth goes in a pass of its own after the colour, where it isn't faint; and so
+    // does a g_surface_depth surface's, which the title draws without
     VkPipeline zpso = VK_NULL_HANDLE;
     const ProgramShading* zps = sh.shading ? &g_program_shading[sh.shading - 1] : nullptr;
+    float zalpha = 0;
+    int surface = -1;  // g_surface_depth's answer for the draw, -1 not asked
     if (zps && zps->depth_alpha > 0 && k.blend && k.zen && k.zwrite &&
-        (zps->top < 0 || s.vsc[size_t(zps->top)][0] > 0)) {
+        (zps->top < 0 || s.vsc[size_t(zps->top)][0] > 0))
+        zalpha = zps->depth_alpha;
+    else if (k.blend && k.zen && !k.zwrite && (surface = SurfaceDepth(s, start, count, indices)))
+        zalpha = g_surface_depth.alpha;
+    if (zalpha > 0) {
         PixelKey zpk = pk;
-        zpk.depth_pass = 1;
+        zpk.depth_pass = std::bit_cast<uint32_t>(zalpha);
         DrawShaders zsh = sh;
         zsh.pkey = Hash(&zpk, sizeof(zpk));
         EnsurePixelShader(zpk, zsh);
@@ -3991,6 +4000,7 @@ void VulkanBackend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t
             zk.blend = 0;
             zk.wmask = 0;
             zk.sten = 0;
+            zk.zwrite = 1;
             zpso = EnsurePipeline(zk, zsh);
         }
         if (zpso) k.zwrite = 0;
@@ -4009,7 +4019,8 @@ void VulkanBackend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t
 
     if (cap_) {
         CaptureDraw(s, prim, count, k, c, stages);
-        fprintf(cap_, " pkey %016llX%s%s", (unsigned long long)sh.pkey, flat ? " screen" : "",
+        fprintf(cap_, " pkey %016llX%s%s%s%s", (unsigned long long)sh.pkey, flat ? " screen" : "",
+                surface < 0 ? "" : surface ? " surface taken" : " surface refused", zpso ? " depth pass" : "",
                 DescribeInputs(s, start, indices, 2).c_str());
         fprintf(cap_, "\n     fog chip %u en %u mode %X params %g %g rs en %u table %u | fogp %g %g %g %g color %08X | final %08X %08X",
                 s.chip_fog, s.fog_enable, s.fog_mode, s.fog_param[0], s.fog_param[1], s.rs[kRsFogEnable],
@@ -4072,7 +4083,10 @@ void VulkanBackend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t
         drawn_.pso = zpso;
         IssueGeometry(a);
     }
-    if (!sh.shading && &s != &sprite_) KeepDraw(a, sh, stages, pso, b, size);
+    if (!sh.shading && !zpso && &s != &sprite_) {
+        KeepDraw(a, sh, stages, pso, b, size);
+        kept_.surface = k.blend && k.zen && !k.zwrite;
+    }
     g_perf.d_record += PerfLap(lap);
 }
 

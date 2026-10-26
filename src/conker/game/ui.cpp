@@ -29,6 +29,7 @@
 #include "common/grass.h"
 #include "common/keyboard.h"
 #include "common/mouse.h"
+#include "common/reflection.h"
 #include "common/rope.h"
 #include "common/warp.h"
 #include "common/water.h"
@@ -567,6 +568,9 @@ void Draw(double fps) {
                 ImGui::Checkbox("Glass shading", &glass::g_shading);
                 ImGui::SameLine();
                 ImGui::TextDisabled("bottles glow through, glint and reflect");
+                ImGui::Checkbox("Floor depth of field", &reflection::g_floor_depth);
+                ImGui::SameLine();
+                ImGui::TextDisabled("a reflective floor blurs by its own distance, not by what it reflects");
                 end_tab();
             }
 

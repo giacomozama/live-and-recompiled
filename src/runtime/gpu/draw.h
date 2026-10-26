@@ -335,6 +335,8 @@ void FillTransformConstants(const State& s, GuestExtent size, DrawConstants& c);
 bool TessellatedDraw(const State& s, uint32_t prim);
 // hands a draw of a g_program_watch entry's program to it, ahead of everything else the draw does
 void WatchDraw(const State& s, uint32_t start, uint32_t count, const uint8_t* indices);
+// g_surface_depth takes the draw (one that blends and tests depth but doesn't write it): its depth goes after it
+bool SurfaceDepth(const State& s, uint32_t start, uint32_t count, const uint8_t* indices);
 // DrawConstants::xc and xs for the draw's g_program_shading entry, after taking its top constant into its run's largest
 void FillShadingConstants(const State& s, uint32_t shading, DrawConstants& c);
 // the top of the draw before the latest of the entry's in its run, -1 when the latest began one: after
