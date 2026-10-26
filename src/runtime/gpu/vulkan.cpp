@@ -499,6 +499,7 @@ struct Tex {
     TextureDesc d;
     uint32_t levels = 1;
     uint64_t sig = 0;
+    uint64_t whole = 0;  // every byte hashed, as sig is at its last upload
     uint64_t frame = 0;
     uint64_t palette = 0;  // hash of the colours a P8 texture was decoded with
 };
@@ -3036,19 +3037,25 @@ Image* VulkanBackend::BindGuestTexture(const State& s, int stage, const TextureD
     uint32_t total = TotalSize(d);
     bool same = SameTexture(tx, d);
     if (!same && !CreateTexture(tx, d, fi, key)) return nullptr;
-    // cheap change check once per frame: lock epochs plus a sample of the bytes
+    // cheap change check once per frame: lock epochs plus a sample of the bytes. A texture back after a frame or more
+    // unbound has every byte hashed: the title may have loaded another in its place, unlocked, and a sample misses
+    // one alike but for a corner (Berri's blink atlas, clean, kept the bloodied one's picture from a later level)
     if (tx.frame != presents_ + 1 || !same || tx.palette != palette.hash) {
+        bool idle = tx.frame != presents_;
         tx.frame = presents_ + 1;
         tx.palette = palette.hash;
         const uint8_t* p = static_cast<const uint8_t*>(kernel::HostPtr(d.data));
         auto perf_t = PerfClock::now();
-        uint64_t sig = MemSig(d.data, total) ^ DirtyEpoch(d.data) ^ palette.hash;
+        uint64_t mark = DirtyEpoch(d.data) ^ palette.hash;
+        uint64_t sig = MemSig(d.data, total) ^ mark;
+        uint64_t whole = total > kSigWholeMax && idle && same ? Hash(p, total) ^ mark : 0;
         g_perf.sig += PerfMs(perf_t);
-        if (sig != tx.sig || !same) {
+        if (sig != tx.sig || (whole && whole != tx.whole) || !same) {
             PerfScope perf_up{g_perf.texup};
             g_perf.texups++;
             g_perf.texup_bytes += total;
             tx.sig = sig;
+            tx.whole = total > kSigWholeMax ? Hash(p, total) ^ mark : 0;
             UploadTexture(tx, d, p, palette.va ? palette.colours : nullptr);
         }
     }
@@ -3076,6 +3083,22 @@ Image* VulkanBackend::BindTexture(const State& s, int stage, DrawTextures& stage
 
     // rendered by the GPU: sample the target itself; DXT data loaded over a target's memory is not it
     auto tit = targets_.find(SizedTargetKey(d.data, fi.depth, d.width, d.height));
+    // nor is a texture the title loaded over an old target's memory without a lock: Conker moves its environment map
+    // targets about the heap, and a fur shell's A8L8 texture later laid where one had been drew that picture, black
+    // dots in the fur. A target not drawn lately gives way to a texture it can't be, of another size or a format no
+    // surface takes; its memory changing proves nothing, the environment maps go unredrawn for frames and still are
+    auto surface_format = [](uint32_t f) {
+        switch (f) {
+            case 0x02: case 0x03: case 0x05: case 0x06: case 0x07:
+            case 0x10: case 0x11: case 0x12: case 0x1C: case 0x1E: return true;
+            default: return false;
+        }
+    };
+    if (tit != targets_.end() && !tit->second.depth && TargetStale(d.data) &&
+        (tit->second.gw != d.width || tit->second.gh != d.height || !surface_format(d.format))) {
+        ReleaseTarget(tit);
+        tit = targets_.end();
+    }
     if (tit != targets_.end() && !d.cube && d.depth == 1 && !fi.compressed) {
         return BindTargetTexture(s, stage, d, tit->second, stages);
     }
