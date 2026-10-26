@@ -730,13 +730,16 @@ bool TossUpIn(const Frame& prev, const Frame& cur, const Snap& sn, const std::ve
 // in the menu its draws that moved most (a view drawn every other frame, characters) took it to 0.11, and text took
 // another string again. The frame's is its 90th percentile, not its median: most of the training level's draws hardly
 // move in a fast turn, the median held the limit at 0.025 while the camera's draws moved 0.04, and the ground's
-// pieces, every one in new buffers, went unblended again (capture 081202 pics 62-84)
+// pieces, every one in new buffers, went unblended again (capture 081202 pics 62-84). Nor only by draw: a character's
+// skinned pieces, many and each with many registers that hardly move, held it under 0.02 while the camera's draws
+// moved 0.05, and the ground's pieces (0.027) went unblended (capture 194651 pics 48-94); so the 90th percentile of
+// its programs' medians too, if higher
 constexpr float kLooseDistance = 0.025f;
 constexpr float kMotionSlack = 1.25f;
 float g_loose = kLooseDistance;  // the frame's (Match), for the notes
 // how far the frame's draws moved, per value: the 90th percentile of those the frame before has at the same addresses,
-// in every part, its draws that moved (a HUD that didn't says nothing of the camera); and each program's, the median
-// of all of its such draws, those that stayed too
+// in every part, its draws that moved (a HUD that didn't says nothing of the camera), or of its programs that moved,
+// the higher; and each program's, the median of all of its such draws, those that stayed too
 struct Motion {
     float frame = 0;
     std::unordered_map<uint64_t, float> program;
@@ -771,8 +774,14 @@ void Measure(const Frame& prev, const Frame& cur, Motion& m) {
         }
     }
     m.frame = Percentile(moved, 9);
-    for (auto& [p, d] : by)
-        if (!d.empty()) m.program[p] = Percentile(d, 5);
+    static std::vector<float> programs;
+    programs.clear();
+    for (auto& [p, d] : by) {
+        if (d.empty()) continue;
+        float v = m.program[p] = Percentile(d, 5);
+        if (v > 0) programs.push_back(v);
+    }
+    m.frame = std::max(m.frame, Percentile(programs, 9));
 }
 void Match() {
     Frame& cur = g_frames[g_cur];
