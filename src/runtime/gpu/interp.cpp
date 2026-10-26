@@ -528,6 +528,19 @@ bool Wrapped(const float* a, const float* b) {
     return whole != 0 && std::fabs(d - whole) < 0.05f;
 }
 
+// a constant register the game zeroes for a slot it leaves off and fills when it uses it: the characters' third group
+// of four blob shadows (c154-c157: x, y, the height they cast below, their weights) is all zeros some frames and
+// casters thousands of units away the next. Taken part way, a blob at half its weight lay half way to the origin, a
+// shadow cast by nothing (capture 170648 pics 98-104). Only the whole register, bit for bit zero (either sign)
+bool Cleared(const float* a, const float* b) {
+    auto zero = [](const float* v) {
+        for (int i = 0; i < 4; i++)
+            if (v[i] != 0.0f) return false;
+        return true;
+    };
+    return zero(a) != zero(b);
+}
+
 constexpr float kFlipNear = 0.2f;
 constexpr uint8_t kFlip = 2;
 // a row of a matrix the game gave negated: a shadow's projection (5342E94B, a dinosaur's flattened onto the floor),
@@ -1367,6 +1380,11 @@ Blended BlendLeader(uint32_t n, float t, State& s, Undo& undo) {
             if (Wrapped(a, c)) {
                 keep[j] = 1;
                 if (watch) kept += " c" + std::to_string(r) + " (wrapped)";
+                continue;
+            }
+            if (Cleared(a, c)) {
+                keep[j] = 1;
+                if (watch) kept += " c" + std::to_string(r) + " (cleared)";
                 continue;
             }
             if (!RowJumped(a, c, reach)) continue;
