@@ -783,6 +783,82 @@ void Measure(const Frame& prev, const Frame& cur, Motion& m) {
     }
     m.frame = std::max(m.frame, Percentile(programs, 9));
 }
+
+// copies of a mesh at the same addresses (a room's lamps: 9E03A2D4, 4EDA4F42 in the hall of lasers) are told apart by
+// where they are, a translation each. A fast turn moves each further than they lie apart, and nearest pairs first took
+// a lamp for the one beside it: c96.w 66, 182, 299, 415 a frame before were 30, 92, 153, 215, and 92 took 415. The
+// near lamp's beam was drawn halfway to another lamp, gone for a picture (capture 205559 pics 32-38, 68-74, 100-106).
+// The camera moves all the copies alike, by one affine map of each value: of the pairs as found and the same draws
+// paired in their turns (the game draws a room's copies in one order), the one the map fits clearly better. Two pairs
+// fit any map
+constexpr size_t kInTurnMin = 3;
+constexpr double kInTurnBetter = 0.5;  // the turns' misfit at most this of the pairs' as found
+// how badly the best affine map of each value from the frame before to this one fits pairs (draws of the frame, of
+// the frame before): the share of the value's spread it leaves unexplained, summed. Packed values and palette
+// registers another draw left say nothing of where a copy is
+double Misfit(const Frame& prev, const Frame& cur, const std::vector<std::pair<uint32_t, uint32_t>>& pairs) {
+    const Snap& first = cur.snaps[pairs[0].first];
+    double n = double(pairs.size()), misfit = 0;
+    for (size_t j = 0; j < first.reads->regs.size(); j++) {
+        if (first.stale[first.reads->regs[j]]) continue;
+        for (size_t k = 0; k < 4; k++) {
+            double sx = 0, sy = 0, sxx = 0, sxy = 0, syy = 0;
+            bool numbers = true;
+            for (auto [c, p] : pairs) {
+                float x = prev.Values(prev.snaps[p])[j][k], y = cur.Values(cur.snaps[c])[j][k];
+                if (Packed(x) || Packed(y)) {
+                    numbers = false;
+                    break;
+                }
+                sx += x, sy += y, sxx += double(x) * x, sxy += double(x) * y, syy += double(y) * y;
+            }
+            double cxx = sxx - sx * sx / n, cxy = sxy - sx * sy / n, cyy = syy - sy * sy / n;
+            if (!numbers || cyy <= 1e-9 * (1.0 + syy)) continue;
+            double left = cxx > 1e-9 * (1.0 + sxx) ? cyy - cxy * cxy / cxx : cyy;
+            misfit += std::max(0.0, left) / cyy;
+        }
+    }
+    return misfit;
+}
+// a kind's pairs at the same addresses (found[c], -1 for none or at other addresses), paired again in their turns
+// where that fits the camera's move clearly better (Misfit); dist and two as Match has them
+void InTurns(const Frame& prev, Frame& cur, const std::vector<uint32_t>& list, const std::vector<uint32_t>& before,
+             const std::vector<int32_t>& found, const std::vector<float>& dist,
+             const std::vector<std::array<float, 4>>& two) {
+    static std::unordered_map<uint64_t, std::vector<uint32_t>> by;  // turns in list, by addresses
+    for (auto& [a, v] : by) v.clear();
+    for (uint32_t c = 0; c < list.size(); c++)
+        if (found[c] >= 0 && cur.snaps[list[c]].reads) by[cur.snaps[list[c]].parts[kAddresses]].push_back(c);
+    static std::vector<std::pair<uint32_t, uint32_t>> as_found, in_turns;
+    static std::vector<uint32_t> ps;
+    for (const auto& [a, cs] : by) {
+        if (cs.size() < kInTurnMin) continue;
+        ps.clear();
+        as_found.clear();
+        for (uint32_t c : cs) {
+            ps.push_back(uint32_t(found[c]));
+            as_found.emplace_back(list[c], before[size_t(found[c])]);
+        }
+        std::sort(ps.begin(), ps.end());
+        bool moved = false;
+        in_turns.clear();
+        for (size_t i = 0; i < cs.size(); i++) {
+            moved |= ps[i] != uint32_t(found[cs[i]]);
+            in_turns.emplace_back(list[cs[i]], before[ps[i]]);
+        }
+        if (!moved || Misfit(prev, cur, in_turns) >= kInTurnBetter * Misfit(prev, cur, as_found)) continue;
+        for (size_t i = 0; i < cs.size(); i++) {
+            Snap& sn = cur.snaps[list[cs[i]]];
+            size_t values = sn.reads->regs.size() * 4;
+            float d = dist[cs[i] * before.size() + ps[i]];
+            const float* t = two[cs[i]].data();
+            sn.found = int32_t(before[ps[i]]);
+            sn.distance = values ? d / float(values) : 0;
+            sn.next = values ? (d == t[0] ? t[1] : t[0]) / float(values) : INFINITY;
+        }
+    }
+}
+
 void Match() {
     Frame& cur = g_frames[g_cur];
     Frame& prev = g_frames[g_cur ^ 1];
@@ -803,6 +879,7 @@ void Match() {
     // each draw's two nearest, at the same addresses ([0], [1]) and at others ([2], [3]): its runner-up is the
     // nearer of those alike to the one it took (Snap::next)
     static std::vector<std::array<float, 4>> two;
+    static std::vector<int32_t> same_found;  // each draw's turn in before, found at the same addresses (InTurns)
     for (const auto& [key, list] : cur.loose) {
         auto it = prev.loose.find(key);
         if (it == prev.loose.end()) continue;
@@ -854,6 +931,7 @@ void Match() {
             return a.turns < b.turns;
         });
         used.assign(list.size(), false);
+        same_found.assign(list.size(), -1);
         for (const Pair& pr : pairs) {
             uint32_t p = before[pr.p];
             if (used[pr.c] || prev.taken[p]) continue;
@@ -871,7 +949,9 @@ void Match() {
             float next = pr.d == t[0] ? t[1] : t[0];
             sn.next = values ? next / float(values) : INFINITY;
             sn.candidates = uint32_t(before.size());
+            if (pr.same) same_found[pr.c] = int32_t(pr.p);
         }
+        InTurns(prev, cur, list, before, same_found, dist, two);
     }
     // a draw still not found that is a draw of the frame before but for its count (the same buffers, start, first
     // indices and kind of primitive) is that draw at another detail: a grass clump drawing fewer blades as the camera
@@ -980,8 +1060,17 @@ void EndFrame() {
     g_frames[g_cur ^ 1].taken.assign(g_frames[g_cur ^ 1].snaps.size(), false);
 }
 
-// XBE_INTERP_WATCH=<programs, hex, comma separated>: each of their draws in the notes, how it came out and why
+// XBE_INTERP_WATCH=<programs, hex, comma separated>: each of their draws in the notes, how it came out and why;
+// XBE_INTERP_WATCH=all watches every draw, to find which program a glitch is by comparing pictures
+bool WatchingAll() {
+    static const bool all = [] {
+        const char* e = std::getenv("XBE_INTERP_WATCH");
+        return e && std::strcmp(e, "all") == 0;
+    }();
+    return all;
+}
 bool Watched(uint64_t program) {
+    if (WatchingAll()) return true;
     static const std::vector<uint64_t> w = [] {
         std::vector<uint64_t> v;
         const char* e = std::getenv("XBE_INTERP_WATCH");
@@ -996,7 +1085,7 @@ bool Watched(uint64_t program) {
 }
 void Watch(uint32_t n, const Snap& sn, Blended how, const std::string& jumped, const std::string& kept,
            const std::string& moved = "") {
-    if (g_pass.watched.size() > 48000) return;
+    if (g_pass.watched.size() > (WatchingAll() ? 1000000u : 48000u)) return;
     static const char* const kHow[] = {"not found", "jumped", "borrowed", "blended"};
     char b[320];
     snprintf(b, sizeof(b),
