@@ -22,8 +22,6 @@ This is a beta: single player is supposed to be fully playable, but there may be
 
 Modes above 60 FPS WILL have frame interpolation glitches, as we have not achieved 100% draw matching yet.
 
-No effort has been made to implement multiplayer yet.
-
 ## Contributing
 
 You may open issues for requesting features or reporting bugs, and submit PRs if you fix a bug or want to add a new feature yourself. There is no guarantee it will be merged, but you won't be laughed at either. We DO accept LLM-written PRs obviously.
