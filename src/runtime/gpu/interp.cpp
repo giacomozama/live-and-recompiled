@@ -638,13 +638,15 @@ bool TossUpIn(const Frame& prev, const Frame& cur, const Snap& sn, const std::ve
 // for a program with none: in a fast pan, draws found at their own addresses were 0.03 apart, and a ground whose
 // buffers all moved that frame (0.027) was drawn unblended, sky showing through its seams. Not the frame's for all:
 // in the menu its draws that moved most (a view drawn every other frame, characters) took it to 0.11, and text took
-// another string again
+// another string again. The frame's is its 90th percentile, not its median: most of the training level's draws hardly
+// move in a fast turn, the median held the limit at 0.025 while the camera's draws moved 0.04, and the ground's
+// pieces, every one in new buffers, went unblended again (capture 081202 pics 62-84)
 constexpr float kLooseDistance = 0.025f;
 constexpr float kMotionSlack = 1.25f;
 float g_loose = kLooseDistance;  // the frame's (Match), for the notes
-// how far the frame's draws moved, per value: the median of those the frame before has at the same addresses, in
-// every part, its draws that moved (a HUD that didn't says nothing of the camera); and each program's, the median of
-// all of its such draws, those that stayed too
+// how far the frame's draws moved, per value: the 90th percentile of those the frame before has at the same addresses,
+// in every part, its draws that moved (a HUD that didn't says nothing of the camera); and each program's, the median
+// of all of its such draws, those that stayed too
 struct Motion {
     float frame = 0;
     std::unordered_map<uint64_t, float> program;
@@ -653,9 +655,9 @@ struct Motion {
         return it != program.end() ? it->second : frame;
     }
 };
-float Median(std::vector<float>& d) {
+float Percentile(std::vector<float>& d, size_t tenths) {
     if (d.empty()) return 0;
-    auto at = d.begin() + ptrdiff_t(d.size() / 2);
+    auto at = d.begin() + ptrdiff_t(d.size() * tenths / 10);
     std::nth_element(d.begin(), at, d.end());
     return *at;
 }
@@ -678,9 +680,9 @@ void Measure(const Frame& prev, const Frame& cur, Motion& m) {
             break;
         }
     }
-    m.frame = Median(moved);
+    m.frame = Percentile(moved, 9);
     for (auto& [p, d] : by)
-        if (!d.empty()) m.program[p] = Median(d);
+        if (!d.empty()) m.program[p] = Percentile(d, 5);
 }
 void Match() {
     Frame& cur = g_frames[g_cur];
