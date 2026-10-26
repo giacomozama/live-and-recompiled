@@ -21,6 +21,8 @@
 // With mouse look on (src/conker/game/mouse.cpp) the mouse also turns the camera, over the camera keys while it moves.
 #include <algorithm>
 #include <cctype>
+#include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -144,6 +146,81 @@ bool Parse(const std::string& name, int& vk) {
 // one axis from its two keys: keyboard strokes are digital, so a held key is full deflection
 int16_t Axis(bool negative, bool positive) {
     return int16_t((positive ? kFull : 0) - (negative ? kFull : 0));
+}
+
+// The movement keys as a thumb on the stick's rim. Eight directions jump 45 degrees between two polls, which reads as
+// a far faster spin than a thumb makes, and the alien's tail swing (the last boss) takes no momentum from it: Conker
+// stands still. So a turn of up to 90 degrees sweeps there at kSweep instead, and a key let go mid-spin, before the
+// next one is down, holds the stick for kGap rather than dropping it to the centre. Larger turns and starts from
+// the centre snap as before, and a resting stick sits where the keys put it (on the square: diagonals full on both
+// axes), so walking is as it was.
+constexpr double kSweep = 540.0;           // degrees per second, a brisk spin of the stick
+constexpr double kSnap = 90.0 + 1e-3;      // turns wider than this jump
+constexpr int64_t kGap = 60'000;           // microseconds a key change can leave the keys up mid-spin
+constexpr int64_t kSpinning = 300'000;     // a sweep this recent counts as spinning
+
+struct Thumb {
+    bool held = false;
+    double angle = 0;          // degrees, counterclockwise from right
+    int64_t last = 0;          // the previous poll
+    int64_t swept = INT64_MIN / 2;  // the last poll that turned the stick
+    int64_t released = 0;      // when the keys went up
+};
+Thumb g_thumb[input::kPorts];
+
+int64_t NowUs() {
+    using namespace std::chrono;
+    return duration_cast<microseconds>(steady_clock::now().time_since_epoch()).count();
+}
+
+// a direction on the square a pair of digital axes reaches, so the eight key directions come out as they are
+void OnSquare(double degrees, int16_t& x, int16_t& y) {
+    const double r = degrees * (3.14159265358979323846 / 180.0);
+    const double c = std::cos(r), s = std::sin(r);
+    const double m = std::max(std::fabs(c), std::fabs(s));
+    x = int16_t(std::lround(c / m * kFull));
+    y = int16_t(std::lround(s / m * kFull));
+}
+
+// the left stick from the movement keys; false while neither they nor a held spin drive it
+bool MoveStick(int port, int16_t& x, int16_t& y) {
+    Thumb& t = g_thumb[port];
+    const int64_t now = NowUs();
+    const double dt = std::clamp(double(now - t.last) / 1e6, 0.0, 0.1);
+    t.last = now;
+
+    const int16_t kx = Axis(Down(port, kMoveLeft), Down(port, kMoveRight));
+    const int16_t ky = Axis(Down(port, kMoveDown), Down(port, kMoveUp));
+    if (kx == 0 && ky == 0) {  // no key, or two opposite ones
+        if (!t.held) return false;
+        if (t.released == 0) t.released = now;
+        if (now - t.released < kGap && now - t.swept < kSpinning) {
+            OnSquare(t.angle, x, y);
+            return true;
+        }
+        t.held = false;
+        return false;
+    }
+    t.released = 0;
+
+    const double target = std::atan2(double(ky), double(kx)) * (180.0 / 3.14159265358979323846);
+    double turn = std::remainder(target - t.angle, 360.0);
+    if (!t.held || std::fabs(turn) > kSnap) {
+        t.angle = target;
+        turn = 0;
+    } else if (turn != 0) {
+        const double step = kSweep * dt;
+        t.angle = std::fabs(turn) <= step ? target : t.angle + std::copysign(step, turn);
+        t.swept = now;
+    }
+    t.held = true;
+    if (t.angle == target) {  // at rest: exactly what the keys say
+        x = kx;
+        y = ky;
+    } else {
+        OnSquare(t.angle, x, y);
+    }
+    return true;
 }
 
 [[maybe_unused]] const bool g_defaults = [] {  // before Load, at static init
@@ -294,9 +371,9 @@ void Pad(int port, input::Pad& pad) {
         return;
     }
 
-    if (Down(port, kMoveUp) || Down(port, kMoveDown) || Down(port, kMoveLeft) || Down(port, kMoveRight)) {
-        pad.lx = Axis(Down(port, kMoveLeft), Down(port, kMoveRight));
-        pad.ly = Axis(Down(port, kMoveDown), Down(port, kMoveUp));
+    if (int16_t x, y; MoveStick(port, x, y)) {
+        pad.lx = x;
+        pad.ly = y;
     }
     if (Down(port, kCamUp) || Down(port, kCamDown) || Down(port, kCamLeft) || Down(port, kCamRight)) {
         pad.rx = Axis(Down(port, kCamLeft), Down(port, kCamRight));
