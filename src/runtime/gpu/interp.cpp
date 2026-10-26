@@ -128,6 +128,12 @@ Keys MakeKeys(const State& s, uint32_t prim, uint32_t start, uint32_t count, con
     return k;
 }
 
+uint64_t ExactKey(uint64_t program, const std::array<uint64_t, kParts>& parts) {
+    uint64_t h = Mix(0, program);
+    for (uint64_t p : parts) h = Mix(h, p);
+    return h;
+}
+
 // the constant registers a program reads (ProgramReads), as a list; from relative up, a palette read relative to a0
 // (ProgramRelativeBase), of which a draw uses the entries its vertices pick
 struct Reads {
@@ -174,6 +180,12 @@ struct Snap {
 
 struct Frame {
     std::unordered_map<uint64_t, std::vector<uint32_t>> loose, programs, lod, mesh;  // the draws of each key
+    std::unordered_map<uint64_t, std::vector<uint32_t>> exact;  // of all its parts (Measure)
+    // once matched, the found draws Borrow and BorrowAcross go out to: of each program, their turns in programs; of
+    // the frame, those with a program. A run of draws not found (a battle's blood, in new buffers each frame) went
+    // through each other draw of the run for each, in every picture drawn again
+    std::unordered_map<uint64_t, std::vector<uint32_t>> found_turns;
+    std::vector<uint32_t> found_programmed;
     std::vector<Snap> snaps;
     std::vector<std::array<float, 4>> values;  // the snaps' constants
     std::vector<bool> taken;  // found by a draw of the frame after
@@ -185,6 +197,9 @@ struct Frame {
         programs.clear();
         lod.clear();
         mesh.clear();
+        exact.clear();
+        found_turns.clear();
+        found_programmed.clear();
         snaps.clear();
         values.clear();
         taken.clear();
@@ -318,6 +333,7 @@ std::string g_notes[8];
 // frames ended; the frame scored (Suspects::first), logged; pictures drawn again this frame. XBE_INTERP_AUTO's saves
 // done, pictures to wait before the next, the frame it may come from
 uint32_t g_frame = 0, g_scored = ~0u, g_logged = 0, g_passes = 0;
+uint32_t g_pass_id = 0;  // pictures drawn again, ever: a leader's blend kept for its followers is of one (BlendDraw)
 uint32_t g_saves = 0, g_save_in = 0, g_save_after = 0;
 
 uint64_t ProgramOf(const State& s) {
@@ -557,6 +573,7 @@ void Draw(const State& s, bool same, uint32_t prim, uint32_t start, uint32_t cou
     cur.programs[k.program].push_back(n);
     cur.lod[k.lod].push_back(n);
     cur.mesh[k.mesh].push_back(n);
+    cur.exact[ExactKey(k.program, k.parts)].push_back(n);
 }
 
 // the frame's draws found in the frame before, once its draws are all in: among the draws alike but for their
@@ -669,10 +686,10 @@ void Measure(const Frame& prev, const Frame& cur, Motion& m) {
     m.program.clear();
     for (const Snap& sn : cur.snaps) {
         if (sn.leader >= 0) continue;
-        auto it = prev.lod.find(sn.lod);
-        if (it == prev.lod.end()) continue;
+        auto it = prev.exact.find(ExactKey(sn.program, sn.parts));
+        if (it == prev.exact.end()) continue;
         for (uint32_t p : it->second) {
-            if (prev.snaps[p].parts != sn.parts) continue;
+            if (prev.snaps[p].parts != sn.parts || prev.snaps[p].program != sn.program) continue;
             size_t values = sn.reads ? sn.reads->regs.size() * 4 : kXf * 16;
             float v = values ? Distance(prev, prev.snaps[p], cur, sn, INFINITY) / float(values) : 0;
             if (v > 0) moved.push_back(v);
@@ -833,6 +850,15 @@ void Match() {
             g_t.draws++;
             Trace(cur, sn, prev, sn.found >= 0 ? &prev.snaps[size_t(sn.found)] : nullptr, sn.by_exact, sn.program);
         }
+    }
+    for (const auto& [program, list] : cur.programs) {
+        std::vector<uint32_t>& turns = cur.found_turns[program];
+        for (uint32_t k = 0; k < list.size(); k++)
+            if (cur.snaps[list[k]].found >= 0) turns.push_back(k);
+    }
+    for (uint32_t i = 0; i < cur.snaps.size(); i++) {
+        const Snap& sn = cur.snaps[i];
+        if (sn.leader < 0 && sn.found >= 0 && sn.reads) cur.found_programmed.push_back(i);
     }
 }
 
@@ -1053,6 +1079,18 @@ std::string Score() {
     return "\n  suspects: " + o + (counted ? "" : " (none of XBE_INTERP_SUSPECT_MASK)") + lines;
 }
 
+// the turns of a sorted list out from turn from, nearest first and the later of two as near: from + 1, from - 1,
+// from + 2, ... as they are in the list; until visit says done
+template <class F>
+void Outward(const std::vector<uint32_t>& turns, size_t from, F visit) {
+    size_t lo = size_t(std::lower_bound(turns.begin(), turns.end(), from) - turns.begin());
+    size_t hi = size_t(std::upper_bound(turns.begin(), turns.end(), from) - turns.begin());
+    while (lo > 0 || hi < turns.size()) {
+        bool up = lo == 0 || (hi < turns.size() && turns[hi] - from <= from - turns[lo - 1]);
+        if (visit(up ? turns[hi++] : turns[--lo])) return;
+    }
+}
+
 // a draw not found (a ground's piece drawn only this frame, beside pieces drawn in both) moves as a found draw of its
 // program next to it in the frame does, when every constant that one moved (or transform) is the same in this one:
 // it takes their values in the frame before from that draw, and keeps its others. Drawn as the frame has it instead,
@@ -1064,14 +1102,15 @@ bool Borrow(const Frame& cur, const Frame& prev, uint32_t n, std::vector<std::ar
     auto it = cur.programs.find(sn.program);
     if (it == cur.programs.end()) return false;
     const std::vector<uint32_t>& list = it->second;
+    auto found = cur.found_turns.find(sn.program);
+    if (found == cur.found_turns.end()) return false;
     size_t from = size_t(std::lower_bound(list.begin(), list.end(), n) - list.begin());
     uint32_t tries = 0;
-    for (size_t step = 1; tries < kTries && step < 2 * list.size(); step++) {
-        // from + 1, from - 1, from + 2, ...
-        size_t off = (step + 1) / 2;
-        if (step % 2 ? from + off >= list.size() : off > from) continue;
-        const Snap& o = cur.snaps[list[step % 2 ? from + off : from - off]];
-        if (o.found < 0 || o.reads != sn.reads) continue;
+    bool borrowed = false;
+    // the found draws of its program, out from its turn
+    Outward(found->second, from, [&](uint32_t turn) {
+        const Snap& o = cur.snaps[list[turn]];
+        if (o.reads != sn.reads) return false;
         tries++;
         const Snap& was = prev.snaps[size_t(o.found)];
         bool moved = false, same = true;
@@ -1087,23 +1126,23 @@ bool Borrow(const Frame& cur, const Frame& prev, uint32_t n, std::vector<std::ar
                     same = std::memcmp(&x[j][c], &y[j][c], 4) == 0 || std::memcmp(&v[j][c], &x[j][c], 4) == 0;
                 moved |= std::memcmp(&v[j], &x[j], 16) == 0;
             }
-            if (!moved || !same) continue;
+            if (!moved || !same) return tries >= kTries;
             old.assign(v, v + sn.reads->regs.size());
             for (size_t j = 0; j < old.size(); j++)
                 for (size_t c = 0; c < 4 && !sn.stale[sn.reads->regs[j]]; c++)
                     if (std::memcmp(&x[j][c], &y[j][c], 4) != 0) old[j][c] = y[j][c];
-            return true;
+            return borrowed = true;
         }
         for (size_t i = 0; same && i < kXf; i++) {
             if (o.xf[i] == was.xf[i]) continue;
             moved = true;
             same = sn.xf[i] == o.xf[i];
         }
-        if (!moved || !same) continue;
+        if (!moved || !same) return tries >= kTries;
         for (size_t i = 0; i < kXf; i++) xf[i] = o.xf[i] == was.xf[i] ? sn.xf[i] : was.xf[i];
-        return true;
-    }
-    return false;
+        return borrowed = true;
+    });
+    return borrowed;
 }
 
 // a draw not found with no found draw of its program near it (a ground whose pieces all changed their index lists
@@ -1116,12 +1155,11 @@ bool BorrowAcross(const Frame& cur, const Frame& prev, uint32_t n, std::vector<s
     const std::array<float, 4>* v = cur.Values(sn);
     static std::array<int16_t, 192> at;  // the other draw's value for each register, or -1
     uint32_t tries = 0;
-    for (size_t step = 1; tries < kTries && step < 2 * cur.snaps.size(); step++) {
-        // n + 1, n - 1, n + 2, ...
-        size_t off = (step + 1) / 2;
-        if (step % 2 ? n + off >= cur.snaps.size() : off > n) continue;
-        const Snap& o = cur.snaps[step % 2 ? n + off : n - off];
-        if (o.leader >= 0 || o.found < 0 || !o.reads || o.reads == sn.reads) continue;
+    bool borrowed = false;
+    // the frame's found draws with a program, out from its turn
+    Outward(cur.found_programmed, n, [&](uint32_t i) {
+        const Snap& o = cur.snaps[i];
+        if (o.reads == sn.reads) return false;
         tries++;
         const Snap& was = prev.snaps[size_t(o.found)];
         const std::array<float, 4>* x = cur.Values(o);
@@ -1137,7 +1175,7 @@ bool BorrowAcross(const Frame& cur, const Frame& prev, uint32_t n, std::vector<s
                 same = std::memcmp(&x[k][c], &y[k][c], 4) == 0 || std::memcmp(&v[j][c], &x[k][c], 4) == 0;
             moved |= std::memcmp(&v[j], &x[k], 16) == 0;
         }
-        if (!moved || !same) continue;
+        if (!moved || !same) return tries >= kTries;
         old.assign(v, v + sn.reads->regs.size());
         for (size_t j = 0; j < old.size(); j++) {
             uint8_t r = sn.reads->regs[j];
@@ -1146,12 +1184,12 @@ bool BorrowAcross(const Frame& cur, const Frame& prev, uint32_t n, std::vector<s
             for (size_t c = 0; c < 4; c++)
                 if (std::memcmp(&x[k][c], &y[k][c], 4) != 0) old[j][c] = y[k][c];
         }
-        return true;
-    }
-    return false;
+        return borrowed = true;
+    });
+    return borrowed;
 }
 
-Blended BlendDraw(uint32_t n, float t, State& s, Undo& undo) {
+Blended BlendLeader(uint32_t n, float t, State& s, Undo& undo) {
     const Frame& cur = g_frames[g_cur];
     const Frame& prev = g_frames[g_cur ^ 1];
     if (g_pass.on) g_pass.draws++;
@@ -1328,6 +1366,43 @@ Blended BlendDraw(uint32_t n, float t, State& s, Undo& undo) {
     return how;
 }
 
+// a draw following its leader (Follows) reads the leader's constants and comes out as it did: the leader's blend
+// kept, set again. Worked out again for each, a battle's thousands of followers took the picture 8 ms (its draws not
+// found looked for a neighbour to borrow from, each time). Recording works each out, to count it in the notes
+Blended BlendDraw(uint32_t n, float t, State& s, Undo& undo) {
+    const Frame& cur = g_frames[g_cur];
+    if (g_pass.on || n >= cur.snaps.size()) return BlendLeader(n, t, s, undo);
+    uint32_t leader = cur.snaps[n].leader >= 0 ? uint32_t(cur.snaps[n].leader) : n;
+    static struct {
+        uint32_t pass = ~0u, leader = ~0u;
+        Blended how = Blended::kNotFound;
+        std::vector<std::pair<uint32_t, std::array<float, 4>>> vsc;
+        std::vector<std::pair<uint32_t, std::array<float, 16>>> xf;
+    } kept;
+    if (leader != n && kept.pass == g_pass_id && kept.leader == leader) {
+        for (const auto& [r, v] : kept.vsc) {
+            undo.vsc.emplace_back(r, s.vsc.v[r]);
+            s.vsc.v[r] = v;
+        }
+        for (const auto& [i, m] : kept.xf) {
+            undo.xf.emplace_back(i, s.transforms[i]);
+            s.transforms[i] = m;
+        }
+        return kept.how;
+    }
+    size_t vsc = undo.vsc.size(), xf = undo.xf.size();
+    Blended how = BlendLeader(n, t, s, undo);
+    kept.pass = g_pass_id;
+    kept.leader = leader;
+    kept.how = how;
+    kept.vsc.clear();
+    kept.xf.clear();
+    for (size_t i = vsc; i < undo.vsc.size(); i++) kept.vsc.emplace_back(undo.vsc[i].first, s.vsc.v[undo.vsc[i].first]);
+    for (size_t i = xf; i < undo.xf.size(); i++)
+        kept.xf.emplace_back(undo.xf[i].first, s.transforms[undo.xf[i].first]);
+    return how;
+}
+
 Blended Blend(uint32_t n, float t, State& s, Undo& undo) {
     Blended how = BlendDraw(n, t, s, undo);
     g_sus.last = false;
@@ -1386,6 +1461,7 @@ void BeginPass(float t) {
     g_sus.first = g_scored != g_frame;
     g_scored = g_frame;
     g_passes++;
+    g_pass_id++;
 }
 
 void EndPass(uint32_t slot) {
