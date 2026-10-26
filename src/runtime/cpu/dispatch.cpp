@@ -328,6 +328,7 @@ std::vector<ProfileEntry>& ProfileEntries() {
     return v;
 }
 std::atomic<uint32_t> g_profile_trigger{0};
+std::atomic<int> g_profile_marked{-1};  // F6's mark, -1 until first pressed: the trigger splits until then
 uint32_t g_frames_held = 0, g_frames_idle = 0;
 }  // namespace
 
@@ -340,10 +341,17 @@ uint32_t* x86_profile_counter(const char* name) {
 
 void x86_profile_trigger(uint32_t value) { g_profile_trigger = value; }
 
+void x86_profile_mark() {
+    int was = g_profile_marked.load();
+    g_profile_marked = was > 0 ? 0 : 1;
+    LOGI("profile: frames %s", was > 0 ? "unmarked" : "marked (counted as held)");
+}
+
 void x86_profile_frame() {
     std::lock_guard<std::mutex> lock(g_profile_lock);
     if (ProfileEntries().empty()) return;
-    bool held = g_profile_trigger > 0x40;
+    const int marked = g_profile_marked;
+    bool held = marked >= 0 ? marked > 0 : g_profile_trigger > 0x40;
     (held ? g_frames_held : g_frames_idle)++;
     for (auto& e : ProfileEntries()) {
         (held ? e.held : e.idle) += *e.count;
@@ -351,6 +359,7 @@ void x86_profile_frame() {
     }
 }
 
+// F6 (main.cpp, main_sdl.cpp): frames from here count as held, until F6 again; once pressed, the trigger no longer splits
 // "calls with the trigger held, calls without, name", after a line with the frame counts
 void x86_profile_dump() {
     static int n = 0;

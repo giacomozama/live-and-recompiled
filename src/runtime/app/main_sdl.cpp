@@ -26,6 +26,7 @@
 #include "xdk/dsound.h"
 
 void x86_profile_dump();  // cpu/dispatch.cpp
+void x86_profile_mark();
 
 namespace app {
 
@@ -39,7 +40,7 @@ std::atomic<uint64_t> g_desktop{0};  // width << 32 | height, read on any thread
 
 // virtual-key codes and the keys SDL names by position; the generic Shift, Ctrl and Alt take either side
 constexpr int kVkShift = 0x10, kVkCtrl = 0x11, kVkAlt = 0x12;
-constexpr int kVkF3 = 0x72, kVkF4 = 0x73, kVkF5 = 0x74;
+constexpr int kVkF3 = 0x72, kVkF4 = 0x73, kVkF5 = 0x74, kVkF6 = 0x75;
 
 const std::array<SDL_Scancode, 256>& ScancodeOf() {
     static const auto table = [] {
@@ -213,6 +214,7 @@ bool Handle(const SDL_Event& e) {
             if (vk == kVkF3) DumpThreads();
             if (vk == kVkF4 && !e.key.repeat) gpu::g_record_dump = true;
             if (vk == kVkF5 && !e.key.repeat) x86_profile_dump();
+            if (vk == kVkF6 && !e.key.repeat) x86_profile_mark();
             break;
         }
         case SDL_EVENT_WINDOW_FOCUS_GAINED:

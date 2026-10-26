@@ -29,6 +29,7 @@
 #include "xdk/dsound.h"
 
 void x86_profile_dump();  // cpu/dispatch.cpp
+void x86_profile_mark();
 
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND, UINT, WPARAM, LPARAM);
 
@@ -199,6 +200,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             if (wp == VK_F3) DumpThreads();
             if (wp == VK_F4 && !(lp & (1 << 30))) gpu::g_record_dump = true;
             if (wp == VK_F5 && !(lp & (1 << 30))) x86_profile_dump();  // not on auto repeat
+            if (wp == VK_F6 && !(lp & (1 << 30))) x86_profile_mark();
             return 0;
         case WM_INPUT:
             RawInput(hwnd, reinterpret_cast<HRAWINPUT>(lp));
