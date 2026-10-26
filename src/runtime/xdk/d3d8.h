@@ -27,9 +27,12 @@ void LodTraceRun(X86Context& ctx, uint32_t data, uint32_t owner = 0);
 
 // The object and the piece of its model whose draws the title pushes next, for frame generation to find each draw
 // again by (gpu::interp::Tag): every draw read off the commands pushed from here until the next SetDrawTag carries
-// them, the commands pushed before are read first. {0, 0} tags nothing. Returns the tag it replaces
+// them, the commands pushed before are read first. {0, 0} tags nothing. Returns the tag it replaces. group: the
+// object's draws come in no fixed order (an effect's particles), so its tag says only whose draw it is, and its draws
+// are told apart among themselves by how near they are (gpu::interp::Tag::group)
 struct DrawTag {
     uint32_t object = 0, piece = 0;
+    bool group = false;
 };
 DrawTag SetDrawTag(DrawTag tag);
 

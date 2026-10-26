@@ -65,6 +65,7 @@ struct Keys {
     uint64_t data = 0;   // the start of each stream's bytes, when tracing or recording
     uint64_t program = 0;
     std::array<uint64_t, kParts> parts{};
+    std::array<uint32_t, 4> textures{};  // the memory of the textures it samples, by stage, for the watch lines
 };
 
 // the back buffers' memory, as presented (Presented): their surfaces stay put, their memory rotates every Swap
@@ -126,8 +127,10 @@ Keys MakeKeys(const State& s, uint32_t prim, uint32_t start, uint32_t count, con
     uint32_t sampled = SampledStages(s);
     for (uint32_t i = 0; i < 4; i++) {
         TextureDesc td;
-        if ((sampled >> i & 1) && s.textures[i] && Describe(s.textures[i], td))
+        if ((sampled >> i & 1) && s.textures[i] && Describe(s.textures[i], td)) {
             addresses = Mix(addresses, uint64_t(td.data) << 2 | i);
+            k.textures[i] = td.data;
+        }
     }
     k.parts[kAddresses] = addresses;
     uint64_t l = Mix(0, k.program);
@@ -186,9 +189,12 @@ struct Snap {
     bool by_exact = false;
     bool second = false;  // found only as another detail's draw (Match)
     bool by_tag = false;  // found by its tag (Match)
+    bool grouped = false;  // of a group the frame before had too: found among its draws or not at all (Match)
     uint64_t lod = 0;     // Keys::lod
     uint64_t mesh = 0;    // Keys::mesh
     Tag tag;
+    uint32_t target = 0;  // its target's memory, for the watch lines
+    std::array<uint32_t, 4> textures{};  // Keys::textures
     // a small untagged draw's vertices as it read them (Frame::raw, from raw_at): verts of them from vertex first of
     // its stream, its position (v0) at offset in each (MoveVertices); verts 0 for none kept
     uint32_t raw_at = 0, verts = 0, first = 0;
@@ -219,7 +225,8 @@ struct Frame {
     std::unordered_map<uint64_t, std::vector<uint32_t>> loose, programs, lod, mesh;
     std::unordered_map<uint64_t, std::vector<uint32_t>> exact;  // of all its parts (Measure)
     // the tagged draws (Tag::key), a follower's as its leader: the draw with its constants
-    std::unordered_map<uint64_t, uint32_t> tags;
+    TagTable tags;
+    std::unordered_map<uint64_t, std::vector<uint32_t>> groups;  // the draws of each group's tag (Tag::group)
     // once matched, the found draws Borrow and BorrowAcross go out to: of each program, their turns in programs; of
     // the frame, those with a program. A run of draws not found (a battle's blood, in new buffers each frame) went
     // through each other draw of the run for each, in every picture drawn again
@@ -245,7 +252,8 @@ struct Frame {
         Reuse(lod);
         Reuse(mesh);
         Reuse(exact);
-        tags.clear();
+        tags.Clear();
+        Reuse(groups);
         Reuse(found_turns);
         found_programmed.clear();
         snaps.clear();
@@ -387,6 +395,7 @@ struct Pass {
     uint32_t draws = 0, unfound = 0, jumped = 0, borrowed = 0, across = 0, kept = 0, second = 0;
     uint32_t tagged = 0, by_tag = 0;  // draws the title tagged, those found by their tag (Match)
     uint32_t moved = 0;               // draws whose vertices were moved part way (MoveVertices)
+    uint32_t offscreen = 0;           // draws into a target not presented, drawn as the frame has them (OffscreenKept)
     std::unordered_map<uint64_t, std::pair<uint32_t, std::string>> unfound_programs;  // count, the first's reason
     std::string jumps;  // the first draws with a jump: draw, program, registers
     std::string watched;  // XBE_INTERP_WATCH's program's draws (Watch)
@@ -646,7 +655,7 @@ bool Moving() {
     return on;
 }
 void KeepVertices(Frame& cur, Snap& sn, const State& s, uint32_t start, uint32_t count, const uint8_t* indices) {
-    if (sn.tag.key || !count || !Moving() || count > (indices ? 6 * kMoveVertices : kMoveVertices)) return;
+    if ((sn.tag.key && !sn.tag.group) || !count || !Moving() || count > (indices ? 6 * kMoveVertices : kMoveVertices)) return;
     InputAt at;
     if (!InputPlace(s, 0, at) || !at.alone || (at.type & 15) != 2 || !(at.type >> 4) || (at.type >> 4) > 4 ||
         !at.stride || at.stride > 0xFFFF || at.offset + (at.type >> 4) * 4 > at.stride)
@@ -686,7 +695,7 @@ void Draw(const State& s, bool same, const Tag& tag, uint32_t prim, uint32_t sta
         Snap& f = cur.snaps.emplace_back();
         f.leader = leader;
         f.tag = tag;
-        if (tag.key) cur.tags.emplace(tag.key, uint32_t(leader));
+        if (tag.key && !tag.group) cur.tags[tag.key] = uint32_t(leader);
         KeepVertices(cur, f, s, start, count, indices);  // a string's letters follow its first
         return;
     }
@@ -696,7 +705,10 @@ void Draw(const State& s, bool same, const Tag& tag, uint32_t prim, uint32_t sta
     sn.reads = reads;
     sn.stale = stale;
     sn.tag = tag;
-    if (tag.key) cur.tags.emplace(tag.key, n);
+    sn.target = s.rt.data;
+    sn.textures = k.textures;
+    if (tag.key && !tag.group) cur.tags[tag.key] = n;
+    else if (tag.key) cur.groups[tag.key].push_back(n);
     KeepVertices(cur, sn, s, start, count, indices);
     if (sn.reads) {
         sn.at = uint32_t(cur.values.size());
@@ -723,6 +735,7 @@ void Draw(const State& s, bool same, const Tag& tag, uint32_t prim, uint32_t sta
 // large to weigh each against all goes a draw at a time (Nearest)
 constexpr size_t kPairs = 4096;
 constexpr float kLooseCost = 3.0f;
+bool Suspecting();
 // whether the frame before has a draw of the same mesh at its addresses, at any detail, no draw took yet: the draw is
 // that one, not another's at other addresses (a clump drawing fewer blades took a clump of that many). Only one that
 // kept its addresses from the frame before it (Snap::by_exact): a dynamic buffer's addresses say nothing, a fly cloud
@@ -947,22 +960,79 @@ void Match() {
     // nearer of those alike to the one it took (Snap::next)
     static std::vector<std::array<float, 4>> two;
     static std::vector<int32_t> same_found;  // each draw's turn in before, found at the same addresses (InTurns)
+    const bool diagnosing = Recording() || Tracing() || Suspecting();
     // a tagged draw is the draw of the frame before with its tag (Tag::key), as the title says, however near another
     // looks: look-alikes (two squirrels' eyes, a room's lamps) are no longer told apart by distance. Only of the same
     // program, whose registers it blends. The passes after find the rest: draws the title tags nothing of, a model at
     // another detail (another piece), an object new to the frame
     for (Snap& sn : cur.snaps) {
-        if (sn.leader >= 0 || !sn.tag.key) continue;
-        auto it = prev.tags.find(sn.tag.key);
-        if (it == prev.tags.end()) continue;
-        const Snap& o = prev.snaps[it->second];
-        if (o.program != sn.program || o.reads != sn.reads) continue;
-        size_t values = sn.reads ? sn.reads->regs.size() * 4 : kXf * 16;
-        prev.taken[it->second] = true;
-        sn.found = int32_t(it->second);
-        sn.distance = values ? Distance(prev, o, cur, sn, INFINITY) / float(values) : 0;
+        if (sn.leader >= 0 || !sn.tag.key || sn.tag.group) continue;
+        const uint32_t* at = prev.tags.Find(sn.tag.key);
+        if (!at) continue;
+        const Snap& o = prev.snaps[*at];
+        // and into the same target (its address too, but for a presented back buffer: MakeKeys). An object drawn into
+        // a texture another object's went to the frame before is read through by draws that know nothing of the blend:
+        // the characters' shadows from the light (5342E94B, the frame's first) taken part way lost part of Conker's
+        // shadow, and dimmed others (capture 222752 pics 24, 26, 104). Drawn as the frame has it, as before tags
+        if (o.program != sn.program || o.reads != sn.reads || o.parts[kTarget] != sn.parts[kTarget]) continue;
+        prev.taken[*at] = true;
+        sn.found = int32_t(*at);
+        // how far it moved, for the notes and the suspects only: weighed for each of a battle's 16000 draws, it was
+        // most of the matching's time
+        if (diagnosing) {
+            size_t values = sn.reads ? sn.reads->regs.size() * 4 : kXf * 16;
+            sn.distance = values ? Distance(prev, o, cur, sn, INFINITY) / float(values) : 0;
+        }
         sn.candidates = 1;
         sn.by_tag = true;
+    }
+    // a group's draws (an effect's particles, in a new order each frame) are found among its draws in the frame before,
+    // nearest pairs first, as near as a draw at other addresses may be (loose); those left are new to it (a puff born)
+    // and those of the frame before left were gone (one died). Neither is taken for another group's or an untagged
+    // draw: the dust a dinosaur kicked up took the other dinosaur's dying puffs, drawn between the two clouds
+    struct GroupPair {
+        float d;
+        uint32_t c, p;
+    };
+    static std::vector<GroupPair> group_pairs;
+    static std::vector<bool> group_used;
+    for (const auto& [key, list] : cur.groups) {
+        auto it = prev.groups.find(key);
+        if (it == prev.groups.end()) continue;
+        const std::vector<uint32_t>& before = it->second;
+        if (list.size() * before.size() > kPairs) continue;  // a crowd too large: the passes by distance alone
+        group_pairs.clear();
+        for (uint32_t c = 0; c < list.size(); c++) {
+            const Snap& sn = cur.snaps[list[c]];
+            size_t values = sn.reads ? sn.reads->regs.size() * 4 : kXf * 16;
+            float limit = values ? 1.01f * loose(sn) * float(values) : INFINITY;
+            for (uint32_t p = 0; p < before.size(); p++) {
+                const Snap& o = prev.snaps[before[p]];
+                if (o.program != sn.program || o.reads != sn.reads || o.parts[kTarget] != sn.parts[kTarget] ||
+                    prev.taken[before[p]])
+                    continue;
+                float d = Distance(prev, o, cur, sn, limit);
+                if (!values || d / float(values) <= loose(sn)) group_pairs.push_back({d, c, p});
+            }
+        }
+        std::sort(group_pairs.begin(), group_pairs.end(), [](const GroupPair& a, const GroupPair& b) {
+            return a.d != b.d ? a.d < b.d : a.c != b.c ? a.c < b.c : a.p < b.p;
+        });
+        group_used.assign(list.size(), false);
+        for (const GroupPair& g : group_pairs) {
+            uint32_t p = before[g.p];
+            if (group_used[g.c] || prev.taken[p]) continue;
+            Snap& sn = cur.snaps[list[g.c]];
+            size_t values = sn.reads ? sn.reads->regs.size() * 4 : kXf * 16;
+            group_used[g.c] = true;
+            prev.taken[p] = true;
+            sn.found = int32_t(p);
+            sn.distance = values ? g.d / float(values) : 0;
+            sn.candidates = uint32_t(before.size());
+            sn.by_tag = true;
+        }
+        for (uint32_t c : list) cur.snaps[c].grouped = true;
+        for (uint32_t p : before) prev.taken[p] = true;
     }
     for (const auto& [key, list] : cur.loose) {
         auto it = prev.loose.find(key);
@@ -971,7 +1041,7 @@ void Match() {
         if (list.size() * before.size() > kPairs) {
             for (size_t k = 0; k < list.size(); k++) {
                 Snap& sn = cur.snaps[list[k]];
-                if (sn.found >= 0 || !Nearest(prev, cur, prev.loose, key, k, sn)) continue;
+                if (sn.found >= 0 || sn.grouped || !Nearest(prev, cur, prev.loose, key, k, sn)) continue;
                 if (prev.snaps[size_t(sn.found)].parts[kAddresses] != sn.parts[kAddresses]) {
                     size_t values = sn.reads ? sn.reads->regs.size() * 4 : kXf * 16;
                     if (sn.distance > loose(sn) ||
@@ -990,7 +1060,7 @@ void Match() {
         used.assign(list.size(), false);
         for (uint32_t c = 0; c < list.size(); c++) {
             const Snap& sn = cur.snaps[list[c]];
-            if (sn.found >= 0) {  // by its tag
+            if (sn.found >= 0 || sn.grouped) {  // by its tag, or among its group's
                 used[c] = true;
                 continue;
             }
@@ -1048,7 +1118,7 @@ void Match() {
     // pieces found beside them). Pieces sharing buffers are told apart by distance; alike, any is drawn the same
     auto by_detail = [&](const std::unordered_map<uint64_t, std::vector<uint32_t>>& by, uint64_t Snap::*key) {
         for (Snap& sn : cur.snaps) {
-            if (sn.leader >= 0 || sn.found >= 0) continue;
+            if (sn.leader >= 0 || sn.found >= 0 || sn.grouped) continue;
             auto it = by.find(sn.*key);
             if (it == by.end()) continue;
             float best = INFINITY, next = INFINITY;
@@ -1079,7 +1149,7 @@ void Match() {
     // all it reads a clump new to the frame took another, drawn halfway between the two. Only the clearly nearest: an
     // eye's own bones are a register or two, alike in both squirrels
     for (Snap& sn : cur.snaps) {
-        if (sn.leader >= 0 || sn.found >= 0 || !sn.reads || sn.reads->relative >= 192) continue;
+        if (sn.leader >= 0 || sn.found >= 0 || sn.grouped || !sn.reads || sn.reads->relative >= 192) continue;
         auto it = prev.programs.find(sn.program);
         if (it == prev.programs.end()) continue;
         float best = INFINITY, next = INFINITY;
@@ -1187,17 +1257,26 @@ void Watch(uint32_t n, const Snap& sn, Blended how, const std::string& jumped, c
                                   : "other addresses",
              sn.distance, sn.next, sn.stale.count(), sn.reads ? sn.reads->relative : 192u);
     g_pass.watched += b;
+    snprintf(b, sizeof(b), "\n      target %08X, textures %08X %08X %08X %08X", sn.target, sn.textures[0],
+             sn.textures[1], sn.textures[2], sn.textures[3]);
+    g_pass.watched += b;
     // its tag: the object and the piece of its model, and the key; untagged draws were matched by distance alone
     if (sn.tag.key) {
         const Frame& prev = g_frames[g_cur ^ 1];
-        snprintf(b, sizeof(b), "\n      tag object %08X piece %08X key %016llX%s", sn.tag.object, sn.tag.piece,
-                 (unsigned long long)sn.tag.key,
-                 sn.by_tag                          ? ""
-                 : prev.tags.count(sn.tag.key) ? " (the frame before's draw of it is another program's)"
-                                               : " (not in the frame before)");
+        bool before = sn.tag.group ? prev.groups.count(sn.tag.key) != 0 : prev.tags.Find(sn.tag.key) != nullptr;
+        snprintf(b, sizeof(b), "\n      %s object %08X piece %08X key %016llX%s",
+                 sn.tag.group ? "group tag" : "tag", sn.tag.object, sn.tag.piece, (unsigned long long)sn.tag.key,
+                 sn.by_tag     ? ""
+                 : !before     ? " (not in the frame before)"
+                 : sn.tag.group ? " (none of its group's draws in the frame before near enough: new to it)"
+                                : " (the frame before's draw of it is another program's, or into another target)");
         g_pass.watched += b;
     } else {
-        g_pass.watched += "\n      untagged";
+        // where it came from, to tell what the game draws it for: an HLE'd draw's caller, the static push buffer it was
+        // read from, the call that had it read (what the game pushed inline came before that call)
+        snprintf(b, sizeof(b), "\n      untagged: caller %08X push buffer %08X walked at %08X", sn.tag.caller,
+                 sn.tag.source, sn.tag.walked);
+        g_pass.watched += b;
     }
     if (!moved.empty()) g_pass.watched += "\n      moved most:" + moved;
     if (!jumped.empty()) g_pass.watched += "\n      jumped:" + jumped;
@@ -1699,10 +1778,26 @@ struct Kept {
     bool suspect = false, judged = false;  // Suspects::last, once Blend judged the leader
 };
 Kept g_kept;
+// XBE_INTERP_OFFSCREEN=0: a draw into a target that is not presented (a shadow from the light, a character's lighting
+// map) drawn as the frame has it, its texture read by draws taken part way: to tell a glitch in what reads such a
+// texture from one in what is drawn into it
+bool OffscreenKept() {
+    static const bool kept = [] {
+        const char* e = std::getenv("XBE_INTERP_OFFSCREEN");
+        return e && *e == '0';
+    }();
+    return kept;
+}
+
 Blended BlendDraw(uint32_t n, float t, State& s, Undo& undo) {
     const Frame& cur = g_frames[g_cur];
     if (n >= cur.snaps.size()) return BlendLeader(n, t, s, undo);
     uint32_t leader = cur.snaps[n].leader >= 0 ? uint32_t(cur.snaps[n].leader) : n;
+    if (OffscreenKept() &&
+        std::find(g_presented.begin(), g_presented.end(), cur.snaps[leader].target) == g_presented.end()) {
+        if (g_pass.on) g_pass.draws++, g_pass.offscreen++;
+        return Blended::kNotFound;
+    }
     Kept& k = g_kept;
     if (leader != n && k.pass == g_pass_id && k.leader == leader) {
         for (const auto& [r, v] : k.vsc) {
@@ -1944,13 +2039,15 @@ void BeginPass(float t) {
 void EndPass(uint32_t slot) {
     std::string suspects = Score();
     if (!g_pass.on || slot >= std::size(g_notes)) return;
-    char b[448];
+    char b[512];
     snprintf(b, sizeof(b),
-             "drawn again at t %.2f: %u draws (%u tagged, %u found by tag, %u with their vertices moved), %u not found, "
+             "drawn again at t %.2f: %u draws (%u tagged, %u found by tag, %u with their vertices moved, %u off screen "
+             "kept), %u not found, "
              "%u found as another detail's, %u moved as a neighbour found, %u as another program's, %u with registers "
              "that jumped, %u palette registers another draw left that jumped; at other addresses found within %.4f "
              "(by the frame)",
-             g_pass.t, g_pass.draws, g_pass.tagged, g_pass.by_tag, g_pass.moved, g_pass.unfound, g_pass.second,
+             g_pass.t, g_pass.draws, g_pass.tagged, g_pass.by_tag, g_pass.moved, g_pass.offscreen, g_pass.unfound,
+             g_pass.second,
              g_pass.borrowed, g_pass.across, g_pass.jumped, g_pass.kept, g_loose);
     std::string note = b + suspects;
     std::vector<std::pair<uint64_t, std::pair<uint32_t, std::string>>> top(g_pass.unfound_programs.begin(),

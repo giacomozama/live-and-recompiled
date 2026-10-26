@@ -412,6 +412,22 @@ at = 0x1CF1AB
 call = "ConkerScopeEdgeNone"
 
 [[hook]]
+at = 0xD9AAF   # a character effect's draw: what it pushes tagged as the effect's, for frame generation (tags.cpp)
+call = "ConkerEffectDraw"
+
+[[hook]]
+at = 0xD9AB1   # after it: the tag before
+call = "ConkerEffectDrawn"
+
+[[hook]]
+at = 0x40935F  # a shadow's receiver: what it draws tagged as the shadow's, for frame generation (tags.cpp)
+call = "ConkerShadowReceiverDraw"
+
+[[hook]]
+at = 0x409364  # after it: the tag before
+call = "ConkerShadowReceiverDrawn"
+
+[[hook]]
 at = 0x1A95DD  # grass patch: drawn as a near one however far (grass::g_distant)
 call = "ConkerGrassNear"
 

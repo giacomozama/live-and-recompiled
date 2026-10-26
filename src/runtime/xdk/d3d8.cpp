@@ -433,28 +433,6 @@ void FlushPending() {
     Walk(Dev(kDevPush));
 }
 
-// The tag SetDrawTag set, and each draw's (gpu::interp::Tag): its object and piece, with where in a static push buffer
-// the walk read the draw's end (g_draw_at; 0 in the scratch buffer, whose places change every frame) and its turn
-// among the frame's draws of that place, a model drawn again (a fur's shells) drawing the same commands each time
-namespace {
-DrawTag g_tag;
-uint32_t g_draw_at = 0;
-std::unordered_map<uint64_t, uint32_t> g_tag_turns;
-
-gpu::interp::Tag TagOfDraw() {
-    if (!g_tag.piece) return {};
-    uint64_t key = (uint64_t(g_tag.object) << 32 | g_tag.piece) * 0x9E3779B97F4A7C15ull ^ g_draw_at;
-    uint32_t turn = g_tag_turns[key]++;
-    key = (key ^ (uint64_t(turn) + 1) * 0xC2B2AE3D27D4EB4Full) * 0xFF51AFD7ED558CCDull;
-    return {key ? key : 1, g_tag.object, g_tag.piece};
-}
-}  // namespace
-
-DrawTag SetDrawTag(DrawTag tag) {
-    std::lock_guard<std::recursive_mutex> lock(g_lock);
-    Walk(Dev(kDevPush));  // the commands pushed so far are the tag's before
-    return std::exchange(g_tag, tag);
-}
 
 // XBE_LOD_TRACE: where a title switches a mesh's detail. A draw read off a static push buffer is told by the buffer
 // the walk jumped to from the scratch buffer, an HLE'd draw by its return address. Each frame, a mesh (program,
@@ -597,6 +575,47 @@ void LodTraceRun(X86Context& ctx, uint32_t data, uint32_t owner) {
     if (!first) return;
     g_lod_lines++;
     LOGR("lod: frame %u push buffer %08X first run from %s (owner %08X)", g_lod_frame, data, chain.c_str(), owner);
+}
+
+// The tag SetDrawTag set, and each draw's (gpu::interp::Tag): its object and piece, with where in a static push buffer
+// the walk read the draw's end (g_draw_at; 0 in the scratch buffer, whose places change every frame) and its turn
+// among the frame's draws of that place, a model drawn again (a fur's shells) drawing the same commands each time
+namespace {
+DrawTag g_tag;
+uint32_t g_draw_at = 0;
+gpu::interp::TagTable g_tag_turns;
+
+uint32_t g_walked = 0;  // the return address of the call whose walk reads the commands now (Walk)
+
+gpu::interp::Tag TagOfDraw() {
+    gpu::interp::Tag t;
+    t.caller = g_lod_caller;
+    t.source = g_lod_source;
+    t.walked = g_walked;
+    if (!g_tag.piece) return t;
+    uint64_t key = (uint64_t(g_tag.object) << 32 | g_tag.piece) * 0x9E3779B97F4A7C15ull;
+    if (g_tag.group) {
+        key = (key ^ 0x5851F42D4C957F2Dull) * 0xFF51AFD7ED558CCDull;  // the group's, every draw of it the same
+    } else {
+        key ^= g_draw_at;
+        uint32_t turn = g_tag_turns[key]++;
+        key = (key ^ (uint64_t(turn) + 1) * 0xC2B2AE3D27D4EB4Full) * 0xFF51AFD7ED558CCDull;
+    }
+    t.key = key ? key : 1;
+    t.object = g_tag.object;
+    t.piece = g_tag.piece;
+    t.group = g_tag.group;
+    return t;
+}
+}  // namespace
+
+DrawTag SetDrawTag(DrawTag tag) {
+    // called around each piece of every model drawn (a battle's 16000 a frame): no lock nor walk when nothing was
+    // pushed since the last
+    if (Dev(kDevPush) == g_walk) return std::exchange(g_tag, tag);
+    std::lock_guard<std::recursive_mutex> lock(g_lock);
+    Walk(Dev(kDevPush));  // the commands pushed so far are the tag's before
+    return std::exchange(g_tag, tag);
 }
 
 }  // namespace d3d
@@ -923,7 +942,7 @@ HLE_STDCALL(D3DDevice_Swap, 1) {
     }
     Walk(Dev(kDevPush));  // reports asked for at the end of the frame
     LodEndFrame();
-    g_tag_turns.clear();
+    g_tag_turns.Clear();
     if (g_backend) g_backend->Present(SurfaceOf(g_buffers[1]));
     // D3DPRESENT_INTERVAL_ONE 1, TWO 2, THREE 4, FOUR 8, IMMEDIATE bit 31; DEFAULT 0 is ONE. The render state, when
     // the title sets one, replaces the device's.
@@ -1901,6 +1920,10 @@ void Walk(uint32_t end) {
     // ended the walk and every command after it in that buffer was silently dropped.
     uint32_t p = g_walk, limit = end, ret[16], sp = 0, guard = 0, jumps = 0, home = 0, resyncs = 0;
     g_lod_source = g_lod_caller = 0;
+    // who had the commands read: what the title pushed inline came before this call, often in the same function. For
+    // the watch lines only
+    static const bool recording = gpu::interp::Recording() != 0;
+    if (recording) g_walked = kernel::Current() ? R32(kernel::CurrentContext().esp) : 0;
     // jump targets land on real blocks (vertex-program words, prebuilt stream bindings), so following them is the
     // xemu behaviour; XBE_NO_WALK_JUMPS restores the old "stop at the first jump" for comparison
     static const bool follow = std::getenv("XBE_NO_WALK_JUMPS") == nullptr;

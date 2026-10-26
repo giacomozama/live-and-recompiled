@@ -1,4 +1,5 @@
 #pragma once
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <string>
@@ -25,9 +26,56 @@ bool Tracing();
 struct Tag {
     uint64_t key = 0;
     uint32_t object = 0, piece = 0;
+    // a group's tag (an effect's particles, drawn in a new order each frame): key the same for all its draws, which
+    // are found among the draws of the frame before with that key, nearest first
+    bool group = false;
+    // where any draw came from, for the watch lines (tagged or not): an HLE'd draw's return address, the static push
+    // buffer the walk had jumped to, the return address of the call that had the push buffer read (d3d8.cpp)
+    uint32_t caller = 0, source = 0, walked = 0;
 };
 // the tag of the draw the title's thread hands the backend next (d3d::SetDrawTag), taken with it as it is recorded
 inline Tag g_draw_tag;
+
+// a value for each of a frame's tag keys (never 0), kept from frame to frame: a battle tags 16000 draws a frame, and a
+// map that made and freed an entry for each cost both threads time each frame. Open addressing, cleared in place
+class TagTable {
+public:
+    // the key's value, made 0 if new
+    uint32_t& operator[](uint64_t key) {
+        if ((used_ + 1) * 2 > slots_.size()) Grow();
+        size_t i = Slot(key);
+        if (!slots_[i].first) {
+            slots_[i] = {key, 0};
+            used_++;
+        }
+        return slots_[i].second;
+    }
+    const uint32_t* Find(uint64_t key) const {
+        if (slots_.empty()) return nullptr;
+        size_t i = Slot(key);
+        return slots_[i].first ? &slots_[i].second : nullptr;
+    }
+    void Clear() {
+        if (used_) std::fill(slots_.begin(), slots_.end(), std::pair<uint64_t, uint32_t>{});
+        used_ = 0;
+    }
+
+private:
+    size_t Slot(uint64_t key) const {
+        size_t mask = slots_.size() - 1, i = size_t(key ^ key >> 29) & mask;
+        while (slots_[i].first && slots_[i].first != key) i = (i + 1) & mask;
+        return i;
+    }
+    void Grow() {
+        std::vector<std::pair<uint64_t, uint32_t>> old(std::max<size_t>(slots_.size() * 2, 1024));
+        old.swap(slots_);
+        used_ = 0;
+        for (const auto& [k, v] : old)
+            if (k) (*this)[k] = v;
+    }
+    std::vector<std::pair<uint64_t, uint32_t>> slots_;
+    size_t used_ = 0;
+};
 // a draw of the frame as it is drawn the first time, in order; indices as Backend::Draw takes them. same: nothing
 // changed since the draw before it but vertex sources and constants (Backend::Changed)
 void Draw(const State& s, bool same, const Tag& tag, uint32_t prim, uint32_t start, uint32_t count,
