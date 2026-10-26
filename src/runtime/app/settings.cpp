@@ -54,6 +54,8 @@ void Load() {
     s.chromatic_aberration = t["chromatic_aberration"].value_or(s.chromatic_aberration);
     s.ambient_occlusion = t["ambient_occlusion"].value_or(s.ambient_occlusion);
     s.ambient_occlusion_radius = t["ambient_occlusion_radius"].value_or(s.ambient_occlusion_radius);
+    s.volume = std::min<uint32_t>(t["volume"].value_or(s.volume), 100);
+    s.mute_in_background = t["mute_in_background"].value_or(s.mute_in_background);
     s.shader_warmup = t["shader_warmup"].value_or(s.shader_warmup);
     s.renderer = t["renderer"].value_or(s.renderer);
     s.aspect = t["aspect"].value_or(s.aspect);
@@ -91,6 +93,8 @@ toml::table Table() {
                   {"chromatic_aberration", int64_t(s.chromatic_aberration)},
                   {"ambient_occlusion", int64_t(s.ambient_occlusion)},
                   {"ambient_occlusion_radius", int64_t(s.ambient_occlusion_radius)},
+                  {"volume", int64_t(s.volume)},
+                  {"mute_in_background", s.mute_in_background},
                   {"shader_warmup", s.shader_warmup},
                   {"renderer", s.renderer},
                   {"aspect", s.aspect},

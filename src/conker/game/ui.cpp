@@ -600,6 +600,13 @@ void Draw(double fps) {
                 end_tab();
             }
 
+            if (tab("Audio")) {
+                Slider("Volume %", &s.volume, 0, 100, app::Settings{}.volume);
+                ImGui::Checkbox("Mute in background", &s.mute_in_background);
+                Hint("No sound while you are in another window.", true);
+                end_tab();
+            }
+
             if (tab("Controls")) {
                 if (ImGui::BeginTabBar("##player")) {
                     for (int p = 0; p < input::kPorts; p++) {

@@ -32,6 +32,8 @@ namespace app {
 
 namespace {
 
+std::atomic<bool> g_background{false};  // Background(): set by the window's focus messages
+
 SDL_Window* g_window = nullptr;
 int g_instance = 0;
 uint32_t g_user = 0;  // the event type Post, ApplyDisplay and OpenGameWindow send to the window thread
@@ -218,10 +220,12 @@ bool Handle(const SDL_Event& e) {
             break;
         }
         case SDL_EVENT_WINDOW_FOCUS_GAINED:
+            g_background = false;
             Send(kMsgActivate, 1);
             break;
         case SDL_EVENT_WINDOW_FOCUS_LOST:
             input::ReleaseAll();  // SDL lets the keys go as no device's
+            g_background = true;
             Send(kMsgActivate, 0);
             break;
         case SDL_EVENT_MOUSE_BUTTON_DOWN:
@@ -348,6 +352,8 @@ void Quit() {
 void SetTitle(const std::wstring& title) {
     if (g_window) SDL_SetWindowTitle(g_window, Utf8(title).c_str());
 }
+
+bool Background() { return g_background.load(std::memory_order_relaxed); }
 
 bool Focused() {
     if (!g_window) return false;

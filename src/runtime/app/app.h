@@ -33,6 +33,8 @@ struct Settings {
     // ambient occlusion from the depth buffer, first: its strength in % (0 off) and its reach in the title's units
     uint32_t ambient_occlusion = 0;
     uint32_t ambient_occlusion_radius = 30;
+    uint32_t volume = 100;           // the game's sound in %, the mixer's output scaled by its square
+    bool mute_in_background = false;  // silent while the game window lacks the focus (Background)
     bool shader_warmup = true;       // make the shaders shaders.rec lists while the title boots
     std::string renderer = "vulkan";  // which gpu::Backend draws, read at launch (gpu/backend.cpp)
     std::string aspect = "auto";     // "W:H" ("4:3", "16:9", "21:9", ...), or "auto": the output's own shape
@@ -94,6 +96,7 @@ void Post(uint32_t msg);                    // any thread: msg to GameInfo::mess
 void Quit();                                // any thread: closes the window, as its X does
 void SetTitle(const std::wstring& title);   // window thread
 bool Focused();                             // window thread: the game window has the keyboard
+bool Background();                          // any thread: the game window lost the focus, as of its last message
 void HoldMouse(bool hold);                  // window thread, SDL only: the cursor hidden, motion as kMsgMouseMotion
 // a message box over the game; ask: Yes and No, true for Yes
 bool Alert(const std::wstring& text, bool ask = false);

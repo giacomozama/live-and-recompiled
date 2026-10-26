@@ -56,6 +56,7 @@ bool KeyDown(int) { return false; }
 void Post(uint32_t) {}
 void SetTitle(const std::wstring&) {}
 bool Focused() { return false; }
+bool Background() { return false; }
 void HoldMouse(bool) {}
 bool Alert(const std::wstring&, bool) { return false; }
 std::vector<Mode> DisplayModes() { return {Desktop()}; }

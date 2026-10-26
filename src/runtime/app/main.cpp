@@ -9,6 +9,7 @@
 #include <timeapi.h>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstring>
 #include <cwchar>
@@ -36,6 +37,8 @@ extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND, UINT, WPARAM,
 namespace app {
 
 namespace {
+
+std::atomic<bool> g_background{false};  // Background(): set by the window's focus messages
 
 HWND g_hwnd = nullptr;
 constexpr UINT kApplyDisplay = WM_APP + 1, kOpenWindow = WM_APP + 2;
@@ -209,6 +212,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             RawDevice(reinterpret_cast<HANDLE>(lp), wp == GIDC_ARRIVAL);
             return 0;
         case WM_ACTIVATE:
+            g_background = LOWORD(wp) == WA_INACTIVE;
             if (LOWORD(wp) == WA_INACTIVE) {
                 input::ReleaseAll();  // the keys let go while another window has them never come
                 // a changed display mode steps aside for the desktop, minimized, and comes back on return; not while
@@ -284,6 +288,7 @@ void Post(uint32_t msg) {
 void Quit() { Post(WM_CLOSE); }
 void SetTitle(const std::wstring& title) { SetWindowTextW(g_hwnd, title.c_str()); }
 bool Focused() { return g_hwnd && GetForegroundWindow() == g_hwnd && !IsIconic(g_hwnd); }
+bool Background() { return g_background.load(std::memory_order_relaxed); }
 void HoldMouse(bool) {}  // the game's own mouse code holds it on Windows
 
 bool Alert(const std::wstring& text, bool ask) {

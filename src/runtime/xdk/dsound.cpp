@@ -10,6 +10,7 @@
 #include <thread>
 #include <vector>
 
+#include "app/app.h"
 #include "audio/audio.h"
 #include "xbe/xbe.h"
 #include "xdk/dsfx.h"
@@ -498,7 +499,17 @@ void Render(float* out, uint32_t frames) {
             if (b == 2 || (b & 1)) out[i * 2 + 1] += src[i] * g;
         }
     }
-    for (uint32_t i = 0; i < frames * 2; i++) out[i] = std::clamp(out[i], -1.0f, 1.0f);
+    // the volume setting, squared to follow loudness, and silence in the background if asked; a change ramps over the
+    // block so it doesn't click
+    static float gain = 1.0f;
+    const app::Settings& set = app::Get();
+    const float v = set.volume / 100.0f, want = set.mute_in_background && app::Background() ? 0.0f : v * v;
+    for (uint32_t i = 0; i < frames; i++) {
+        float g = gain + (want - gain) * float(i + 1) / float(frames);
+        out[i * 2] = std::clamp(out[i * 2] * g, -1.0f, 1.0f);
+        out[i * 2 + 1] = std::clamp(out[i * 2 + 1] * g, -1.0f, 1.0f);
+    }
+    gain = want;
     static uint64_t rendered = 0;
     if (g_trace && (rendered += frames) >= audio::kRate) {
         rendered = 0;
