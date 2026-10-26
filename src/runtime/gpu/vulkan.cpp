@@ -1223,8 +1223,14 @@ private:
         std::array<uint32_t, 16> strides{};
         std::array<std::vector<uint8_t>, 16> data;
         std::vector<uint32_t> indices;
+        // a run of one buffer: its vertices straight in the ring (data unused), the ring's last allocation as it
+        // grows. Through data, a cutscene's 25 MB of vertices a frame were copied twice
+        bool direct = false;
+        Alloc vb{};
+        uint64_t bytes = 0;  // the vertices', without the slack after them
     };
     Run run_;
+    bool GrowRun(const VertexBuffer& b);
     // the frame's runs as drawn, for its drawing again: their draws, their geometry in the ring, the stage bindings
     // they had; good until the ring starts over (a waiting Submit) or the frame ends
     struct KeptRun {
@@ -3426,21 +3432,46 @@ bool VulkanBackend::Mergeable(const Assembled& a) const {
     return v != 0;
 }
 
+// a direct run's vertices (Run::direct) grown by b's, in place: false when the ring took something else since
+constexpr uint64_t kRunSlack = 8;  // as UploadVertexBuffers: a vertex's reads past its end
+bool VulkanBackend::GrowRun(const VertexBuffer& b) {
+    Frame& f = CurrentFrame();
+    uint64_t had = std::max<uint64_t>(run_.bytes, 16) + kRunSlack;
+    uint64_t now = std::max<uint64_t>(run_.bytes + b.bytes, 16) + kRunSlack;
+    if (!run_.draws) {
+        run_.vb = Upload(now, 16);
+    } else {
+        if (run_.vb.buf != f.upload->buf || f.used != run_.vb.off + had || run_.vb.off + now > kUploadSize) return false;
+        f.used = run_.vb.off + now;
+        g_perf.upload += now - had;
+    }
+    if (b.bytes) std::memcpy(run_.vb.cpu + run_.bytes, b.src, b.bytes);
+    run_.bytes += b.bytes;
+    std::memset(run_.vb.cpu + run_.bytes, 0, now - run_.bytes);
+    return true;
+}
+
 void VulkanBackend::JoinRun(const Assembled& a) {
     constexpr uint32_t kRunVertices = 1u << 18;
     uint32_t v = a.buffers[0].bytes / a.buffers[0].stride;
     int topo = int(PrimitiveTopology(a));
+    bool direct = a.buffer_count == 1;
     bool fits = run_.draws && run_.buffers == a.buffer_count && run_.topo == topo && run_.vertices + v <= kRunVertices;
     for (uint32_t i = 0; fits && i < a.buffer_count; i++) fits = run_.strides[i] == a.buffers[i].stride;
+    // a direct run the ring moved on from starts again: the same draws, in one more
+    if (fits && direct && !GrowRun(a.buffers[0])) fits = false;
     if (!fits) {
         FlushRun();
         run_.first = pass_serial_;
         run_.buffers = a.buffer_count;
         run_.topo = topo;
         for (uint32_t i = 0; i < a.buffer_count; i++) run_.strides[i] = a.buffers[i].stride;
+        run_.direct = direct;
+        run_.bytes = 0;
+        if (direct) GrowRun(a.buffers[0]);
     }
     uint32_t base = run_.vertices;
-    for (uint32_t i = 0; i < a.buffer_count; i++) {
+    for (uint32_t i = 0; !direct && i < a.buffer_count; i++) {
         const VertexBuffer& b = a.buffers[i];
         run_.data[i].insert(run_.data[i].end(), b.src, b.src + b.bytes);
     }
@@ -3471,10 +3502,15 @@ void VulkanBackend::FlushRun() {
     g_perf.runs++;
     VkBuffer bufs[16];
     VkDeviceSize offs[16], sizes[16], strides[16];
-    constexpr uint64_t kSlack = 8;  // as UploadVertexBuffers
-    for (uint32_t i = 0; i < run_.buffers; i++) {
+    for (uint32_t i = 0; run_.direct && i < 1; i++) {
+        bufs[i] = run_.vb.buf;
+        offs[i] = run_.vb.off;
+        sizes[i] = std::max<uint64_t>(run_.bytes, 16) + kRunSlack;
+        strides[i] = run_.strides[i];
+    }
+    for (uint32_t i = 0; !run_.direct && i < run_.buffers; i++) {
         const std::vector<uint8_t>& d = run_.data[i];
-        uint64_t bytes = std::max<uint64_t>(d.size(), 16) + kSlack;
+        uint64_t bytes = std::max<uint64_t>(d.size(), 16) + kRunSlack;
         Alloc vb = Upload(bytes, 16);
         std::memcpy(vb.cpu, d.data(), d.size());
         std::memset(vb.cpu + d.size(), 0, bytes - d.size());
