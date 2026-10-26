@@ -21,6 +21,9 @@ uint32_t StateOf(uint32_t effect);  // x: address of the effect's state
 // one GP frame: 32 mix bins of n <= kFrame samples, bin b at bins + b * kFrame
 void Process(float* bins, uint32_t n);
 
+// XBE_TRACE_DSOUND: whether an effect that can be heard reads mix bin b (a capture's is not heard)
+bool Reads(uint32_t b);
+
 // IDirectSound_SetEffectData / GetEffectData: count dwords at a byte offset into the effect's state
 void SetData(uint32_t effect, uint32_t offset, const uint32_t* data, uint32_t count);
 void GetData(uint32_t effect, uint32_t offset, uint32_t* data, uint32_t count);

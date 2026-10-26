@@ -370,7 +370,9 @@ void Deactivate(Voice& v) {
     if (v.active) v.active = v.paused = v.ending = false;
 }
 
+// a mixin buffer has no data of its own and mixes what reaches it from the start: Conker never plays its own
 bool Plays(const Voice& v) {
+    if (v.mixin) return true;
     return !(v.paused || v.sync || v.hold || v.flushing || (!v.stream && !v.playing));
 }
 
@@ -516,7 +518,13 @@ void Render(float* out, uint32_t frames) {
             std::string bins;
             for (int k = 0; k < routes; k++) {
                 float hr = float(1 << g_bin_headroom[r[k].bin]);
-                std::snprintf(b, sizeof b, " %u:", r[k].bin);
+                // where it goes unheard: a multipass bin with no mixin buffer behind it, or a bin no speaker or
+                // heard effect takes
+                uint32_t bn = r[k].bin;
+                const char* lost = bn == kMultipass ? (!Submix(v) ? "!nosub" : "")
+                                   : (dsfx::Loaded() ? bn > 5 || bn == 3 : !Speaker(bn)) && !dsfx::Reads(bn) ? "!unread"
+                                                                                                           : "";
+                std::snprintf(b, sizeof b, " %u%s:", bn, lost);
                 bins += b;
                 for (uint32_t c = 0; c < std::min<uint32_t>(v.channels, kChannels); c++) {
                     if (r[k].g[c] <= 0) continue;
@@ -606,16 +614,47 @@ void ReadFormat(Voice& v, uint32_t wfx) {
     if (v.tag != 1 && v.tag != 0x69) LOG_FIRST(8, "dsound: format tag %X not supported", v.tag);
 }
 
-// DSMIXBINS: the voice's bins and their volumes
+// a voice with a mixin output buffer sends each of its channels to the buffer's bin after the bins it was given,
+// which lose their last slots if the eight do not hold them all (the library's 0x4C3C71)
+void AddSubmixBin(Voice& v) {
+    uint32_t have = uint32_t(std::count(v.bin, v.bin + v.nbins, kMultipass));
+    uint32_t want = std::min<uint32_t>(std::max<uint32_t>(v.channels, 1), 8);
+    if (have >= want) return;
+    uint32_t add = want - have;
+    if (v.nbins + add > 8) v.nbins = uint8_t(8 - add);
+    while (add--) v.bin[v.nbins++] = uint8_t(kMultipass);
+}
+
+// DSMIXBINS: the voice's bins and their volumes, and its mixin buffer's bin as the library adds it (0x4C54EF)
 void SetBins(Voice& v, uint32_t mixbins) {
-    v.nbins = 0;  // none listed: front left and right
-    if (!mixbins) return;
-    uint32_t n = std::min<uint32_t>(R32(mixbins), 8), pairs = R32(mixbins + 4);
-    for (uint32_t i = 0; i < n; i++) {
-        v.bin[i] = R32(pairs + i * 8) & 31;
-        v.bin_mb[v.bin[i]] = int32_t(R32(pairs + i * 8 + 4));
+    v.nbins = 0;  // none listed: the speakers, as Routes plays them
+    if (mixbins) {
+        uint32_t n = std::min<uint32_t>(R32(mixbins), 8), pairs = R32(mixbins + 4);
+        for (uint32_t i = 0; i < n; i++) {
+            v.bin[i] = R32(pairs + i * 8) & 31;
+            v.bin_mb[v.bin[i]] = int32_t(R32(pairs + i * 8 + 4));
+        }
+        v.nbins = uint8_t(n);
     }
-    v.nbins = uint8_t(n);
+    if (!Submix(v)) return;
+    if (!v.nbins) {
+        static const uint8_t kSpeakers[6] = {0, 1, 2, 3, 4, 5}, kQuad[4] = {0, 1, 4, 5};
+        uint32_t ch = std::max<uint32_t>(v.channels, 1);
+        v.nbins = uint8_t(ch == 4 ? 4 : std::clamp<uint32_t>(ch, 2, 6));
+        std::memcpy(v.bin, ch == 4 ? kQuad : kSpeakers, v.nbins);
+    }
+    AddSubmixBin(v);
+}
+
+// SetOutputBuffer as the library has it (0x4C5559): the voice leaves its old mixin buffer's bin, and a new one takes
+// all its bins, at 1 / channels; the title gives it its other bins again with SetMixBins
+void SetOut(Voice& v, uint32_t out) {
+    if (Submix(v)) v.nbins = uint8_t(std::remove(v.bin, v.bin + v.nbins, kMultipass) - v.bin);
+    v.out = out;
+    if (!Submix(v)) return;
+    v.nbins = 0;
+    AddSubmixBin(v);
+    v.bin_mb[kMultipass] = int32_t(std::lround(2000 * std::log10(1.0 / std::max<uint32_t>(v.channels, 1))));
 }
 // volumes only, the bins stay
 void SetBinVolumes(Voice& v, uint32_t mixbins) {
@@ -1095,9 +1134,9 @@ BUFFER(SetRolloffCurve, 4) {
     for (uint32_t i = 0; a[1] && i < std::min<uint32_t>(a[2], 64); i++) v.curve.push_back(F32(R32(a[1] + i * 4)));
     return 0;
 }
-// (this, mixin buffer or none): where the voice's multipass sends go; the title routes them with its mix bins
+// (this, mixin buffer or none): the buffer the voice's multipass sends feed
 BUFFER(SetOutputBuffer, 2) {
-    v.out = a[1];
+    SetOut(v, a[1]);
     return 0;
 }
 BUFFER(SetFormat, 2) {
@@ -1278,7 +1317,7 @@ STREAM(SetI3DL2Source, 3) { return 0; }
 HLE_STDCALL(IDirectSoundStream_SetOutputBuffer, 2) {
     std::lock_guard<std::recursive_mutex> lock(g_lock);
     Trace("str", "SetOutputBuffer", 2, a);
-    if (Voice* v = Find(a[0])) v->out = a[1];
+    if (Voice* v = Find(a[0])) SetOut(*v, a[1]);
     return 0;
 }
 // (this, lPitch / pLfoDesc / pEnvelopeDesc): pitch, LFO and envelope writes all reach a console voice

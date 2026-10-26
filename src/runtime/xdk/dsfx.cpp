@@ -232,7 +232,9 @@ bool Load(const std::vector<uint8_t>& img, uint32_t* xmem) {
         e.kind = KindOf(u32(m + 4), u32(m + 12));
         e.base = at + uint32_t((u32(m + 8) - states) / 4);
         known |= e.kind != Kind::Unknown;
-        LOGI("dsound: effect %u %s, state at x:%04X", i, Name(e.kind), e.base);
+        // its first eight parameters, which are its inputs and outputs: x:1400 + 32 * bin is a mix bin
+        LOGI("dsound: effect %u %s, state at x:%04X io %04X %04X %04X %04X %04X %04X %04X %04X", i, Name(e.kind), e.base,
+             X(e, 5), X(e, 6), X(e, 7), X(e, 8), X(e, 9), X(e, 10), X(e, 11), X(e, 12));
         g_fx.push_back(std::move(e));
     }
     return known;
@@ -259,6 +261,22 @@ void Process(float* bins, uint32_t n) {
         g_x[e.base + kFlags] |= kInit;
     }
     g_bins = nullptr;
+}
+
+bool Reads(uint32_t b) {
+    auto at = [&](uint32_t a) {
+        return (a >= kBins && a < kBins + kBinWords && (a - kBins) / kFrame == b) ||
+               (a >= kBinsAlias && a < kBinsAlias + kBinWords && (a - kBinsAlias) / kFrame == b);
+    };
+    for (const Effect& e : g_fx) {
+        uint32_t ins = e.kind == Kind::Xtalk                                 ? 4
+                       : e.kind == Kind::Reverb || e.kind == Kind::Mix2      ? 2
+                       : e.kind == Kind::FanOut || e.kind == Kind::Iir2      ? 1
+                                                                             : 0;
+        for (uint32_t k = 0; k < ins; k++)
+            if (at(X(e, 5 + k))) return true;
+    }
+    return false;
 }
 
 void SetData(uint32_t effect, uint32_t offset, const uint32_t* data, uint32_t count) {
