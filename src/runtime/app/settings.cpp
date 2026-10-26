@@ -52,6 +52,8 @@ void Load() {
     s.smaa = t["smaa"].value_or(s.smaa);
     s.film_grain = t["film_grain"].value_or(s.film_grain);
     s.chromatic_aberration = t["chromatic_aberration"].value_or(s.chromatic_aberration);
+    s.ambient_occlusion = t["ambient_occlusion"].value_or(s.ambient_occlusion);
+    s.ambient_occlusion_radius = t["ambient_occlusion_radius"].value_or(s.ambient_occlusion_radius);
     s.shader_warmup = t["shader_warmup"].value_or(s.shader_warmup);
     s.renderer = t["renderer"].value_or(s.renderer);
     s.aspect = t["aspect"].value_or(s.aspect);
@@ -87,6 +89,8 @@ toml::table Table() {
                   {"smaa", s.smaa},
                   {"film_grain", int64_t(s.film_grain)},
                   {"chromatic_aberration", int64_t(s.chromatic_aberration)},
+                  {"ambient_occlusion", int64_t(s.ambient_occlusion)},
+                  {"ambient_occlusion_radius", int64_t(s.ambient_occlusion_radius)},
                   {"shader_warmup", s.shader_warmup},
                   {"renderer", s.renderer},
                   {"aspect", s.aspect},

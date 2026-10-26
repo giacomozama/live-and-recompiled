@@ -197,6 +197,78 @@ float4 grade(O i) : SV_Target {
 }
 )";
 
+// ambient occlusion over the 3D picture, before the title's own passes read it (ApplyOcclusion). occlusion, at half
+// the size, from the depth (t0 and t1): each pixel's view space position and its normal from its neighbours, then
+// samples on a spiral within the reach, each occluding by the cosine of its direction to the normal, less where it lies
+// farther than the reach; blurx and blury (the occlusion at t0, the depth at t1) blur it across like depths alone;
+// apply (the picture at t0, the occlusion at t1) darkens the picture by it. b1: px the picture's 1 / size, the reach,
+// the strength; frame the guest size and A, B of depth = A + B / w; vp the viewport's x y scale and offset; pr and pr2
+// the projection's x row (x, z, w) and y row (y, z, w)
+const char* kOcclusionHlsl = R"(
+cbuffer B : register(b1) { float4 px; float4 frame; float4 vp; float4 pr; float4 pr2; };
+Texture2D a : register(t0);
+Texture2D b : register(t1);
+SamplerState ls : register(s0);
+SamplerState ps : register(s1);
+struct O { float4 p : SV_Position; float2 uv : TEXCOORD0; };
+O vs(uint id : SV_VertexID) {
+    O o;
+    o.uv = float2((id << 1) & 2, id & 2);
+    o.p = float4(o.uv * float2(2, -2) + float2(-1, 1), 0, 1);
+    return o;
+}
+float DepthAt(float2 uv) { return b.SampleLevel(ps, uv, 0).r; }
+float ViewW(float d) { return frame.w / min(d - frame.z, -1e-7); }
+float3 ViewAt(float2 uv) {
+    float w = ViewW(DepthAt(uv)), z = -w;
+    float2 clip = (uv * frame.xy - vp.zw) * w / vp.xy;
+    return float3((clip.x - pr.y * z - pr.z) / pr.x, (clip.y - pr2.y * z - pr2.z) / pr2.x, z);
+}
+float4 occlusion(O i) : SV_Target {
+    float2 uv = i.uv;
+    if (DepthAt(uv) >= 0.9999999) return 1;
+    float3 p = ViewAt(uv);
+    // the neighbour on the nearer side of each axis, so an edge doesn't bend the normal
+    float3 r = ViewAt(uv + float2(px.x, 0)) - p, l = p - ViewAt(uv - float2(px.x, 0));
+    float3 u = ViewAt(uv + float2(0, px.y)) - p, d = p - ViewAt(uv - float2(0, px.y));
+    float3 n = normalize(cross(abs(r.z) < abs(l.z) ? r : l, abs(u.z) < abs(d.z) ? u : d));
+    if (dot(n, p) > 0) n = -n;
+    // the reach in guest pixels; under two it would sample the pixel's own surface
+    float reach = px.z, w = -p.z;
+    float rpx = reach * abs(pr.x * vp.x) / w;
+    if (rpx < 2) return 1;
+    float turn = 6.2831853 * frac(52.9829189 * frac(dot(i.p.xy, float2(0.06711056, 0.00583715))));
+    float sum = 0, r2 = reach * reach;
+    const int kTaps = 12;
+    [unroll] for (int k = 0; k < kTaps; k++) {
+        float f = (k + 0.5) / kTaps, ang = f * 7 * 6.2831853 + turn;  // seven turns
+        float2 q = uv + rpx * f * float2(cos(ang), sin(ang)) / frame.xy;
+        float3 v = ViewAt(q) - p;
+        float vv = dot(v, v), fall = max(1 - vv / r2, 0);
+        sum += fall * fall * max(dot(v, n) * rsqrt(vv + 1e-4 * r2) - 0.1, 0);
+    }
+    float o = saturate(1 - px.w * 2 * sum / kTaps);
+    return lerp(1, o, saturate(rpx / 2 - 1));
+}
+float4 Blur(float2 uv, float2 dir) {
+    float w0 = ViewW(DepthAt(uv)), sum = 0, weights = 0;
+    [unroll] for (int k = -3; k <= 3; k++) {
+        float2 q = uv + dir * k;
+        float wt = exp(-k * k / 8.0) * saturate(1 - 20 * abs(ViewW(DepthAt(q)) - w0) / w0);
+        sum += a.SampleLevel(ps, q, 0).r * wt;
+        weights += wt;
+    }
+    return weights > 0 ? sum / weights : a.SampleLevel(ps, uv, 0).r;
+}
+float4 blurx(O i) : SV_Target { return Blur(i.uv, float2(px.x * 2, 0)); }
+float4 blury(O i) : SV_Target { return Blur(i.uv, float2(0, px.y * 2)); }
+float4 apply(O i) : SV_Target {
+    float4 c = a.SampleLevel(ps, i.uv, 0);
+    c.rgb *= b.SampleLevel(ls, i.uv, 0).r;
+    return c;
+}
+)";
+
 // SMAA (gpu/smaa_hlsl.h) in its custom shading language mode, a source per pass (SmaaHlsl). No texture is handed to a
 // function: SMAA's texture arguments become unused uints and its sampling macros read the global of the argument's
 // name, which the pass declares.
@@ -825,7 +897,7 @@ private:
     Image* Feedback(Target& t);
     Image* DepthBytes(Target& z, uint32_t format);
     void Pass(const char* hlsl, const char* entry, VkFormat rtv, Image& target, uint32_t w, uint32_t h,
-              const VkImageView src[3], const float p[8], float blend);
+              const VkImageView src[3], const float* p, float blend, uint32_t floats = 8);
     VkPipeline EnsurePassPipeline(const char* hlsl, const char* entry, VkFormat rtv, float blend);
     // the effects over the 3D picture (kPostHlsl): once a frame, at the first screen space draw onto the frame-sized
     // target after a 3D one, else at Present
@@ -834,6 +906,11 @@ private:
     bool ReadsTarget(const State& s);
     void TrackPost(const State& s, bool flat);
     void ApplyPost(Target& t);
+    // the ambient occlusion, first of the effects: the view and depth of the frame's 3D draws (g_view_constants), a
+    // draw that reads the frame (the title's bloom and depth of field take their copies so), and the passes
+    void TrackView(const State& s);
+    bool ReadsFrame(const State& s);
+    void ApplyOcclusion();
     bool EnsureSmaaTextures();
     // Draw, in call order, each callee right after its caller
     bool DepthCopy(const State& s);
@@ -1107,6 +1184,7 @@ private:
     struct KeptDraw {
         bool ok = false;
         bool surface = false;  // blends and tests depth without writing it: a draw like it may be a g_surface_depth one
+        bool solid = false;    // a 3D draw to the effects (TrackPost): one like it, in its state, is one too
         ConstReads reads;
         bool quad = false;
         DrawTextures stages{};
@@ -1221,6 +1299,13 @@ private:
     // were drawn, the copies they read, and each vertex program's PositionWSource by hash
     uint32_t post_rt_ = 0;
     bool post_done_ = false;
+    // the occlusion: drawn this frame, the frame's surfaces and its last 3D draw's view (vp: g_view_constants'
+    // viewport scale and offset, pr: the projection's rows), its copy of the picture and its occlusion and blur
+    bool occlusion_done_ = false, view_ok_ = false;
+    Surface post_surf_{}, post_zs_{};
+    float post_zscale_ = 0;
+    std::array<float, 4> view_vp_[2]{}, view_pr_[4]{};
+    ImageRef occlusion_tmp_[3];
     // XBE_POST_TRACE: what the picture's draws did to the effects, logged in FinishFront when it changes
     struct PostTrace {
         uint32_t solid = 0, other = 0, other_rt = 0, ow = 0, oh = 0;  // 3D draws on the frame's size, on others
@@ -2604,13 +2689,13 @@ VkPipeline VulkanBackend::EnsurePassPipeline(const char* hlsl, const char* entry
     return pso;
 }
 
-// a full screen pass into target: src are t0 to t2, p is b1, blend >= 0 blends by that factor
+// a full screen pass into target: src are t0 to t2, p's floats (8 unless said) are b1, blend >= 0 blends by that factor
 void VulkanBackend::Pass(const char* hlsl, const char* entry, VkFormat rtv, Image& target, uint32_t w, uint32_t h,
-                         const VkImageView src[3], const float p[8], float blend) {
+                         const VkImageView src[3], const float* p, float blend, uint32_t floats) {
     VkPipeline pso = EnsurePassPipeline(hlsl, entry, rtv, blend);
     if (!pso) return;
     Alloc cb = Upload(kPassCbBytes);
-    std::memcpy(cb.cpu, p, 8 * sizeof(float));
+    std::memcpy(cb.cpu, p, floats * sizeof(float));
     SetTargets(&target, nullptr);
     SetFullViewport(w, h);
     if (blend >= 0) {
@@ -3777,7 +3862,8 @@ void VulkanBackend::DeliverReports() {
 
 bool VulkanBackend::PostWanted() const {
     const app::Settings& set = app::Get();
-    return set.smaa || set.film_grain || set.chromatic_aberration;
+    return set.smaa || set.film_grain || set.chromatic_aberration ||
+           (set.ambient_occlusion && g_view_constants.viewport >= 0);
 }
 
 bool VulkanBackend::ScreenSpaceDraw(const State& s, const Assembled& a) {
@@ -3798,11 +3884,13 @@ bool VulkanBackend::ReadsTarget(const State& s) {
     return targets_.count(SizedTargetKey(d.data, Format(d.format).depth, d.width, d.height)) != 0;
 }
 
-// a 3D draw onto the frame-sized target marks it; the first screen space one after that draws the effects under it
+// a 3D draw onto the frame-sized target marks it; the first screen space one after that draws the effects under it.
+// The occlusion goes before: at the first screen space draw onto the frame or reading it, under the title's own passes
 void VulkanBackend::TrackPost(const State& s, bool flat) {
     if (post_done_ || !PostWanted()) return;
     PostTrace& pt = post_trace_;
     Target* rt = FindTarget(s.rt, false);
+    if (flat && !occlusion_done_ && post_rt_ && ((rt && rt->data == post_rt_) || ReadsFrame(s))) ApplyOcclusion();
     if (!rt) {
         pt.no_target++;
         return;
@@ -3819,6 +3907,7 @@ void VulkanBackend::TrackPost(const State& s, bool flat) {
     if (!flat) {
         pt.solid++;
         post_rt_ = rt->data;
+        TrackView(s);
         return;
     }
     if (post_rt_ != rt->data) {
@@ -3831,6 +3920,87 @@ void VulkanBackend::TrackPost(const State& s, bool flat) {
     }
     pt.applied = "at a 2D draw";
     ApplyPost(*rt);
+}
+
+// a 3D draw on the frame that tests depth: its surfaces, and its program's view when g_view_constants' registers hold
+// one (another program may keep other things there)
+void VulkanBackend::TrackView(const State& s) {
+    const ViewConstants& vc = g_view_constants;
+    if (vc.viewport < 0 || !(s.vs_handle & 1) || !s.rs[kRsZEnable]) return;
+    std::array<float, 4> vp[2] = {s.vsc[size_t(vc.viewport)], s.vsc[size_t(vc.viewport + 1)]};
+    std::array<float, 4> pr[4];
+    for (int i = 0; i < 4; i++) pr[i] = s.vsc[size_t(vc.projection + i)];
+    bool perspective = pr[0][0] != 0 && pr[1][1] != 0 && pr[2][3] != 0 && pr[3][0] == 0 && pr[3][1] == 0 &&
+                       pr[3][2] == -1 && pr[3][3] == 0 && vp[0][0] != 0 && vp[0][1] != 0 && vp[0][2] != 0;
+    if (!perspective) return;
+    std::copy(vp, vp + 2, view_vp_);
+    std::copy(pr, pr + 4, view_pr_);
+    post_surf_ = s.rt;
+    post_zs_ = s.zs;
+    post_zscale_ = s.zscale;
+    view_ok_ = true;
+}
+
+bool VulkanBackend::ReadsFrame(const State& s) {
+    for (uint32_t tex : s.textures) {
+        TextureDesc d;
+        if (tex && Describe(tex, d) && d.data == post_rt_) return true;
+    }
+    return false;
+}
+
+// the occlusion's passes over the frame, by the depth buffer its last 3D draw with a view tested
+void VulkanBackend::ApplyOcclusion() {
+    occlusion_done_ = true;
+    const app::Settings& set = app::Get();
+    if (!set.ambient_occlusion || !view_ok_) return;
+    Target* t = FindTarget(post_surf_, false);
+    Target* z = FindTarget(post_zs_, true);
+    if (!t || t->data != post_rt_ || !z || !z->res || !z->res->depth_view || z->w != t->w || z->h != t->h) return;
+    uint32_t hw = (t->w + 1) / 2, hh = (t->h + 1) / 2;
+    for (size_t i = 0; i < 3; i++) {
+        ImageRef& im = occlusion_tmp_[i];
+        uint32_t w = i ? hw : t->w, h = i ? hh : t->h;
+        VkFormat fmt = i ? kBgra : t->fmt;
+        if (im && im->w == w && im->h == h && im->format == fmt) continue;
+        if (im) Retire(im);
+        im = NewImage({.fmt = fmt, .w = w, .h = h,
+                       .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+                                VK_IMAGE_USAGE_TRANSFER_DST_BIT});
+        if (!im) return;
+    }
+    if (cap_) fprintf(cap_, "     note ambient occlusion over %08X by %08X\n", t->data, z->data);
+    ResolveSamples(*t);
+    ResolveSamples(*z);
+    Transition(*t->res, kSrc);
+    Transition(*occlusion_tmp_[0], kDst);
+    Barrier();
+    VkImageCopy r{};
+    r.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    r.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    r.extent = {t->w, t->h, 1};
+    vkCmdCopyImage(cmd_, t->res->image, kSrc, occlusion_tmp_[0]->image, kDst, 1, &r);
+    WriteRes(*t, true);
+    t->drawn = true;
+    // depth = (screen z * scale + offset) / zscale, screen z = (z row . p) / w at z = -w: A + B / w
+    const auto &s = view_vp_[0], &o = view_vp_[1], &x = view_pr_[0], &y = view_pr_[1], &zr = view_pr_[2];
+    float p[20] = {1.0f / t->w, 1.0f / t->h, float(set.ambient_occlusion_radius), set.ambient_occlusion / 100.0f,
+                   float(t->gw), float(t->gh), (o[2] - s[2] * zr[2]) / post_zscale_, s[2] * zr[3] / post_zscale_,
+                   s[0], s[1], o[0], o[1],
+                   x[0], x[2], x[3], 0,
+                   y[1], y[2], y[3], 0};
+    Image& frame = *occlusion_tmp_[0];
+    Image& occ = *occlusion_tmp_[1];
+    Image& blur = *occlusion_tmp_[2];
+    auto run = [&](const char* entry, VkFormat fmt, Image& dst, uint32_t w, uint32_t h, Image* in0, Image* in1) {
+        for (Image* im : {in0, in1}) Transition(*im, kRead);
+        const VkImageView views[3] = {in0->Sampled(), in1->Sampled(), VK_NULL_HANDLE};
+        Pass(kOcclusionHlsl, entry, fmt, dst, w, h, views, p, -1, 20);
+    };
+    run("occlusion", kBgra, occ, hw, hh, z->res.get(), z->res.get());
+    run("blurx", kBgra, blur, hw, hh, &occ, z->res.get());
+    run("blury", kBgra, occ, hw, hh, &blur, z->res.get());
+    run("apply", t->fmt, *t->res, t->w, t->h, &frame, &occ);
 }
 
 // SMAA's lookups as BGRA textures, made the first time SMAA runs
@@ -3858,10 +4028,13 @@ bool VulkanBackend::EnsureSmaaTextures() {
 // the target's picture through SMAA and grade, each pass reading what the one before wrote and the last
 // writing the target
 void VulkanBackend::ApplyPost(Target& t) {
+    if (!occlusion_done_) ApplyOcclusion();
     post_done_ = true;
     const app::Settings& set = app::Get();
     bool grade = set.film_grain || set.chromatic_aberration;
     bool smaa = set.smaa;
+    post_trace_.outcome = "drawn";
+    if (!grade && !smaa) return;
     post_trace_.outcome = "stopped: no SMAA textures";
     if (smaa && !EnsureSmaaTextures()) return;
     post_trace_.outcome = "stopped: no copy of the picture";
@@ -3933,7 +4106,9 @@ void VulkanBackend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t
     }
     bool same = std::exchange(same_state_, false) && &s != &sprite_;
     bool patches = tess_ && TessellatedDraw(s, prim);
-    if (same && kept_.ok && !cap_ && !PostWanted() && !(kept_.surface && SurfaceDepth(s, start, count, indices)) &&
+    // the effects watch for the first screen space draw, which a draw like a 3D one isn't
+    if (same && kept_.ok && !cap_ && (!PostWanted() || post_done_ || kept_.solid) &&
+        !(kept_.surface && SurfaceDepth(s, start, count, indices)) &&
         ((replay_ && ReuseRun(s)) || FastDraw(s, prim, start, count, indices, patches))) {
         g_perf.fast++;
         return;
@@ -4083,9 +4258,10 @@ void VulkanBackend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t
         drawn_.pso = zpso;
         IssueGeometry(a);
     }
-    if (!sh.shading && !zpso && &s != &sprite_) {
+    if ((!sh.shading || g_program_shading[sh.shading - 1].plain) && !zpso && &s != &sprite_) {
         KeepDraw(a, sh, stages, pso, b, size);
         kept_.surface = k.blend && k.zen && !k.zwrite;
+        kept_.solid = !flat;
     }
     g_perf.d_record += PerfLap(lap);
 }
@@ -4540,6 +4716,7 @@ void VulkanBackend::FinishFront(Target& t) {
     PostTraceEnd(t);
     post_rt_ = 0;
     post_done_ = false;
+    occlusion_done_ = view_ok_ = false;
     ResolveSamples(t);
     Transition(*t.res, kRead);
 }
@@ -4767,6 +4944,7 @@ void VulkanBackend::Present(const Surface& front) {
     }
     post_rt_ = 0;
     post_done_ = false;
+    occlusion_done_ = view_ok_ = false;
     if (t && interp::Recording()) RecordPictures(sources, notes, t->gw, t->gh);
     if (pictures.empty()) pictures.push_back(VK_NULL_HANDLE);
     // the frame's pictures share out the time to the next frame, the first shown now; the time between frames is

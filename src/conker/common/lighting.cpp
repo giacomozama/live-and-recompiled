@@ -83,8 +83,10 @@ std::string Format(const char* fmt, int r, const char* s) {
 
 }  // namespace
 
-// The three groups' shapes go first: their programs read c[149] too
+// The three groups' shapes go first: their programs read c[149] too. The view the shading undoes oPos by is the
+// ambient occlusion's too.
 void lighting::Init() {
+    gpu::g_view_constants = {.viewport = 58, .projection = 99};
     struct Shape {
         int groups;
         bool key_in_d0;
@@ -102,6 +104,7 @@ void lighting::Init() {
                 .functions = functions,
                 .also = {sh.key_in_d0 ? kKeyInD0 : kKeyInD1, sh.groups == 3 ? kThreeGroups : kOneGroup, kPlaced},
                 .pre = pre,
+                .plain = true,
             });
         }
     }

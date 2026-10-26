@@ -30,6 +30,9 @@ struct Settings {
     bool smaa = false;
     uint32_t film_grain = 0;
     uint32_t chromatic_aberration = 0;
+    // ambient occlusion from the depth buffer, first: its strength in % (0 off) and its reach in the title's units
+    uint32_t ambient_occlusion = 0;
+    uint32_t ambient_occlusion_radius = 30;
     bool shader_warmup = true;       // make the shaders shaders.rec lists while the title boots
     std::string renderer = "vulkan";  // which gpu::Backend draws, read at launch (gpu/backend.cpp)
     std::string aspect = "auto";     // "W:H" ("4:3", "16:9", "21:9", ...), or "auto": the output's own shape

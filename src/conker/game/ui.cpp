@@ -543,6 +543,10 @@ void Draw(double fps) {
                 ImGui::Checkbox("SMAA", &s.smaa);
                 Slider("Film grain %", &s.film_grain, 0, 100, app::Settings{}.film_grain);
                 Slider("Chromatic aberration %", &s.chromatic_aberration, 0, 100, app::Settings{}.chromatic_aberration);
+                Slider("Ambient occlusion %", &s.ambient_occlusion, 0, 100, app::Settings{}.ambient_occlusion);
+                if (s.ambient_occlusion)
+                    Slider("Ambient occlusion reach", &s.ambient_occlusion_radius, 5, 200,
+                           app::Settings{}.ambient_occlusion_radius);
 
                 ImGui::Checkbox("Wind on distant grass", &grass::g_wind);
                 ImGui::SameLine();

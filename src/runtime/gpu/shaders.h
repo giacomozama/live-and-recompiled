@@ -73,7 +73,8 @@ struct PixelKey {
 // in fainter leaves the depth behind it; with top set, only the draws whose x there is above 0 (the shells, not the
 // skin under them). also lists more text the translation must contain as well as match, for an entry that takes only
 // one shape of a program. pre runs in the pixel shader before the combiner stages, after the textures are fetched (before
-// the fixed function's stages, which fetch as they go), and may change v0 and v1; PS_TWO_SIDED is 1 there when the back faces take the back colours.
+// the fixed function's stages, which fetch as they go), and may change v0 and v1; PS_TWO_SIDED is 1 there when the back faces take the back colours. plain: the shading reads
+// no constants of its own (no clock, fill or top), so a draw in the state of the one before may reuse its pipeline.
 struct ShadingField {
     const float* data = nullptr;  // w x h, rows of w
     uint32_t w = 0, h = 0;
@@ -97,6 +98,7 @@ struct ProgramShading {
     float depth_alpha = 0;
     const char* also[3] = {};
     const char* pre = "";
+    bool plain = false;
 };
 inline std::vector<ProgramShading> g_program_shading;  // filled before the title boots, unchanged after
 
@@ -132,6 +134,15 @@ struct SurfaceDepthHook {
     uint32_t vertices = 16;  // at most
 };
 inline SurfaceDepthHook g_surface_depth;  // set before the title boots, unchanged after
+
+// Where a game's vertex programs keep the view, for the ambient occlusion (app::Settings) to read the depth buffer as
+// view space positions: the viewport's scale and offset (screen = clip / w * scale + offset) in hardware registers
+// viewport and viewport + 1, the projection's four rows from projection, w = -z (the last row 0 0 -1 0). -1: none.
+struct ViewConstants {
+    int viewport = -1;
+    int projection = -1;
+};
+inline ViewConstants g_view_constants;  // set before the title boots, unchanged after
 
 uint64_t Hash(const void* p, size_t n, uint64_t h = 1469598103934665603ull);
 
