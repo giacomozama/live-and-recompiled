@@ -575,6 +575,7 @@ struct Tex {
     uint64_t whole = 0;  // every byte hashed, as sig is at its last upload
     uint64_t frame = 0;
     uint64_t palette = 0;  // hash of the colours a P8 texture was decoded with
+    uint8_t sign = 0;      // channels uploaded offset by 128 (OffsetSigned)
 };
 
 // what a VkSampler is made from, hashed for the cache
@@ -3102,14 +3103,48 @@ void VulkanBackend::UploadTextureLevel(Tex& tx, uint32_t f, uint32_t l, const st
 void VulkanBackend::UploadTexture(Tex& tx, const TextureDesc& d, const uint8_t* p, const uint32_t* colours) {
     Transition(*tx.res, kDst);
     uint32_t faces = d.cube ? 6 : 1;
-    std::vector<uint8_t> px;
+    std::vector<uint8_t> px, up;
+    // a signed texture's levels down to 32 texels are made here, a box over the level above offset by 128: the title's
+    // own hold spikes along the zeros of the lens drops' bump map (-60 beside 0 at the centre of the 64 level), a dotted
+    // cross through a drop drawn large. The smaller ones stay the title's: a drop's trail squeezes the map into a strip a
+    // few pixels wide, and the offset down their centre column is what keeps the trail under its drop
+    const bool remip = tx.sign && !d.cube && d.depth == 1;
+    uint32_t uw = 0, uh = 0;
     for (uint32_t f = 0; f < faces; f++) {
         for (uint32_t l = 0; l < tx.levels; l++) {
             uint32_t pitch;
+            if (remip && l && std::max(uw, uh) >= 64) {
+                uint32_t w = std::max(uw >> 1, 1u), h = std::max(uh >> 1, 1u);
+                pitch = w * 4;
+                px.resize(size_t(pitch) * h);
+                for (uint32_t y = 0; y < h; y++)
+                    for (uint32_t x = 0; x < w; x++)
+                        for (uint32_t c = 0; c < 4; c++) {
+                            uint32_t x0 = std::min(x * 2, uw - 1), x1 = std::min(x * 2 + 1, uw - 1);
+                            uint32_t y0 = std::min(y * 2, uh - 1), y1 = std::min(y * 2 + 1, uh - 1);
+                            uint32_t sum = up[(size_t(y0) * uw + x0) * 4 + c] + up[(size_t(y0) * uw + x1) * 4 + c] +
+                                           up[(size_t(y1) * uw + x0) * 4 + c] + up[(size_t(y1) * uw + x1) * 4 + c];
+                            px[(size_t(y) * w + x) * 4 + c] = uint8_t((sum + 2) / 4);
+                        }
+                UploadTextureLevel(tx, f, l, px, pitch);
+                up.swap(px);
+                uw = w;
+                uh = h;
+                continue;
+            }
             DecodeLevel(d, l, f, p, colours, px, pitch);
-            if (OffsetSigned(d.format))
-                for (uint8_t& b : px) b ^= 0x80;
+            if (tx.sign) {
+                // r g b a to the bytes of a B G R A texel
+                uint8_t x[4] = {uint8_t(tx.sign & 4 ? 0x80 : 0), uint8_t(tx.sign & 2 ? 0x80 : 0), uint8_t(tx.sign & 1 ? 0x80 : 0),
+                                uint8_t(tx.sign & 8 ? 0x80 : 0)};
+                for (size_t i = 0; i < px.size(); i++) px[i] ^= x[i & 3];
+            }
             UploadTextureLevel(tx, f, l, px, pitch);
+            if (remip) {
+                up = px;
+                uw = pitch / 4;
+                uh = uint32_t(px.size() / pitch);
+            }
         }
     }
     Transition(*tx.res, kRead);
@@ -3129,7 +3164,8 @@ Image* VulkanBackend::BindGuestTexture(const State& s, int stage, const TextureD
     // cheap change check once per frame: lock epochs plus a sample of the bytes. A texture back after a frame or more
     // unbound has every byte hashed: the title may have loaded another in its place, unlocked, and a sample misses
     // one alike but for a corner (Berri's blink atlas, clean, kept the bloodied one's picture from a later level)
-    if (tx.frame != presents_ + 1 || !same || tx.palette != palette.hash) {
+    const uint8_t sign = OffsetSigned(d.format, s.tss[size_t(stage)][kTssColorSign]);
+    if (tx.frame != presents_ + 1 || !same || tx.palette != palette.hash || tx.sign != sign) {
         bool idle = tx.frame != presents_;
         tx.frame = presents_ + 1;
         tx.palette = palette.hash;
@@ -3139,19 +3175,20 @@ Image* VulkanBackend::BindGuestTexture(const State& s, int stage, const TextureD
         uint64_t sig = MemSig(d.data, total) ^ mark;
         uint64_t whole = total > kSigWholeMax && idle && same ? Hash(p, total) ^ mark : 0;
         g_perf.sig += PerfMs(perf_t);
-        if (sig != tx.sig || (whole && whole != tx.whole) || !same) {
+        if (sig != tx.sig || (whole && whole != tx.whole) || !same || tx.sign != sign) {
             PerfScope perf_up{g_perf.texup};
             g_perf.texups++;
             g_perf.texup_bytes += total;
             tx.sig = sig;
             tx.whole = total > kSigWholeMax ? Hash(p, total) ^ mark : 0;
+            tx.sign = sign;
             UploadTexture(tx, d, p, palette.va ? palette.colours : nullptr);
         }
     }
     stages.view[stage] = tx.res->view;
     stages.levels[stage] = tx.levels;
     if (fi.depth) info.shadow = ShadowDepthKind(d.format);
-    if (OffsetSigned(d.format)) info.flags |= kTexOffset;
+    info.sign = sign;
     return tx.res.get();
 }
 
@@ -3424,6 +3461,20 @@ void VulkanBackend::CaptureTextures(const State& s, const DrawTextures& stages) 
                 res ? "" : " unbound");
         if (res && !tg && stages.info[i].kind == kTex2D && cap_seen_.insert(d.data).second) {
             cap_tex_.push_back({res->shared_from_this(), stages.view[i], d.data, d.width, d.height});
+            // each level of a mipmapped one as the guest's bytes decode, before any sign offset: tex_<addr>_m<level>
+            const FormatInfo& fi = Format(d.format);
+            if (d.levels > 1 && !d.cube && d.depth == 1 && !fi.compressed && !fi.depth && fi.host != Host::R32F &&
+                d.format != 0x0B) {
+                const uint8_t* p = static_cast<const uint8_t*>(kernel::HostPtr(d.data));
+                std::vector<uint8_t> px;
+                for (uint32_t l = 0; l < d.levels; l++) {
+                    uint32_t pitch;
+                    DecodeLevel(d, l, 0, p, nullptr, px, pitch);
+                    char name[48];
+                    snprintf(name, sizeof(name), "tex_%08X_m%u.bmp", d.data, l);
+                    WriteBmp(cap_dir_ / name, px, pitch / 4, uint32_t(px.size() / pitch));
+                }
+            }
         }
     }
 }

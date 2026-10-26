@@ -394,11 +394,14 @@ struct Ps {
     }
 };
 
-// a kTexOffset fetch back to the console's bytes, filtered as signed: from 127.5 down a blend of -1 and 0 reads just
-// under 256 (or just under 0), which sbyte takes as the small negative it is
+// a fetch's signed channels back to the console's bytes, filtered as signed: from 127.5 down a blend of -1 and 0 reads
+// just under 256 (or just under 0), which sbyte takes as the small negative it is
 std::string Unoffset(const TexInfo& t, int i) {
-    if (!(t.flags & kTexOffset)) return {};
-    return F("{ float4 o = t%d * 255; t%d = (o + (o < 127.5 ? 128 : -128)) / 255; }\n", i, i);
+    if (!t.sign) return {};
+    std::string m;
+    for (int c = 0; c < 4; c++)
+        if (t.sign >> c & 1) m += "rgba"[c];
+    return F("{ float4 o = t%d * 255; t%d.%s = ((o + (o < 127.5 ? 128 : -128)) / 255).%s; }\n", i, i, m.c_str(), m.c_str());
 }
 
 // a dot stage's operand: the source stage's rgb, raw or read back as signed bytes

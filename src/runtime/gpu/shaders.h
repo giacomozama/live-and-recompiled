@@ -16,11 +16,11 @@ struct TexInfo {
     uint8_t kind = kTexNone;
     uint8_t rect = 0;    // linear texture, coordinates in texels
     uint8_t shadow = 0;  // depth texture: 1 D24, 2 D16
-    uint8_t flags = 0;   // kTexWide, kTexOffset, kTexDepthBytes; bits 0 and 1 are a backend extension's
+    uint8_t flags = 0;   // kTexWide, kTexDepthBytes; bits 0 and 1 are a backend extension's
+    uint8_t sign = 0;    // channels uploaded offset by 128 (OffsetSigned), bits r g b a: the fetch reads back the bytes
 };
 enum : uint8_t {
-    kTexWide = 4,    // an upscaled target shrunk by the pass: each tap averaged over console texels
-    kTexOffset = 8,  // uploaded offset by 128 (OffsetSigned): the fetch reads back the console's bytes
+    kTexWide = 4,  // an upscaled target shrunk by the pass: each tap averaged over console texels
     // a depth buffer's bytes read as colour (stage 0 of a programmable draw: a depth of field's focus mask), bits 5
     // and 6 the DepthByteLayout: nearer pixels around lend the draw their output (DepthSpread)
     kTexDepthBytes = 16,

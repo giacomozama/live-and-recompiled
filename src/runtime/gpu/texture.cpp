@@ -266,7 +266,12 @@ const FormatInfo& Format(uint32_t f) {
     return kUnknown;
 }
 
-bool OffsetSigned(uint32_t f) { return f == 0x28 || f == 0x17; }
+uint8_t OffsetSigned(uint32_t f, uint32_t sign) {
+    if (f == 0x28 || f == 0x17) return 0xF;
+    const FormatInfo& i = Format(f);
+    if (i.compressed || i.depth || i.host == Host::R32F) return 0;
+    return uint8_t((sign >> 29 & 1) | (sign >> 29 & 2) | (sign >> 29 & 4) | (sign >> 25 & 8));
+}
 
 bool Describe(uint32_t header, TextureDesc& d) {
     using namespace kernel;

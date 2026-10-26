@@ -19,9 +19,11 @@ struct FormatInfo {
 };
 
 const FormatInfo& Format(uint32_t xbox_format);
-// V8U8 and LIN_V8U8, two's complement du dv: uploaded offset by 128 so the filter blends them as signed (+1 next to -1
-// blended as unsigned bytes reads -1, an outline along every zero of a bump map); the shader takes the 128 off again
-bool OffsetSigned(uint32_t xbox_format);
+// the channels filtered as signed, bits 0 to 3 r g b a: V8U8 and LIN_V8U8's two's complement du dv, else those the
+// stage's filter marks signed (FILTER bits 31:28 b g r a, kTssColorSign). They go up offset by 128 so the filter blends
+// them as signed (+1 next to -1 blended as unsigned bytes reads -1, an outline along every zero of a bump map, a cross
+// through a raindrop on the lens); the shader takes the 128 off again
+uint8_t OffsetSigned(uint32_t xbox_format, uint32_t color_sign);
 
 // a D3DPixelContainer decoded
 struct TextureDesc {
