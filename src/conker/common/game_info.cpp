@@ -13,12 +13,13 @@
 
 namespace {
 
-// after the settings load: the fps cap follows frame_rate, the fur and water programs get their shading,
+// after the settings load: the fps cap follows frame_rate, the fur, water and grass programs get their shading,
 // then the lit programs theirs, reflective floors their depth
 void Init() {
     display::Init();
     fur::Init();
     water::Init();
+    grass::Init();
     lighting::Init();
     reflection::Init();
 }
