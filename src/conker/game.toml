@@ -346,72 +346,6 @@ at = 0x64468   # camera projection: its aspect widened to the display's (Hor+)
 call = "ConkerCameraAspect"
 
 [[hook]]
-at = 0x2A8A43  # camera layout: two players side by side instead of top and bottom, if set
-call = "ConkerSplitLayout"
-
-[[hook]]
-at = 0x43551   # split screen text print: side by side, sized by the smaller of the view's scales
-call = "ConkerSplitHudScaleA"
-
-[[hook]]
-at = 0x1C7DB0  # HUD draw: side by side, sized by the smaller of the view's scales
-call = "ConkerSplitHudScaleB"
-
-[[hook]]
-at = 0x1C851D  # HUD draw: side by side, text sized evenly
-call = "ConkerSplitHudText"
-
-[[hook]]
-at = 0x1C85BD
-call = "ConkerSplitHudText"
-
-[[hook]]
-at = 0x1C88BC
-call = "ConkerSplitHudText"
-
-[[hook]]
-at = 0x1C87C4
-call = "ConkerSplitHudTextSwapped"
-
-[[hook]]
-at = 0x1C8A50  # HUD draw: side by side, the weapon's charge bar sized evenly
-call = "ConkerSplitHudBar"
-
-[[hook]]
-at = 0x1CC9F0  # two player vignette strips: not side by side
-call = "ConkerSplitVignette"
-on_true = "ret"
-
-# sniper scope: side by side, the lens the half's width and round on the display, the masks above and below it
-[[hook]]
-at = 0x1CF4A5
-call = "ConkerScopeLens"
-
-[[hook]]
-at = 0x1CF112
-call = "ConkerScopeMaskAbove"
-
-[[hook]]
-at = 0x1CF123
-call = "ConkerScopeMaskBelow"
-
-[[hook]]
-at = 0x1CF15C
-call = "ConkerScopeEdgeAbove"
-
-[[hook]]
-at = 0x1CF177
-call = "ConkerScopeEdgeNone"
-
-[[hook]]
-at = 0x1CF190
-call = "ConkerScopeEdgeBelow"
-
-[[hook]]
-at = 0x1CF1AB
-call = "ConkerScopeEdgeNone"
-
-[[hook]]
 at = 0xD9AAF   # a character effect's draw: what it pushes tagged as the effect's, for frame generation (tags.cpp)
 call = "ConkerEffectDraw"
 
@@ -438,10 +372,6 @@ call = "ConkerFurDistant"
 [[hook]]
 at = 0x1A968F  # grass patch: all its blades, solid (grass::g_max_lod, g_fade)
 call = "ConkerGrassFull"
-
-[[hook]]
-at = 0x12338E  # the idea bulb's countdown: kept while Conker stands on the B pad (bulb::g_lasting)
-call = "ConkerBulbLasting"
 
 [[hook]]
 at = 0x2D5662  # a character's script timer +0x214: counted in console frames, not frames (the alien's punch window)

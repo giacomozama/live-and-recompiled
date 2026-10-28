@@ -17,7 +17,6 @@
 #include "xdk/d3d8.h"
 #include "xdk/dsound.h"
 
-#include "common/bulb.h"
 #include "common/cutscenes.h"
 #include "common/display.h"
 #include "common/fur.h"
@@ -328,23 +327,6 @@ X86_FUNC(sub_0053AE30) {
         if (uint32_t pb = kernel::R32(ctx.esp + 4))
             d3d::LodTraceRun(ctx, kernel::R32(pb + 4), kernel::R32(ctx.esp) == 0x3F3602 ? ctx.esi : 0);
     __imp__sub_0053AE30(ctx, base);
-}
-
-// 0x123290 updates a player's idea bulb (type 0x6B, the list at 0x77168C; esi the bulb, edi the player), by its state
-// [bulb+0x2F]: 0 arms it when the player stands on a B pad ([[player+0x568]+0x97]), with [bulb+0x2C] twice the
-// refresh rate in ticks (two seconds) and state 1; 1 shows it and counts that down by the frame's ticks ([0x7FA20C]),
-// going to 2 when it runs out or the player leaves the pad; 2 drops it until the player leaves the pad, then 0.
-// bulb::g_lasting: before state 1 counts down (0x12338E), the ticks are given back while time is left, so the bulb
-// stays until the player leaves the pad or the game zeroes its time (0x123388, [[player+0x568]+0xA0] set).
-bool bulb::g_lasting = false;
-
-// [[hook]] before 0x12338E: the showing bulb's countdown
-void ConkerBulbLasting(X86Context& ctx, uint8_t* base) {
-    (void)base;
-    if (!bulb::g_lasting) return;
-    int32_t time = int16_t(kernel::R16(ctx.esi + 0x2C));
-    int32_t ticks = int32_t(kernel::R32(0x7FA20C));
-    if (time > 0) kernel::W16(ctx.esi + 0x2C, uint16_t(std::min(time + ticks, 0x7FFF)));
 }
 
 // 0x2D5540 steps a character's timers each frame (edi the character, dl the frame's ticks [0x7FA250]), most by the

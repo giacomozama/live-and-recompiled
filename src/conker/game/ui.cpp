@@ -22,7 +22,6 @@
 #include <imgui.h>
 
 #include "app/app.h"
-#include "common/bulb.h"
 #include "common/cutscenes.h"
 #include "common/display.h"
 #include "common/fur.h"
@@ -584,15 +583,8 @@ void Draw(double fps) {
                 ImGui::SeparatorText("Gameplay");
                 ImGui::Checkbox("Skippable cutscenes", &cutscenes::g_skippable);
                 Hint("Press LT to skip any cutscene, even ones you haven't seen.", true);
-                ImGui::Checkbox("Lasting idea bulb", &bulb::g_lasting);
-                Hint("The lightbulb over Conker stays as long as he stands on a B pad, not just 2 seconds.", true);
                 ImGui::Checkbox("Rope physics", &rope::g_physics);
                 Hint("Ropes swing realistically when Conker hangs on them.", true);
-                int split = display::g_side_by_side;
-                if (ImGui::Combo("Two player split", &split, "Top and bottom\0Side by side (experimental)\0"))
-                    display::g_side_by_side = split != 0;
-                Hint(split ? "Starts from the next match. Some on-screen info may be in the wrong place."
-                                          : "Starts from the next match.");
                 end_tab();
             }
 
