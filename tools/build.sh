@@ -5,7 +5,7 @@
 #   tools/build.sh --iso FILE      first extract the disc image into assets/
 #   tools/build.sh --store PATH    first unpack the digital release's DefaultPackage (or its folder) into assets/
 #   tools/build.sh --game DIR      first copy extracted files into assets/ (default.xbe, dvddata/, media/)
-#   tools/build.sh --linux         also build the native Linux port, out/build/release/Game (SDL3, Vulkan)
+#   tools/build.sh --linux         also build the native Linux port, out/build/zig-glibc/Game (SDL3, Vulkan)
 #   tools/build.sh --harness       also build the Linux headless harness, out/harness/conker
 #   tools/build.sh --pdb           also write Game.pdb (off again: cmake -DXBE_PDB=OFF out/build/zig-windows)
 #   tools/build.sh -j N            parallel jobs (default: nproc)
@@ -63,10 +63,10 @@ if [ -n "$ISO" ]; then
     fi
 elif [ -n "$STORE" ]; then
     if ready_assets; then
-        configure_rel
-        cmake --build "$REL" --target setup -j "$JOBS" >/dev/null
+        configure_linux
+        cmake --build "$LIN" --target setup -j "$JOBS" >/dev/null
         echo "      unpacking $(basename "$STORE") -> assets/"
-        "$REL/setup-linux" --unpack "$STORE" "$ASSETS"
+        "$LIN/setup-linux" --unpack "$STORE" "$ASSETS"
     fi
 elif [ -n "$FROM" ]; then
     for d in default.xbe dvddata media; do
@@ -87,8 +87,8 @@ echo "[2/4] toolchain"
 "$ROOT/tools/fetch-toolchain.sh"
 
 echo "[3/4] recompiler"
-configure_rel
-cmake --build "$REL" --target xbe_recomp -j "$JOBS"
+configure_linux
+cmake --build "$LIN" --target xbe_recomp -j "$JOBS"
 
 echo "[4/4] Game.exe"
 configure_windows
@@ -98,8 +98,8 @@ echo "      $BUILD/Game.exe"
 
 if [ "$LINUX" = 1 ]; then
     echo "[+] native Linux port"
-    cmake --build "$REL" --target Game -j "$JOBS"
-    echo "      $REL/Game"
+    cmake --build "$LIN" --target Game -j "$JOBS"
+    echo "      $LIN/Game"
 fi
 
 if [ "$HARNESS" = 1 ]; then

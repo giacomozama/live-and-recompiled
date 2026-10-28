@@ -19,7 +19,8 @@ set(CMAKE_LINK_DEPENDS_USE_LINKER OFF)
 # build, finds the X11, Wayland and audio headers of the libraries it loads at run time after them, in /usr/include
 # (-idirafter also makes CMake count that folder as the compiler's own, so it never puts it first). The C++ flags stay
 # without it: they are the compile line of the player's build too (add_xbe_player_kit).
-# -g0: Zig writes debug info by default, which would make the game eight times its size.
+# -g0: Zig writes debug info by default, which would make the game eight times its size. XBE_ZIG_EXTRA_FLAGS goes after
+# them (the profile build's frame pointers, tools/configure.cmake).
 set(XBE_ZIG_TARGET x86_64-linux-gnu.2.31)
-set(CMAKE_C_FLAGS_INIT "-target ${XBE_ZIG_TARGET} -mcpu=x86_64_v2 -g0 -idirafter /usr/include")
-set(CMAKE_CXX_FLAGS_INIT "-target ${XBE_ZIG_TARGET} -mcpu=x86_64_v2 -g0")
+set(CMAKE_C_FLAGS_INIT "-target ${XBE_ZIG_TARGET} -mcpu=x86_64_v2 -g0 ${XBE_ZIG_EXTRA_FLAGS} -idirafter /usr/include")
+set(CMAKE_CXX_FLAGS_INIT "-target ${XBE_ZIG_TARGET} -mcpu=x86_64_v2 -g0 ${XBE_ZIG_EXTRA_FLAGS}")

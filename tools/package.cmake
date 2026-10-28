@@ -42,15 +42,12 @@ if(NOT EXISTS ${XBE_ROOT}/assets/default.xbe)
     message(FATAL_ERROR "no game in assets/: put the supported release there first (see README.md)")
 endif()
 if(NOT CMAKE_HOST_WIN32)
-    xbe_configure(release)  # the Linux codegen tool; on Windows the zig-windows build runs its own
-    build(release xbe_recomp)
-endif()
-xbe_configure(zig-windows)
-build(zig-windows Game_kit)
-if(NOT CMAKE_HOST_WIN32)
+    # first: its xbe_recomp is the zig-windows build's codegen tool here; on Windows that build runs its own
     xbe_configure(zig-glibc)
     build(zig-glibc Game_kit setup)
 endif()
+xbe_configure(zig-windows)
+build(zig-windows Game_kit)
 
 set(DEST ${OUT}/${NAME})
 message(STATUS "[3/5] staging ${DEST}")

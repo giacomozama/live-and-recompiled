@@ -11,7 +11,7 @@ the runtime as they are, with these stand ins.
 - `compat/` the few Win32 names a game's Windows only sources may touch; `XBE_HEADLESS` tells a game's sources there is no
   window
 
-Needs clang and the game's generated code. The game repo supplies stand ins for its own Windows only sources.
+Needs the pinned Zig (`tools/fetch-toolchain.sh`) and the game's generated code. The game repo supplies stand ins for its own Windows only sources.
 
 ## Build
 

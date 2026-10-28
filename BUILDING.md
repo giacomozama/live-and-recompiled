@@ -24,7 +24,7 @@ How to build the port from a checkout and how to package a release. For playing,
   (`default.xbe` with `dvddata/` and `media/` beside it), or the digital release's package (`DefaultPackage` and its
   `DefaultPackage.data` folder), which Setup's unpacker (`setup-linux --unpack`) unpacks (a Microsoft Store install keeps it in
   `C:\XboxGames\Conker- Live and Reloaded\Content\Game`; see the README's Installation).
-- **Linux:** `clang`/`clang++`, `lld`, `cmake` (3.25 or newer), `ninja` and `git` (and `curl` for packaging's
+- **Linux:** `cmake` (3.25 or newer), `ninja` and `git` (and `curl` for packaging's
   `--test-download`). Add `extract-xiso`
   to build from a disc image, and Wine or Proton to run `Game.exe`. The native port (`--linux`) also needs the X11 and
   Wayland development headers SDL builds against (SDL loads the libraries themselves at run time), and a Vulkan 1.3
@@ -41,7 +41,7 @@ tools/build.sh --game path/to/files      # or from files you already extracted: 
 tools/build.sh                           # after a change: incremental
 umu-run out/build/zig-windows/Game.exe
 tools/build.sh --linux                   # also the native Linux port
-out/build/release/Game
+out/build/zig-glibc/Game
 ```
 
 `--iso`, `--store` and `--game` put the game in `assets/`. You only need them once; to switch to another copy, empty
@@ -52,8 +52,9 @@ changed.
 `Game.exe` finds `assets/` by walking up from its own folder. It keeps `settings.toml`, its logs, shader records
 and saves beside itself, and so does the native `Game`. The native port is the same game in an SDL3 window, drawn
 with Vulkan and played through SDL3's audio; it has everything `Game.exe` has but the boot splash
-and the window kept up across a relaunch. This build uses the system clang and libstdc++; a release's native `Game` is
-built with the pinned Zig instead (see [Building a release](#building-a-release)). `tools/build.sh --harness` also
+and the window kept up across a relaunch. Every build, the native one and the harness
+included, uses the pinned Zig against glibc 2.31 with Zig's libc++, as a release's native `Game` does (see
+[Building a release](#building-a-release)), so what is measured in one holds for what players run. `tools/build.sh --harness` also
 builds `out/harness/conker`, a headless Linux build with no window or GPU, for testing.
 
 ### On Windows
