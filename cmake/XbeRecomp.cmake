@@ -64,8 +64,14 @@ FetchContent_MakeAvailable(zydis tomlplusplus imgui roboto SDL3 miniz vulkan_hea
 # (a native build, or Windows on Windows); cross compiling for another OS, set XBE_CODEGEN_TOOL to a native one's path.
 set(XBE_CODEGEN_TOOL "xbe_recomp" CACHE FILEPATH "xbe_recomp used for codegen (a host path when cross compiling)")
 # Windows builds: CodeView debug info and <target>.pdb beside the exe, for Visual Studio or WinDbg. It is set on the
-# targets, not the compile flags, so a player kit's compile line (from CMAKE_CXX_FLAGS) stays without it.
+# targets, not the compile flags, so a player kit's compile line (XBE_KIT_CXX_FLAGS) stays without it.
 option(XBE_PDB "Windows builds: write <target>.pdb (slower builds, bigger objects)" OFF)
+set(XBE_KIT_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
+# zig's -g0 wins over a -g after it: the toolchain's goes, for the targets from here on (the dependencies above keep it)
+if(XBE_PDB)
+    string(REPLACE "-g0" "" CMAKE_C_FLAGS "${CMAKE_C_FLAGS}")
+    string(REPLACE "-g0" "" CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
+endif()
 
 # x86 to C++ recompiler
 file(GLOB XBE_RECOMP_SOURCES CONFIGURE_DEPENDS ${XBE_ROOT_DIR}/src/recomp/*.cpp)
@@ -261,7 +267,8 @@ function(add_xbe_image target xbe config partitions game_dir)
         if(XBE_PDB)
             target_compile_options(${target}_host PRIVATE -g -gcodeview)
             target_compile_options(${target} PRIVATE -g -gcodeview)
-            target_link_options(${target} PRIVATE -Wl,--pdb=)
+            # zig writes <target>.pdb itself for a COFF link with debug info, and takes no --pdb
+            target_link_options(${target} PRIVATE -g)
         endif()
     endif()
     set_target_properties(${target} PROPERTIES XBE_FILE ${xbe} XBE_SHA1_FILE ${XBE_SHA1_FILE} XBE_CONFIG ${config}
@@ -302,7 +309,7 @@ function(add_xbe_player_kit target title)
     set(lib lib/${os})
 
     # the compile line of the generated sources, as add_xbe_image's target has it in a Release build
-    separate_arguments(cxx_flags NATIVE_COMMAND "${CMAKE_CXX_FLAGS} -DNDEBUG")
+    separate_arguments(cxx_flags NATIVE_COMMAND "${XBE_KIT_CXX_FLAGS} -DNDEBUG")
     set(cxxflags ${cxx_flags} ${CMAKE_CXX20_EXTENSION_COMPILE_OPTION})
     foreach(d ${XBE_HOST_DEFINITIONS})
         list(APPEND cxxflags -D${d})
@@ -320,14 +327,14 @@ function(add_xbe_player_kit target title)
         set(sdl_libs m kernel32 user32 gdi32 winmm imm32 ole32 oleaut32 version uuid advapi32 setupapi shell32 dinput8)
         # Zig makes the import library of xaudio2_8 itself, and the flags carry its -target as on Linux
         list(APPEND sdl_libs ${XBE_XAUDIO2})
-        separate_arguments(ldflags NATIVE_COMMAND "${CMAKE_CXX_FLAGS}")
+        separate_arguments(ldflags NATIVE_COMMAND "${XBE_KIT_CXX_FLAGS}")
         list(APPEND ldflags -mwindows -municode -fuse-ld=lld)
         set(cxx zig)
         set(driver c++)
     else()
         set(sdl_libs m)
         # the compile flags too, as CMake links: without zig's -target the game would ask for this host's glibc
-        separate_arguments(ldflags NATIVE_COMMAND "${CMAKE_CXX_FLAGS}")
+        separate_arguments(ldflags NATIVE_COMMAND "${XBE_KIT_CXX_FLAGS}")
         list(APPEND ldflags -fuse-ld=lld -pthread)
         set(cxx zig)
         set(driver c++)  # zig's own first argument, before every compile and link
