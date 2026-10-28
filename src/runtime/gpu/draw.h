@@ -95,6 +95,13 @@ struct PerfScope {
 // each present: the second's lines once one has passed
 void LogPerf();
 
+// n bytes onto the end of v in one copy: vector::insert from pointers went a byte at a time, per draw
+inline void AppendBytes(std::vector<uint8_t>& v, const void* p, size_t n) {
+    size_t at = v.size();
+    v.resize(at + n);
+    if (n) std::memcpy(v.data() + at, p, n);
+}
+
 // F3 captures only with diag::CaptureDir set
 bool CaptureOn();
 

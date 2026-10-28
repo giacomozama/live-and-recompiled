@@ -200,12 +200,8 @@ void WatchDraw(const State& s, uint32_t start, uint32_t count, const uint8_t* in
         if (!((w.regs >> r) & 1)) continue;
         in[r].resize(size_t(d.vertices) * 4);
         auto out = reinterpret_cast<float (*)[4]>(in[r].data());
-        bool read = true;
-        for (uint32_t k = 0; read && k < (w.spread ? d.vertices : 1); k++) {
-            uint32_t at = w.spread ? uint32_t(uint64_t(k) * count / d.vertices) : 0;
-            read = ReadInput(s, r, start + at, indices ? indices + size_t(at) * 2 : nullptr,
-                             w.spread ? 1 : d.vertices, out + k);
-        }
+        bool read = w.spread ? ReadInputSpread(s, r, start, indices, count, d.vertices, out)
+                             : ReadInput(s, r, start, indices, d.vertices, out);
         if (read) d.v[r] = out;
     }
     d.tex_modes = s.ps ? s.rs[kRsPsTextureModes] : 0;
@@ -223,10 +219,7 @@ bool SurfaceDepth(const State& s, uint32_t start, uint32_t count, const uint8_t*
     d.vertices = std::min(count, h.vertices);
     in.resize(size_t(d.vertices) * 4);
     auto out = reinterpret_cast<float (*)[4]>(in.data());
-    for (uint32_t k = 0; k < d.vertices; k++) {
-        uint32_t at = uint32_t(uint64_t(k) * count / d.vertices);
-        if (!ReadInput(s, 0, start + at, indices ? indices + size_t(at) * 2 : nullptr, 1, out + k)) return false;
-    }
+    if (!ReadInputSpread(s, 0, start, indices, count, d.vertices, out)) return false;
     d.v[0] = out;
     return h.takes(d);
 }

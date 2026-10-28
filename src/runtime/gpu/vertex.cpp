@@ -604,6 +604,21 @@ bool ReadInput(const State& s, int reg, uint32_t start, const uint8_t* ip, uint3
     return ReadElement(s, in, StrideOf(s, *layout, in), start, ip, vertices, out);
 }
 
+bool ReadInputSpread(const State& s, int reg, uint32_t start, const uint8_t* ip, uint32_t count, uint32_t samples,
+                     float (*out)[4]) {
+    VertexShader fvf_layout;
+    const VertexShader* layout = PickLayout(s, fvf_layout);
+    if (!layout) return false;
+    const auto& in = layout->inputs[size_t(reg)];
+    if (in.stream < 0 || !in.type || in.type == kTypeNone) return false;
+    uint32_t stride = StrideOf(s, *layout, in);
+    for (uint32_t k = 0; k < samples; k++) {
+        uint32_t at = uint32_t(uint64_t(k) * count / samples);
+        if (!ReadElement(s, in, stride, start + at, ip ? ip + size_t(at) * 2 : nullptr, 1, out + k)) return false;
+    }
+    return true;
+}
+
 bool InputPlace(const State& s, int reg, InputAt& at) {
     VertexShader fvf_layout;
     const VertexShader* layout = PickLayout(s, fvf_layout);
@@ -616,6 +631,19 @@ bool InputPlace(const State& s, int reg, InputAt& at) {
             s.streams[size_t(other.stream)].vb)
             at.alone = false;
     return true;
+}
+
+uint32_t StreamsRead(const State& s) {
+    uint32_t used = 0;
+    for (uint32_t i = 0; i < 16; i++)
+        if (s.streams[i].fmt & 0xF0) used |= 1u << i;
+    if ((s.vs_handle & 1) && s.vs) {
+        for (const auto& in : s.vs->inputs)
+            if (in.stream >= 0) used |= 1u << in.stream;
+    } else {
+        used |= 1;
+    }
+    return used;
 }
 
 }  // namespace gpu

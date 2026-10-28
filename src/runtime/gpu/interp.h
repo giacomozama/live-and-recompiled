@@ -55,6 +55,10 @@ public:
         size_t i = Slot(key);
         return slots_[i].first ? &slots_[i].second : nullptr;
     }
+    // the key's slot on its way into the cache: tags are hashes, so each lookup lands anywhere in the table and misses
+    void Prefetch(uint64_t key) const {
+        if (!slots_.empty()) __builtin_prefetch(&slots_[size_t(key ^ key >> 29) & (slots_.size() - 1)]);
+    }
     void Clear() {
         if (used_) std::fill(slots_.begin(), slots_.end(), std::pair<uint64_t, uint32_t>{});
         used_ = 0;
