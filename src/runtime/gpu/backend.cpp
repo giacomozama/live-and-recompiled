@@ -6,6 +6,11 @@
 
 namespace gpu {
 
+std::vector<std::string>& Adapters() {
+    static std::vector<std::string> list;
+    return list;
+}
+
 // A backend is picked by name; each one a platform has gets a line here. Vulkan is the only one so far, and what an
 // unknown name gets.
 std::unique_ptr<Backend> CreateBackend(uint32_t width, uint32_t height) {

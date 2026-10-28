@@ -3,6 +3,8 @@
 #include <chrono>
 #include <cstdint>
 #include <memory>
+#include <string>
+#include <vector>
 
 #include "gpu/state.h"
 
@@ -77,6 +79,8 @@ private:
 
 // the renderer the settings name, initialised; one that failed Init draws nothing. A backend is a Backend subclass in
 // its own file with a Create<Name>Backend here, and a line in CreateBackend (backend.cpp)
+// the GPUs the backend can draw with, named, as it found them at start (empty before); the settings' gpu names one
+std::vector<std::string>& Adapters();
 std::unique_ptr<Backend> CreateBackend(uint32_t width, uint32_t height);
 std::unique_ptr<Backend> CreateVulkanBackend();
 // the same backend driven from a thread of its own: calls return once recorded

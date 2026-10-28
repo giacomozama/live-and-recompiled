@@ -35,6 +35,7 @@
 #include "common/warp.h"
 #include "common/water.h"
 #include "core/input.h"
+#include "gpu/backend.h"
 #include "kernel/kernel.h"
 
 namespace ui {
@@ -508,6 +509,19 @@ void Draw(double fps) {
                 if (aspect < 0) items += s.aspect + '\0', aspect = kAspects;  // a custom W:H from settings.toml
                 items += '\0';
                 if (ImGui::Combo("Aspect", &aspect, items.c_str()) && aspect < kAspects) s.aspect = aspects[aspect];
+
+                {
+                    const std::vector<std::string>& adapters = gpu::Adapters();
+                    if (adapters.size() > 1 || !s.gpu.empty()) {
+                        if (ImGui::BeginCombo("Graphics adapter", s.gpu.empty() ? "Automatic" : s.gpu.c_str())) {
+                            if (ImGui::Selectable("Automatic", s.gpu.empty())) s.gpu.clear();
+                            for (const std::string& a : adapters)
+                                if (ImGui::Selectable(a.c_str(), a == s.gpu)) s.gpu = a;
+                            ImGui::EndCombo();
+                        }
+                        Hint("Starts from the next launch. Automatic picks a discrete GPU first.");
+                    }
+                }
 
                 ImGui::SeparatorText("Quality");
                 Slider("Render %", &s.render_percent, 25, 400, app::Settings{}.render_percent);

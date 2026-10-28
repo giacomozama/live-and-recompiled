@@ -37,6 +37,7 @@ struct Settings {
     std::string audio_device;         // an audio::Device id, "" the system default
     bool mute_in_background = false;  // silent while the game window lacks the focus (Background)
     bool shader_warmup = true;       // make the shaders shaders.rec lists while the title boots
+    std::string gpu;                  // the name of the graphics adapter to draw with, "" the best there is (read at launch)
     std::string renderer = "vulkan";  // which gpu::Backend draws, read at launch (gpu/backend.cpp)
     std::string aspect = "auto";     // "W:H" ("4:3", "16:9", "21:9", ...), or "auto": the output's own shape
     std::string join_ip;                   // co-op: a host past the LAN the system link search also asks

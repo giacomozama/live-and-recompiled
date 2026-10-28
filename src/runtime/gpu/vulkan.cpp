@@ -1568,6 +1568,7 @@ bool VulkanBackend::PickDevice() {
     std::vector<VkPhysicalDevice> devs(n);
     vkEnumeratePhysicalDevices(inst_, &n, devs.data());
     int best_score = 0;
+    Adapters().clear();
     for (VkPhysicalDevice d : devs) {
         VkPhysicalDeviceProperties p;
         vkGetPhysicalDeviceProperties(d, &p);
@@ -1602,8 +1603,10 @@ bool VulkanBackend::PickDevice() {
             LOGI("vulkan: %s left out, no %s", p.deviceName, lacks);
             continue;
         }
+        Adapters().push_back(p.deviceName);
         int score = p.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU ? 3
                     : p.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU ? 2 : 1;
+        if (app::Get().gpu == p.deviceName) score += 10;  // the one the settings name
         if (score <= best_score) continue;
         best_score = score;
         phys_ = d;

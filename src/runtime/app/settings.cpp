@@ -70,6 +70,7 @@ void Load() {
     s.audio_device = t["audio_device"].value_or(s.audio_device);
     s.mute_in_background = t["mute_in_background"].value_or(s.mute_in_background);
     s.shader_warmup = t["shader_warmup"].value_or(s.shader_warmup);
+    s.gpu = t["gpu"].value_or(s.gpu);
     s.renderer = t["renderer"].value_or(s.renderer);
     s.aspect = t["aspect"].value_or(s.aspect);
     s.join_ip = t["join_ip"].value_or(s.join_ip);
@@ -110,6 +111,7 @@ toml::table Table() {
                   {"audio_device", s.audio_device},
                   {"mute_in_background", s.mute_in_background},
                   {"shader_warmup", s.shader_warmup},
+                  {"gpu", s.gpu},
                   {"renderer", s.renderer},
                   {"aspect", s.aspect},
                   {"join_ip", s.join_ip},
