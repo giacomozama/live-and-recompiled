@@ -50,6 +50,8 @@ std::string SettingsText();  // the settings as Save writes them
 void LogSystem();  // the machine, at a run's start
 void InstallCrashHandler();          // crash.cpp: unhandled exceptions, aborts and terminate write a report to the log
 void ApplyDisplay();  // any thread
+// F11 and Alt+Enter: windowed, or back to the fullscreen or borderless it was in last; any thread
+void ToggleWindowed();
 struct Mode {
     uint32_t width, height;
 };

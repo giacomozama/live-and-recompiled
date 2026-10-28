@@ -199,7 +199,14 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     }
     if (intptr_t result = 0; kGame.message && kGame.message(hwnd, msg, wp, lp, &result)) return result;
     switch (msg) {
+        case WM_SYSKEYDOWN:
+            if (wp == VK_RETURN && !(lp & (1 << 30))) {
+                ToggleWindowed();
+                return 0;
+            }
+            break;
         case WM_KEYDOWN:
+            if (wp == VK_F11 && !(lp & (1 << 30))) ToggleWindowed();
             if (wp == VK_F3) DumpThreads();
             if (wp == VK_F4 && !(lp & (1 << 30))) gpu::g_record_dump = true;
             if (wp == VK_F5 && !(lp & (1 << 30))) x86_profile_dump();  // not on auto repeat

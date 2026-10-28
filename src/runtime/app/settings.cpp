@@ -28,6 +28,18 @@ Settings& Get() {
     return s;
 }
 
+void ToggleWindowed() {
+    static DisplayMode last = DisplayMode::Borderless;  // what windowed returns to
+    Settings& s = Get();
+    if (s.display_mode == DisplayMode::Windowed) {
+        s.display_mode = last;
+    } else {
+        last = s.display_mode;
+        s.display_mode = DisplayMode::Windowed;
+    }
+    ApplyDisplay();
+}
+
 // the text the file last had from Load or Save, for SaveChanged
 static std::string g_written;
 
