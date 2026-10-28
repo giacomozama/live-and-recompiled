@@ -166,7 +166,9 @@ struct Voice {
     float p[3] = {}, min_dist = 1, max_dist = 1e9f;
     bool calc3d = false;  // the title's own 3D calculator drives the voice (dsound::SetVoice3d)
     float att3d = 1, pan3d = 0;
+    int32_t dist_mb = 0, cone_mb = 0, direct_mb = 0;  // F3: the calculator's terms att3d sums
     double energy = 0;  // XBE_TRACE_DSOUND: sum of squares mixed since the last report
+    double recent = 0;  // F3: mean square mixed, smoothed over about half a second
     int64_t fed = 0, done = 0, born = 0;  // F3: steady ms of the last packet in, the last packet out, creation
     // ADPCM block cache
     int64_t block = -1;
@@ -439,6 +441,45 @@ void Pull(Voice& v, float* ab, uint32_t frames) {
     }
 }
 
+// how a voice is routed: volume and headroom in mB, then bin:channel=mB for each channel it takes, before bin
+// headroom, and its 3D attenuation and pan
+void Describe(uint32_t obj, const Voice& v) {
+    char b[160];
+    Route r[16];
+    int routes = Routes(v, r);
+    auto mb = [](float x) { return x > 0 ? int(std::lround(2000 * std::log10(x))) : -10000; };
+    std::string bins;
+    for (int k = 0; k < routes; k++) {
+        float hr = float(1 << g_bin_headroom[r[k].bin]);
+        // where it goes unheard: a multipass bin with no mixin buffer behind it, or a bin no speaker or heard effect
+        // takes
+        uint32_t bn = r[k].bin;
+        const char* lost = bn == kMultipass ? (!Submix(v) ? "!nosub" : "")
+                           : (dsfx::Loaded() ? bn > 5 || bn == 3 : !Speaker(bn)) && !dsfx::Reads(bn) ? "!unread"
+                                                                                                   : "";
+        std::snprintf(b, sizeof b, " %u%s:", bn, lost);
+        bins += b;
+        for (uint32_t c = 0; c < std::min<uint32_t>(v.channels, kChannels); c++) {
+            if (r[k].g[c] <= 0) continue;
+            std::snprintf(b, sizeof b, "%s%u=%d", bins.back() == ':' ? "" : ",", c, mb(r[k].g[c] * hr));
+            bins += b;
+        }
+    }
+    std::string d3;
+    if (v.calc3d) {
+        std::snprintf(b, sizeof b, " (dist %d cone %d direct %d)", v.dist_mb, v.cone_mb, v.direct_mb);
+        d3 = b;
+    } else if (v.is3d) {
+        std::snprintf(b, sizeof b, " (at %.1f %.1f %.1f min %.1f max %.1f mode %u curve %zu)", v.p[0], v.p[1], v.p[2],
+                      v.min_dist, v.max_dist, v.mode, v.curve.size());
+        d3 = b;
+    }
+    LOGR("dsound:  %08X %uch %uHz%s out %08X vol %d headroom %d%s bins%s 3d %s att %d%s pan %.2f level %d", obj,
+         v.channels, v.freq ? v.freq : v.rate, v.mixin ? " mixin" : "", v.out, mb(v.volume), mb(v.headroom),
+         v.nbins ? "" : " default", bins.c_str(), v.calc3d ? "calc" : v.is3d ? "ds" : "no", mb(v.att3d), d3.c_str(),
+         v.pan3d, mb(float(std::sqrt(v.recent))));
+}
+
 void Render(float* out, uint32_t frames) {
     static std::vector<float> bus, ab;
     static std::vector<Voice*> order;
@@ -465,15 +506,19 @@ void Render(float* out, uint32_t frames) {
         Pull(*v, ab.data(), frames);
         Voice* sub = Submix(*v);
         uint32_t ch = std::min<uint32_t>(std::max<uint32_t>(v->channels, 1), kChannels);
+        double block = 0;
         for (int k = 0; k < routes; k++) {
             float* dst = r[k].bin == kMultipass && sub ? sub->submix.data() : &bus[size_t(r[k].bin) * frames];
             for (uint32_t i = 0; i < frames; i++) {
                 float x = 0;
                 for (uint32_t c = 0; c < ch; c++) x += ab[i * ch + c] * r[k].g[c];
                 dst[i] += x;
-                v->energy += x * x;
+                block += x * x;
             }
         }
+        v->energy += block;
+        double w = std::min(1.0, frames / (0.5 * audio::kRate));
+        v->recent += (block / frames - v->recent) * w;
     }
     // the GP's effects, a frame at a time
     if (dsfx::Loaded()) {
@@ -521,32 +566,7 @@ void Render(float* out, uint32_t frames) {
             char b[96];
             std::snprintf(b, sizeof b, " %08X%s%s(%.3f)", obj, v.stream ? "s" : "", v.looping ? "L" : "", rms);
             list += b;
-            // how it is routed: volume and headroom in mB, then bin:channel=mB for each channel it takes, before
-            // bin headroom
-            Route r[16];
-            int routes = Routes(v, r);
-            auto mb = [](float x) { return x > 0 ? int(std::lround(2000 * std::log10(x))) : -10000; };
-            std::string bins;
-            for (int k = 0; k < routes; k++) {
-                float hr = float(1 << g_bin_headroom[r[k].bin]);
-                // where it goes unheard: a multipass bin with no mixin buffer behind it, or a bin no speaker or
-                // heard effect takes
-                uint32_t bn = r[k].bin;
-                const char* lost = bn == kMultipass ? (!Submix(v) ? "!nosub" : "")
-                                   : (dsfx::Loaded() ? bn > 5 || bn == 3 : !Speaker(bn)) && !dsfx::Reads(bn) ? "!unread"
-                                                                                                           : "";
-                std::snprintf(b, sizeof b, " %u%s:", bn, lost);
-                bins += b;
-                for (uint32_t c = 0; c < std::min<uint32_t>(v.channels, kChannels); c++) {
-                    if (r[k].g[c] <= 0) continue;
-                    std::snprintf(b, sizeof b, "%s%u=%d", bins.back() == ':' ? "" : ",", c, mb(r[k].g[c] * hr));
-                    bins += b;
-                }
-            }
-            LOGR("dsound:  %08X %uch %uHz%s out %08X vol %d headroom %d%s bins%s 3d %s att %d pan %.2f", obj,
-                 v.channels, v.freq ? v.freq : v.rate, v.mixin ? " mixin" : "", v.out, mb(v.volume), mb(v.headroom),
-                 v.nbins ? "" : " default", bins.c_str(), v.calc3d ? "calc" : v.is3d ? "ds" : "no", mb(v.att3d),
-                 v.pan3d);
+            Describe(obj, v);
         }
         LOGR("dsound: audible%s", list.c_str());
     }
@@ -744,13 +764,17 @@ float F32(uint32_t v) {
 
 }  // namespace
 
-void dsound::SetVoice3d(uint32_t obj, int32_t attenuation_mb, float azimuth) {
+void dsound::SetVoice3d(uint32_t obj, uint32_t changed, int32_t dist_mb, int32_t cone_mb, int32_t direct_mb,
+                        float azimuth) {
     std::lock_guard<std::recursive_mutex> lock(g_lock);
     Voice* v = Find(obj);
     if (!v) return;
     v->calc3d = true;
-    v->att3d = Db(attenuation_mb);
-    v->pan3d = std::sin(azimuth * 3.14159265f / 180.0f);
+    if (changed & k3dDistance) v->dist_mb = dist_mb;
+    if (changed & k3dCone) v->cone_mb = cone_mb;
+    if (changed & k3dDirect) v->direct_mb = direct_mb;
+    v->att3d = Db(std::max(v->dist_mb + v->cone_mb + v->direct_mb, -10000));
+    if (changed & k3dAzimuth) v->pan3d = std::sin(azimuth * 3.14159265f / 180.0f);
 }
 
 void dsound::LogState() {
@@ -778,6 +802,9 @@ void dsound::LogState() {
              v.flushing ? " flushing" : "", v.releasing ? " releasing" : "", v.released ? " released" : "", v.refs,
              v.callback, ago(v.born), ago(v.fed), ago(v.done));
     }
+    // and how each one that plays is heard, its level the last half second as mixed, in mB
+    for (auto& [obj, v] : g_voices)
+        if (Plays(v)) Describe(obj, v);
 }
 
 // device
