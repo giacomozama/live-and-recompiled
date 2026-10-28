@@ -2,6 +2,10 @@
 // app::kGame. The window thread is the main thread, which SDL's video wants. Its events reach GameInfo::message as a
 // Win32 window's would (app.h). Windows adds its boot splash and relaunch handover (splash.cpp, handover.cpp), a
 // console when started from one, and raw keyboard input, so each keyboard is told apart as on Linux.
+//
+// On Android the same code is the app's libmain.so: SDL's activity calls SDL_main (SDL_main.h renames main), the
+// window is the whole screen, the back button is Escape (the menu), the on-screen controller is drawn over the game
+// (touch.cpp), and the app going into the background takes the window's surface with it (SurfacePaused).
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -17,6 +21,9 @@
 #endif
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_vulkan.h>
+#ifdef __ANDROID__
+#include <SDL3/SDL_main.h>
+#endif
 #if defined(__linux__) && !defined(__ANDROID__)
 #include <dlfcn.h>
 #endif
@@ -41,6 +48,7 @@
 
 #include "app/app.h"
 #include "app/icon.h"
+#include "app/touch.h"
 #include "core/diag.h"
 #include "core/input.h"
 #include "core/log.h"
@@ -68,6 +76,10 @@ enum : int32_t { kUserPost, kUserApply, kUserOpen, kUserText };
 std::atomic<uint64_t> g_desktop{0};  // width << 32 | height, read on any thread
 std::atomic<uint32_t> g_refresh{60};  // the window's display's refresh rate in Hz, read on any thread
 std::atomic<double> g_refresh_hz{60};  // the same, unrounded
+// Android: the app is in the background, its window has no surface (SurfacePaused); the renderer has let go of its
+// own when g_surface_released is set
+std::atomic<bool> g_surface_paused{false};
+std::atomic<bool> g_surface_released{false};
 
 // virtual-key codes and the keys SDL names by position; the generic Shift, Ctrl and Alt take either side
 constexpr int kVkShift = 0x10, kVkCtrl = 0x11, kVkAlt = 0x12;
@@ -137,8 +149,9 @@ void AddInputDevices() {
     }
 }
 
-// the virtual-key code a key event names, 0 for a key without one
+// the virtual-key code a key event names, 0 for a key without one; Android's back button is Escape
 int VkOf(SDL_Scancode sc) {
+    if (sc == SDL_SCANCODE_AC_BACK) return 0x1B;
     static const auto table = [] {
         std::array<uint8_t, SDL_SCANCODE_COUNT> t{};
         const auto& to = ScancodeOf();
@@ -198,6 +211,9 @@ void DumpThreads() {
 
 // window thread only
 void ApplyNow() {
+#ifdef __ANDROID__
+    return;  // the whole screen, always
+#endif
     const Settings& s = Get();
     Mode out = Output();
     if (s.display_mode == DisplayMode::Windowed) {
@@ -238,6 +254,8 @@ bool Handle(const SDL_Event& e) {
         std::lock_guard lock(UiLock());
         ImGui_ImplSDL3_ProcessEvent(&e);
     }
+    // the on-screen controller's fingers, and its menu button
+    if (touch::Handle(&e)) Send(kMsgKeyDown, 0x1B);
     switch (e.type) {
         case SDL_EVENT_QUIT:
         case SDL_EVENT_WINDOW_CLOSE_REQUESTED:
@@ -338,6 +356,10 @@ bool Handle(const SDL_Event& e) {
         case SDL_EVENT_GAMEPAD_ADDED:
         case SDL_EVENT_GAMEPAD_REMOVED:
             input::HandleEvent(&e);
+            break;
+        case SDL_EVENT_DID_ENTER_BACKGROUND:
+            // the game waits in the menu for the player's return, rather than running on unseen
+            if (!kernel::Held()) Send(kMsgKeyDown, 0x1B);
             break;
         default:
             if (e.type != g_user) break;
@@ -607,8 +629,16 @@ const std::filesystem::path& ExePath() {
 }  // namespace
 
 std::filesystem::path ExeDir() {
+#ifdef __ANDROID__
+    // the app's own files: the game's in assets (the app's first screen puts them there), settings and saves
+    static const std::filesystem::path dir = [] {
+        const char* p = SDL_GetAndroidInternalStoragePath();
+        return std::filesystem::path(p ? p : "/data/local/tmp");
+    }();
+#else
     static const std::filesystem::path dir =
         ExePath().empty() ? std::filesystem::current_path() : ExePath().parent_path();
+#endif
     return dir;
 }
 
@@ -820,6 +850,16 @@ std::vector<const char*> VulkanExtensions() {
     return names ? std::vector<const char*>(names, names + n) : std::vector<const char*>{};
 }
 
+#ifdef __ANDROID__
+std::filesystem::path AndroidDir(int kind) {
+    const char* p = kind == 2 ? SDL_GetAndroidExternalStoragePath() : kind == 3 ? SDL_GetAndroidCachePath() : nullptr;
+    return p ? std::filesystem::path(p) : ExeDir();
+}
+#endif
+
+bool SurfacePaused() { return g_surface_paused.load(); }
+void SurfaceReleased() { g_surface_released.store(true); }
+
 bool VulkanSurface(void* instance, void* surface) {
     return g_window && SDL_Vulkan_CreateSurface(g_window, static_cast<VkInstance>(instance), nullptr,
                                                 static_cast<VkSurfaceKHR*>(surface));
@@ -935,11 +975,33 @@ int Run(int argc, char** argv) {
         std::_Exit(code);
     }
     SDL_SetHint(SDL_HINT_APP_NAME, app::Utf8(app::kGame.title).c_str());
+#ifdef __ANDROID__
+    // the back button comes as a key (Escape, the menu), the screen stays landscape, and fingers are fingers: ImGui takes
+    // the menu's taps as SDL's own mouse it makes from them
+    SDL_SetHint(SDL_HINT_ANDROID_TRAP_BACK_BUTTON, "1");
+    SDL_SetHint(SDL_HINT_ORIENTATIONS, "LandscapeLeft LandscapeRight");
+#endif
     if (!SDL_Init(SDL_INIT_VIDEO)) {
         LOGE("SDL: no video: %s", SDL_GetError());
         app::Alert(L"The game window could not open (" + std::wstring(SDL_GetError(), SDL_GetError() + std::strlen(SDL_GetError())) + L").");
         return 1;
     }
+#ifdef __ANDROID__
+    // the render thread lets go of the surface before the app goes into the background (the renderer's ResizeSwap),
+    // waited for here, as the app pauses
+    SDL_AddEventWatch(
+        [](void*, SDL_Event* e) {
+            if (e->type == SDL_EVENT_WILL_ENTER_BACKGROUND) {
+                app::g_surface_released = false;
+                app::g_surface_paused = true;
+                for (int i = 0; i < 100 && !app::g_surface_released.load(); i++) SDL_Delay(5);
+            } else if (e->type == SDL_EVENT_DID_ENTER_FOREGROUND) {
+                app::g_surface_paused = false;
+            }
+            return true;
+        },
+        nullptr);
+#endif
     app::StoreDesktop();
     if (relaunched && !logx::kVerbose) LOGR("Relaunched: %s", IMAGE_XBE);
     else app::LogSystem();
@@ -955,7 +1017,10 @@ int Run(int argc, char** argv) {
     app::g_user = SDL_RegisterEvents(1);
     std::wstring title = app::kGame.title;
     if (app::Instance()) title += L" [" + std::to_wstring(app::Instance()) + L"]";
-    const SDL_WindowFlags flags = SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIDDEN | SDL_WINDOW_HIGH_PIXEL_DENSITY;
+    SDL_WindowFlags flags = SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIDDEN | SDL_WINDOW_HIGH_PIXEL_DENSITY;
+#ifdef __ANDROID__
+    flags |= SDL_WINDOW_FULLSCREEN;
+#endif
     // the OpenGL renderer's window is an OpenGL one (a window is made for one API): a GL 4.1 core context's
     // framebuffer, double buffered, no depth of its own (gpu/opengl.cpp draws into its own targets)
     if (gpu::RendererName() == "opengl") {
@@ -1010,6 +1075,7 @@ int Run(int argc, char** argv) {
 
     input::Init();
     app::AddInputDevices();
+    touch::Init();
     if (app::kGame.window) app::kGame.window(app::g_window);
     if (!app::RunWelcome()) {
         logx::Flush();

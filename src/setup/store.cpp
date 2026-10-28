@@ -23,10 +23,15 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <memory>
 #include <set>
 #include <stdexcept>
 #include <string>
 #include <vector>
+
+#ifndef _WIN32
+#include <unistd.h>
+#endif
 
 namespace fs = std::filesystem;
 
@@ -57,6 +62,40 @@ struct Error : std::runtime_error {
 uint32_t U32(const uint8_t* p) { return p[0] | p[1] << 8 | p[2] << 16 | uint32_t(p[3]) << 24; }
 uint16_t U16(const uint8_t* p) { return uint16_t(p[0] | p[1] << 8); }
 
+// one Data file: by its path, or (Android's document picker) by a file descriptor
+struct Part {
+    virtual ~Part() = default;
+    virtual bool Read(uint64_t at, void* out, uint64_t len) = 0;
+};
+
+struct StreamPart : Part {
+    std::ifstream f;
+    explicit StreamPart(const fs::path& p) : f(p, std::ios::binary) {}
+    bool Read(uint64_t at, void* out, uint64_t len) override {
+        f.clear();
+        f.seekg(std::streamoff(at));
+        return bool(f.read(static_cast<char*>(out), std::streamsize(len)));
+    }
+};
+
+#ifndef _WIN32
+struct FdPart : Part {
+    int fd;
+    explicit FdPart(int fd) : fd(fd) {}
+    bool Read(uint64_t at, void* out, uint64_t len) override {
+        auto* p = static_cast<uint8_t*>(out);
+        while (len) {
+            ssize_t n = pread(fd, p, len, off_t(at));
+            if (n <= 0) return false;
+            p += n;
+            at += uint64_t(n);
+            len -= uint64_t(n);
+        }
+        return true;
+    }
+};
+#endif
+
 // the volume inside the Data files, as one run of bytes
 class Volume {
 public:
@@ -67,14 +106,51 @@ public:
             std::error_code ec;
             uint64_t size = fs::file_size(dir / name, ec);
             if (ec) break;
-            files_.emplace_back(dir / name, std::ios::binary);
-            if (!files_.back()) throw Error(std::string("cannot open ") + Str((dir / name)));
+            auto part = std::make_unique<StreamPart>(dir / name);
+            if (!part->f) throw Error(std::string("cannot open ") + Str((dir / name)));
+            files_.push_back(std::move(part));
             sizes_.push_back(size);
         }
         if (files_.empty()) throw Error("no Data0000 in " + Str(dir));
+        Measure();
+    }
+#ifndef _WIN32
+    explicit Volume(const std::vector<int>& fds) {
+        for (int fd : fds) {
+            off_t size = lseek(fd, 0, SEEK_END);
+            if (size < 0) throw Error("cannot read the package's Data files");
+            files_.push_back(std::make_unique<FdPart>(fd));
+            sizes_.push_back(uint64_t(size));
+        }
+        if (files_.empty()) throw Error("no Data0000 in the package");
+        Measure();
+    }
+#endif
+    uint64_t Size() const { return size_; }
+
+    // false past the end
+    bool Read(uint64_t at, void* out, uint64_t len) {
+        if (at > size_ || len > size_ - at) return false;
+        auto* p = static_cast<uint8_t*>(out);
+        while (len) {
+            uint64_t block = at / kBlock, in = at % kBlock;
+            uint64_t file = block / kFileBlocks, rem = block % kFileBlocks;
+            uint64_t table = rem / kBlocksPerTable, idx = rem % kBlocksPerTable;
+            uint64_t take = std::min(len, (kBlocksPerTable - idx) * kBlock - in);  // to the end of the sub-table
+            uint64_t phys = (2 + table * (kBlocksPerTable + 1) + idx) * kBlock + in;
+            if (!files_[file]->Read(phys, p, take)) throw Error("read error in the package");
+            p += take;
+            at += take;
+            len -= take;
+        }
+        return true;
+    }
+
+private:
+    // the volume's size from the files': all but the last are full, the last ends inside a sub-table or at its end
+    void Measure() {
         uint64_t total = 0;
         for (size_t i = 0; i < sizes_.size(); i++) {
-            // all but the last file are full; the last ends inside a sub-table or at its end
             bool last = i + 1 == sizes_.size();
             uint64_t blocks = 0;
             if (sizes_[i] % kBlock == 0 && sizes_[i] >= 2 * kBlock) {
@@ -90,31 +166,8 @@ public:
         }
         size_ = total * kBlock;
     }
-    uint64_t Size() const { return size_; }
 
-    // false past the end
-    bool Read(uint64_t at, void* out, uint64_t len) {
-        if (at > size_ || len > size_ - at) return false;
-        auto* p = static_cast<uint8_t*>(out);
-        while (len) {
-            uint64_t block = at / kBlock, in = at % kBlock;
-            uint64_t file = block / kFileBlocks, rem = block % kFileBlocks;
-            uint64_t table = rem / kBlocksPerTable, idx = rem % kBlocksPerTable;
-            uint64_t take = std::min(len, (kBlocksPerTable - idx) * kBlock - in);  // to the end of the sub-table
-            uint64_t phys = (2 + table * (kBlocksPerTable + 1) + idx) * kBlock + in;
-            auto& f = files_[file];
-            f.clear();
-            f.seekg(std::streamoff(phys));
-            if (!f.read(reinterpret_cast<char*>(p), std::streamsize(take))) throw Error("read error in the package");
-            p += take;
-            at += take;
-            len -= take;
-        }
-        return true;
-    }
-
-private:
-    std::vector<std::ifstream> files_;
+    std::vector<std::unique_ptr<Part>> files_;
     std::vector<uint64_t> sizes_;
     uint64_t size_ = 0;
 };
@@ -246,6 +299,8 @@ std::string Title(const fs::path& header) {
     return title;
 }
 
+void UnpackVolume(Volume& v, const fs::path& out, store::Say say);  // below, after Unpack
+
 }  // namespace
 
 namespace store {
@@ -260,55 +315,106 @@ bool Unpack(const fs::path& given, const fs::path& out, Say say, std::string& er
         }
         say("data:    %s\n", Str(data).c_str());
         Volume v(data);
-
-        uint8_t vd[kSector];
-        if (!v.Read(0, vd, kSector) || memcmp(vd, kMagic, kMagicSize) || memcmp(vd + 0x7EC, kMagic, kMagicSize)) {
-            throw Error("the package's data isn't a disc file system (is it a different kind of package?)");
-        }
-        uint32_t root = U32(vd + 0x14), rootSize = U32(vd + 0x18);
-
-        say("finding the game's files...\n");
-        std::vector<File> files;
-        int64_t shift = FindShift(v, root, rootSize, files);
-        uint64_t total = 0;
-        for (auto& f : files) total += f.size;
-        say("%zu files, %.2f GB, volume starts at disc sector %lld\n", files.size(), double(total) / 1e9,
-            (long long)shift);
-
-        std::error_code ec;
-        fs::create_directories(out, ec);
-        if (ec) throw Error("cannot create " + Str(out) + ": " + ec.message());
-        std::sort(files.begin(), files.end(), [](const File& a, const File& b) { return a.at < b.at; });  // one pass
-        std::vector<uint8_t> buf(4u << 20);
-        uint64_t written = 0;
-        int shown = -1;
-        for (auto& f : files) {
-            fs::path dest = out / fs::path(f.path);
-            fs::create_directories(dest.parent_path(), ec);
-            std::ofstream o(dest, std::ios::binary | std::ios::trunc);
-            if (!o) throw Error("cannot write " + Str(dest));
-            for (uint64_t pos = 0; pos < f.size;) {
-                uint64_t n = std::min<uint64_t>(buf.size(), f.size - pos);
-                if (!v.Read(f.at + pos, buf.data(), n)) throw Error("package ends inside " + f.path);
-                if (!o.write(reinterpret_cast<char*>(buf.data()), std::streamsize(n))) {
-                    throw Error("cannot write " + Str(dest) + " (disk full?)");
-                }
-                pos += n;
-                written += n;
-                int pct = total ? int(written * 100 / total) : 100;
-                if (pct != shown) {
-                    shown = pct;
-                    say("\r%3d%%", pct);
-                }
-            }
-        }
-        say("\r100%%\nunpacked into %s\n", Str(out).c_str());
+        UnpackVolume(v, out, say);
         return true;
     } catch (const std::exception& e) {
         error = e.what();
         return false;
     }
 }
+
+bool LoadFile(const fs::path& given, const std::string& name, std::vector<uint8_t>& out, std::string& error) {
+    try {
+        fs::path header;
+        Volume v(FindData(given, header));
+        uint8_t vd[kSector];
+        if (!v.Read(0, vd, kSector) || memcmp(vd, kMagic, kMagicSize) || memcmp(vd + 0x7EC, kMagic, kMagicSize))
+            throw Error("the package's data isn't a disc file system (is it a different kind of package?)");
+        std::vector<File> files;
+        FindShift(v, U32(vd + 0x14), U32(vd + 0x18), files);
+        auto lower = [](std::string s) {
+            for (char& c : s) c = char(std::tolower(uint8_t(c)));
+            return s;
+        };
+        for (const File& f : files) {
+            if (lower(f.path) != lower(name)) continue;
+            out.resize(f.size);
+            if (!v.Read(f.at, out.data(), f.size)) throw Error("the package ends inside " + f.path);
+            return true;
+        }
+        throw Error("there is no " + name + " in the package");
+    } catch (const std::exception& e) {
+        error = e.what();
+        return false;
+    }
+}
+
+#ifndef _WIN32
+bool UnpackFds(const std::vector<int>& data, const fs::path& out, Say say, std::string& error) {
+    try {
+        Volume v(data);
+        UnpackVolume(v, out, say);
+        return true;
+    } catch (const std::exception& e) {
+        error = e.what();
+        return false;
+    }
+}
+#endif
+
+}  // namespace store
+
+namespace {
+
+// the volume's files into out
+void UnpackVolume(Volume& v, const fs::path& out, store::Say say) {
+    uint8_t vd[kSector];
+    if (!v.Read(0, vd, kSector) || memcmp(vd, kMagic, kMagicSize) || memcmp(vd + 0x7EC, kMagic, kMagicSize)) {
+        throw Error("the package's data isn't a disc file system (is it a different kind of package?)");
+    }
+    uint32_t root = U32(vd + 0x14), rootSize = U32(vd + 0x18);
+
+    say("finding the game's files...\n");
+    std::vector<File> files;
+    int64_t shift = FindShift(v, root, rootSize, files);
+    uint64_t total = 0;
+    for (auto& f : files) total += f.size;
+    say("%zu files, %.2f GB, volume starts at disc sector %lld\n", files.size(), double(total) / 1e9,
+        (long long)shift);
+
+    std::error_code ec;
+    fs::create_directories(out, ec);
+    if (ec) throw Error("cannot create " + Str(out) + ": " + ec.message());
+    std::sort(files.begin(), files.end(), [](const File& a, const File& b) { return a.at < b.at; });  // one pass
+    std::vector<uint8_t> buf(4u << 20);
+    uint64_t written = 0;
+    int shown = -1;
+    for (auto& f : files) {
+        fs::path dest = out / fs::path(f.path);
+        fs::create_directories(dest.parent_path(), ec);
+        std::ofstream o(dest, std::ios::binary | std::ios::trunc);
+        if (!o) throw Error("cannot write " + Str(dest));
+        for (uint64_t pos = 0; pos < f.size;) {
+            uint64_t n = std::min<uint64_t>(buf.size(), f.size - pos);
+            if (!v.Read(f.at + pos, buf.data(), n)) throw Error("package ends inside " + f.path);
+            if (!o.write(reinterpret_cast<char*>(buf.data()), std::streamsize(n))) {
+                throw Error("cannot write " + Str(dest) + " (disk full?)");
+            }
+            pos += n;
+            written += n;
+            int pct = total ? int(written * 100 / total) : 100;
+            if (pct != shown) {
+                shown = pct;
+                say("\r%3d%%", pct);
+            }
+        }
+    }
+    say("\r100%%\nunpacked into %s\n", Str(out).c_str());
+}
+
+}  // namespace
+
+namespace store {
 
 bool HasPackage(const fs::path& dir) {
     std::error_code ec;

@@ -1,6 +1,11 @@
 // The crash report everywhere but Windows (app/crash.cpp): the signal and where it hit, the host stack and every guest
-// thread, to the log. `addr2line -fiC -e Game <address>` names a host frame's line.
+// thread, to the log. `addr2line -fiC -e Game <address>` names a host frame's line. Android's Bionic has backtrace()
+// only from API 33: there the host stack is the unwinder's, by address.
+#ifdef __ANDROID__
+#include <unwind.h>
+#else
 #include <execinfo.h>
+#endif
 #include <signal.h>
 #include <ucontext.h>
 #include <unistd.h>
@@ -39,12 +44,28 @@ void Report(const char* what) {
     if (g_reporting.exchange(true)) return;
     LOGE("crash: ==== %s ====", what);
     LOGE("crash: host stack");
+#ifdef __ANDROID__
+    struct Frames {
+        uintptr_t pc[64];
+        int n = 0;
+    } frames;
+    _Unwind_Backtrace(
+        [](_Unwind_Context* c, void* p) {
+            auto& f = *static_cast<Frames*>(p);
+            if (f.n == 64) return _URC_END_OF_STACK;
+            f.pc[f.n++] = _Unwind_GetIP(c);
+            return _URC_NO_REASON;
+        },
+        &frames);
+    for (int i = 0; i < frames.n; i++) LOGE("crash:   %016llX", static_cast<unsigned long long>(frames.pc[i]));
+#else
     void* frames[64];
     int n = backtrace(frames, 64);
     if (char** names = backtrace_symbols(frames, n)) {
         for (int i = 0; i < n; i++) LOGE("crash:   %s", names[i]);
         std::free(names);
     }
+#endif
     // the recompiled code keeps guest registers in host ones between calls: a context can lag its thread
     for (auto& t : kernel::Threads()) {
         if (!t->ctx) continue;
@@ -60,6 +81,8 @@ void OnSignal(int sig, siginfo_t* info, void* uc) {
     unsigned long long ip = 0;
 #if defined(__x86_64__) && defined(__GLIBC__)
     ip = static_cast<ucontext_t*>(uc)->uc_mcontext.gregs[REG_RIP];
+#elif defined(__aarch64__)
+    ip = static_cast<ucontext_t*>(uc)->uc_mcontext.pc;
 #else
     (void)uc;
 #endif

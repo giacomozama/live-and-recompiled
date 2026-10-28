@@ -1,0 +1,4 @@
+# Gradle and Kotlin caches, the SDK location Android Studio writes; the build itself goes to out/build/android
+.gradle/
+.kotlin/
+local.properties

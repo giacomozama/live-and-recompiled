@@ -87,6 +87,22 @@ bool Disc::Open(const std::filesystem::path& path, std::string& error) {
         error = "cannot open the file";
         return false;
     }
+    return Mount(error);
+}
+
+#ifndef _WIN32
+bool Disc::OpenFd(int fd, std::string& error) {
+    file_ = dup(fd);
+    if (file_ == -1) {
+        error = "cannot open the file";
+        return false;
+    }
+    return Mount(error);
+}
+#endif
+
+// the game partition's volume and its folders
+bool Disc::Mount(std::string& error) {
     for (uint64_t base : kPartitions) {
         uint8_t volume[kSector];
         if (ReadAt(base + kVolume, volume, kSector) != kSector || std::memcmp(volume, kMagic, kMagicSize) != 0 ||

@@ -11,6 +11,9 @@
 #include <SDL3/SDL.h>
 
 #include "app/app.h"
+#ifdef XBE_SDL
+#include "app/touch.h"
+#endif
 #include "core/log.h"
 
 namespace input {
@@ -204,6 +207,9 @@ Pad Raw(int port) {
         for (int v : {int(p.lx), int(p.ly), int(p.rx), int(p.ry)}) used |= v > kStick || v < -kStick;
         if (used) Used(port, Source::Controller);
     }
+#ifdef XBE_SDL
+    touch::Merge(port, p);  // the on-screen controller, Android's (the settings menu reads Raw too)
+#endif
     return p;
 }
 

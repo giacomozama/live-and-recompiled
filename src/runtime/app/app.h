@@ -276,6 +276,15 @@ void UiNewFrame();
 // any thread, before handing the window over to a relaunched instance (kernel::Relaunch): losing the focus to it no
 // longer minimizes an exclusive fullscreen window, which would give the desktop's mode back for the new one's start
 void KeepFullscreenOnFocusLoss();
+// Android: the app is in the background and its window has no surface. The renderer lets go of its own and says so
+// (render thread), and makes a new one once this is false again. Never set elsewhere
+bool SurfacePaused();
+void SurfaceReleased();
+#ifdef __ANDROID__
+// where ConfigDir, DataDir, StateDir and CacheDir (0 to 3) are: the app's internal files for the first two, its
+// external files for the logs and captures (a file manager or adb reaches them), its cache
+std::filesystem::path AndroidDir(int kind);
+#endif
 // boot splash: GameInfo::splash .bmp or .png beside the exe, up before the game window
 bool OpenSplash();        // window thread, at launch; false without one, and the game window opens at once
 void SplashFirstFrame();  // the game's first Swap: waits out the splash's minimum, then opens the game window

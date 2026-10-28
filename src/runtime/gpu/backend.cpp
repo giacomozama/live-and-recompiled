@@ -24,15 +24,17 @@ std::string RendererName() {
     return override_name && *override_name ? override_name : app::Get().renderer;
 }
 
-// An unknown renderer name selects Vulkan. OpenGL everywhere, Windows can also select D3D11.
+// An unknown renderer name selects Vulkan. OpenGL everywhere but Android, Windows can also select D3D11.
 std::unique_ptr<Backend> CreateBackend(uint32_t width, uint32_t height, bool& ok) {
     const std::string name = RendererName();
+#ifndef __ANDROID__  // no desktop OpenGL on Android: Vulkan draws there
     if (name == "opengl") {
         auto backend = CreateOpenGLBackend();
         ok = backend->Init(width, height);
         if (!ok) LOGE("opengl: cannot start the renderer");
         return backend;
     }
+#endif
 #ifdef _WIN32
     if (name == "d3d11") {
         auto backend = CreateD3D11Backend();

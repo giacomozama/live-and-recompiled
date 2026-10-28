@@ -25,6 +25,10 @@ public:
     ~Disc();
     // false with the reason when the file is no Xbox disc image
     bool Open(const std::filesystem::path& path, std::string& error);
+#ifndef _WIN32
+    // the same from a file descriptor, which the disc keeps a copy of (Android's document picker hands out descriptors)
+    bool OpenFd(int fd, std::string& error);
+#endif
     // from the root, any case, ".." steps up; null when missing
     const Entry* Find(const std::vector<std::string>& parts) const;
     const Entry* Find(std::string_view path) const;  // backslash separated
@@ -36,6 +40,7 @@ public:
 
 private:
     uint32_t ReadAt(uint64_t at, void* out, uint32_t len) const;
+    bool Mount(std::string& error);
     bool ReadDir(Entry& dir, int depth);
 
     intptr_t file_ = -1;  // HANDLE or fd
