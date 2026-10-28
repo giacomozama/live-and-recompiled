@@ -623,7 +623,30 @@ using Spirv = std::vector<uint32_t>;
 using SpirvRef = std::shared_ptr<const Spirv>;
 
 constexpr size_t kConstRegs = 192;  // State::vsc, the cbuffer c
-using ConstReads = std::bitset<kConstRegs>;
+// the registers of c read, a bit each. Same visits the set bits alone: a draw compares only the registers its shaders
+// read, and a bitset's walk over all 192 to find them was most of that
+struct ConstReads {
+    std::array<uint64_t, kConstRegs / 64> w{};
+    ConstReads& set() {
+        w.fill(~0ull);
+        return *this;
+    }
+    void set(size_t i) { w[i >> 6] |= 1ull << (i & 63); }
+    bool operator[](size_t i) const { return w[i >> 6] >> (i & 63) & 1; }
+    ConstReads& operator|=(const ConstReads& o) {
+        for (size_t k = 0; k < w.size(); k++) w[k] |= o.w[k];
+        return *this;
+    }
+    // now and before hold the same in every register read
+    bool Same(const std::array<float, 4>* now, const std::array<float, 4>* before) const {
+        for (size_t k = 0; k < w.size(); k++)
+            for (uint64_t m = w[k]; m; m &= m - 1) {
+                size_t i = k * 64 + size_t(__builtin_ctzll(m));
+                if (std::memcmp(&now[i], &before[i], sizeof(now[i])) != 0) return false;
+            }
+        return true;
+    }
+};
 
 // a draw's shaders, and the SPIR-V Compile returned
 struct DrawShaders : ShaderChoice {
@@ -864,6 +887,15 @@ private:
         VkImageView view[kBindViews] = {};  // left null: the dummy 2D image, and blit_[0]
         VkSampler smp[kBindViews] = {};
     };
+    // what SetTextureViewsAndSamplers made the stages' views and samplers of, and made them: a draw in the same state
+    // with the same clamp and anisotropy has the same ones (FastDraw)
+    struct ViewsAndSamplers {
+        bool ok = false;
+        bool clamp = false;
+        uint32_t aniso = 0, samplers_made = 0;
+        VkImageView view[4] = {};
+        VkSampler smp[4] = {};
+    };
 
     Alloc Upload(uint64_t size, uint64_t align = kCbAlign);
     Frame& CurrentFrame() { return frames_[frame_ % kFrames]; }
@@ -952,7 +984,8 @@ private:
     void EndDrawCapture(const State& s, const Assembled& a, uint32_t count, const DrawConstants& c);
     void CaptureShaders(const State& s, const Assembled& a, const DrawShaders& sh, const PixelKey& pk);
     void CaptureShader(const char* kind, uint64_t key, const std::string& src);
-    void SetTextureViewsAndSamplers(const State& s, const Assembled& a, const DrawTextures& stages, Bindings& b);
+    void SetTextureViewsAndSamplers(const State& s, const Assembled& a, const DrawTextures& stages, Bindings& b,
+                                    const ViewsAndSamplers* same_state = nullptr);
     VkSampler EnsureSampler(const SamplerDesc& sd);
     VkSampler FindSampler(const SamplerDesc& sd);
     VkSampler MakeSampler(const SamplerDesc& sd);
@@ -1180,6 +1213,8 @@ private:
     };
     std::array<LastSampler, 4> last_smp_{};
     uint32_t last_smp_next_ = 0;
+    uint32_t samplers_made_ = 0;  // FindSampler's cache, each time it starts over: samplers from before may be gone
+    ViewsAndSamplers filled_;
     void ForgetDrawCmd() { drawn_ = {}; }
     // the last draw that went the whole way, which a draw in the same state (Changed) takes up again: its shaders,
     // textures, pipeline and constants, past the vertices it assembles itself
@@ -1192,6 +1227,7 @@ private:
         DrawTextures stages{};
         VkPipeline pso = VK_NULL_HANDLE;
         Bindings b;
+        ViewsAndSamplers filled;  // its stages', as SetTextureViewsAndSamplers made them
         GuestExtent size{};
         Target* rt = nullptr;  // bound as it drew
         Target* ds = nullptr;
@@ -3316,6 +3352,7 @@ VkSampler VulkanBackend::FindSampler(const SamplerDesc& sd) {
         samplers_.clear();
         last_smp_ = {};
         custom_borders_ = 0;
+        samplers_made_++;
     }
     VkSampler s = MakeSampler(sd);
     samplers_[key] = s;
@@ -3416,9 +3453,7 @@ void VulkanBackend::UploadConstants(const State& s, const DrawShaders& sh, const
                                     const DrawTextures& stages, GuestExtent size, DrawConstants& c, Bindings& b) {
     // the last draw's constants again when this one reads the same: a level drawn in thousands of small draws
     // changing a register they don't read would otherwise fill the ring and wait for the GPU every frame
-    bool same_vc = last_vc_ok_;
-    for (size_t i = 0; same_vc && i < kConstRegs; i++)
-        same_vc = !sh.reads[i] || std::memcmp(&s.vsc[i], &last_vsc_[i], sizeof(s.vsc[i])) == 0;
+    bool same_vc = last_vc_ok_ && sh.reads.Same(s.vsc.data(), last_vsc_.data());
     if (!same_vc) {
         last_vc_ = Upload(sizeof(s.vsc.v));
         std::memcpy(last_vc_.cpu, s.vsc.data(), sizeof(s.vsc.v));
@@ -3508,22 +3543,34 @@ void VulkanBackend::CaptureShaders(const State& s, const Assembled& a, const Dra
     CaptureShader("ps", sh.pkey, PixelHlsl(pk));
 }
 
-// a stage without a texture reads a dummy of its kind; the samplers read the views' levels
+// a stage without a texture reads a dummy of its kind; the samplers read the views' levels. same_state: what they were
+// for a draw in this one's state and stages, the same again but for clamp, the anisotropy or a sampler cache since
 void VulkanBackend::SetTextureViewsAndSamplers(const State& s, const Assembled& a, const DrawTextures& stages,
-                                               Bindings& b) {
+                                               Bindings& b, const ViewsAndSamplers* same_state) {
     bool clamp = UnitTexcoords(a);
     uint32_t aniso = app::Get().aniso;
-    for (int i = 0; i < 4; i++) {
-        const TexInfo& info = stages.info[i];
-        VkImageView v = stages.res[i] ? stages.view[i] : VK_NULL_HANDLE;
-        if (!v) {
-            v = info.shadow             ? dummy_depth_->Sampled()
-                : info.kind == kTexCube ? dummy_cube_->view
-                : info.kind == kTex3D   ? dummy_3d_->view
-                                        : dummy_2d_->view;
+    const ViewsAndSamplers* f = same_state;
+    if (!f || !f->ok || f->clamp != clamp || f->aniso != aniso || f->samplers_made != samplers_made_) {
+        filled_ = {true, clamp, aniso, samplers_made_};
+        for (int i = 0; i < 4; i++) {
+            const TexInfo& info = stages.info[i];
+            VkImageView v = stages.res[i] ? stages.view[i] : VK_NULL_HANDLE;
+            if (!v) {
+                v = info.shadow             ? dummy_depth_->Sampled()
+                    : info.kind == kTexCube ? dummy_cube_->view
+                    : info.kind == kTex3D   ? dummy_3d_->view
+                                            : dummy_2d_->view;
+            }
+            filled_.view[i] = v;
+            filled_.smp[i] = EnsureSampler(StageSampler(s, i, stages, clamp, aniso));
+            // a sampler cache that started over for this one leaves the stages before it from the old one
+            if (filled_.samplers_made != samplers_made_) filled_.ok = false;
         }
-        b.view[i] = v;
-        b.smp[i] = EnsureSampler(StageSampler(s, i, stages, clamp, aniso));
+        f = &filled_;
+    }
+    for (int i = 0; i < 4; i++) {
+        b.view[i] = f->view[i];
+        b.smp[i] = f->smp[i];
     }
     if (drawn_.bound && SameBytes(b, drawn_.b)) return;
     FlushRun();
@@ -3660,7 +3707,7 @@ void VulkanBackend::JoinRun(const Assembled& a) {
     uint32_t base = run_.vertices;
     for (uint32_t i = 0; !direct && i < a.buffer_count; i++) {
         const VertexBuffer& b = a.buffers[i];
-        run_.data[i].insert(run_.data[i].end(), b.src, b.src + b.bytes);
+        AppendBytes(run_.data[i], b.src, b.bytes);
     }
     if (a.index_count) {
         for (uint32_t k = 0; k < a.index_count; k++) {
@@ -3747,8 +3794,7 @@ bool VulkanBackend::ReuseRun(const State& s) {
     if (!last_vc_ok_ || !last_dc_ok_ || kept_.b.cb[0].buffer != last_vc_.buf || kept_.b.cb[0].offset != last_vc_.off ||
         kept_.b.cb[1].buffer != last_dc_.buf || kept_.b.cb[1].offset != last_dc_.off)
         return false;
-    for (size_t i = 0; i < kConstRegs; i++)
-        if (kept_.reads[i] && std::memcmp(&s.vsc[i], &last_vsc_[i], sizeof(s.vsc[i])) != 0) return false;
+    if (!kept_.reads.Same(s.vsc.data(), last_vsc_.data())) return false;
     if (CurrentFrame().used > kUploadSize - kUploadReserve) return false;
     if (bound_rt_ != kept_.rt || bound_ds_ != kept_.ds || bound_ms_ != kept_.ms || (!bound_rt_ && !bound_ds_))
         return false;
@@ -4326,6 +4372,7 @@ void VulkanBackend::KeepDraw(const Assembled& a, const DrawShaders& sh, const Dr
     kept_.stages = stages;
     kept_.pso = pso;
     kept_.b = b;
+    kept_.filled = filled_;  // this draw's, SetTextureViewsAndSamplers the last before
     kept_.size = size;
     kept_.rt = bound_rt_;
     kept_.ds = bound_ds_;
@@ -4366,8 +4413,7 @@ bool VulkanBackend::FastDraw(const State& s, uint32_t prim, uint32_t start, uint
     if (!last_vc_ok_ || !last_dc_ok_ || kept_.b.cb[0].buffer != last_vc_.buf || kept_.b.cb[0].offset != last_vc_.off ||
         kept_.b.cb[1].buffer != last_dc_.buf || kept_.b.cb[1].offset != last_dc_.off)
         return false;
-    for (size_t i = 0; i < kConstRegs; i++)
-        if (kept_.reads[i] && std::memcmp(&s.vsc[i], &last_vsc_[i], sizeof(s.vsc[i])) != 0) return false;
+    if (!kept_.reads.Same(s.vsc.data(), last_vsc_.data())) return false;
     if (CurrentFrame().used > kUploadSize - kUploadReserve) return false;
     if (bound_rt_ != kept_.rt || bound_ds_ != kept_.ds || bound_ms_ != kept_.ms || (!bound_rt_ && !bound_ds_))
         return false;
@@ -4381,7 +4427,7 @@ bool VulkanBackend::FastDraw(const State& s, uint32_t prim, uint32_t start, uint
         drawn_.pso = kept_.pso;
     }
     Bindings b = kept_.b;
-    SetTextureViewsAndSamplers(s, a, stages, b);
+    SetTextureViewsAndSamplers(s, a, stages, b, &kept_.filled);
     SetViewportScissor(s, kept_.size.w);
     SetBlendFactorStencilRef(s);
     // in the state the draws before it set: its geometry joins theirs, drawn with them later (a ground drawn a quad at

@@ -35,6 +35,7 @@
 #include "gpu/backend.h"
 #include "gpu/draw.h"
 #include "gpu/interp.h"
+#include "gpu/vertex.h"
 #include "kernel/kernel.h"
 #include "kernel/memory.h"
 
@@ -146,6 +147,19 @@ using Clock = std::chrono::steady_clock;
 // XBE_PERF timing, on PerfClock (gpu/draw.h): read only with XBE_PERF, as the title's thread takes it twice a call
 uint64_t Ns(PerfClock::time_point t) { return uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(PerfClock::now() - t).count()); }
 
+// Threaded's copy of a header in the ring (Header)
+struct HeaderCopy {
+    uint32_t at = 0;
+    uint64_t made = 0;  // ring_pos_ after it was written
+    uint8_t bytes[kHeaderBytes];
+};
+// a lookup in one of Threaded's maps, kept to skip the next one of the same key
+template <typename T>
+struct Recent {
+    uint32_t key = 0;
+    T* value = nullptr;
+};
+
 class Threaded final : public Backend {
 public:
     explicit Threaded(std::unique_ptr<Backend> inner)
@@ -186,11 +200,11 @@ public:
         }
         cur_->cmds.push_back(c);
         if (perf) tsc[3] = __rdtsc();
-        for (uint32_t tex : s.textures) Use(tex);
-        for (uint32_t pal : s.palettes) Use(pal);
-        for (const auto& st : s.streams) Use(st.vb);
-        Use(s.rt.header);
-        Use(s.zs.header);
+        for (size_t i = 0; i < 4; i++) Use(s.textures[i], &slot_uses_[kSlotTextures + i]);
+        for (size_t i = 0; i < 4; i++) Use(s.palettes[i], &slot_uses_[kSlotPalettes + i]);
+        for (size_t i = 0; i < 16; i++) Use(s.streams[i].vb, &slot_uses_[kSlotStreams + i]);
+        Use(s.rt.header, &slot_uses_[kSlotTarget]);
+        Use(s.zs.header, &slot_uses_[kSlotDepth]);
         Written(s.rt);
         if (perf) tsc[4] = __rdtsc();
         if (cur_->cmds.size() >= kBatchCommands) Submit();
@@ -358,15 +372,28 @@ private:
 
     // A header as it is now. The console's push buffer takes a texture's format and address, and a surface's or vertex
     // buffer's address, when they are set; the title points the same header elsewhere before the GPU gets there.
-    uint32_t Header(uint32_t header) {
+    // slot: the state's place for it (kSlots), whose header is mostly the draw before's: its copy found without a lookup
+    uint32_t Header(uint32_t header, Recent<HeaderCopy>* slot = nullptr) {
         if (!header || !ring_) return header;
         // vertex buffer, index buffer and palette headers are 12 bytes: reading 20 can run off the end of the heap
         const uint32_t type = kernel::R32(header) & 0x70000;  // 0 vertex, 0x10000 index, 0x30000 palette
+        // two fixed sizes, not one picked at run time: the copy and the compare after it stay a few loads, not calls
         uint8_t now[kHeaderBytes] = {};
-        std::memcpy(now, kernel::HostPtr(header), type < 0x20000 || type == 0x30000 ? 12 : kHeaderBytes);
-        Recent<HeaderCopy>& r = recent_headers_[(header >> 3) & 63];
-        HeaderCopy& c = r.key == header ? *r.value : headers_[header];
-        r = {header, &c};
+        const void* src = kernel::HostPtr(header);
+        if (type < 0x20000 || type == 0x30000)
+            std::memcpy(now, src, 12);
+        else
+            std::memcpy(now, src, kHeaderBytes);
+        HeaderCopy* found;
+        if (slot && slot->key == header) {
+            found = slot->value;
+        } else {
+            Recent<HeaderCopy>& r = recent_headers_[(header >> 3) & 63];
+            found = r.key == header ? r.value : &headers_[header];
+            r = {header, found};
+            if (slot) *slot = r;
+        }
+        HeaderCopy& c = *found;
         if (c.made && !std::memcmp(c.bytes, now, kHeaderBytes) && ring_pos_ - c.made < kHeaderRing / 2) return c.at;
         c.at = Scratch(now, kHeaderBytes);
         c.made = ring_pos_;
@@ -422,17 +449,22 @@ private:
             }
         if (tsc) tsc[0] = __rdtsc();
         std::array<uint32_t, 4> textures;
-        for (size_t i = 0; i < 4; i++) textures[i] = Header(s.textures[i]);
+        for (size_t i = 0; i < 4; i++) textures[i] = Header(s.textures[i], &slot_headers_[kSlotTextures + i]);
         Delta(&sent_.textures, &textures, sizeof(textures));
         std::array<uint32_t, 4> palettes;
-        for (size_t i = 0; i < 4; i++) palettes[i] = Header(s.palettes[i]);
+        for (size_t i = 0; i < 4; i++) palettes[i] = Header(s.palettes[i], &slot_headers_[kSlotPalettes + i]);
         Delta(&sent_.palettes, &palettes, sizeof(palettes));
+        // the title leaves all sixteen streams bound and draws from a few: the rest go as they are, which the render
+        // thread only tells from 0, and a draw that reads one later sends its copy as a change
         auto streams = s.streams;
-        for (auto& st : streams) st.vb = Header(st.vb);
+        for (uint32_t used = StreamsRead(s); used; used &= used - 1) {
+            size_t i = size_t(__builtin_ctz(used));
+            streams[i].vb = Header(streams[i].vb, &slot_headers_[kSlotStreams + i]);
+        }
         Delta(&sent_.streams, &streams, sizeof(streams));
         Surface rt = s.rt, zs = s.zs;
-        rt.header = Header(rt.header);
-        zs.header = Header(zs.header);
+        rt.header = Header(rt.header, &slot_headers_[kSlotTarget]);
+        zs.header = Header(zs.header, &slot_headers_[kSlotDepth]);
         Delta(&sent_.rt, &rt, sizeof(rt));
         Delta(&sent_.zs, &zs, sizeof(zs));
         if (tsc) tsc[1] = __rdtsc();
@@ -453,11 +485,16 @@ private:
     }
 
     // resources by guest header: the batch that last read them
-    void Use(uint32_t header) {
+    void Use(uint32_t header, Recent<uint64_t>* slot = nullptr) {
         if (!header) return;
+        if (slot && slot->key == header) {
+            *slot->value = cur_->id;
+            return;
+        }
         Recent<uint64_t>& r = recent_uses_[(header >> 3) & 63];
         if (r.key != header) r = {header, &last_use_[header]};
         *r.value = cur_->id;
+        if (slot) *slot = r;
     }
     void Written(const Surface& s) {
         if (!s.header) return;
@@ -790,20 +827,14 @@ private:
     bool changed_ = true;              // render thread: state changed since the last Draw (Backend::Changed)
 
     // the title's thread
-    struct HeaderCopy {
-        uint32_t at = 0;
-        uint64_t made = 0;  // ring_pos_ after it was written
-        uint8_t bytes[kHeaderBytes];
-    };
     std::unordered_map<uint32_t, HeaderCopy> headers_;
     // the last few lookups, in front of the maps (their elements stay put)
-    template <typename T>
-    struct Recent {
-        uint32_t key = 0;
-        T* value = nullptr;
-    };
     std::array<Recent<HeaderCopy>, 64> recent_headers_{};
     std::array<Recent<uint64_t>, 64> recent_uses_{};
+    // the state's header places, each with the lookup its last header had: a draw's mostly the draw before's
+    enum : size_t { kSlotTextures = 0, kSlotPalettes = 4, kSlotStreams = 8, kSlotTarget = 24, kSlotDepth = 25, kSlots };
+    std::array<Recent<HeaderCopy>, kSlots> slot_headers_{};
+    std::array<Recent<uint64_t>, kSlots> slot_uses_{};
     uint32_t ring_ = 0;
     uint64_t ring_pos_ = 0;
     Batch* cur_ = nullptr;

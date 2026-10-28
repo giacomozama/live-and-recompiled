@@ -92,16 +92,7 @@ Keys MakeKeys(const State& s, uint32_t prim, uint32_t start, uint32_t count, con
     k.loose = h;
     uint64_t addresses = 0;
 
-    // the streams the draw reads: a raw draw's inline formats, a declaration's streams, an FVF's stream 0
-    uint32_t used = 0;
-    for (uint32_t i = 0; i < 16; i++)
-        if (s.streams[i].fmt & 0xF0) used |= 1u << i;
-    if ((s.vs_handle & 1) && s.vs) {
-        for (const auto& in : s.vs->inputs)
-            if (in.stream >= 0) used |= 1u << in.stream;
-    } else {
-        used |= 1;
-    }
+    uint32_t used = StreamsRead(s);
     // the vertices it covers: from start, or the indices' from the base vertex to the highest
     uint32_t first = start, verts = count;
     if (indices && (Tracing() || Recording())) {
@@ -682,12 +673,13 @@ void KeepVertices(Frame& cur, Snap& sn, const State& s, uint32_t start, uint32_t
     sn.type = uint8_t(at.type);
     sn.indexed = indices != nullptr;
     const uint8_t* src = static_cast<const uint8_t*>(kernel::HostPtr(va + first * at.stride));
-    cur.raw.insert(cur.raw.end(), src, src + bytes);
+    AppendBytes(cur.raw, src, bytes);
 }
 
 void Draw(const State& s, bool same, const Tag& tag, uint32_t prim, uint32_t start, uint32_t count,
           const uint8_t* indices) {
     Frame& cur = g_frames[g_cur];
+    if (tag.key && !tag.group) cur.tags.Prefetch(tag.key);  // looked up after the work below
     int32_t leader = -1;
     const Reads* reads = ReadsOf(s);
     std::bitset<192> stale = Stale(s, reads);
@@ -965,7 +957,10 @@ void Match() {
     // looks: look-alikes (two squirrels' eyes, a room's lamps) are no longer told apart by distance. Only of the same
     // program, whose registers it blends. The passes after find the rest: draws the title tags nothing of, a model at
     // another detail (another piece), an object new to the frame
-    for (Snap& sn : cur.snaps) {
+    constexpr size_t kAhead = 8;  // draws whose tag's slot is fetched before it is looked up
+    for (size_t k = 0; k < cur.snaps.size(); k++) {
+        if (k + kAhead < cur.snaps.size()) prev.tags.Prefetch(cur.snaps[k + kAhead].tag.key);
+        Snap& sn = cur.snaps[k];
         if (sn.leader >= 0 || !sn.tag.key || sn.tag.group) continue;
         const uint32_t* at = prev.tags.Find(sn.tag.key);
         if (!at) continue;

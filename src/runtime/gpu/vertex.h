@@ -67,6 +67,9 @@ bool Assemble(const State& s, uint32_t prim, uint32_t start, uint32_t count, con
 std::string DescribeInputs(const State& s, uint32_t start, const uint8_t* indices, uint32_t vertices);
 // input register reg of the draw's first vertices, decoded; false when the draw has none or its stream is unbound
 bool ReadInput(const State& s, int reg, uint32_t start, const uint8_t* indices, uint32_t vertices, float (*out)[4]);
+// the same for samples vertices spread evenly over the draw's count, the layout looked up once for them all
+bool ReadInputSpread(const State& s, int reg, uint32_t start, const uint8_t* indices, uint32_t count, uint32_t samples,
+                     float (*out)[4]);
 
 // where the draw reads input register reg: the stream, the byte offset in its vertex, the D3DVSDT type and the stride;
 // alone: every register the draw reads comes from that stream. False when it reads none, or its stream is unbound
@@ -75,5 +78,8 @@ struct InputAt {
     bool alone = false;
 };
 bool InputPlace(const State& s, int reg, InputAt& at);
+
+// the streams the draw reads, a bit each: a raw draw's inline formats, a declaration's streams, an FVF's stream 0
+uint32_t StreamsRead(const State& s);
 
 }  // namespace gpu
