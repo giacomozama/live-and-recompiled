@@ -89,12 +89,13 @@ See [BUILDING.md](BUILDING.md).
 - [Xbox XBE Recomp](https://github.com/TGP482/XboxXBERecomp), the recompiler and runtime this is built on.
 - [xemu](https://github.com/xemu-project/xemu) and [Cxbx-Reloaded](https://github.com/Cxbx-Reloaded/Cxbx-Reloaded) as references for the Xbox's hardware and API behaviour.
 - [SMAA](http://www.iryoku.com/smaa/) by Jorge Jimenez, Jose I. Echevarria, Belen Masia, Fernando Navarro and Diego Gutierrez (MIT).
-- [toml++](https://github.com/marzer/tomlplusplus) for the configs
-- [Dear ImGui](https://github.com/ocornut/imgui) for the settings overlay
-- [FLTK](https://www.fltk.org) for Setup's window
+- [toml++](https://github.com/marzer/tomlplusplus) for the configs.
+- [Dear ImGui](https://github.com/ocornut/imgui) for the settings overlay.
+- [FLTK](https://www.fltk.org) for Setup UI.
 - [SDL](https://github.com/libsdl-org/SDL) for the window, input and controllers.
 - [Zig](https://ziglang.org) (`zig c++`: Clang, LLD, mingw-w64 and glibc stubs, libc++), the compiler Setup builds the game with, on both systems.
 - [The ConkerXbox60FPSWidescreen patch](https://www.moddb.com/downloads/conkerxbox60fpswidescreen) for important information about game code.
+- [Rare Limited](https://www.rare.co.uk/) for creating the original game.
 
 ## License
 
