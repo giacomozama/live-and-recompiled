@@ -26,6 +26,9 @@ namespace app {
 namespace {
 
 std::atomic<bool> g_reporting{false};
+// the handlers before ours, which the signal goes on to: the default on a desktop, Android's crash reporter (the
+// tombstone and logcat's backtrace) there
+struct sigaction g_before[NSIG];
 
 const char* SignalName(int sig) {
     switch (sig) {
@@ -88,8 +91,9 @@ void OnSignal(int sig, siginfo_t* info, void* uc) {
 #endif
     std::snprintf(what, sizeof(what), "%s at %016llX, address %p", SignalName(sig), ip, info ? info->si_addr : nullptr);
     Report(what);
-    // the default action after: a core dump where the system keeps them
-    signal(sig, SIG_DFL);
+    // the handler before ours after (on return the fault comes again, or the raised signal arrives): a core dump where
+    // the system keeps them, Android's crash report there
+    sigaction(sig, &g_before[sig], nullptr);
     raise(sig);
 }
 
@@ -123,7 +127,7 @@ void InstallCrashHandler() {
     sa.sa_sigaction = OnSignal;
     sa.sa_flags = SA_SIGINFO | SA_ONSTACK;
     sigemptyset(&sa.sa_mask);
-    for (int sig : {SIGSEGV, SIGBUS, SIGILL, SIGFPE, SIGABRT, SIGTRAP}) sigaction(sig, &sa, nullptr);
+    for (int sig : {SIGSEGV, SIGBUS, SIGILL, SIGFPE, SIGABRT, SIGTRAP}) sigaction(sig, &sa, &g_before[sig]);
     std::set_terminate(OnTerminate);
 }
 

@@ -10,6 +10,10 @@
 #include <thread>
 #include <vector>
 
+#ifdef __ANDROID__
+#include <android/log.h>
+#endif
+
 namespace fs = std::filesystem;
 
 namespace logx {
@@ -29,6 +33,13 @@ static int RunNumber(const fs::path& file, const std::string& prefix) {
     return std::atoi(name.c_str() + prefix.size() + 1);
 }
 
+// Android: each line goes to the file as it is written, as the system ends an app without a word, and to logcat
+static void Opened() {
+#ifdef __ANDROID__
+    if (g_file) std::setvbuf(g_file, nullptr, _IOLBF, 4096);
+#endif
+}
+
 void Init(const std::string& dir, const std::string& prefix, bool append) {
     std::lock_guard<std::mutex> lock(g_mutex);
     std::error_code ec;
@@ -36,6 +47,7 @@ void Init(const std::string& dir, const std::string& prefix, bool append) {
     if (!kVerbose) {
         g_path = (fs::path(dir) / (prefix + ".log")).string();
         g_file = std::fopen(g_path.c_str(), append ? "a" : "w");
+        Opened();
         return;
     }
     std::vector<std::pair<int, fs::path>> runs;
@@ -47,6 +59,7 @@ void Init(const std::string& dir, const std::string& prefix, bool append) {
     std::snprintf(name, sizeof(name), "%s_%03d.log", prefix.c_str(), runs.empty() ? 1 : runs.back().first + 1);
     g_path = (fs::path(dir) / name).string();
     g_file = std::fopen(g_path.c_str(), "w");
+    Opened();
 }
 
 const std::string& Path() { return g_path; }
@@ -72,7 +85,12 @@ void Write(Level lv, const char* fmt, ...) {
         std::fwrite(line, 1, size_t(n), g_file);
         if (lv >= Level::Warn) std::fflush(g_file);
     }
+#ifdef __ANDROID__
+    static const int kPriority[] = {ANDROID_LOG_DEBUG, ANDROID_LOG_INFO, ANDROID_LOG_WARN, ANDROID_LOG_ERROR, ANDROID_LOG_INFO};
+    __android_log_write(kPriority[int(lv)], "LiveAndRecompiled", msg);
+#else
     std::fwrite(line, 1, size_t(n), stderr);
+#endif
 }
 
 void Flush() {
