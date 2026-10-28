@@ -59,6 +59,9 @@ if(NOT CMAKE_HOST_WIN32)
     # the Linux half beside it: kit.toml and the rest are the same in both
     file(COPY ${XBE_BUILDS}/zig-glibc/package/Game/kit/linux.toml DESTINATION ${DEST}/kit)
     file(COPY ${XBE_BUILDS}/zig-glibc/package/Game/kit/lib/linux DESTINATION ${DEST}/kit/lib)
+    if(EXISTS ${XBE_BUILDS}/zig-glibc/package/Game/kit/files/linux)
+        file(COPY ${XBE_BUILDS}/zig-glibc/package/Game/kit/files/linux DESTINATION ${DEST}/kit/files)
+    endif()
     file(COPY ${XBE_BUILDS}/zig-glibc/package/Game/kit/bin/xbe_recomp DESTINATION ${DEST}/kit/bin)
 endif()
 if(NOT CMAKE_HOST_WIN32)
@@ -98,9 +101,16 @@ function(embed_kit os setup recomp)
     file(COPY ${DEST}/kit/lib/${os} DESTINATION ${stage}/lib)
     file(COPY ${DEST}/kit/bin/${recomp} DESTINATION ${stage}/bin)
     file(COPY ${KIT_TOOLCHAIN_${os}} DESTINATION ${stage}/toolchain)
+    # what Setup puts beside the game (the DLSS module and NVIDIA's library), when the build made it
+    set(files)
+    if(EXISTS ${DEST}/kit/files/${os})
+        file(COPY ${DEST}/kit/files/${os} DESTINATION ${stage}/files)
+        set(files files)
+    endif()
     set(zip ${OUT}/.kit-${os}.zip)
     file(REMOVE ${zip})
     execute_process(COMMAND ${CMAKE_COMMAND} -E tar cf ${zip} --format=zip kit.toml ${os}.toml config xdk include lib bin toolchain
+            ${files}
         WORKING_DIRECTORY ${stage} COMMAND_ERROR_IS_FATAL ANY)
     file(SIZE ${zip} size)
     string(LENGTH "${size}" digits)
@@ -165,8 +175,13 @@ endif()
 function(archive os setup license ext flags format)
     set(file ${OUT}/${NAME}-${version}-${os}-x86_64.${ext})
     file(REMOVE ${file})
+    # NVIDIA's terms, for its DLSS library in the kit
+    set(nvidia)
+    if(EXISTS ${OUT}/${NAME}/NVIDIA_RTX_SDKS_LICENSE.txt)
+        set(nvidia ${NAME}/NVIDIA_RTX_SDKS_LICENSE.txt)
+    endif()
     execute_process(COMMAND ${CMAKE_COMMAND} -E tar ${flags} ${file} --format=${format}
-            ${NAME}/${setup} ${NAME}/${license} ${NAME}/THIRD_PARTY.txt
+            ${NAME}/${setup} ${NAME}/${license} ${NAME}/THIRD_PARTY.txt ${nvidia}
         WORKING_DIRECTORY ${OUT} COMMAND_ERROR_IS_FATAL ANY)
     file(SIZE ${file} size)
     math(EXPR mb "(${size} + 524288) / 1048576")

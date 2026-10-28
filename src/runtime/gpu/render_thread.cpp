@@ -743,9 +743,11 @@ private:
         if (changed && (c.vs >= 0 || c.ps >= 0)) *changed = true;
     }
 
-    // a frame starts: kept for drawing again when frame generation is on, from the state it starts with
+    // a frame starts: kept for drawing again, from the state it starts with; frame generation draws it again between
+    // frames when it is on, and the motion passes draw it again for the motion vectors
     void BeginFrame() {
-        keeping_ = app::Get().frame_generation > 1;
+        motion_ = inner_->Motion();
+        keeping_ = app::Get().frame_generation > 1 || motion_;
         holding_ = keeping_ || g_freeze.load();  // a frame frozen on is kept whole
         frame_start_ = state_;
         if (keeping_) {
@@ -850,7 +852,44 @@ private:
         refreshed_ = true;
     }
 
-    // a frame's Present: with frame generation, the pictures between the frame before and it drawn first
+    // the frame's draws again for the motion vectors of its picture slot, drawn at t, each with its constants as the
+    // picture before (at before) had them; the state between them, nothing else
+    void Motion(const Batch& last, uint32_t slot, float t, float before) {
+        State& rs = replay_state_;
+        rs = frame_start_;
+        uint32_t n = 0;
+        interp::Undo undo;
+        Before was;
+        interp::BeginMotion();
+        ShadingReplay(true, t);
+        inner_->MotionPass(true, slot);
+        auto run = [&](const Batch& b) {
+            ShowDue();
+            for (const Cmd& c : b.cmds) {
+                const uint8_t* data = b.bytes.data() + c.data;
+                if (c.op == Op::State) Apply(rs, b, c, nullptr);
+                if (c.op != Op::Draw) continue;
+                // the picture before's constants and transforms, then the draw's at t
+                was.vsc.clear();
+                was.xf.clear();
+                interp::At(n, before, 0, rs, undo);
+                for (const auto& [r, v] : undo.vsc) was.vsc.emplace_back(r, rs.vsc.v[r]);
+                for (const auto& [i, m] : undo.xf) was.xf.emplace_back(i, rs.transforms[i]);
+                undo.Restore(rs);
+                if (t < 1) interp::At(n, t, 1, rs, undo);
+                n++;
+                inner_->DrawMotion(rs, was, c.a, c.b, c.c, c.d ? data : nullptr);
+                undo.Restore(rs);
+            }
+        };
+        for (const Batch* b : frame_) run(*b);
+        run(last);
+        inner_->MotionPass(false, slot);
+        ShadingReplay(false);
+    }
+
+    // a frame's Present: with frame generation, the pictures between the frame before and it drawn first; with motion
+    // vectors, each picture's after it is drawn
     void Present(const Batch& b, const Cmd& c) {
         {
             auto wait_start = PerfClock::now();
@@ -861,7 +900,8 @@ private:
         interp::Presented(c.s1.data);
         last_front_ = c.s1;
         uint32_t pictures = keeping_ ? inner_->Pictures() : 1;
-        if (pictures > 1 && frame_draws_) {
+        bool motion = motion_ && frame_draws_;
+        if ((pictures > 1 || motion) && frame_draws_) {
             auto match_start = PerfClock::now();
             interp::Match();
             gen_match_ns_ += Ns(match_start);
@@ -873,8 +913,10 @@ private:
                        was_redrawn = g_perf.redrawn, was_changed = g_perf.redraw_changed,
                        was_unkept = g_perf.redraw_unkept, was_refused = g_perf.redraw_refused,
                        was_textures = g_perf.redraw_textures;
+        float step = 1.0f / float(pictures);
         if (pictures > 1 && frame_draws_) {
             inner_->Keep(c.s1);
+            if (motion) Motion(b, pictures - 1, 1, 1 - step);
             for (uint32_t i = 1; i < pictures; i++) {
                 float t = float(i) / float(pictures);
                 inner_->Replaying(true);
@@ -887,7 +929,11 @@ private:
                 auto between_start = PerfClock::now();
                 inner_->Between(c.s1, i);
                 gen_between_ns_ += Ns(between_start);
+                if (motion) Motion(b, i - 1, t, t - step);
             }
+            changed_ = true;
+        } else if (motion) {
+            Motion(b, 0, 1, 0);
             changed_ = true;
         }
         gen_replay_ns_ += Ns(replay_start);
@@ -1001,6 +1047,7 @@ private:
     std::vector<Batch*> frame_;
     State frame_start_, replay_state_;
     bool keeping_ = false, frame_over_ = false;
+    bool motion_ = false;  // the backend wants motion vectors for the frame's pictures (Backend::Motion)
     // the freeze: holding_, the frame is kept whole (frame generation's or g_freeze at its start); the last frame kept
     // past its Present while frozen, the state it started with and its front buffer; DrawFrozen drew it
     bool holding_ = false;

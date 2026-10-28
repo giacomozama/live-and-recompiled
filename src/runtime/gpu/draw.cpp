@@ -560,6 +560,11 @@ std::string VertexHlsl(const shader_record::VertexEntry& v, const std::vector<ui
     return v.quad ? QuadHlsl(std::move(src)) : src;
 }
 
+std::string MotionVertexHlsl(const shader_record::VertexEntry& v, const std::vector<uint32_t>& program) {
+    return v.program ? VertexProgramHlsl(program, v.regs, v.decode, v.shading, true)
+                     : FixedVertexHlsl(v.regs, v.pretransformed, v.decode, v.fixed, true);
+}
+
 uint32_t SampledStages(const State& s) {
     uint32_t mask = 0;
     if (s.ps) {

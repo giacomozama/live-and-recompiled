@@ -63,6 +63,10 @@ set(ENABLE_HLSL ON CACHE BOOL "" FORCE)
 FetchContent_Declare(glslang GIT_REPOSITORY https://github.com/KhronosGroup/glslang.git GIT_TAG 15.0.0 GIT_SHALLOW TRUE)
 FetchContent_MakeAvailable(zydis tomlplusplus imgui roboto SDL3 miniz vulkan_headers volk vma glslang fltk)
 execute_process(COMMAND ${CMAKE_COMMAND} -P ${CMAKE_CURRENT_LIST_DIR}/patch_imgui.cmake ${imgui_SOURCE_DIR})
+# the DLSS module, a library of its own beside the game (Zig builds)
+if(XBE_ZIG_TARGET)
+    include(${CMAKE_CURRENT_LIST_DIR}/Dlss.cmake)
+endif()
 
 # Codegen runs on the host. By default it is this build's own xbe_recomp, which works when the target runs here
 # (a native build, or Windows on Windows); cross compiling for another OS, set XBE_CODEGEN_TOOL to a native one's path.
@@ -347,6 +351,9 @@ function(add_xbe_image target xbe config partitions game_dir)
 
     add_executable(${target} WIN32 ${GEN_SOURCES})
     add_dependencies(${target} recompile_${target})
+    if(TARGET xbe_dlss)
+        add_dependencies(${target} xbe_dlss)  # built with the game, beside it
+    endif()
     target_include_directories(${target} PRIVATE ${XBE_ROOT_DIR}/src/runtime ${GEN})
     # whole: an archive member is otherwise only taken for a symbol nothing defines yet, and every function the host
     # replaces already has the recompiled weak definition, so the replacements would be left out
@@ -377,6 +384,7 @@ endfunction()
 #   kit/config, xdk/   the image's config and the XDK tables
 #   kit/include/       the headers the generated code includes, and image_symbols.h to check the recompile against
 #   kit/lib/<os>/      the prebuilt host (runtime, game hooks, ImGui), glslang and SDL
+#   kit/files/<os>/    what Setup puts beside the game as it is: the DLSS module and NVIDIA's library (cmake/Dlss.cmake)
 # <os>.toml's [toolchain.windows] and [toolchain.linux] (the archive of the compiler of the version the kit was
 # built with, Zig, for the host it runs on, kit/toolchain/<archive> inside Setup, and its SHA-256) are added by the packaging script; Setup
 # unpacks it into kit/toolchain/<os>-<host> on the first run, and cxx is relative to that.
@@ -434,6 +442,16 @@ function(add_xbe_player_kit target title)
         list(APPEND libs -l${l})
     endforeach()
     list(APPEND libs ${std_libs})
+    # beside the game: the DLSS module and NVIDIA's DLSS library, when this build makes them
+    set(files)
+    set(copy_files)
+    if(TARGET xbe_dlss)
+        get_filename_component(runtime_name ${XBE_DLSS_RUNTIME} NAME)
+        set(files files/${os}/$<TARGET_FILE_NAME:xbe_dlss> files/${os}/${runtime_name})
+        set(copy_files COMMAND ${CMAKE_COMMAND} -E make_directory ${kit}/files/${os}
+            COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:xbe_dlss> ${XBE_DLSS_RUNTIME} ${kit}/files/${os}/
+            COMMAND ${CMAKE_COMMAND} -E copy ${XBE_DLSS_DIR}/LICENSE.txt ${pkg}/NVIDIA_RTX_SDKS_LICENSE.txt)
+    endif()
     set(toml "# written by add_xbe_player_kit; Setup reads it\n")
     # the sha1 is filled in at build time, from the game in assets/ then (xbe_sha1.cmake)
     string(APPEND toml "title = \"${title}\"\nexe = \"${target}\"\nxbe = \"${xbe}\"\nsha1 = \"@XBE_SHA1@\"\nalso_sha1 = [@XBE_ALSO_SHA1@]\n")
@@ -442,7 +460,7 @@ function(add_xbe_player_kit target title)
     string(APPEND toml "include = [\"include\"]\n")
     file(GENERATE OUTPUT ${CMAKE_BINARY_DIR}/${target}_kit.toml.in CONTENT "${toml}")
     set(toml "# written by add_xbe_player_kit: building ${target} for ${os}; Setup reads it\ncxx = \"${cxx}\"\n")
-    foreach(key driver cxxflags ldflags libs)
+    foreach(key driver cxxflags ldflags libs files)
         set(items)
         foreach(v ${${key}})
             list(APPEND items "\"${v}\"")
@@ -462,8 +480,9 @@ function(add_xbe_player_kit target title)
     endforeach()
     # <os>.toml is written at configure time, so the rest of the folder is cleared around it
     add_custom_target(${target}_kit
-        COMMAND ${CMAKE_COMMAND} -E rm -rf ${pkg}/assets ${pkg}/THIRD_PARTY.txt ${kit}/bin ${kit}/config ${kit}/xdk
-            ${kit}/include ${kit}/lib ${kit}/kit.toml
+        COMMAND ${CMAKE_COMMAND} -E rm -rf ${pkg}/assets ${pkg}/THIRD_PARTY.txt ${pkg}/NVIDIA_RTX_SDKS_LICENSE.txt
+            ${kit}/bin ${kit}/config ${kit}/xdk
+            ${kit}/include ${kit}/lib ${kit}/files/${os} ${kit}/kit.toml
         COMMAND ${CMAKE_COMMAND} -E make_directory ${kit}/bin ${kit}/config ${kit}/include/cpu
             ${kit}/${lib}
         COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:xbe_recomp> ${kit}/bin/
@@ -476,9 +495,11 @@ function(add_xbe_player_kit target title)
         COMMAND ${CMAKE_COMMAND} -E copy ${gen}/image_symbols.h ${kit}/include/
         COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:${target}_host> $<TARGET_FILE:SDL3::SDL3-static> ${kit}/${lib}/
         COMMAND ${CMAKE_COMMAND} -E copy ${glslang_libs} ${kit}/${lib}/
+        ${copy_files}
         ${extra}
         COMMAND ${CMAKE_COMMAND} -E copy ${XBE_ROOT_DIR}/THIRD_PARTY.txt ${pkg}/
         DEPENDS ${target}_host setup xbe_recomp SDL3::SDL3-static ${XBE_GLSLANG_LIBS} ${sha1_file}
+            $<TARGET_NAME_IF_EXISTS:xbe_dlss>
         COMMENT "Staging the ${os} player kit for ${target} in ${pkg}"
         VERBATIM)
 endfunction()

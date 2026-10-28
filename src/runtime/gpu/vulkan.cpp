@@ -24,6 +24,7 @@
 #include <glslang/Public/ResourceLimits.h>
 #include <glslang/Public/ShaderLang.h>
 
+#include "gpu/dlss.h"
 #include "gpu/dxgi_formats.h"
 
 #include <algorithm>
@@ -58,6 +59,9 @@
 #endif
 
 #include <smmintrin.h>
+#ifndef _WIN32
+#include <dlfcn.h>
+#endif
 
 #include "app/app.h"
 #include "core/diag.h"
@@ -573,6 +577,41 @@ float4 outline(O i) : SV_Target {
 }
 )";
 
+// XBE_MOTION_VIEW: a picture's motion vectors (t1, UV units) over it (t0), against the picture shown before it (t2).
+// size: picture width and height; opts: the view, then the jitter of the picture before less this one's, in UV units.
+// View 1 colours the motion by its direction, fully at 8 pixels or more, over the picture in grey; 2 takes the picture
+// before along the motion and shows in red where it differs from this one (right motion: red only where the picture
+// itself changed, light, particles, things uncovered); 3 does the same without the motion, to compare 2 with
+const char* kMotionViewHlsl = R"(
+cbuffer B : register(b1) { float4 size; float4 opts; };
+Texture2D now : register(t0);
+Texture2D mv : register(t1);
+Texture2D before : register(t2);
+SamplerState ls : register(s0);
+SamplerState ps : register(s1);
+struct O { float4 p : SV_Position; float2 uv : TEXCOORD0; };
+O vs(uint id : SV_VertexID) {
+    O o;
+    o.uv = float2((id << 1) & 2, id & 2);
+    o.p = float4(o.uv * float2(2, -2) + float2(-1, 1), 0, 1);
+    return o;
+}
+float4 view(O i) : SV_Target {
+    float2 v = mv.SampleLevel(ps, i.uv, 0).xy;
+    float3 c = now.SampleLevel(ps, i.uv, 0).rgb;
+    float grey = dot(c, float3(0.3, 0.59, 0.11)) * 0.6;
+    if (opts.x < 1.5) {
+        float2 px = v * size.xy;
+        float len = length(px);
+        float3 dir = float3(0.5 + 0.5 * px / max(len, 1e-6), 0.5 - 0.5 * px.x / max(len, 1e-6));
+        return float4(lerp(grey.xxx, dir, saturate(len / 8)), 1);
+    }
+    float2 at = i.uv + opts.yz + (opts.x < 2.5 ? v : 0);
+    float3 b = before.SampleLevel(ls, at, 0).rgb;
+    return float4(lerp(grey.xxx, float3(1, 0, 0), saturate(length(c - b) * 4)), 1);
+}
+)";
+
 // SMAA (gpu/smaa_hlsl.h) in its custom shading language mode, a source per pass (SmaaHlsl). No texture is handed to a
 // function: SMAA's texture arguments become unused uints and its sampling macros read the global of the argument's
 // name, which the pass declares.
@@ -791,6 +830,7 @@ VkFormat VkFormatOf(uint32_t dxgi) {
     switch (dxgi) {
         case DXGI_FORMAT_R32_FLOAT: return VK_FORMAT_R32_SFLOAT;
         case DXGI_FORMAT_R32G32_FLOAT: return VK_FORMAT_R32G32_SFLOAT;
+        case DXGI_FORMAT_R16G16_FLOAT: return VK_FORMAT_R16G16_SFLOAT;
         case DXGI_FORMAT_R32G32B32_FLOAT: return VK_FORMAT_R32G32B32_SFLOAT;
         case DXGI_FORMAT_R32G32B32A32_FLOAT: return VK_FORMAT_R32G32B32A32_SFLOAT;
         case DXGI_FORMAT_B8G8R8A8_UNORM: return VK_FORMAT_B8G8R8A8_UNORM;
@@ -1252,6 +1292,71 @@ bool SameTexture(const Tex& tx, const TextureDesc& d) {
            tx.d.depth == d.depth && tx.d.levels == d.levels && tx.d.cube == d.cube && tx.d.pitch == d.pitch;
 }
 
+// XBE_MOTION_VIEW=1..3: motion vectors for the frame's pictures, shown over them (kMotionViewHlsl); 0 when unset
+int MotionView() {
+    static const int view = [] {
+        const char* e = std::getenv("XBE_MOTION_VIEW");
+        return e ? std::clamp(std::atoi(e), 0, 3) : 0;
+    }();
+    return view;
+}
+
+bool MotionWanted() { return MotionView() != 0; }
+
+void DlssLog(const char* line) { LOGI("%s", line); }
+
+// the DLSS module beside the executable (gpu/dlss.h), null when it isn't there or is of another version
+const XbeDlssApi* LoadDlss() {
+#ifdef _WIN32
+    HMODULE m = LoadLibraryW((app::ExeDir() / L"xbe_dlss.dll").c_str());
+    if (!m) {
+        LOGI("dlss: no DLSS module beside the game (xbe_dlss.dll, error %lu)", GetLastError());
+        return nullptr;
+    }
+    auto get = reinterpret_cast<PFN_xbe_dlss_api>(reinterpret_cast<void*>(GetProcAddress(m, XBE_DLSS_API_EXPORT)));
+#else
+    void* m = dlopen((app::ExeDir() / "libxbe_dlss.so").c_str(), RTLD_NOW | RTLD_LOCAL);
+    if (!m) {
+        LOGI("dlss: no DLSS module beside the game (%s)", dlerror());
+        return nullptr;
+    }
+    auto get = reinterpret_cast<PFN_xbe_dlss_api>(dlsym(m, XBE_DLSS_API_EXPORT));
+#endif
+    const XbeDlssApi* api = get ? get(XBE_DLSS_API_VERSION) : nullptr;
+    if (!api) LOGW("dlss: the DLSS module beside the game is of another version");
+    return api;
+}
+
+// the names the list has all of, among the extensions there are
+bool HasAll(const std::vector<VkExtensionProperties>& there, uint32_t n, const char* const* names) {
+    for (uint32_t i = 0; i < n; i++) {
+        bool found = false;
+        for (const VkExtensionProperties& e : there) found = found || std::strcmp(e.extensionName, names[i]) == 0;
+        if (!found) {
+            LOGI("dlss: %s missing", names[i]);
+            return false;
+        }
+    }
+    return true;
+}
+
+// names added to the list once each
+void AddNames(std::vector<const char*>& list, uint32_t n, const char* const* names) {
+    for (uint32_t i = 0; i < n; i++)
+        if (std::none_of(list.begin(), list.end(), [&](const char* e) { return std::strcmp(e, names[i]) == 0; }))
+            list.push_back(names[i]);
+}
+
+// Halton's sequence in base b at i, from 1: low discrepancy, the jitter's offsets
+float Halton(uint32_t i, uint32_t b) {
+    float f = 1, r = 0;
+    for (; i; i /= b) {
+        f /= float(b);
+        r += f * float(i % b);
+    }
+    return r;
+}
+
 class VulkanBackend final : public Backend {
 public:
     ~VulkanBackend() override;
@@ -1291,12 +1396,18 @@ public:
         pass_serial_ = skip_to_ = 0;
         kept_run_next_ = kept_draw_next_ = 0;
         as_drawn_ = false;
+        // a picture drawn again is its slot's until the next one starts (its Between, its motion pass)
+        if (on) pic_slot_ = replays_++;
     }
     bool Skips() const override { return replay_ && pass_serial_ + 1 <= skip_to_; }  // as Draw's first check
     void AsDrawn(bool same) override { as_drawn_ = same; }
     void Pass() override {
         if (replay_) pass_serial_++;
     }
+    bool Motion() override;
+    void MotionPass(bool on, uint32_t slot) override;
+    void DrawMotion(const State& s, const Before& before, uint32_t prim, uint32_t start, uint32_t count,
+                    const uint8_t* indices) override;
     // XBE_INTERP_RECORD: the pictures shown, kept at the console's size w x h, and F4's saving of them
     void RecordPictures(const std::vector<Image*>& sources, const std::vector<std::string>& notes, uint32_t w, uint32_t h);
     void SaveRecorded();
@@ -1351,6 +1462,7 @@ private:
         bool ok = false;
         bool clamp = false;
         uint32_t aniso = 0, samplers_made = 0;
+        float bias = 0;  // lod_bias_
         VkImageView view[4] = {};
         VkSampler smp[4] = {};
     };
@@ -1408,6 +1520,31 @@ private:
     void TrackView(const State& s);
     bool ReadsFrame(const State& s);
     void ApplyOcclusion();
+    // motion vectors (Motion): the frame's depth kept for the motion pass of the picture being drawn, as the 3D left
+    // it; the sub-pixel offset of a picture slot's 3D draws (Jittering), in host pixels; the debug views
+    // (XBE_MOTION_VIEW) over the pictures Present shows, their slots beside them
+    void KeepMotionDepth();
+    bool MotionOn() const { return MotionWanted() || upscale_; }
+    bool Jittering() const;
+    std::array<float, 2> Jitter(uint32_t slot) const;
+    // the frame's 3D, jittered for a temporal upscaler; never its 2D or the passes over it (bound_rt_ bound)
+    std::array<float, 2> DrawJitter(bool flat) const {
+        if (flat || !bound_rt_ || bound_rt_->gw != guest_w_ || bound_rt_->gh != guest_h_) return {};
+        return Jitter(pic_slot_);
+    }
+    void ShowMotion(std::vector<Image*>& shows, const std::vector<Image*>& sources,
+                    const std::vector<uint32_t>& slots);
+    // DLSS (app::Settings::upscaler): the module's extensions on the instance and device, whether it upscales the
+    // frame to come (NGX started the first time it does), the size it upscales to, the render scale that takes, and
+    // each picture upscaled in its place (last: the frame's own upscaled, for Redisplay)
+    void AddDlssInstanceExtensions(std::vector<const char*>& exts);
+    void AddDlssDeviceExtensions(std::vector<const char*>& exts);
+    void UpdateUpscaler();
+    VkExtent2D PictureExtent() const;
+    app::Scale UpscaleScale();
+    bool EnsureDlss(uint32_t w, uint32_t h, uint32_t out_w, uint32_t out_h);
+    void Upscale(std::vector<Image*>& shows, const std::vector<Image*>& sources,
+                 const std::vector<uint32_t>& slots, ImageRef& last);
     bool EnsureSmaaTextures();
     // Draw, in call order, each callee right after its caller
     bool DepthCopy(const State& s);
@@ -1707,6 +1844,7 @@ private:
         bool ok = false;
         bool surface = false;  // blends and tests depth without writing it: a draw like it may be a g_surface_depth one
         bool solid = false;    // a 3D draw to the effects (TrackPost): one like it, in its state, is one too
+        std::array<float, 2> jitter{};  // its viewport's offset (Jitter)
         ConstReads reads;
         bool quad = false;
         DrawTextures stages{};
@@ -1973,6 +2111,44 @@ private:
         uint32_t w = 0, h = 0;
         std::string note;
     };
+    // motion vectors (Motion): the picture slot the draws are for (Pictures() - 1 the frame's own, else the drawing
+    // again's turn, replays_ so far this frame); per slot, the frame-sized target its 3D drew to, its depth as the 3D
+    // left it (taken: presents_ + 1 of the frame it was taken in), the motion pass's velocity over it in UV units and
+    // the frame it drew it in (drawn, presents_ + 1); the motion pass under way and its slot. The frame's 3D target and
+    // depth as TrackPost saw them; the motion pass's shaders and pipelines by key; the jitter the draw takes. The debug
+    // views' pictures, the last picture shown and its jitter; the pictures shown before this frame's (Jitter's count)
+    uint32_t pic_slot_ = 0, replays_ = 0;
+    struct MotionSlot {
+        uint32_t rt = 0;
+        ImageRef depth, velocity;
+        uint64_t taken = 0, drawn = 0;
+    };
+    std::array<MotionSlot, kMaxGen> motion_;
+    bool motion_pass_ = false;
+    uint32_t motion_slot_ = 0;
+    Surface motion_rs_{}, motion_zs_{};
+    bool motion_z_ = false;
+    std::unordered_map<uint64_t, const Spirv*> motion_shaders_;
+    std::unordered_map<uint64_t, VkPipeline> motion_psos_;
+    std::array<float, 2> jitter_{};
+    std::array<ImageRef, kMaxGen> motion_view_;
+    ImageRef motion_before_;
+    std::array<float, 2> motion_before_jitter_{};
+    uint64_t shown_base_ = 0;
+    uint32_t jitter_phases_ = 16;  // Jitter's cycle
+    // DLSS: the module, whether the device has its extensions, NGX started (1) or failed to (-1), whether the frame's
+    // pictures are upscaled, the upscaler as made (w, h, out w, out h, quality + 1, all 0 for none), the pictures it
+    // made, what a picture without 3D reads for depth and motion, a picture's next evaluation starting afresh, and the
+    // texture LOD bias the render size takes
+    const XbeDlssApi* dlss_ = nullptr;
+    bool dlss_device_ = false;
+    int dlss_init_ = 0;
+    bool upscale_ = false;
+    std::array<uint32_t, 5> dlss_made_{};
+    std::array<ImageRef, kMaxGen> dlss_out_;
+    ImageRef dlss_still_depth_, dlss_still_motion_;
+    bool dlss_reset_ = true;
+    float lod_bias_ = 0;
     std::vector<Recorded> recorded_;  // a ring, the next written at recorded_next_
     uint64_t recorded_next_ = 0;
     // without vsync a picture past the frame's first has its time from when the GPU finished the first (after, its
@@ -2022,6 +2198,7 @@ VulkanBackend::~VulkanBackend() {
     lmw_.wake.notify_all();
     if (lmw_.thread.joinable()) lmw_.thread.join();
     if (dev_) vkDeviceWaitIdle(dev_);
+    if (dlss_ && dlss_init_ > 0) dlss_->shutdown();
     if (ui_) ImGui_ImplVulkan_Shutdown();
     if (cap_) fclose(cap_);
     // every image and buffer before the allocator
@@ -2037,6 +2214,12 @@ VulkanBackend::~VulkanBackend() {
     dummy_cube_.reset();
     dummy_depth_.reset();
     lut_.reset();
+    motion_ = {};
+    motion_view_ = {};
+    motion_before_.reset();
+    dlss_out_ = {};
+    dlss_still_depth_.reset();
+    dlss_still_motion_.reset();
     for (auto& f : frames_) {
         f.garbage.clear();
         f.upload.reset();
@@ -2045,7 +2228,7 @@ VulkanBackend::~VulkanBackend() {
         }
         if (f.pool) vkDestroyCommandPool(dev_, f.pool, nullptr);
     }
-    for (auto* m : {&psos_, &blit_psos_, &warm_.psos}) {
+    for (auto* m : {&psos_, &blit_psos_, &warm_.psos, &motion_psos_}) {
         for (auto& [key, p] : *m) {
             if (p) vkDestroyPipeline(dev_, p, nullptr);
         }
@@ -2098,6 +2281,7 @@ bool VulkanBackend::CreateInstance() {
             if (!std::strcmp(e.extensionName, VK_EXT_SWAPCHAIN_COLOR_SPACE_EXTENSION_NAME))
                 exts.push_back(VK_EXT_SWAPCHAIN_COLOR_SPACE_EXTENSION_NAME);
     }
+    AddDlssInstanceExtensions(exts);
     bool debug = std::getenv("XBE_VULKAN_DEBUG") != nullptr;
     const char* validation = "VK_LAYER_KHRONOS_validation";
     if (debug) exts.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
@@ -2374,6 +2558,7 @@ bool VulkanBackend::CreateDevice() {
                 exts.push_back(e);
         }
     }
+    AddDlssDeviceExtensions(exts);
     VkDeviceCreateInfo ci{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, &f};
     ci.queueCreateInfoCount = 1;
     ci.pQueueCreateInfos = &qi;
@@ -2679,7 +2864,9 @@ bool VulkanBackend::InitUi() {
 }
 
 void VulkanBackend::LoadSettings() {
-    scale_ = app::RenderScale(guest_w_, guest_h_);
+    UpdateUpscaler();
+    const app::Scale upscaled = UpscaleScale();
+    scale_ = upscaled.x > 0 ? upscaled : app::RenderScale(guest_w_, guest_h_);
     msaa_ = WantSamples();
 }
 
@@ -3021,6 +3208,8 @@ bool VulkanBackend::CreateTargetResource(Target& t) {
 
 // msaa samples, 1 when off
 uint32_t VulkanBackend::WantSamples() const {
+    // the motion pass tests the depth a pixel at a time
+    if (MotionOn()) return 1;
     uint32_t n = app::Get().msaa;
     return n == 2 || n == 4 || n == 8 ? n : 1;
 }
@@ -4508,7 +4697,8 @@ void VulkanBackend::SetTextureViewsAndSamplers(const State& s, const Assembled& 
     bool clamp = UnitTexcoords(s, a);
     uint32_t aniso = app::Get().aniso;
     const ViewsAndSamplers* f = same_state;
-    if (!f || !f->ok || f->clamp != clamp || f->aniso != aniso || f->samplers_made != samplers_made_) {
+    if (!f || !f->ok || f->clamp != clamp || f->aniso != aniso || f->samplers_made != samplers_made_ ||
+        f->bias != lod_bias_) {
         FillViewsAndSamplers(s, stages, clamp, aniso);
         f = &filled_;
     }
@@ -4525,7 +4715,7 @@ void VulkanBackend::SetTextureViewsAndSamplers(const State& s, const Assembled& 
 
 // filled_ for the stages: each one's view (a dummy of its kind without one) and its sampler
 void VulkanBackend::FillViewsAndSamplers(const State& s, const DrawTextures& stages, bool clamp, uint32_t aniso) {
-    filled_ = {true, clamp, aniso, samplers_made_};
+    filled_ = {true, clamp, aniso, samplers_made_, lod_bias_};
     for (int i = 0; i < 4; i++) {
         const TexInfo& info = stages.info[i];
         VkImageView v = stages.res[i] ? stages.view[i] : VK_NULL_HANDLE;
@@ -4536,7 +4726,10 @@ void VulkanBackend::FillViewsAndSamplers(const State& s, const DrawTextures& sta
                                         : dummy_2d_->view;
         }
         filled_.view[i] = v;
-        filled_.smp[i] = EnsureSampler(StageSampler(s, i, stages, clamp, aniso));
+        // textures, not targets, sampled as for the output's size when upscaled
+        SamplerDesc sd = StageSampler(s, i, stages, clamp, aniso);
+        if (!stages.rt[i]) sd.bias += lod_bias_;
+        filled_.smp[i] = EnsureSampler(sd);
         // a sampler cache that started over for this one leaves the stages before it from the old one
         if (filled_.samplers_made != samplers_made_) filled_.ok = false;
     }
@@ -4567,8 +4760,8 @@ void VulkanBackend::SetViewportScissor(const State& s, GuestExtent size) {
     y0 = std::clamp<int32_t>(y0, 0, int32_t(H));
     x1 = std::clamp<int32_t>(x1, 0, int32_t(W));
     y1 = std::clamp<int32_t>(y1, 0, int32_t(H));
-    // as SetViewport and SetScissor make them
-    VkViewport vp{vx, H, vw, -H, 0, 1};
+    // as SetViewport and SetScissor make them, moved by the draw's jitter
+    VkViewport vp{vx + jitter_[0], H + jitter_[1], vw, -H, 0, 1};
     VkRect2D r{{x0, y0}, {uint32_t(std::max(x1 - x0, 0)), uint32_t(std::max(y1 - y0, 0))}};
     if (drawn_.view && std::memcmp(&vp, &drawn_.vp, sizeof(vp)) == 0 && std::memcmp(&r, &drawn_.sc, sizeof(r)) == 0)
         return;
@@ -4791,6 +4984,7 @@ bool VulkanBackend::ReuseRun(const State& s) {
         drawn_.b = b;
         drawn_.bound = true;
     }
+    jitter_ = kept_.jitter;
     SetViewportScissor(s, kept_.size);
     SetBlendFactorStencilRef(s);
     vkCmdBindVertexBuffers2(cmd_, 0, r.buffers, r.bufs, r.offs, r.sizes, r.strides);
@@ -4890,6 +5084,7 @@ bool VulkanBackend::ReuseDraw(const State& s) {
         drawn_.b = b;
         drawn_.bound = true;
     }
+    jitter_ = DrawJitter(r.flat);  // the picture's own, not the frame's
     SetViewportScissor(s, r.kept.size);
     SetBlendFactorStencilRef(s);
     const Geometry& g = r.g;
@@ -5093,7 +5288,7 @@ bool VulkanBackend::PostWanted() const {
     return set.smaa || set.film_grain || set.chromatic_aberration ||
            (set.ambient_occlusion && g_view_constants.viewport >= 0) ||
            (set.motion_blur && g_view_constants.camera >= 0) || HdrExpand() ||
-           g_outlines.load(std::memory_order_relaxed);
+           g_outlines.load(std::memory_order_relaxed) || MotionOn();
 }
 
 bool VulkanBackend::ScreenSpaceDraw(const State& s, const Assembled& a) {
@@ -5297,6 +5492,11 @@ void VulkanBackend::TrackPost(const State& s, bool flat) {
         pt.solid++;
         post_rt_ = rt->data;
         TrackView(s);
+        if (s.rs[kRsZEnable]) {
+            motion_rs_ = s.rt;
+            motion_zs_ = s.zs;
+            motion_z_ = true;
+        }
         return;
     }
     if (post_rt_ != rt->data) {
@@ -5360,6 +5560,7 @@ bool VulkanBackend::ReadsFrame(const State& s) {
 // the occlusion's passes over the frame, by the depth buffer its last 3D draw with a view tested
 void VulkanBackend::ApplyOcclusion() {
     occlusion_done_ = true;
+    KeepMotionDepth();
     const app::Settings& set = app::Get();
     if (!set.ambient_occlusion || !view_ok_) return;
     Target* t = FindTarget(post_surf_, false);
@@ -5409,6 +5610,403 @@ void VulkanBackend::ApplyOcclusion() {
     run("blurx", kBgra, blur, hw, hh, &occ, z->res.get());
     run("blury", kBgra, occ, hw, hh, &blur, z->res.get());
     run("apply", t->fmt, *t->res, t->w, t->h, &frame, &occ);
+}
+
+bool VulkanBackend::Motion() { return MotionOn(); }
+
+// for an upscaler; XBE_JITTER=1 with XBE_MOTION_VIEW too, to see it without one
+bool VulkanBackend::Jittering() const {
+    static const bool on = std::getenv("XBE_JITTER") != nullptr;
+    return upscale_ || (on && MotionWanted());
+}
+
+// each picture shown takes the next point of Halton's (2, 3) in a cycle of jitter_phases_, within half a pixel each
+// way
+std::array<float, 2> VulkanBackend::Jitter(uint32_t slot) const {
+    if (!Jittering()) return {};
+    uint32_t i = uint32_t((shown_base_ + slot) % jitter_phases_) + 1;
+    return {Halton(i, 2) - 0.5f, Halton(i, 3) - 0.5f};
+}
+
+// at the first 2D after the frame's 3D (ApplyOcclusion's time), which may clear the depth or draw over it, or as the
+// frame left it: once a picture
+void VulkanBackend::KeepMotionDepth() {
+    if (!MotionOn() || !motion_z_) return;
+    MotionSlot& m = motion_[pic_slot_ % kMaxGen];
+    if (m.taken == presents_ + 1) return;
+    Target* rt = FindTarget(motion_rs_, false);
+    Target* z = FindTarget(motion_zs_, true);
+    if (!rt || !z || !z->res || z->w != rt->w || z->h != rt->h) return;
+    ResolveSamples(*z);
+    if (!m.depth || m.depth->w != z->w || m.depth->h != z->h) {
+        if (m.depth) Retire(m.depth);
+        m.depth = NewImage({.fmt = depth_fmt_, .w = z->w, .h = z->h,
+                            .usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+                                     VK_IMAGE_USAGE_TRANSFER_DST_BIT});
+        if (!m.depth) return;
+    }
+    if (cap_) fprintf(cap_, "     note motion depth of %08X kept for picture slot %u\n", z->data, pic_slot_);
+    Transition(*z->res, kSrc);
+    Transition(*m.depth, kDst);
+    Barrier();
+    VkImageCopy r{};
+    r.srcSubresource = {z->res->aspect, 0, 0, 1};
+    r.dstSubresource = {m.depth->aspect, 0, 0, 1};
+    r.extent = {z->w, z->h, 1};
+    vkCmdCopyImage(cmd_, z->res->image, kSrc, m.depth->image, kDst, 1, &r);
+    m.rt = rt->data;
+    m.taken = presents_ + 1;
+}
+
+void VulkanBackend::MotionPass(bool on, uint32_t slot) {
+    FlushRun();
+    EndRendering();
+    ForgetDrawCmd();
+    kept_.ok = false;
+    bound_rt_ = bound_ds_ = nullptr;
+    jitter_ = {};
+    motion_pass_ = false;
+    if (!on) return;
+    slot %= kMaxGen;
+    // a frame with no 2D after its 3D: its depth as it left it
+    if (slot == pic_slot_ % kMaxGen) KeepMotionDepth();
+    MotionSlot& m = motion_[slot];
+    if (m.taken != presents_ + 1) return;
+    if (!m.velocity || m.velocity->w != m.depth->w || m.velocity->h != m.depth->h) {
+        if (m.velocity) Retire(m.velocity);
+        m.velocity = NewImage({.fmt = VK_FORMAT_R16G16_SFLOAT, .w = m.depth->w, .h = m.depth->h,
+                               .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+                                        VK_IMAGE_USAGE_TRANSFER_DST_BIT});
+        if (!m.velocity) return;
+    }
+    ClearWhole(*m.velocity);  // what no draw covers stood still
+    motion_pass_ = true;
+    motion_slot_ = slot;
+    m.drawn = presents_ + 1;
+}
+
+namespace {
+
+// the motion pass's shaders' cache keys, apart from the draws' own
+constexpr uint64_t kMotionVertexSalt = 0x6D6F74696F6E5653ull;
+constexpr uint64_t kMotionPixelSalt = 0x6D6F74696F6E5053ull;
+constexpr uint32_t kCmpEqual = 0x202;  // D3DCMP_EQUAL
+
+}  // namespace
+
+// The draw again into the slot's velocity, tested against its depth as the 3D left it: equal where the draw wrote
+// depth (the shaders are precise; a g_surface_depth surface's depth pass wrote it too), its own test where it didn't
+// (a sky behind everything), none where it tests none (a sky drawn first). Only the opaque 3D: what blends without
+// writing depth, points and tessellated patches leave the motion of what's behind them
+void VulkanBackend::DrawMotion(const State& s, const Before& before, uint32_t prim, uint32_t start, uint32_t count,
+                               const uint8_t* indices) {
+    if (!motion_pass_ || !count) return;
+    MotionSlot& m = motion_[motion_slot_];
+    if (prim == kPrimPoints || FixedSprite(s, prim) || TessellatedDraw(s, prim)) return;
+    PsoKey k;
+    std::memset(&k, 0, sizeof(k));
+    KeyBlend(s, k);
+    bool zen = s.rs[kRsZEnable] != 0;
+    bool zwrite = zen && SimpleState(s, kMZWriteEnable) != 0;
+    if (k.blend && !zwrite && !(zen && SurfaceDepth(s, start, count, indices))) return;
+    if (k.blend) zwrite = true;
+    Target* rt = FindTarget(s.rt, false);
+    if (!rt || rt->data != m.rt) return;
+    Assembled& a = asm_;
+    if (!AssembleDraw(s, prim, start, count, indices, a, false) || ScreenSpaceDraw(s, a)) return;
+    DrawShaders sh;
+    ClassifyShaders(s, a, count, sh);
+    if (sh.quad || (!sh.prog && a.pretransformed)) return;
+    if (sh.prog) EnsureProgramHash(s);
+    sh.shading = DrawShading(s, sh);
+
+    uint64_t vkey = VertexKey(s, a, sh) ^ kMotionVertexSalt, hash;
+    auto vit = motion_shaders_.find(vkey);
+    if (vit == motion_shaders_.end()) {
+        std::string src = MotionVertexHlsl(MakeVertexEntry(s, a, sh), DrawProgram(s, sh));
+        vit = motion_shaders_.emplace(vkey, Compile(src, "main", "vs_5_0", hash)).first;
+    }
+    sh.vs_code = vit->second;
+
+    // the stages for its alpha tests and discards; the draw's targets are not bound
+    DrawTextures stages{};
+    draw_rt_ = draw_ds_ = nullptr;
+    stages.sampled = SampledStages(s);
+    for (int i = 0; i < 4; i++) stages.res[i] = BindTexture(s, i, stages);
+    PixelKey pk = MakePixelKey(s, stages.info);
+    pk.shading = sh.shading;
+    uint64_t pkey = Hash(&pk, sizeof(pk)) ^ kMotionPixelSalt;
+    auto pit = motion_shaders_.find(pkey);
+    if (pit == motion_shaders_.end())
+        pit = motion_shaders_.emplace(pkey, Compile(PixelHlsl(pk, true), "main", "ps_5_0", hash)).first;
+    sh.ps_code = pit->second;
+    if (!sh.vs_code || !sh.ps_code) return;
+
+    // the pipeline, its shaders by their keys: the velocity as its colour, the depth tested and kept, no blend or
+    // stencil
+    BuildPipelineKey(s, a, vkey, pkey, k);
+    KeyDepthStencil(s, a, k);
+    k.has_rt = k.has_ds = 1;
+    k.rtfmt = DXGI_FORMAT_R16G16_FLOAT;
+    k.samples = 1;
+    k.blend = k.src = k.dst = k.op = 0;
+    k.wmask = 0x3;
+    if (zwrite) k.zfunc = kCmpEqual;
+    k.zwrite = 0;
+    k.sten = k.sfunc = k.smask = k.swmask = k.sfail = k.szfail = k.spass = 0;
+    auto [pso, fresh] = motion_psos_.try_emplace(Hash(&k, sizeof(k)), VK_NULL_HANDLE);
+    if (fresh) {
+        pso->second = CreateDrawPipeline(k, *sh.vs_code, *sh.ps_code, nullptr);
+        if (!pso->second) LOGE("vulkan: motion pipeline creation failed");
+    }
+    if (!pso->second) return;
+
+    // the constants, then those the picture before had after them (cp), then its fixed function transform (mwvp)
+    GuestExtent size;
+    SurfaceSize(s.rt, size.w, size.h);
+    DrawConstants c{};
+    Bindings b;
+    UploadConstants(s, sh, k, stages, size, c, b);
+    constexpr size_t kVc = sizeof(s.vsc.v);
+    Alloc mc = Upload(kVc * 2 + sizeof(c.wvp));
+    std::memcpy(mc.cpu, s.vsc.data(), kVc);
+    std::memcpy(mc.cpu + kVc, s.vsc.data(), kVc);
+    auto* was = reinterpret_cast<std::array<float, 4>*>(mc.cpu + kVc);
+    for (const auto& [r, v] : before.vsc)
+        if (r < kConstRegs) was[r] = v;
+    std::memcpy(mc.cpu + kVc * 2, c.wvp, sizeof(c.wvp));
+    if (sh.fixed_transform && !before.xf.empty()) {
+        // the render thread's own state, its matrices the picture before's for the time it takes to work it out
+        State& w = const_cast<State&>(s);
+        static std::vector<std::pair<uint32_t, std::array<float, 16>>> put;
+        put.clear();
+        for (const auto& [i, mtx] : before.xf) {
+            put.emplace_back(i, w.transforms[i]);
+            w.transforms[i] = mtx;
+        }
+        DrawConstants pc{};
+        FillTransformConstants(w, size, pc);
+        for (const auto& [i, mtx] : put) w.transforms[i] = mtx;
+        std::memcpy(mc.cpu + kVc * 2, pc.wvp, sizeof(pc.wvp));
+    }
+    b.cb[0] = {mc.buf, mc.off, kVc * 2 + sizeof(c.wvp)};
+
+    SetTargets(m.velocity.get(), m.depth.get());
+    bound_rt_ = rt;  // the viewport's size, the velocity's
+    bound_ds_ = nullptr;
+    EnsureRendering();
+    if (pso->second != drawn_.pso) {
+        vkCmdBindPipeline(cmd_, VK_PIPELINE_BIND_POINT_GRAPHICS, pso->second);
+        drawn_.pso = pso->second;
+    }
+    SetTextureViewsAndSamplers(s, a, stages, b);
+    jitter_ = Jitter(motion_slot_);
+    SetViewportScissor(s, size);
+    SetBlendFactorStencilRef(s);
+    DrawGeometry(a);
+}
+
+// each picture with a motion pass drawn this frame through the view, in its place; then the last picture kept
+void VulkanBackend::ShowMotion(std::vector<Image*>& shows, const std::vector<Image*>& sources,
+                               const std::vector<uint32_t>& slots) {
+    for (size_t i = 0; i < sources.size(); i++) {
+        Image& now = *sources[i];
+        const MotionSlot& m = motion_[slots[i] % kMaxGen];
+        if (m.drawn != presents_ + 1 || !m.velocity || m.velocity->w != now.w || m.velocity->h != now.h) continue;
+        Image* before = i ? sources[i - 1] : motion_before_.get();
+        std::array<float, 2> jb = i ? Jitter(slots[i - 1]) : motion_before_jitter_;
+        if (!before || before->w != now.w || before->h != now.h) before = &now;
+        std::array<float, 2> jn = Jitter(slots[i]);
+        ImageRef& out = motion_view_[i % kMaxGen];
+        if (!out || out->w != now.w || out->h != now.h) {
+            if (out) Retire(out);
+            out = NewImage({.w = now.w, .h = now.h,
+                            .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT});
+            if (!out) continue;
+        }
+        for (Image* im : {&now, m.velocity.get(), before}) Transition(*im, kRead);
+        const VkImageView views[3] = {now.view, m.velocity->view, before->view};
+        float p[8] = {float(now.w), float(now.h), 0, 0,
+                      float(MotionView()), (jb[0] - jn[0]) / float(now.w), (jb[1] - jn[1]) / float(now.h), 0};
+        Pass(kMotionViewHlsl, "view", kBgra, *out, now.w, now.h, views, p, -1);
+        Transition(*out, kRead);
+        shows[i] = out.get();
+    }
+    Image& last = *sources.back();
+    if (!motion_before_ || motion_before_->w != last.w || motion_before_->h != last.h) {
+        if (motion_before_) Retire(motion_before_);
+        motion_before_ = NewImage({.w = last.w, .h = last.h,
+                                   .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT});
+        if (!motion_before_) return;
+    }
+    Transition(last, kRead);
+    SetBlitTarget(*motion_before_, last.w, last.h);
+    float uv[4] = {0, 0, 1, 1};
+    Blit(last.view, uv, {.alpha = true});
+    Transition(*motion_before_, kRead);
+    motion_before_jitter_ = Jitter(slots.back());
+}
+
+// the module, if it is beside the game, and the instance extensions NGX needs when the loader has them all: before
+// the instance, so DLSS can be turned on later without a restart
+void VulkanBackend::AddDlssInstanceExtensions(std::vector<const char*>& exts) {
+    dlss_ = LoadDlss();
+    if (!dlss_) {
+        g_dlss_state = 3;
+        return;
+    }
+    static const std::wstring library = app::ExeDir().wstring(), data = app::StateDir().wstring();
+    dlss_->setup(DlssLog, library.c_str(), data.c_str());
+    uint32_t n = 0;
+    const char* const* names = nullptr;
+    if (!dlss_->instance_extensions(&n, &names)) {
+        dlss_ = nullptr;
+        return;
+    }
+    uint32_t count = 0;
+    vkEnumerateInstanceExtensionProperties(nullptr, &count, nullptr);
+    std::vector<VkExtensionProperties> there(count);
+    vkEnumerateInstanceExtensionProperties(nullptr, &count, there.data());
+    if (!HasAll(there, n, names)) {
+        dlss_ = nullptr;
+        return;
+    }
+    AddNames(exts, n, names);
+}
+
+// the device extensions NGX needs, when the GPU has them all: DLSS is there (g_dlss_state)
+void VulkanBackend::AddDlssDeviceExtensions(std::vector<const char*>& exts) {
+    if (!dlss_) return;
+    uint32_t n = 0;
+    const char* const* names = nullptr;
+    if (!dlss_->device_extensions(inst_, phys_, &n, &names)) return;
+    uint32_t count = 0;
+    vkEnumerateDeviceExtensionProperties(phys_, nullptr, &count, nullptr);
+    std::vector<VkExtensionProperties> there(count);
+    vkEnumerateDeviceExtensionProperties(phys_, nullptr, &count, there.data());
+    if (!HasAll(there, n, names)) return;
+    AddNames(exts, n, names);
+    dlss_device_ = true;
+    g_dlss_state = 1;
+}
+
+// whether the frame to come is upscaled: DLSS asked for and there, NGX started the first time; the LOD bias and the
+// jitter's cycle for the sizes it takes
+void VulkanBackend::UpdateUpscaler() {
+    bool want = app::Get().upscaler == "dlss" && dlss_ && dlss_device_ && dlss_init_ >= 0 && !minimised_;
+    if (want && !dlss_init_) {
+        dlss_init_ = dlss_->init(inst_, phys_, dev_, vkGetInstanceProcAddr, vkGetDeviceProcAddr) ? 1 : -1;
+        if (dlss_init_ < 0) g_dlss_state = 2;
+        else LOGI("dlss: NGX started");
+        want = dlss_init_ > 0;
+    }
+    if (want != upscale_) {
+        upscale_ = want;
+        dlss_reset_ = true;
+        LOGI("dlss: %s", want ? "upscaling" : "off");
+    }
+}
+
+// the render scale DLSS asks for the picture's size at its quality, {0, 0} when not upscaling: the frame drawn at the
+// render size DLSS gives for the picture (its shape, as app::RenderScale's), upscaled to the picture
+app::Scale VulkanBackend::UpscaleScale() {
+    lod_bias_ = 0;
+    jitter_phases_ = 16;
+    if (!upscale_ || !guest_w_ || !guest_h_) return {0, 0};
+    VkExtent2D out = PictureExtent();
+    uint32_t w = 0, h = 0;
+    if (out.width < 32 || out.height < 32 ||
+        !dlss_->render_size(out.width, out.height, int(app::Get().upscaler_quality), &w, &h) || !w || !h)
+        return {0, 0};
+    const app::Scale scale{float(w) / float(guest_w_), float(h) / float(guest_h_)};
+    const float ratio = float(out.height) / float(h);
+    // NVIDIA's advice: textures as sharp as at the output's size, and 8 jitter phases per output pixel a render pixel
+    // covers
+    lod_bias_ = -std::log2(std::max(ratio, 1.0f));
+    jitter_phases_ = std::clamp(uint32_t(std::lround(8 * ratio * ratio)), 8u, 72u);
+    return scale;
+}
+
+// the upscaler made for these sizes, made again (the device idle) when they change; false when it can't be
+bool VulkanBackend::EnsureDlss(uint32_t w, uint32_t h, uint32_t out_w, uint32_t out_h) {
+    uint32_t quality = app::Get().upscaler_quality;
+    std::array<uint32_t, 5> want{w, h, out_w, out_h, quality + 1};
+    if (want == dlss_made_) return true;
+    if (dlss_made_[4]) {
+        Flush();
+        vkDeviceWaitIdle(dev_);
+        dlss_->release();
+    }
+    dlss_made_ = {};
+    EndRendering();
+    if (!dlss_->create(cmd_, w, h, out_w, out_h, int(quality))) return false;
+    ForgetDrawCmd();
+    dlss_made_ = want;
+    dlss_reset_ = true;
+    return true;
+}
+
+// each picture through DLSS at the picture's size, in the order they are shown: its own depth and motion when its
+// motion pass drew them, else (no 3D) none, and no history either
+void VulkanBackend::Upscale(std::vector<Image*>& shows, const std::vector<Image*>& sources,
+                            const std::vector<uint32_t>& slots, ImageRef& last) {
+    VkExtent2D out = PictureExtent();
+    Image& first = *sources[0];
+    if (!EnsureDlss(first.w, first.h, out.width, out.height)) return;
+    // depth 1 and no motion, for pictures without 3D
+    if (!dlss_still_depth_ || dlss_still_depth_->w != first.w || dlss_still_depth_->h != first.h) {
+        for (ImageRef* r : {&dlss_still_depth_, &dlss_still_motion_})
+            if (*r) Retire(*r);
+        dlss_still_depth_ = NewImage({.fmt = depth_fmt_, .w = first.w, .h = first.h,
+                                      .usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+                                               VK_IMAGE_USAGE_TRANSFER_DST_BIT});
+        dlss_still_motion_ = NewImage({.fmt = VK_FORMAT_R16G16_SFLOAT, .w = first.w, .h = first.h,
+                                       .usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT});
+        if (!dlss_still_depth_ || !dlss_still_motion_) return;
+        ClearWhole(*dlss_still_depth_);
+        ClearWhole(*dlss_still_motion_);
+    }
+    for (size_t i = 0; i < sources.size(); i++) {
+        Image& color = *sources[i];
+        if (color.w != first.w || color.h != first.h) continue;
+        const MotionSlot& m = motion_[slots[i] % kMaxGen];
+        bool moved = m.drawn == presents_ + 1 && m.velocity && m.depth && m.velocity->w == color.w &&
+                     m.velocity->h == color.h;
+        Image& depth = moved ? *m.depth : *dlss_still_depth_;
+        Image& motion = moved ? *m.velocity : *dlss_still_motion_;
+        ImageRef& dst = dlss_out_[i % kMaxGen];
+        if (!dst || dst->w != out.width || dst->h != out.height) {
+            if (dst) Retire(dst);
+            dst = NewImage({.fmt = VK_FORMAT_R8G8B8A8_UNORM, .w = out.width, .h = out.height,
+                            .usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT});
+            if (!dst) return;
+        }
+        for (Image* im : {&color, &depth, &motion}) Transition(*im, kRead);
+        Transition(*dst, VK_IMAGE_LAYOUT_GENERAL);
+        Barrier();
+        // XBE_DLSS_JITTER=-1 hands DLSS the jitter the other way round, for finding which way it takes it
+        static const float sign = std::getenv("XBE_DLSS_JITTER") && std::atoi(std::getenv("XBE_DLSS_JITTER")) < 0 ? -1 : 1;
+        std::array<float, 2> jitter = moved ? Jitter(slots[i]) : std::array<float, 2>{};
+        jitter[0] *= sign;
+        jitter[1] *= sign;
+        XbeDlssEvaluate e{};
+        e.color = {color.image, color.view, color.format, VK_IMAGE_ASPECT_COLOR_BIT, color.w, color.h};
+        e.depth = {depth.image, depth.Sampled(), depth.format, VK_IMAGE_ASPECT_DEPTH_BIT, depth.w, depth.h};
+        e.motion = {motion.image, motion.view, motion.format, VK_IMAGE_ASPECT_COLOR_BIT, motion.w, motion.h};
+        e.output = {dst->image, dst->view, dst->format, VK_IMAGE_ASPECT_COLOR_BIT, dst->w, dst->h};
+        e.jitter[0] = jitter[0];
+        e.jitter[1] = jitter[1];
+        e.motion_scale[0] = float(color.w);
+        e.motion_scale[1] = float(color.h);
+        e.reset = dlss_reset_ || !moved;
+        bool ok = dlss_->evaluate(cmd_, &e);
+        ForgetDrawCmd();  // NGX bound its own pipeline and descriptors
+        if (!ok) continue;
+        dlss_reset_ = false;
+        Transition(*dst, kRead);
+        shows[i] = dst.get();
+        if (i + 1 == sources.size()) last = dst;
+    }
 }
 
 // SMAA's lookups as BGRA textures, made the first time SMAA runs
@@ -5475,7 +6073,7 @@ void VulkanBackend::ApplyPost(Target& t) {
     post_done_ = true;
     const app::Settings& set = app::Get();
     bool grade = set.film_grain || set.chromatic_aberration;
-    bool smaa = set.smaa;
+    bool smaa = set.smaa && !upscale_;  // an upscaler anti-aliases, from the jitter SMAA would smear
     float way[12];
     Target* z = nullptr;
     bool blur = MotionBlurWay(way);
@@ -5723,6 +6321,7 @@ void VulkanBackend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t
     if (!BindTargets(s)) return CountedSkip(s, "targets");
     // a 2D draw g_hud_split places isn't kept: a draw in the same state may lie in another group
     const bool hud = HudPlace(s, a, start, count, indices);
+    jitter_ = DrawJitter(flat);
     g_perf.d_setup += PerfLap(lap);
 
     // vertex shader
@@ -5913,6 +6512,7 @@ void VulkanBackend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t
         KeepDraw(a, sh, stages, pso, b, size);
         kept_.surface = k.blend && k.zen && !k.zwrite;
         kept_.solid = !flat;
+        kept_.jitter = jitter_;
         // for the frame's drawing again (ReuseDraw): a draw kept (a plain shading's too: per-pixel lighting, the
         // bloodbath's soldiers), its geometry bound as DrawGeometry left it
         if (!replay_ && !bound && !cap_ && Pictures() > 1) {
@@ -6033,6 +6633,7 @@ bool VulkanBackend::FastDraw(const State& s, uint32_t prim, uint32_t start, uint
     }
     Bindings b = kept_.b;
     SetTextureViewsAndSamplers(s, a, stages, b, &kept_.filled);
+    jitter_ = kept_.jitter;
     SetViewportScissor(s, kept_.size);
     SetBlendFactorStencilRef(s);
     // in the state the draws before it set: its geometry joins theirs, drawn with them later (a ground drawn a quad at
@@ -6356,6 +6957,14 @@ bool VulkanBackend::AcquireImage(uint32_t& bi, VkSemaphore acquired) {
     return true;
 }
 
+// the picture's size in the window as DrawFrame places it: 16:9 when the console reports a widescreen display, else
+// 4:3, or the shape a patched title draws, as large as fits
+VkExtent2D VulkanBackend::PictureExtent() const {
+    const float aspect = app::FrameAspect();
+    const float vw = std::min(float(bb_w_), float(bb_h_) * aspect);
+    return {std::max(1u, uint32_t(std::round(vw))), std::max(1u, uint32_t(std::round(vw / aspect)))};
+}
+
 // the overlay, once a frame: each of the frame's pictures draws it (DrawUi)
 void VulkanBackend::BuildUi() {
     std::lock_guard lock(app::UiLock());
@@ -6557,6 +7166,7 @@ void VulkanBackend::FinishFront(Target& t, ImageRef* mask) {
     post_rt_ = 0;
     post_done_ = false;
     occlusion_done_ = view_ok_ = many_views_ = false;
+    motion_z_ = false;
     ResolveSamples(t);
     Transition(*t.res, kRead);
     if (mask) MakeHdrMask(t, *mask);
@@ -6622,6 +7232,7 @@ bool VulkanBackend::KeepPicture(const Surface& front, uint32_t slot) {
 void VulkanBackend::Keep(const Surface& front) {
     FlushRun();
     gen_taken_ = 0;
+    replays_ = 0;
     gen_pics_.resize(Pictures());
     if (Target* t = EnsureTarget(front, false); t && LatchCpuWrite(*t)) UploadTarget(*t, front);
     KeepPicture(front, uint32_t(gen_pics_.size() - 1));
@@ -6798,6 +7409,7 @@ void VulkanBackend::Present(const Surface& front) {
     std::vector<std::string> notes;
     std::vector<Image*> masks;  // each source's highlights mask (MakeHdrMask), null without
     ImageRef last, last_mask;
+    std::vector<uint32_t> slots;
     if (!gen_pics_.empty() && (gen_taken_ >> (gen_pics_.size() - 1) & 1)) {
         for (size_t i = 0; i < gen_pics_.size(); i++) {
             if (!(gen_taken_ >> i & 1)) continue;
@@ -6805,6 +7417,7 @@ void VulkanBackend::Present(const Surface& front) {
             sources.push_back(gen_pics_[i].get());
             last_mask = i < gen_masks_.size() ? gen_masks_[i] : nullptr;
             masks.push_back(last_mask.get());
+            slots.push_back(uint32_t(i));
             notes.push_back(i + 1 < gen_pics_.size() ? interp::Note(uint32_t(i)) : "the frame's own");
             last = gen_pics_[i];
         }
@@ -6819,9 +7432,13 @@ void VulkanBackend::Present(const Surface& front) {
         sources.push_back(t->res.get());
         masks.push_back(front_mask_.get());
         last_mask = front_mask_;
+        slots.push_back(pic_slot_);
         notes.push_back("the frame's own, alone");
         last = t->res;
     }
+    // what each picture's DrawFrame shows: its source, or what DLSS or the motion view made of it
+    std::vector<Image*> shows = sources;
+    if (upscale_ && !MotionView() && !sources.empty()) Upscale(shows, sources, slots, last);
     // kept past a remade target or frame generation's pictures going, for Redisplay; the one before goes with this
     // frame's garbage, once the GPU is done with it
     if (shown_ != last) Retire(std::exchange(shown_, std::move(last)));
@@ -6831,6 +7448,7 @@ void VulkanBackend::Present(const Surface& front) {
     hdr_3d_rt_ = 0;
     occlusion_done_ = view_ok_ = many_views_ = false;
     if (t && interp::Recording()) RecordPictures(sources, notes, t->gw, t->gh);
+    if (MotionView() && !sources.empty()) ShowMotion(shows, sources, slots);
     if (pictures.empty()) pictures.push_back(VK_NULL_HANDLE);
     // the frame's pictures share out the time to the next frame, the first shown now; the time between frames is
     // measured
@@ -6850,7 +7468,7 @@ void VulkanBackend::Present(const Surface& front) {
         uint32_t bi = 0;
         if (!AcquireImage(bi, f.acquired[i])) break;
         BeginCommands(f.present[i]);
-        DrawFrame(i < sources.size() ? sources[i] : nullptr, bi, true, i < masks.size() ? masks[i] : nullptr);
+        DrawFrame(i < shows.size() ? shows[i] : nullptr, bi, true, i < masks.size() ? masks[i] : nullptr);
         Submit(false, f.acquired[i], present_sem_[bi]);
         if (!i) first = fence_value_;
         const auto offset = std::chrono::duration_cast<std::chrono::steady_clock::duration>(
@@ -6867,6 +7485,8 @@ void VulkanBackend::Present(const Surface& front) {
     presents_++;
     presents_seen_.store(presents_);
     frame_++;
+    shown_base_ += std::max<size_t>(sources.size(), 1);
+    pic_slot_ = Pictures() - 1;
     if (std::getenv("XBE_FRAME_LOG"))
         LOGI("frame %llu: %u draws, %u opaque, %u counted, %zu reports left", (unsigned long long)presents_,
              frame_draws_, frame_opaque_, frame_counted_, reports_.size());
@@ -6988,7 +7608,9 @@ void VulkanBackend::RemakeTargets(app::Scale scale, uint32_t samples) {
 }
 
 void VulkanBackend::ApplySettings() {
-    app::Scale want = app::RenderScale(guest_w_, guest_h_);
+    UpdateUpscaler();
+    const app::Scale upscaled = UpscaleScale();
+    const app::Scale want = upscaled.x > 0 ? upscaled : app::RenderScale(guest_w_, guest_h_);
     uint32_t samples = WantSamples();
     if (std::fabs(want.x - scale_.x) > 1e-4f || std::fabs(want.y - scale_.y) > 1e-4f || samples != msaa_) {
         Flush();

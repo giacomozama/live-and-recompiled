@@ -243,6 +243,8 @@ constexpr uint64_t kRecordLayout = kRecordRevision << 48 | uint64_t(sizeof(Pixel
 uint64_t RecordLayout();
 // program: the words v.program names, unused without one
 std::string VertexHlsl(const shader_record::VertexEntry& v, const std::vector<uint32_t>& program);
+// the motion pass's vertex shader for the draw (VertexProgramHlsl's motion), never a screen quad's
+std::string MotionVertexHlsl(const shader_record::VertexEntry& v, const std::vector<uint32_t>& program);
 
 // a draw's shaders: what they are made from, their cache keys and the hashes the compiles returned
 struct ShaderChoice {

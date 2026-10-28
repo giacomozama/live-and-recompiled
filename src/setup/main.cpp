@@ -110,6 +110,7 @@ struct Kit {
     std::vector<fs::path> include;
     std::vector<std::string> driver;  // the compiler's own first arguments (zig's "c++"), before every command
     std::vector<std::string> cxxflags, ldflags, libs;
+    std::vector<fs::path> files;                  // put beside the game as it is (the DLSS module and NVIDIA's library)
     fs::path toolchain;                           // work/toolchain/<os>-<host>, cxx is in it
     std::string toolchain_archive, toolchain_sha256;  // [toolchain.<host>]: the compiler's archive inside the kit, and its checksum
     std::string Game() const { return target == "windows" ? exe + ".exe" : exe; }
@@ -299,6 +300,7 @@ bool LoadKit(const fs::path& kit_dir, Kit& k, std::string& error) {
     k.cxxflags = Strings(o["cxxflags"]);
     k.ldflags = Strings(o["ldflags"]);
     for (auto& s : Strings(o["libs"])) k.libs.push_back(s.rfind("-", 0) == 0 ? s : (kit_dir / s).generic_string());
+    for (auto& s : Strings(o["files"])) k.files.push_back(kit_dir / s);
     k.toolchain_archive = o["toolchain"][kHost]["archive"].value_or(std::string());
     k.toolchain_sha256 = o["toolchain"][kHost]["sha256"].value_or(std::string());
     if (k.exe.empty() || k.xbe.empty() || k.sha1.size() != 40) {
@@ -1107,6 +1109,9 @@ bool Build(const Options& opt) {
     if (opt.portable) {
         std::ofstream(game_dir / "portable.txt").put('\n');
     }
+    // what goes beside the game; without it the game runs all the same, without what it brings (DLSS)
+    for (auto& f : k.files)
+        if (!Place(f, game_dir / f.filename())) Say("  (the game runs without %s)\n", f.filename().string().c_str());
 
     // the generated code and objects are the title's code: only kept when asked for
     finish();

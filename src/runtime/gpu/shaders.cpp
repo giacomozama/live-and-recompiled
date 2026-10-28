@@ -41,9 +41,12 @@ struct VOut {
     float fogamt : TEXCOORD4;
     float psize : TEXCOORD6;  // a point's size in console pixels, PointHlsl reads it
 )";
-const char* kCommonMid = R"(};
-cbuffer VC : register(b0) { float4 c[192]; };
-cbuffer DC : register(b1) {
+// a motion pass's shaders (MotionVertexHlsl) hand on the position as drawn and as the picture before had it, in clip
+// space, and read the constants the picture before had as cp, the fixed function's transform as mwvp
+const char* kMotionOut = "    float4 mcur : TEXCOORD8;\n    float4 mprev : TEXCOORD9;\n";
+const char* kVc = "};\ncbuffer VC : register(b0) { float4 c[192]; };\n";
+const char* kMotionVc = "};\ncbuffer VC : register(b0) { float4 c[192]; float4 cp[192]; float4x4 mwvp; };\n";
+const char* kCommonMid = R"(cbuffer DC : register(b1) {
     float4 surf;
     float4 fogp;
     float4 fogcolor;
@@ -75,9 +78,11 @@ const ShaderHooks& Hooks() {
 const ProgramShading& Shading(uint32_t shading) { return g_program_shading[shading - 1]; }
 
 // a ProgramShading's shaders (shading set) hand on two more values and take DrawConstants::xc and xs
-std::string Common(uint32_t shading = 0) {
+std::string Common(uint32_t shading = 0, bool motion = false) {
     std::string s = kCommonHead;
     if (shading) s += "    float4 x0 : TEXCOORD5;\n    float4 x1 : TEXCOORD7;\n";
+    if (motion) s += kMotionOut;
+    s += motion ? kMotionVc : kVc;
     s += kCommonMid + Hooks().Constants() + kCommonTail;
     if (shading) s += "    float4 xc;\n    float4 xs[20];\n";
     s += "};\n";
@@ -137,8 +142,8 @@ const char* kMask[16] = {"", "w", "z", "zw", "y", "yw", "yz", "yzw", "x", "xw", 
 const char* kLanes[5] = {"", "x", "xy", "xyz", "xyzw"};  // oFog takes one lane per mask bit, from x
 const char* kOut[16] = {"oPos", "", "", "oD0", "oD1", "oFog", "oPts", "oB0", "oB1", "oT0", "oT1", "oT2", "oT3", "", "", ""};
 
-// operand A 0, B 1, C 2
-std::string Src(const Tok& k, int which, uint16_t regs) {
+// operand A 0, B 1, C 2; the temporaries and a0 named with pre in front, the constants read from consts
+std::string Src(const Tok& k, int which, uint16_t regs, const char* pre, const char* consts) {
     uint32_t neg, sw[4], reg, mux;
     if (which == 0) {
         neg = k.f(1, 8, 1);
@@ -158,13 +163,13 @@ std::string Src(const Tok& k, int which, uint16_t regs) {
     // mux: 1 temporary (R12 reads oPos), 2 input, 3 constant
     std::string base;
     if (mux == 1) {
-        base = reg == 12 ? "oPos" : F("R%u", reg);
+        base = reg == 12 ? F("%soPos", pre) : F("%sR%u", pre, reg);
     } else if (mux == 2) {
         uint32_t v = k.f(1, 9, 4);
         base = (regs >> v) & 1 ? F("i.v%u", v) : (v == 3 ? "float4(1,1,1,1)" : "float4(0,0,0,1)");
     } else {
         uint32_t cr = k.f(1, 13, 8);
-        base = k.f(3, 1, 1) ? F("c[clamp(a0 + %u, 0, 191)]", cr) : F("c[%u]", cr);
+        base = k.f(3, 1, 1) ? F("%s[clamp(%sa0 + %u, 0, 191)]", consts, pre, cr) : F("%s[%u]", consts, cr);
     }
     const char* xyzw = "xyzw";
     std::string s = F("(%s(%s).%c%c%c%c)", neg ? "-" : "", base.c_str(), xyzw[sw[0]], xyzw[sw[1]], xyzw[sw[2]], xyzw[sw[3]]);
@@ -205,7 +210,7 @@ std::string IluExpr(uint32_t op, const std::string& c) {
     }
 }
 
-std::string RegDest(uint32_t r) { return r == 12 ? "oPos" : F("R%u", r); }
+std::string RegDest(uint32_t r, const char* pre) { return r == 12 ? F("%soPos", pre) : F("%sR%u", pre, r); }
 
 std::string VsInputStruct(uint16_t regs) {
     std::string s = "struct VIn {\n";
@@ -281,6 +286,20 @@ const char* kVsPrologue = R"(
     precise float4 oPos = 0;
     float4 oD0 = float4(0, 0, 0, 1), oD1 = 0, oB0 = float4(0, 0, 0, 1), oB1 = 0, oFog = 0, oPts = 1;
     float4 oT0 = float4(0, 0, 0, 1), oT1 = float4(0, 0, 0, 1), oT2 = float4(0, 0, 0, 1), oT3 = float4(0, 0, 0, 1);
+)";
+
+// the program again on the constants of the picture before, for its position alone: registers of its own (m in front)
+const char* kVsMotionPrologue = R"(
+    int ma0 = 0;
+    precise float4 mR0 = 0, mR1 = 0, mR2 = 0, mR3 = 0, mR4 = 0, mR5 = 0, mR6 = 0, mR7 = 0, mR8 = 0, mR9 = 0, mR10 = 0, mR11 = 0;
+    precise float4 moPos = 0;
+)";
+// both positions to clip space as the epilogue takes oPos (q), without its pull of a pass's far edges
+const char* kVsMotionEpilogue = R"(
+    precise float4 mp = moPos;
+    mp.w = magclamp(mp.w);
+    o.mcur = q;
+    o.mprev = float4((mp.x * 2 / surf.x - 1) * mp.w, (1 - mp.y * 2 / surf.y) * mp.w, 0, mp.w);
 )";
 
 // combiners
@@ -625,6 +644,49 @@ std::string FfOp(uint32_t op, const std::string& a1, const std::string& a2, cons
     }
 }
 
+// the program's instructions: temporaries and a0 named with pre in front, constants read from consts; outputs false
+// writes oPos (pre's) alone. fog: whether it writes oFog
+std::string ProgramBody(const std::vector<uint32_t>& prog, uint16_t regs, const char* pre, const char* consts,
+                        bool outputs, bool& fog) {
+    std::string s;
+    for (size_t n = 0; n + 4 <= prog.size(); n += 4) {
+        Tok k{&prog[n]};
+        uint32_t mac = k.f(1, 21, 4), ilu = k.f(1, 25, 3);
+        if (mac || ilu) {
+            std::string a = Src(k, 0, regs, pre, consts), b = Src(k, 1, regs, pre, consts),
+                        c = Src(k, 2, regs, pre, consts);
+            s += "    {\n";
+            if (mac) s += "        precise float4 mr = " + MacExpr(mac, a, b, c) + ";\n";
+            if (ilu) s += "        precise float4 ir = " + IluExpr(ilu, c) + ";\n";
+            uint32_t r = k.f(3, 20, 4), omask = k.f(3, 12, 4);
+            if (mac == 13) {
+                s += F("        %sa0 = mac_arl(mr.x);\n", pre);
+            } else if (mac) {
+                uint32_t m = k.f(3, 24, 4);
+                if (ilu && r == 1) m = 0;
+                if (m && r <= 12) s += F("        %s.%s = mr.%s;\n", RegDest(r, pre).c_str(), kMask[m], kMask[m]);
+            }
+            if (ilu) {
+                uint32_t m = k.f(3, 16, 4), ir = mac ? 1 : r;
+                if (m && ir <= 12) s += F("        %s.%s = ir.%s;\n", RegDest(ir, pre).c_str(), kMask[m], kMask[m]);
+            }
+            bool use_ilu = k.f(3, 2, 1) == 1;
+            if (omask && k.f(3, 11, 1) && ((use_ilu && ilu) || (!use_ilu && mac && mac != 13))) {
+                uint32_t o = k.f(3, 3, 8) & 0xF;
+                const char* src = use_ilu ? "ir" : "mr";
+                fog |= o == 5;
+                if (kOut[o][0] && (outputs || o == 0)) {
+                    const char* msk = o == 5 ? kLanes[std::popcount(omask)] : kMask[omask];
+                    s += F("        %s%s.%s = %s.%s;\n", o == 0 ? pre : "", kOut[o], msk, src, msk);
+                }
+            }
+            s += "    }\n";
+        }
+        if (k.f(3, 0, 1)) break;  // last instruction
+    }
+    return s;
+}
+
 }  // namespace
 
 bool PixelKey::operator==(const PixelKey& o) const { return std::memcmp(this, &o, sizeof(*this)) == 0; }
@@ -748,47 +810,21 @@ PixelKey MakePixelKey(const State& s, const TexInfo tex[4]) {
     return k;
 }
 
-std::string VertexProgramHlsl(const std::vector<uint32_t>& prog, uint16_t regs, uint64_t decode, uint32_t shading) {
-    std::string s = Common(shading);
+std::string VertexProgramHlsl(const std::vector<uint32_t>& prog, uint16_t regs, uint64_t decode, uint32_t shading,
+                              bool motion) {
+    std::string s = Common(shading, motion);
     s += kVsHelpers;
     s += VsInputs(regs, decode);
     s += kVsPrologue;
     bool fog = false;  // the program writes oFog
-    for (size_t n = 0; n + 4 <= prog.size(); n += 4) {
-        Tok k{&prog[n]};
-        uint32_t mac = k.f(1, 21, 4), ilu = k.f(1, 25, 3);
-        if (mac || ilu) {
-            std::string a = Src(k, 0, regs), b = Src(k, 1, regs), c = Src(k, 2, regs);
-            s += "    {\n";
-            if (mac) s += "        precise float4 mr = " + MacExpr(mac, a, b, c) + ";\n";
-            if (ilu) s += "        precise float4 ir = " + IluExpr(ilu, c) + ";\n";
-            uint32_t r = k.f(3, 20, 4), omask = k.f(3, 12, 4);
-            if (mac == 13) {
-                s += "        a0 = mac_arl(mr.x);\n";
-            } else if (mac) {
-                uint32_t m = k.f(3, 24, 4);
-                if (ilu && r == 1) m = 0;
-                if (m && r <= 12) s += F("        %s.%s = mr.%s;\n", RegDest(r).c_str(), kMask[m], kMask[m]);
-            }
-            if (ilu) {
-                uint32_t m = k.f(3, 16, 4), ir = mac ? 1 : r;
-                if (m && ir <= 12) s += F("        %s.%s = ir.%s;\n", RegDest(ir).c_str(), kMask[m], kMask[m]);
-            }
-            bool use_ilu = k.f(3, 2, 1) == 1;
-            if (omask && k.f(3, 11, 1) && ((use_ilu && ilu) || (!use_ilu && mac && mac != 13))) {
-                uint32_t o = k.f(3, 3, 8) & 0xF;
-                const char* src = use_ilu ? "ir" : "mr";
-                fog |= o == 5;
-                if (kOut[o][0]) {
-                    const char* msk = o == 5 ? kLanes[std::popcount(omask)] : kMask[omask];
-                    s += F("        %s.%s = %s.%s;\n", kOut[o], msk, src, msk);
-                }
-            }
-            s += "    }\n";
-        }
-        if (k.f(3, 0, 1)) break;  // last instruction
+    s += ProgramBody(prog, regs, "", "c", true, fog);
+    if (motion) {
+        bool unused = false;
+        s += kVsMotionPrologue;
+        s += ProgramBody(prog, regs, "m", "cp", false, unused);
     }
     s += kVsEpilogue;
+    if (motion) s += kVsMotionEpilogue;
     // a program that never writes oFog leaves its draws unfogged: Conker's blood drops (point sprites) are drawn with
     // the vertex fog the library pushes for D3DFOG_NONE, which on a zero oFog came out flat fog color
     if (!fog) s += "    o.fogamt = 1;\n";
@@ -931,8 +967,9 @@ FixedKey MakeFixedKey(const State& s) {
 }
 
 // D3D's fixed function vertex pipeline: transform, lighting in view space, texture coordinate generation and transforms
-std::string FixedVertexHlsl(uint16_t regs, bool pretransformed, uint64_t decode, const FixedKey& f) {
-    std::string s = Common();
+std::string FixedVertexHlsl(uint16_t regs, bool pretransformed, uint64_t decode, const FixedKey& f, bool motion) {
+    motion = motion && !pretransformed;
+    std::string s = Common(0, motion);
     s += kVsHelpers;
     s += VsInputs(regs, decode);
     s += kVsPrologue;
@@ -945,6 +982,7 @@ std::string FixedVertexHlsl(uint16_t regs, bool pretransformed, uint64_t decode,
     } else {
         s += "    float4 ip = float4(" + v(0, "float4(0,0,0,1)") + ".xyz, 1);\n";
         s += "    float4 cp = mul(ip, wvp);\n";
+        if (motion) s += "    float4 mcp = mul(ip, mwvp);\n";
         s += "    float3 vp = mul(ip, wv).xyz;\n";
         s += "    float3 vn = mul(float4(" + v(2, "float4(0,0,0,0)") + ".xyz, 0), wvn).xyz;\n";
         if (f.light & 8) s += "    vn = dot(vn, vn) > 0 ? normalize(vn) : vn;\n";
@@ -1018,6 +1056,9 @@ std::string FixedVertexHlsl(uint16_t regs, bool pretransformed, uint64_t decode,
     s += "    oPts.x = pts.y ? pts.x * pts.y * rsqrt(max(ptsk.x + ptsk.y * de + ptsk.z * de * de, 1e-20)) : pts.x;\n";
     s += R"(
     VOut o;
+)";
+    if (motion) s += "    o.mcur = cp;\n    o.mprev = mcp;\n";
+    s += R"(
     // like the pretransformed ones, target sized passes end half a console pixel short of the far edges
     float2 sp = (float2(cp.x, -cp.y) / cp.w + 1) * 0.5 * surf.xy;
     if (surf.w == 0 && abs(sp.x - (surf.x - 0.5)) < 1e-3) cp.x = cp.w;
@@ -1039,8 +1080,9 @@ std::string FixedVertexHlsl(uint16_t regs, bool pretransformed, uint64_t decode,
     return s;
 }
 
-std::string PixelHlsl(const PixelKey& k) {
-    std::string s = Common(k.shading);
+std::string PixelHlsl(const PixelKey& k, bool motion) {
+    motion = motion && !k.quad;
+    std::string s = Common(k.shading, motion);
     s += PsHelpers();
     bool soft = k.shading && Shading(k.shading).soft;
     if (soft) s += kPsSoftAlphaTest;
@@ -1050,7 +1092,7 @@ std::string PixelHlsl(const PixelKey& k) {
         s += F("%s tex%d : register(t%d);\n%s smp%d : register(s%d);\n", type, i, i, t.shadow ? "SamplerComparisonState" : "SamplerState", i, i);
         if (t.kind == kTex2D && !t.shadow && (t.flags & kTexWide)) s += SpreadTap(i);
     }
-    s += F("float4 main(VOut i, bool front : SV_IsFrontFace) : SV_Target {\n");
+    s += motion ? "float4 shade(VOut i, bool front) {\n" : "float4 main(VOut i, bool front : SV_IsFrontFace) : SV_Target {\n";
     s += "    float4 tc0 = i.tc0, tc1 = i.tc1, tc2 = i.tc2, tc3 = i.tc3;\n";
     s += k.two_sided ? "    float4 v0 = front ? i.d0 : i.b0, v1 = front ? i.d1 : i.b1;\n" : "    float4 v0 = i.d0, v1 = i.d1;\n";
     s += "    if (misc.w == 0) v1 = float4(0, 0, 0, 1);\n";
@@ -1167,6 +1209,15 @@ std::string PixelHlsl(const PixelKey& k) {
     if (k.depth_pass) body += F("if (outc.a < %g) discard;\n", std::bit_cast<float>(k.depth_pass));
     body += Hooks().Output() + "return outc;\n}\n";
     s += body;
+    // the motion pass: the draw's shading for its discards alone, then where the pixel was in the picture before, in
+    // UV units from where it is now (y down)
+    if (motion)
+        s += R"(float2 main(VOut i, bool front : SV_IsFrontFace) : SV_Target {
+    shade(i, front);
+    float2 now = i.mcur.xy / i.mcur.w, before = i.mprev.xy / i.mprev.w;
+    return (before - now) * float2(0.5, -0.5);
+}
+)";
     return k.quad ? QuadHlsl(std::move(s)) : s;
 }
 

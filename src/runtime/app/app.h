@@ -29,6 +29,10 @@ struct Settings {
     DisplayMode display_mode = DisplayMode::Borderless;
     uint32_t width = 0, height = 0;  // 0 is the desktop mode
     uint32_t render_percent = 100;   // of the size the frame is shown at (RenderScale)
+    // a temporal upscaler over the frame's pictures, which then sets the render size itself: "off", or "dlss" (an
+    // NVIDIA RTX GPU, with the DLSS module beside the game); its quality, XbeDlssQuality (gpu/dlss.h)
+    std::string upscaler = "off";
+    uint32_t upscaler_quality = 1;
     uint32_t fps_cap = 60;           // 0 unlimited
     bool vsync = true;
     // HDR output (an HDR10 swap chain, where the display and compositor offer one): the SDR picture shown with its

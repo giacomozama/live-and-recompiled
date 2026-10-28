@@ -2100,13 +2100,32 @@ void Draw(double fps) {
                 }
 
                 if (Section("quality")) {
-                    Slider("render", &s.render_percent, 25, 200, app::Settings{}.render_percent);
-                    Check("amd_fsr_1", &s.fsr);
-                    Hint("hint_amd_fidelityfx_super_resolution_edge", true);
-                    if (s.fsr) {
-                        Slider("fsr_sharpness", &s.fsr_sharpness, 0, 100, app::Settings{}.fsr_sharpness);
-                        Slider("fur_sharpness", &s.fur_sharpness, 0, 100, app::Settings{}.fur_sharpness);
-                        Hint("hint_how_much_of_fsr_s", true);
+                    // DLSS while it is there or already chosen; it sets the render size itself, so the render size
+                    // and FSR 1 step aside while it is on
+                    const int dlss_state = gpu::g_dlss_state.load();
+                    bool dlss = s.upscaler == "dlss";
+                    ImGui::BeginDisabled(dlss_state != 1 && !dlss);
+                    if (Check("nvidia_dlss", &dlss)) s.upscaler = dlss ? "dlss" : "off";
+                    ImGui::EndDisabled();
+                    Hint(dlss_state == 3   ? "hint_the_dlss_files_aren_t"
+                         : dlss_state == 2 ? "hint_dlss_failed_to_start_on"
+                         : dlss_state == 1 ? "hint_dlss_renders_fewer_pixels_and"
+                                           : "hint_dlss_needs_an_nvidia_rtx",
+                         true);
+                    if (dlss) {
+                        int quality = int(std::min<uint32_t>(s.upscaler_quality, 4));
+                        if (Segmented("dlss_quality", &quality,
+                                      {"dlaa", "quality", "balanced", "performance", "ultra_performance"}))
+                            s.upscaler_quality = uint32_t(quality);
+                    } else {
+                        Slider("render", &s.render_percent, 25, 200, app::Settings{}.render_percent);
+                        Check("amd_fsr_1", &s.fsr);
+                        Hint("hint_amd_fidelityfx_super_resolution_edge", true);
+                        if (s.fsr) {
+                            Slider("fsr_sharpness", &s.fsr_sharpness, 0, 100, app::Settings{}.fsr_sharpness);
+                            Slider("fur_sharpness", &s.fur_sharpness, 0, 100, app::Settings{}.fur_sharpness);
+                            Hint("hint_how_much_of_fsr_s", true);
+                        }
                     }
                     constexpr uint32_t kRates[] = {30, 60, 120, 180, 240, 0};
                     int rate = 0;

@@ -2048,7 +2048,8 @@ bool OffscreenKept() {
     return kept;
 }
 
-Blended BlendDraw(uint32_t n, float t, State& s, Undo& undo) {
+// k: the leader's blend kept for its followers, of pass (g_kept and g_pass_id for the pictures drawn again)
+Blended BlendDraw(uint32_t n, float t, State& s, Undo& undo, Kept& k, uint32_t pass) {
     const Frame& cur = g_frames[g_cur];
     if (n >= cur.snaps.size()) return BlendLeader(n, t, s, undo);
     uint32_t leader = cur.snaps[n].leader >= 0 ? uint32_t(cur.snaps[n].leader) : n;
@@ -2057,8 +2058,7 @@ Blended BlendDraw(uint32_t n, float t, State& s, Undo& undo) {
         if (g_pass.on) g_pass.draws++, g_pass.offscreen++;
         return Blended::kNotFound;
     }
-    Kept& k = g_kept;
-    if (leader != n && k.pass == g_pass_id && k.leader == leader) {
+    if (leader != n && k.pass == pass && k.leader == leader) {
         for (const auto& [r, v] : k.vsc) {
             undo.vsc.emplace_back(r, s.vsc.v[r]);
             s.vsc.v[r] = v;
@@ -2087,7 +2087,7 @@ Blended BlendDraw(uint32_t n, float t, State& s, Undo& undo) {
     uint32_t unfound = g_pass.unfound, jumped = g_pass.jumped, borrowed = g_pass.borrowed, across = g_pass.across,
              kept = g_pass.kept, second = g_pass.second, tagged = g_pass.tagged, by_tag = g_pass.by_tag;
     Blended how = BlendLeader(n, t, s, undo);
-    k.pass = g_pass_id;
+    k.pass = pass;
     k.leader = leader;
     k.how = how;
     k.judged = false;
@@ -2107,7 +2107,7 @@ Blended BlendDraw(uint32_t n, float t, State& s, Undo& undo) {
 }
 
 Blended Blend(uint32_t n, float t, State& s, Undo& undo) {
-    Blended how = BlendDraw(n, t, s, undo);
+    Blended how = BlendDraw(n, t, s, undo, g_kept, g_pass_id);
     g_sus.last = false;
     Frame& cur = g_frames[g_cur];
     if (!g_sus.on || n >= cur.snaps.size()) return how;
@@ -2135,6 +2135,19 @@ Blended Blend(uint32_t n, float t, State& s, Undo& undo) {
     for (size_t i = 0; i < 4; i++)
         if ((why >> i & 1) && g_sus.by[i]++ < kLines)
             g_sus.lines[i] += SuspectLine(at, prev, sn) + (i == 3 ? ", jumped" : "");
+    return how;
+}
+
+// the motion passes' own kept blends, one per t they take, and their own pass ids
+Kept g_motion_kept[2];
+uint32_t g_motion_id = 0;
+
+void BeginMotion() { g_motion_id++; }
+
+Blended At(uint32_t n, float t, uint32_t slot, State& s, Undo& undo) {
+    bool on = std::exchange(g_pass.on, false);
+    Blended how = BlendDraw(n, t, s, undo, g_motion_kept[slot & 1], g_motion_id);
+    g_pass.on = on;
     return how;
 }
 

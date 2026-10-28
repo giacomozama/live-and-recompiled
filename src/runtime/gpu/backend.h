@@ -1,14 +1,22 @@
 #pragma once
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "gpu/state.h"
 
 namespace gpu {
+
+// a draw's vertex constants and fixed function transforms in the picture before, where they differ from its own
+struct Before {
+    std::vector<std::pair<uint32_t, std::array<float, 4>>> vsc;
+    std::vector<std::pair<uint32_t, std::array<float, 16>>> xf;
+};
 
 // D3DCLEAR flags as the XDK defines them
 enum : uint32_t {
@@ -59,6 +67,14 @@ public:
     // drawing again, before a Draw: true, the draw is the frame's own but for the constants blended for the picture;
     // false, its vertices or other state were changed for it too
     virtual void AsDrawn(bool /*same*/) {}
+    // motion vectors, for a temporal upscaler: Motion says the backend wants them for each of the frame's pictures.
+    // Between MotionPass(true, slot) and MotionPass(false, slot) the frame's draws come again through DrawMotion, at
+    // the picture's own t, each with what its constants were in the picture shown before it (Before). slot numbers
+    // the frame's pictures as Keep and Between do: Pictures() - 1 its own, i - 1 Between's i
+    virtual bool Motion() { return false; }
+    virtual void MotionPass(bool /*on*/, uint32_t /*slot*/) {}
+    virtual void DrawMotion(const State& /*s*/, const Before& /*before*/, uint32_t /*prim*/, uint32_t /*start*/,
+                            uint32_t /*count*/, const uint8_t* /*indices*/) {}
     // the CPU is about to touch this resource's memory: write GPU results back first
     virtual void Sync(uint32_t data_va, uint32_t size) = 0;
     // a lock that does not wait for the GPU (NOOVERWRITE): a result a frame or two old is what the console gives too
@@ -117,6 +133,10 @@ inline std::atomic<uint64_t> g_perf_wait_kind_ns[6];  // read-back, resource, fe
 inline std::atomic<uint64_t> g_perf_sync_late{0}, g_perf_sync_block{0};  // read-backs the title waited for, by cause
 // XBE_PERF: the title thread's draw recording in TSC cycles: state compared, headers copied, command, uses, handover
 inline std::atomic<uint64_t> g_perf_rec_cycles[5];
+
+// DLSS as the renderer found it, for the menu: 0 not there (no NVIDIA RTX GPU or driver for it), 1 there, 2 there
+// but failed to start, 3 no DLSS module beside the game (the log says why)
+inline std::atomic<int> g_dlss_state{0};
 
 // F3: save the next frame, every draw and target, under diag::CaptureDir
 inline std::atomic<bool> g_capture{false};

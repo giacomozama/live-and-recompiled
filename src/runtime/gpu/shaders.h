@@ -232,8 +232,10 @@ PixelKey MakePixelKey(const State& s, const TexInfo tex[4]);
 // vertex program microcode to HLSL, regs is the bit mask of v registers the draw supplies
 // decode: VertexDecode per register, 4 bits each, for elements the input assembler hands over raw
 // shading: a g_program_shading entry, 1 based, 0 none
+// motion: the motion pass's shader, which also runs the program on the constants the picture before had (cp, after c
+// in b0) and hands on both positions, for the pixel shader PixelHlsl makes with motion
 std::string VertexProgramHlsl(const std::vector<uint32_t>& program, uint16_t regs, uint64_t decode = 0,
-                              uint32_t shading = 0);
+                              uint32_t shading = 0, bool motion = false);
 // the g_program_shading entries a program matches, bit i for entry i + 1 (the first 64), whether they are on or not
 uint64_t MatchProgramShading(const std::vector<uint32_t>& program);
 // the g_program_watch entries a program matches, bit i for entry i (the first 64): each sees the draw
@@ -258,8 +260,13 @@ struct FixedKey {
     uint32_t tex[4] = {};  // per stage: coordinate set, texgen at bit 4, D3DTTFF count at bit 8, projected bit 11, set size at bit 12
 };
 FixedKey MakeFixedKey(const State& s);
-std::string FixedVertexHlsl(uint16_t regs, bool pretransformed, uint64_t decode = 0, const FixedKey& f = {});
-std::string PixelHlsl(const PixelKey& k);
+// motion: as VertexProgramHlsl's, the transform the picture before had in mwvp (after cp in b0); none for vertices
+// already on the screen
+std::string FixedVertexHlsl(uint16_t regs, bool pretransformed, uint64_t decode = 0, const FixedKey& f = {},
+                            bool motion = false);
+// motion: the motion pass's (not for a screen quad), which discards as the draw does and writes the pixel's motion
+// as two floats: where it was in the picture before less where it is, in UV units
+std::string PixelHlsl(const PixelKey& k, bool motion = false);
 // a screen quad's vertex or pixel shader: texture coordinates as the quad was drawn, before its far edges were pulled out
 std::string QuadHlsl(std::string s);
 // the geometry shader that draws a point as a square of its size, a point sprite with stage 3 spanning it

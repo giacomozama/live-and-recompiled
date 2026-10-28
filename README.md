@@ -113,3 +113,13 @@ See [BUILDING.md](BUILDING.md).
 This project is licensed under the GNU General Public License, version 3 only (see [LICENSE](LICENSE)). The parts that
 come from Xbox XBE Recomp keep its MIT license, and the libraries it uses keep theirs (both in
 [THIRD_PARTY.txt](THIRD_PARTY.txt)). The game itself is not part of it.
+
+### Additional permission under GNU GPL version 3 section 7
+
+If you modify this Program, or any covered work, by linking or combining it with the NVIDIA DLSS SDK (or a modified
+version of that library), containing parts covered by the terms of the NVIDIA RTX SDKs License, the licensors of this
+Program grant you additional permission to convey the resulting work.
+
+The DLSS support uses this: the DLSS module (`src/dlss`, built as `xbe_dlss.dll` and `libxbe_dlss.so`) links NVIDIA's
+NGX library, and NVIDIA's DLSS library ships beside the game. Both of NVIDIA's are under NVIDIA's own terms
+(`NVIDIA_RTX_SDKS_LICENSE.txt` in the release), not this project's.

@@ -127,6 +127,11 @@ struct Undo {
 };
 enum class Blended { kNotFound, kJumped, kBorrowed, kYes };
 Blended Blend(uint32_t n, float t, State& s, Undo& undo);
+// Motion vectors (a temporal upscaler's): the frame's draw n at t as Blend takes it, counted in no picture's note.
+// Each motion pass begins with BeginMotion; slot (0 or 1) keeps apart the two t a pass asks each draw for, the
+// picture's own and the one before it
+void BeginMotion();
+Blended At(uint32_t n, float t, uint32_t slot, State& s, Undo& undo);
 // A 2D draw the game places on the CPU (a speech bubble, a marker over a character) moves in its vertices, not its
 // constants: the frame's draw n, after Blend came out how, drawn with its positions at t from the draw of the frame
 // before it was found as, when both are small, untagged and laid out alike. s's stream then reads a copy in the ring
