@@ -192,6 +192,9 @@ struct Snap {
     uint16_t stride = 0, offset = 0;
     uint8_t stream = 0, type = 0;
     bool indexed = false;
+    // why its kept vertices are drawn as the frame has them and not moved part way (Settle): null to move them, ""
+    // for a reason not worth a watch line
+    const char* still = "";
 };
 
 static_assert(std::is_trivially_destructible_v<Snap>, "a frame's snaps cleared without a destructor each");
@@ -674,6 +677,115 @@ void KeepVertices(Frame& cur, Snap& sn, const State& s, uint32_t start, uint32_t
     sn.indexed = indices != nullptr;
     const uint8_t* src = static_cast<const uint8_t*>(kernel::HostPtr(va + first * at.stride));
     AppendBytes(cur.raw, src, bytes);
+}
+
+// the draw of the frame before a draw with kept vertices is moved from: the one it was found as; a follower's, the
+// draw as far on from its leader's. Null when there is none, or it read other vertices
+const Snap* MovedFrom(const Frame& prev, const Frame& cur, uint32_t n) {
+    const Snap& sn = cur.snaps[n];
+    const Snap* was = nullptr;
+    if (sn.leader < 0) {
+        if (sn.found >= 0) was = &prev.snaps[size_t(sn.found)];
+    } else if (int32_t lf = cur.snaps[size_t(sn.leader)].found; lf >= 0) {
+        size_t q = size_t(lf) + (n - uint32_t(sn.leader));
+        if (q < prev.snaps.size() && prev.snaps[q].leader == lf) was = &prev.snaps[q];
+    }
+    if (!was || was->verts != sn.verts || was->stride != sn.stride || was->offset != sn.offset || was->type != sn.type)
+        return nullptr;
+    return was;
+}
+
+// Whether a draw's kept vertices may move part way from was's, and the box they cover in either frame. Only the same
+// sprite carried along whole. A 2D draw's constants never change, so it was found by its turn alone, and that pairs it
+// with another sprite whenever the frame's turns shift: a loading bar's blocks, a block taken part way toward its
+// neighbour, were drawn scrambled (capture 214722 pics 114-116). So all but its positions the same, byte for byte
+// (texture coordinates, colours), and every vertex moved by the same step: a sprite that changes its shape (the
+// peephole's circle, closing) went part way while what fits around it didn't, showing the scene through the seams
+// (capture 214710 pic 70). A step further than the draw's reach is a jump (a bubble shown somewhere else)
+struct SpriteBox {
+    uint32_t n = 0, target = 0;
+    std::array<float, 2> lo{}, hi{};
+    float slack = 0;
+    bool shaped = false;  // held for its shape: the sprites it touches are held with it (Settle)
+};
+const char* Judge(const Frame& prev, const Frame& cur, const Snap& sn, const Snap& was, SpriteBox& box) {
+    uint32_t comps = sn.type >> 4, pos_end = sn.offset + comps * 4;
+    const uint8_t* ra = prev.raw.data() + was.raw_at;
+    const uint8_t* rb = cur.raw.data() + sn.raw_at;
+    const uint8_t* a = ra + sn.offset;
+    const uint8_t* b = rb + sn.offset;
+    for (uint32_t v = 0; v < sn.verts; v++) {
+        const uint8_t* va = ra + v * sn.stride;
+        const uint8_t* vb = rb + v * sn.stride;
+        if (std::memcmp(va, vb, sn.offset) != 0 || std::memcmp(va + pos_end, vb + pos_end, sn.stride - pos_end) != 0)
+            return "other values than its position changed (another sprite)";
+    }
+    float reach = 0;
+    bool moved = false;
+    std::array<float, 4> step{};
+    box.lo.fill(INFINITY), box.hi.fill(-INFINITY);
+    for (uint32_t v = 0; v < sn.verts; v++)
+        for (uint32_t c = 0; c < comps; c++) {
+            float x, y;
+            std::memcpy(&x, a + v * sn.stride + c * 4, 4);
+            std::memcpy(&y, b + v * sn.stride + c * 4, 4);
+            if (!std::isfinite(x) || !std::isfinite(y)) return "not a number";
+            reach = Reach(Reach(reach, x), y);
+            moved |= x != y;
+            if (!v) step[c] = y - x;
+            if (c < 2) box.lo[c] = std::min({box.lo[c], x, y}), box.hi[c] = std::max({box.hi[c], x, y});
+        }
+    if (comps < 2) box.lo.fill(INFINITY), box.hi.fill(-INFINITY);  // no place on the screen: touches nothing
+    box.slack = 1e-4f * (1.0f + reach);
+    for (uint32_t v = 0; v < sn.verts; v++)
+        for (uint32_t c = 0; c < comps; c++) {
+            float x, y;
+            std::memcpy(&x, a + v * sn.stride + c * 4, 4);
+            std::memcpy(&y, b + v * sn.stride + c * 4, 4);
+            if (std::fabs((y - x) - step[c]) > box.slack) {
+                box.shaped = true;
+                return "not moved whole (its shape changed)";
+            }
+            if (Jumped(x, y, reach)) return "jumped";
+        }
+    return moved ? nullptr : "";
+}
+
+// The frame's draws with kept vertices judged once, before its pictures are drawn again (Snap::still). A sprite moved
+// whole that touches one held for its shape is held too, and so on along what touches it: the peephole is its circle
+// and four pieces fitting around it, and the circle carried along whole while the pieces shrank went part way from
+// them, a sliver of the scene through the seam (capture 132017 pics 66, 68, 74)
+void Settle(const Frame& prev, Frame& cur) {
+    static std::vector<SpriteBox> boxes;
+    boxes.clear();
+    for (uint32_t n = 0; n < cur.snaps.size(); n++) {
+        Snap& sn = cur.snaps[n];
+        if (!sn.verts) continue;
+        const Snap* was = MovedFrom(prev, cur, n);
+        SpriteBox box;
+        sn.still = was ? Judge(prev, cur, sn, *was, box) : "";
+        if (sn.still && !box.shaped) continue;
+        box.n = n;
+        box.target = sn.leader < 0 ? sn.target : cur.snaps[size_t(sn.leader)].target;
+        boxes.push_back(box);
+    }
+    auto touch = [](const SpriteBox& p, const SpriteBox& q) {
+        float e = std::max(p.slack, q.slack);
+        return p.target == q.target && p.lo[0] <= q.hi[0] + e && q.lo[0] <= p.hi[0] + e && p.lo[1] <= q.hi[1] + e &&
+               q.lo[1] <= p.hi[1] + e;
+    };
+    for (bool more = true; more;) {
+        more = false;
+        for (SpriteBox& p : boxes) {
+            if (p.shaped) continue;
+            for (const SpriteBox& q : boxes)
+                if (q.shaped && touch(p, q)) {
+                    p.shaped = more = true;
+                    cur.snaps[p.n].still = "beside a sprite held for its shape";
+                    break;
+                }
+        }
+    }
 }
 
 void Draw(const State& s, bool same, const Tag& tag, uint32_t prim, uint32_t start, uint32_t count,
@@ -1182,6 +1294,7 @@ void Match() {
         const Snap& sn = cur.snaps[i];
         if (sn.leader < 0 && sn.found >= 0 && sn.reads) cur.found_programmed.push_back(i);
     }
+    if (Moving()) Settle(prev, cur);
 }
 
 void Presented(uint32_t data) {
@@ -1891,69 +2004,22 @@ bool MoveVertices(uint32_t n, float t, Blended how, State& s, uint32_t& start, U
     if (!g_move_data || n >= cur.snaps.size() || how == Blended::kNotFound || how == Blended::kJumped) return false;
     const Snap& sn = cur.snaps[n];
     if (!sn.verts) return false;
-    // the draw of the frame before: the one it was found as; a follower's, the draw as far on from its leader's
-    const Snap* was = nullptr;
-    if (sn.leader < 0) {
-        if (sn.found >= 0) was = &prev.snaps[size_t(sn.found)];
-    } else if (int32_t lf = cur.snaps[size_t(sn.leader)].found; lf >= 0) {
-        size_t q = size_t(lf) + (n - uint32_t(sn.leader));
-        if (q < prev.snaps.size() && prev.snaps[q].leader == lf) was = &prev.snaps[q];
-    }
-    if (!was || was->verts != sn.verts || was->stride != sn.stride || was->offset != sn.offset ||
-        was->type != sn.type)
-        return false;
-    // Only the same sprite carried along whole. A 2D draw's constants never change, so it was found by its turn alone,
-    // and that pairs it with another sprite whenever the frame's turns shift: a loading bar's blocks, a block taken
-    // part way toward its neighbour, were drawn scrambled (capture 214722 pics 114-116). So all but its positions the
-    // same, byte for byte (texture coordinates, colours), and every vertex moved by the same step: a sprite that
-    // changes its shape (the peephole's circle, closing) went part way while what fits around it didn't, showing the
-    // scene through the seams (capture 214710 pic 70). A step further than the draw's reach is a jump (a bubble shown
-    // somewhere else). Otherwise the draw is drawn as the frame has it
-    uint32_t comps = sn.type >> 4, pos_end = sn.offset + comps * 4;
-    const uint8_t* ra = prev.raw.data() + was->raw_at;
-    const uint8_t* rb = cur.raw.data() + sn.raw_at;
-    const uint8_t* a = ra + sn.offset;
-    const uint8_t* b = rb + sn.offset;
+    // judged before the frame's pictures (Settle); a draw held, or with nothing to move, is drawn as the frame has it
+    const Snap* was = MovedFrom(prev, cur, n);
     bool watch = g_pass.on && Watched(ProgramOf(s));
-    auto keep = [&](const char* why) {
-        if (watch) {
+    if (!was || sn.still) {
+        if (watch && was && sn.still && *sn.still) {
             char line[160];
             snprintf(line, sizeof(line), "\n    draw %u program %016llX: %u vertices kept as the frame has them: %s", n,
-                     (unsigned long long)ProgramOf(s), sn.verts, why);
+                     (unsigned long long)ProgramOf(s), sn.verts, sn.still);
             g_pass.watched += line;
         }
         return false;
-    };
-    for (uint32_t v = 0; v < sn.verts; v++) {
-        const uint8_t* va = ra + v * sn.stride;
-        const uint8_t* vb = rb + v * sn.stride;
-        if (std::memcmp(va, vb, sn.offset) != 0 || std::memcmp(va + pos_end, vb + pos_end, sn.stride - pos_end) != 0)
-            return keep("other values than its position changed (another sprite)");
     }
-    float reach = 0;
-    bool moved = false;
+    uint32_t comps = sn.type >> 4;
+    const uint8_t* a = prev.raw.data() + was->raw_at + sn.offset;
+    const uint8_t* b = cur.raw.data() + sn.raw_at + sn.offset;
     std::array<float, 4> step{}, lo{}, hi{};
-    for (uint32_t v = 0; v < sn.verts; v++)
-        for (uint32_t c = 0; c < comps; c++) {
-            float x, y;
-            std::memcpy(&x, a + v * sn.stride + c * 4, 4);
-            std::memcpy(&y, b + v * sn.stride + c * 4, 4);
-            if (!std::isfinite(x) || !std::isfinite(y)) return keep("not a number");
-            reach = Reach(Reach(reach, x), y);
-            moved |= x != y;
-            if (!v) step[c] = y - x, lo[c] = hi[c] = y;
-            lo[c] = std::min(lo[c], y), hi[c] = std::max(hi[c], y);
-        }
-    if (!moved) return false;
-    const float slack = 1e-4f * (1.0f + reach);
-    for (uint32_t v = 0; v < sn.verts; v++)
-        for (uint32_t c = 0; c < comps; c++) {
-            float x, y;
-            std::memcpy(&x, a + v * sn.stride + c * 4, 4);
-            std::memcpy(&y, b + v * sn.stride + c * 4, 4);
-            if (std::fabs((y - x) - step[c]) > slack) return keep("not moved whole (its shape changed)");
-            if (Jumped(x, y, reach)) return keep("jumped");
-        }
     // this frame's vertices with their positions part way, and a header of the stream's pointing at them
     uint32_t bytes = sn.verts * sn.stride, room = (bytes + 63) & ~63u;
     if (room > g_move_data_size) return false;
@@ -1971,6 +2037,8 @@ bool MoveVertices(uint32_t n, float t, Blended how, State& s, uint32_t& start, U
             std::memcpy(&y, b + v * sn.stride + c * 4, 4);
             float z = x + (y - x) * t;
             std::memcpy(out + v * sn.stride + sn.offset + c * 4, &z, 4);
+            if (!v) step[c] = y - x, lo[c] = hi[c] = y;
+            lo[c] = std::min(lo[c], y), hi[c] = std::max(hi[c], y);
         }
     State::Stream& st = s.streams[sn.stream];
     std::memcpy(kernel::HostPtr(header), kernel::HostPtr(st.vb), kHeaderBytes);
