@@ -46,6 +46,11 @@ uint32_t TotalSize(const TextureDesc& d);
 void DecodeLevel(const TextureDesc& d, uint32_t level, uint32_t face, const uint8_t* guest, const uint32_t* palette,
                  std::vector<uint8_t>& out, uint32_t& row_pitch);
 
+// DXT blocks (BC1, BC2 or BC3, as DecodeLevel left them: rows of blocks pitch bytes apart, the slices one after the
+// other) as BGRA texels, w by h a slice, rows tightly packed; for GPUs without BC textures (most phones')
+void DecodeDxt(Host kind, uint32_t w, uint32_t h, const std::vector<uint8_t>& blocks, uint32_t pitch,
+               std::vector<uint8_t>& out, uint32_t& row_pitch);
+
 uint32_t LinearColorFormat(uint32_t fmt);
 uint32_t LinearDepthFormat(uint32_t fmt);
 void SurfaceSize(const Surface& s, uint32_t& w, uint32_t& h);

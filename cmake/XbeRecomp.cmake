@@ -22,6 +22,11 @@ set(SDL_TEST_LIBRARY OFF CACHE BOOL "" FORCE)
 set(SDL_RENDER OFF CACHE BOOL "" FORCE)
 set(SDL_GPU OFF CACHE BOOL "" FORCE)
 set(SDL_CAMERA OFF CACHE BOOL "" FORCE)
+# Android: Vulkan draws, so SDL's OpenGL ES and its libraries stay out
+if(ANDROID)
+    set(SDL_OPENGLES OFF CACHE BOOL "" FORCE)
+    set(SDL_OPENGL OFF CACHE BOOL "" FORCE)
+endif()
 FetchContent_Declare(SDL3 GIT_REPOSITORY https://github.com/libsdl-org/SDL.git GIT_TAG release-3.4.16 GIT_SHALLOW TRUE)
 # FLTK for Setup's window: static, Wayland and X11 both (it picks at run time; Pango and Cairo draw on Wayland), and the
 # Win32 API on Windows. Its bundled image libraries and libdecor (cairo title bars), no GL, D-Bus, tools or tests, and of
@@ -43,6 +48,9 @@ endif()
 FetchContent_Declare(fltk GIT_REPOSITORY https://github.com/fltk/fltk.git GIT_TAG release-1.4.5 GIT_SHALLOW TRUE)
 # miniz for Setup, which unpacks the compiler it downloads
 FetchContent_Declare(miniz GIT_REPOSITORY https://github.com/richgel999/miniz.git GIT_TAG 3.1.2 GIT_SHALLOW TRUE)
+# micro-ecc for the APK builder, which signs the APK with ECDSA P-256 (its one C file, compiled into the builder)
+FetchContent_Declare(uecc GIT_REPOSITORY https://github.com/kmackay/micro-ecc.git GIT_TAG v1.1 GIT_SHALLOW TRUE
+    SOURCE_SUBDIR none)
 # The Vulkan renderer: the API's headers, volk (loads the Vulkan loader at run time, nothing to link), VMA for memory,
 # all three headers only and fetched without their builds (a SOURCE_SUBDIR that isn't there); glslang compiles the HLSL
 # the shaders are written in to SPIR-V
@@ -58,7 +66,13 @@ foreach(option ENABLE_OPT ENABLE_GLSLANG_BINARIES ENABLE_SPVREMAPPER ENABLE_PCH 
 endforeach()
 set(ENABLE_HLSL ON CACHE BOOL "" FORCE)
 FetchContent_Declare(glslang GIT_REPOSITORY https://github.com/KhronosGroup/glslang.git GIT_TAG 15.0.0 GIT_SHALLOW TRUE)
-FetchContent_MakeAvailable(zydis tomlplusplus imgui roboto SDL3 miniz vulkan_headers volk vma glslang fltk)
+# Android builds only the game (a shared library, cmake/zig-android.cmake): the tools run on the PC, so their
+# libraries are left out
+if(ANDROID)
+    FetchContent_MakeAvailable(tomlplusplus imgui roboto SDL3 vulkan_headers volk vma glslang)
+else()
+    FetchContent_MakeAvailable(zydis tomlplusplus imgui roboto SDL3 miniz vulkan_headers volk vma glslang fltk uecc)
+endif()
 
 # Codegen runs on the host. By default it is this build's own xbe_recomp, which works when the target runs here
 # (a native build, or Windows on Windows); cross compiling for another OS, set XBE_CODEGEN_TOOL to a native one's path.
@@ -73,6 +87,7 @@ if(XBE_PDB)
     string(REPLACE "-g0" "" CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
 endif()
 
+if(NOT ANDROID)
 # x86 to C++ recompiler
 file(GLOB XBE_RECOMP_SOURCES CONFIGURE_DEPENDS ${XBE_ROOT_DIR}/src/recomp/*.cpp)
 add_executable(xbe_recomp ${XBE_RECOMP_SOURCES})
@@ -109,6 +124,29 @@ if(XBE_ZIG_TARGET AND NOT WIN32)
     target_link_options(setup PRIVATE -Wl,--allow-shlib-undefined)
 endif()
 
+# The APK builder, Setup's sibling for Android: recompiles the game on the PC, links libmain.so with the Android kit
+# (add_xbe_android_kit) and puts it in the release's base APK, signed with the player's key
+add_executable(apkbuilder ${XBE_ROOT_DIR}/src/apkbuilder/main.cpp ${XBE_ROOT_DIR}/src/apkbuilder/gui.cpp
+    ${XBE_ROOT_DIR}/src/apkbuilder/apk.cpp
+    ${XBE_ROOT_DIR}/src/setup/store.cpp
+    ${XBE_ROOT_DIR}/src/runtime/kernel/disc.cpp
+    ${XBE_ROOT_DIR}/src/runtime/kernel/crypto.cpp
+    ${uecc_SOURCE_DIR}/uECC.c)
+if(WIN32)
+    set_target_properties(apkbuilder PROPERTIES OUTPUT_NAME apk-builder-windows)
+else()
+    set_target_properties(apkbuilder PROPERTIES OUTPUT_NAME apk-builder-linux)
+endif()
+target_include_directories(apkbuilder PRIVATE ${XBE_ROOT_DIR}/src/runtime ${XBE_ROOT_DIR}/src ${uecc_SOURCE_DIR})
+target_compile_definitions(apkbuilder PRIVATE _CRT_SECURE_NO_WARNINGS)
+target_link_libraries(apkbuilder PRIVATE tomlplusplus::tomlplusplus miniz fltk
+    $<$<PLATFORM_ID:Windows>:winhttp> $<$<PLATFORM_ID:Windows>:bcrypt>)
+if(XBE_ZIG_TARGET AND NOT WIN32)
+    target_compile_options(apkbuilder PRIVATE -idirafter /usr/include)
+    target_link_options(apkbuilder PRIVATE -Wl,--allow-shlib-undefined)
+endif()
+endif()  # NOT ANDROID
+
 set(XBE_IMGUI_SOURCES
     ${imgui_SOURCE_DIR}/imgui.cpp
     ${imgui_SOURCE_DIR}/imgui_draw.cpp
@@ -131,15 +169,24 @@ list(APPEND XBE_IMGUI_SOURCES ${XBE_UI_FONT})
 # The host's platform: on Windows a Win32 window and XAudio2; elsewhere an SDL3 window and audio (XBE_SDL). Vulkan draws
 # on both. Each side's own sources are left out of the other's build.
 file(GLOB XBE_RUNTIME_SOURCES CONFIGURE_DEPENDS ${XBE_ROOT_DIR}/src/runtime/*/*.cpp)
+# app/android.cpp, the JNI calls of the Android app's own activities, goes to Android alone.
+if(ANDROID)
+    # with the digital release's unpacker, Setup's, which it reads the player's package with
+    list(APPEND XBE_RUNTIME_SOURCES ${XBE_ROOT_DIR}/src/setup/store.cpp)
+    set_source_files_properties(${XBE_ROOT_DIR}/src/runtime/app/android.cpp PROPERTIES INCLUDE_DIRECTORIES ${XBE_ROOT_DIR}/src)
+else()
+    list(FILTER XBE_RUNTIME_SOURCES EXCLUDE REGEX "/app/android\\.cpp$")
+endif()
 if(WIN32)
     list(APPEND XBE_IMGUI_SOURCES ${imgui_SOURCE_DIR}/backends/imgui_impl_win32.cpp)
-    list(FILTER XBE_RUNTIME_SOURCES EXCLUDE REGEX "/(app/main_sdl|app/crash_posix|app/system_info_posix|audio/sdl_audio)\\.cpp$")
+    list(FILTER XBE_RUNTIME_SOURCES EXCLUDE REGEX "/(app/main_sdl|app/touch|app/crash_posix|app/system_info_posix|audio/sdl_audio)\\.cpp$")
     set(XBE_SDL_SOURCES ${XBE_ROOT_DIR}/src/runtime/core/input.cpp)
 else()
     list(APPEND XBE_IMGUI_SOURCES ${imgui_SOURCE_DIR}/backends/imgui_impl_sdl3.cpp)
     list(FILTER XBE_RUNTIME_SOURCES EXCLUDE REGEX
         "/(app/main|app/crash|app/splash|app/handover|app/system_info|audio/xaudio2)\\.cpp$")
     set(XBE_SDL_SOURCES ${XBE_ROOT_DIR}/src/runtime/core/input.cpp ${XBE_ROOT_DIR}/src/runtime/app/main_sdl.cpp
+        ${XBE_ROOT_DIR}/src/runtime/app/touch.cpp
         ${XBE_ROOT_DIR}/src/runtime/audio/sdl_audio.cpp ${imgui_SOURCE_DIR}/backends/imgui_impl_sdl3.cpp)
 endif()
 # SDL's headers go to the code that uses it alone (it is linked LINK_ONLY), so the generated sources' compile line stays
@@ -170,6 +217,12 @@ if(NOT XBE_XAUDIO2)
 endif()
 if(WIN32)
     set(XBE_HOST_SYSTEM_LIBS dxguid ole32 shell32 windowscodecs dbghelp winmm dwmapi ws2_32)
+elseif(ANDROID)
+    # Bionic has threads in libc; log and android for the log and the window
+    set(XBE_HOST_SYSTEM_LIBS dl log android)
+    # libmain.so: every symbol resolved at link time, the soname System.loadLibrary finds, and its segments on 16 KiB
+    # pages, which Android 15's devices with large pages need (and 4 KiB ones take)
+    set(XBE_ANDROID_LINK_OPTIONS -Wl,--no-undefined -Wl,-soname,libmain.so -Wl,-z,max-page-size=16384)
 else()
     set(XBE_HOST_SYSTEM_LIBS ${CMAKE_DL_LIBS} pthread)
 endif()
@@ -254,7 +307,14 @@ function(add_xbe_image target xbe config partitions game_dir)
         target_link_libraries(${target}_host PUBLIC $<LINK_ONLY:${lib}>)
     endforeach()
 
-    add_executable(${target} WIN32 ${GEN_SOURCES})
+    if(ANDROID)
+        # the app's libmain.so, which SDL's activity loads and calls SDL_main in
+        add_library(${target} SHARED ${GEN_SOURCES})
+        set_target_properties(${target} PROPERTIES OUTPUT_NAME main)
+        target_link_options(${target} PRIVATE ${XBE_ANDROID_LINK_OPTIONS})
+    else()
+        add_executable(${target} WIN32 ${GEN_SOURCES})
+    endif()
     add_dependencies(${target} recompile_${target})
     target_include_directories(${target} PRIVATE ${XBE_ROOT_DIR}/src/runtime ${GEN})
     # whole: an archive member is otherwise only taken for a symbol nothing defines yet, and every function the host
@@ -389,5 +449,96 @@ function(add_xbe_player_kit target title)
         COMMAND ${CMAKE_COMMAND} -E copy ${XBE_ROOT_DIR}/THIRD_PARTY.txt ${pkg}/
         DEPENDS ${target}_host setup xbe_recomp SDL3::SDL3-static ${XBE_GLSLANG_LIBS} ${sha1_file}
         COMMENT "Staging the ${os} player kit for ${target} in ${pkg}"
+        VERBATIM)
+endfunction()
+
+# The Android kit for an image (cmake/zig-android.cmake), the APK builder's (src/apkbuilder): everything a player's PC
+# needs to build libmain.so from their own copy, and none of the title's code. Staged in <build>/package/<target>-android;
+# tools/package-android.cmake adds the host's recompiler (bin/) and the base APK (apk/base.apk), and puts it inside each
+# APK builder.
+#   kit/kit.toml       as a player kit's (add_xbe_player_kit)
+#   kit/android.toml   how to build libmain.so: the compiler, its flags and the libraries. {kit} in a flag is the
+#                      folder the kit is unpacked in; a library not starting with - is a path in it
+#   kit/config, xdk/, include/  as a player kit's
+#   kit/lib/android/   the prebuilt host (runtime, game hooks, ImGui, the JNI calls of the app), glslang and SDL
+#   kit/sysroot/       the NDK's sysroot, its headers and the link stubs of the system libraries the game uses
+function(add_xbe_android_kit target title)
+    get_target_property(xbe ${target} XBE_FILE)
+    get_target_property(sha1_file ${target} XBE_SHA1_FILE)
+    get_target_property(config ${target} XBE_CONFIG)
+    get_target_property(gen ${target} XBE_GEN)
+    set(pkg ${CMAKE_BINARY_DIR}/package/${target}-android)
+    set(kit ${pkg}/kit)
+    string(REPLACE ";" "," XBE_ALSO_SHA1_ARG "${XBE_ALSO_SHA1}")
+    set(lib lib/android)
+    set(crt usr/lib/aarch64-linux-android/${XBE_ANDROID_API})
+
+    # the generated sources' compile line, as add_xbe_image's target has it in a Release build
+    separate_arguments(cxx_flags NATIVE_COMMAND "${XBE_KIT_CXX_FLAGS} -DNDEBUG")
+    set(cxxflags ${cxx_flags} ${CMAKE_CXX20_EXTENSION_COMPILE_OPTION})
+    foreach(d ${XBE_HOST_DEFINITIONS})
+        list(APPEND cxxflags -D${d})
+    endforeach()
+    list(APPEND cxxflags ${XBE_GEN_COMPILE_OPTIONS})
+    # the link line: a shared library, the host whole, glslang, SDL and the system libraries SDL and the host link
+    separate_arguments(ldflags NATIVE_COMMAND "${XBE_KIT_CXX_FLAGS}")
+    list(APPEND ldflags -shared -fuse-ld=lld -pthread ${XBE_ANDROID_LINK_OPTIONS} "-L{kit}/sysroot/${crt}")
+    set(libs -Wl,--whole-archive ${lib}/lib${target}_host.a -Wl,--no-whole-archive)
+    foreach(l ${XBE_GLSLANG_LIBS})
+        list(APPEND libs ${lib}/$<TARGET_FILE_NAME:${l}>)
+    endforeach()
+    list(APPEND libs ${lib}/libSDL3.a)
+    set(system_libs OpenSLES ${XBE_HOST_SYSTEM_LIBS} m)
+    foreach(l ${system_libs})
+        list(APPEND libs -l${l})
+    endforeach()
+    set(toml "# written by add_xbe_android_kit; the APK builder reads it\n")
+    string(APPEND toml "title = \"${title}\"\nexe = \"${target}\"\nxbe = \"${xbe}\"\nsha1 = \"@XBE_SHA1@\"\nalso_sha1 = [@XBE_ALSO_SHA1@]\n")
+    get_filename_component(config_name ${config} NAME)
+    string(APPEND toml "config = \"config/${config_name}\"\nxdk = \"xdk\"\nrecomp = \"bin/xbe_recomp\"\n")
+    string(APPEND toml "include = [\"include\"]\n")
+    file(GENERATE OUTPUT ${CMAKE_BINARY_DIR}/${target}_android_kit.toml.in CONTENT "${toml}")
+    set(toml "# written by add_xbe_android_kit: building libmain.so for Android (API ${XBE_ANDROID_API}); the APK builder reads it\n")
+    string(APPEND toml "cxx = \"zig\"\nsysroot = \"sysroot\"\napi = ${XBE_ANDROID_API}\n")
+    set(driver c++)
+    foreach(key driver cxxflags ldflags libs)
+        set(items)
+        foreach(v ${${key}})
+            list(APPEND items "\"${v}\"")
+        endforeach()
+        list(JOIN items ", " items)
+        string(APPEND toml "${key} = [${items}]\n")
+    endforeach()
+    file(GENERATE OUTPUT ${kit}/android.toml CONTENT "${toml}")
+
+    set(glslang_libs)
+    foreach(l ${XBE_GLSLANG_LIBS})
+        list(APPEND glslang_libs $<TARGET_FILE:${l}>)
+    endforeach()
+    # the sysroot's link stubs for the libraries above, and the start and end of a shared library
+    set(stubs crtbegin_so.o crtend_so.o libc.so libm.so libdl.so)
+    foreach(l ${system_libs})
+        list(APPEND stubs lib${l}.so)
+    endforeach()
+    list(REMOVE_DUPLICATES stubs)
+    list(TRANSFORM stubs PREPEND ${XBE_ANDROID_SYSROOT}/${crt}/)
+    add_custom_target(${target}_android_kit
+        COMMAND ${CMAKE_COMMAND} -E rm -rf ${pkg}/THIRD_PARTY.txt ${kit}/bin ${kit}/apk ${kit}/config ${kit}/xdk
+            ${kit}/include ${kit}/lib ${kit}/sysroot ${kit}/kit.toml
+        COMMAND ${CMAKE_COMMAND} -E make_directory ${kit}/config ${kit}/include/cpu ${kit}/${lib} ${kit}/sysroot/${crt}
+        COMMAND ${CMAKE_COMMAND} -DMODE=kit -DSHA=${sha1_file} -DALSO=${XBE_ALSO_SHA1_ARG}
+            -DIN=${CMAKE_BINARY_DIR}/${target}_android_kit.toml.in -DOUT=${kit}/kit.toml -P ${XBE_ROOT_DIR}/cmake/xbe_sha1.cmake
+        COMMAND ${CMAKE_COMMAND} -E copy ${XBE_GAME_SRC}/${config} ${kit}/config/
+        COMMAND ${CMAKE_COMMAND} -E copy_directory ${XBE_XDK_DIR} ${kit}/xdk
+        COMMAND ${CMAKE_COMMAND} -E copy ${XBE_ROOT_DIR}/src/runtime/cpu/x86_ops.h ${XBE_ROOT_DIR}/src/runtime/cpu/x86_context.h
+            ${kit}/include/cpu/
+        COMMAND ${CMAKE_COMMAND} -E copy ${gen}/image_symbols.h ${kit}/include/
+        COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:${target}_host> $<TARGET_FILE:SDL3::SDL3-static> ${kit}/${lib}/
+        COMMAND ${CMAKE_COMMAND} -E copy ${glslang_libs} ${kit}/${lib}/
+        COMMAND ${CMAKE_COMMAND} -E copy_directory ${XBE_ANDROID_SYSROOT}/usr/include ${kit}/sysroot/usr/include
+        COMMAND ${CMAKE_COMMAND} -E copy ${stubs} ${kit}/sysroot/${crt}/
+        COMMAND ${CMAKE_COMMAND} -E copy ${XBE_ROOT_DIR}/THIRD_PARTY.txt ${pkg}/
+        DEPENDS ${target}_host SDL3::SDL3-static ${XBE_GLSLANG_LIBS} ${sha1_file}
+        COMMENT "Staging the Android kit for ${target} in ${pkg}"
         VERBATIM)
 endfunction()

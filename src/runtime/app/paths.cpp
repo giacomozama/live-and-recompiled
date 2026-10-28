@@ -1,7 +1,7 @@
 // Where the game keeps what it writes. Windows: settings and the hard disk in %APPDATA%, logs, crash dumps, captures
 // and the shader records in %LOCALAPPDATA%. Elsewhere the XDG folders: $XDG_CONFIG_HOME, $XDG_DATA_HOME,
 // $XDG_STATE_HOME and $XDG_CACHE_HOME, each defaulting under $HOME as the spec says. A portable.txt beside the exe
-// keeps everything in the exe's folder, as before.
+// keeps everything in the exe's folder, as before. Android: the app's own folders (AndroidDir).
 #include <cstdlib>
 #include <system_error>
 
@@ -41,6 +41,12 @@ fs::path Xdg(const char* var, const char* fallback) {
 
 // the folder for kind, made; the exe's own when portable, or when the platform has none
 fs::path Dir(int kind) {
+#ifdef __ANDROID__
+    fs::path android = AndroidDir(kind);
+    std::error_code made;
+    fs::create_directories(android, made);
+    return android;
+#endif
     static const bool portable = [] {
         std::error_code ec;
         return fs::exists(ExeDir() / "portable.txt", ec);

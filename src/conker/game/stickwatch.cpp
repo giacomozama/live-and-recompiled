@@ -11,8 +11,8 @@
 // led there. Other threads touching the page while it is open are missed, which a search can live with.
 //
 // Use: in a level, F11, then turn the camera with the stick in each mode (third person, first person, a weapon
-// out), F11 again. Each reader is logged once with its access count, fields and callers. Linux (the native build)
-// only: the Windows build logs that it has no watch.
+// out), F11 again. Each reader is logged once with its access count, fields and callers. x86-64 Linux (the native
+// build) only: the Windows and Android builds log that they have no watch.
 #include "common/stickwatch.h"
 
 #if !defined(XBE_HEADLESS)
@@ -27,7 +27,7 @@
 #include "core/log.h"
 #include "kernel/memory.h"
 
-#if defined(__linux__)
+#if defined(__linux__) && defined(__x86_64__)
 
 #include <elf.h>
 #include <execinfo.h>
@@ -261,13 +261,13 @@ void Tick() {
 
 }  // namespace stickwatch
 
-#else  // no watch outside Linux
+#else  // no watch outside x86-64 Linux
 
 namespace stickwatch {
 
 void Tick() {
     static const bool enabled = std::getenv("XBE_STICK_WATCH") != nullptr;
-    if (enabled) LOG_FIRST(1, "stickwatch: the watch is Linux only (the native build)");
+    if (enabled) LOG_FIRST(1, "stickwatch: the watch is x86-64 Linux only (the native build)");
 }
 
 }  // namespace stickwatch

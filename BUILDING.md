@@ -11,6 +11,8 @@ How to build the port from a checkout and how to package a release. For playing,
 | `src/conker/` | The game: `game.toml` (the recompiler's config), `common/` and `game/` (hooks, patches, input, the Esc menu) |
 | `src/recomp/`, `src/symbols/` | `xbe_recomp`, the x86 to C++ recompiler, and `xbe_symbols`, which writes a new title's config |
 | `src/setup/` | Setup, the player's build: unpacks the game, recompiles it and links it |
+| `src/apkbuilder/` | The APK builder, Setup's sibling for Android: recompiles the game on the PC and makes the signed APK |
+| `src/android/` | The Android app (Gradle, Kotlin): SDL's activity for the game and the first screen that unpacks the game on the device |
 | `src/harness/` | A headless Linux build for testing, with no window or GPU |
 | `cmake/` | `XbeRecomp.cmake` (the build of all of the above) and the Zig toolchain files |
 | `tools/` | `build.sh` and `build.bat`, `package.sh` and `package.bat`, the toolchain pin and a few Python helpers |
@@ -74,6 +76,27 @@ It's the same build as on Linux and in releases, with the same compiler and flag
 IDEs that read `CMakePresets.json` get the same build as the `zig-windows` preset, once `tools\build.bat` has fetched
 the compiler.
 
+### Android
+
+The Android port is the same game as a shared library, `libmain.so`, for 64-bit ARM, built with the pinned Zig against
+the Android NDK's sysroot (only its headers and link stubs, never its compiler: `cmake/zig-android.cmake`). The app
+around it is `src/android/`, a Gradle project in Kotlin whose game activity is SDL's.
+
+You need the [Android NDK](https://developer.android.com/ndk) (found at `$ANDROID_NDK_HOME`, or the newest in
+`$ANDROID_HOME/ndk` or `~/Android/Sdk/ndk`), the Android SDK with platform 36 (`$ANDROID_HOME`, default
+`~/Android/Sdk`) and a JDK 17 to 21 for Gradle (`$JAVA_HOME`).
+
+```bash
+tools/build.sh --android     # also out/build/zig-android/libmain.so, and the app with it in, signed with Gradle's debug key:
+adb install -r out/build/android/app/outputs/apk/debug/app-debug.apk
+```
+
+The renderer needs Vulkan 1.3 with push descriptors. Phones' GPUs without geometry shaders draw no point lists, and
+without BC textures the DXT ones are decoded when they are uploaded. The app keeps the game's files in its own storage
+(`files/assets`); its first screen unpacks them there from what the player picks (`SetupActivity.kt`, and
+`src/runtime/app/android.cpp` for the disc image and the package). `adb logcat` shows SDL's messages; the game's log is
+in `Android/data/org.liveandrecompiled.conker/files/logs`.
+
 ## Building a release
 
 A release is `setup-windows.exe` and `setup-linux`, each with its own kit inside (appended to the executable, unpacked into
@@ -118,6 +141,19 @@ alone, which builds `Game.exe`.
 
 Both scripts run `tools/package.cmake`, which can also be run directly: `cmake -P tools/package.cmake`, with
 `-DTEST=OFF`, `-DTEST_DOWNLOAD=ON` or `-DJOBS=N` before `-P`.
+
+### The Android release
+
+```bash
+tools/package-android.sh             # writes out/release/LiveAndRecompiled-<version>-android-builder-windows.zip and -linux.tar.gz
+```
+
+It needs what [Android](#android) above does. It builds the APK builder for both hosts, the Android kit
+(`out/build/zig-android`: the prebuilt runtime, SDL and glslang for Android, the headers and a trimmed copy of the
+NDK's sysroot) and the base APK with Gradle (the app without `libmain.so`), puts the kit with each host's recompiler
+inside each builder, and tests the result as a player would: the packaged builder makes the APK from the game in
+`assets/`, and `apksigner verify` (when the SDK has it) checks its signature. `--no-test` and `--test-download` work as
+for `tools/package.sh`; on Windows it is `tools\package-android.bat`. See [docs/distribution.md](docs/distribution.md).
 
 ## The digital release's package
 

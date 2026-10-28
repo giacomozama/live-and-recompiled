@@ -14,7 +14,11 @@
 #include <utility>
 #include <vector>
 
+#ifdef __aarch64__
+#include <arm_neon.h>
+#else
 #include <emmintrin.h>
+#endif
 
 #include "core/log.h"
 #include "gpu/backend.h"
@@ -269,13 +273,23 @@ float Rel(float u, float v) {
 // Rel of four values at once, each as Rel has it, times w; added into d in turn, as four calls would. Distance was
 // most of the matching's time
 void AddRel4(const float* u, const float* v, float w, float& d) {
+    alignas(16) float r[4];
+#ifdef __aarch64__
+    const float32x4_t one = vdupq_n_f32(1.0f), big = vdupq_n_f32(FLT_MAX);
+    float32x4_t a = vld1q_f32(u), b = vld1q_f32(v);
+    float32x4_t au = vabsq_f32(a), av = vabsq_f32(b);
+    float32x4_t q = vdivq_f32(vabsq_f32(vsubq_f32(a, b)), vaddq_f32(vaddq_f32(one, au), av));
+    // not equal (NaN counts, as cmpneq has it), both finite
+    uint32x4_t counted = vandq_u32(vmvnq_u32(vceqq_f32(a, b)), vandq_u32(vcleq_f32(au, big), vcleq_f32(av, big)));
+    vst1q_f32(r, vmulq_f32(vreinterpretq_f32_u32(vandq_u32(counted, vreinterpretq_u32_f32(q))), vdupq_n_f32(w)));
+#else
     const __m128 sign = _mm_set1_ps(-0.0f), one = _mm_set1_ps(1.0f), big = _mm_set1_ps(FLT_MAX);
     __m128 a = _mm_loadu_ps(u), b = _mm_loadu_ps(v);
     __m128 au = _mm_andnot_ps(sign, a), av = _mm_andnot_ps(sign, b);
     __m128 q = _mm_div_ps(_mm_andnot_ps(sign, _mm_sub_ps(a, b)), _mm_add_ps(_mm_add_ps(one, au), av));
     __m128 counted = _mm_and_ps(_mm_cmpneq_ps(a, b), _mm_and_ps(_mm_cmple_ps(au, big), _mm_cmple_ps(av, big)));
-    alignas(16) float r[4];
     _mm_store_ps(r, _mm_mul_ps(_mm_and_ps(counted, q), _mm_set1_ps(w)));
+#endif
     d += r[0];
     d += r[1];
     d += r[2];

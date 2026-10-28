@@ -121,6 +121,15 @@ std::vector<const char*> VulkanExtensions();
 bool VulkanSurface(void* instance, void* surface);
 void PixelSize(uint32_t& w, uint32_t& h);
 void UiNewFrame();
+// Android: the app is in the background and its window has no surface. The renderer lets go of its own and says so
+// (render thread), and makes a new one once this is false again. Never set elsewhere
+bool SurfacePaused();
+void SurfaceReleased();
+#ifdef __ANDROID__
+// where ConfigDir, DataDir, StateDir and CacheDir (0 to 3) are: the app's internal files for the first two, its
+// external files for the logs and captures (a file manager or adb reaches them), its cache
+std::filesystem::path AndroidDir(int kind);
+#endif
 #endif
 // boot splash: GameInfo::splash .bmp or .png beside the exe, up before the game window
 bool OpenSplash();        // window thread, at launch; false without one, and the game window opens at once

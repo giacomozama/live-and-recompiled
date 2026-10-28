@@ -56,9 +56,16 @@
 #include <backends/imgui_impl_win32.h>
 #endif
 
+#ifdef __aarch64__
+#include <arm_neon.h>
+#else
 #include <smmintrin.h>
+#endif
 
 #include "app/app.h"
+#ifndef _WIN32
+#include "app/touch.h"
+#endif
 #include "core/diag.h"
 #include "core/log.h"
 #include "gpu/backend.h"
@@ -83,12 +90,18 @@ bool SameBytes(const T& a, const T& b) {
     static_assert(std::is_trivially_copyable_v<T>);
     const uint8_t* x = reinterpret_cast<const uint8_t*>(&a);
     const uint8_t* y = reinterpret_cast<const uint8_t*>(&b);
-    __m128i diff = _mm_setzero_si128();
     size_t i = 0;
+#ifdef __aarch64__
+    uint8x16_t diff = vdupq_n_u8(0);
+    for (; i + 16 <= sizeof(T); i += 16) diff = vorrq_u8(diff, veorq_u8(vld1q_u8(x + i), vld1q_u8(y + i)));
+    if (vmaxvq_u8(diff)) return false;
+#else
+    __m128i diff = _mm_setzero_si128();
     for (; i + 16 <= sizeof(T); i += 16)
         diff = _mm_or_si128(diff, _mm_xor_si128(_mm_loadu_si128(reinterpret_cast<const __m128i*>(x + i)),
                                                 _mm_loadu_si128(reinterpret_cast<const __m128i*>(y + i))));
     if (!_mm_testz_si128(diff, diff)) return false;
+#endif
     for (; i + 4 <= sizeof(T); i += 4) {
         uint32_t u, v;
         std::memcpy(&u, x + i, 4);
@@ -107,6 +120,13 @@ constexpr uint64_t kUploadReserve = 8ull << 20;
 constexpr uint64_t kCbAlign = 256;     // constants in the ring: past every device's minUniformBufferOffsetAlignment
 constexpr uint64_t kPassCbBytes = 256;  // a full screen pass's constants
 constexpr VkFormat kBgra = VK_FORMAT_B8G8R8A8_UNORM;
+// Android says suboptimal on every present of a picture it turns itself (CreateSwapChain's preTransform), which is no
+// reason to make the swap chain again; a new size still is (ResizeSwap)
+#ifdef __ANDROID__
+constexpr bool kSuboptimalRotated = true;
+#else
+constexpr bool kSuboptimalRotated = false;
+#endif
 constexpr uint32_t kQueries = 8192;  // occlusion queries in flight, several frames of counted draws
 constexpr uint32_t kNoQuery = ~0u;
 constexpr size_t kSamplersKept = 2048;  // distinct stage samplers before the cache starts over
@@ -576,6 +596,7 @@ struct Tex {
     uint64_t frame = 0;
     uint64_t palette = 0;  // hash of the colours a P8 texture was decoded with
     uint8_t sign = 0;      // channels uploaded offset by 128 (OffsetSigned)
+    Host dxt = Host::None;  // DXT blocks decoded to BGRA on upload, on a GPU without BC textures
 };
 
 // what a VkSampler is made from, hashed for the cache
@@ -1042,6 +1063,7 @@ private:
     void FinishCapture(const Surface& front);
     void StartCapture();
     void ResizeSwap();
+    void DropSurface();
     void UploadGammaRamp();
     void FinishFront(Target& t);
     bool KeepPicture(const Surface& front, uint32_t slot);
@@ -1143,6 +1165,10 @@ private:
     bool non_solid_ = false;
     bool tess_ = false;  // ProgramShading::tess
     bool precise_ = false;
+    // phones' GPUs: Mali and PowerVR have no geometry shaders (point lists are left out then), most have no BC
+    // textures (DXT ones are decoded to BGRA on upload)
+    bool gs_ = true;
+    bool bc_ = true;
     bool custom_border_ = false;
     bool dynamic_rendering_ext_ = false;
     uint32_t custom_border_max_ = 0;
@@ -1583,8 +1609,6 @@ bool VulkanBackend::PickDevice() {
         if (p.apiVersion < VK_API_VERSION_1_3) lacks = "Vulkan 1.3";
         else if (!HasExtension(exts, VK_KHR_SWAPCHAIN_EXTENSION_NAME)) lacks = "a swap chain";
         else if (!HasExtension(exts, VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME)) lacks = "push descriptors";
-        else if (!f.features.geometryShader) lacks = "geometry shaders";
-        else if (!f.features.textureCompressionBC) lacks = "BC textures";
         else if (!f12.timelineSemaphore || !f12.hostQueryReset) lacks = "timeline semaphores or host query resets";
         else if (!f13.dynamicRendering) lacks = "dynamic rendering";
         uint32_t qn = 0;
@@ -1613,6 +1637,8 @@ bool VulkanBackend::PickDevice() {
         non_solid_ = f.features.fillModeNonSolid;
         tess_ = f.features.tessellationShader;
         precise_ = f.features.occlusionQueryPrecise;
+        gs_ = f.features.geometryShader;
+        bc_ = f.features.textureCompressionBC;
         custom_border_ = HasExtension(exts, VK_EXT_CUSTOM_BORDER_COLOR_EXTENSION_NAME);
         dynamic_rendering_ext_ = HasExtension(exts, VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME);
     }
@@ -1642,6 +1668,8 @@ bool VulkanBackend::PickDevice() {
     VkFormatFeatureFlags shadow = VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT | VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
     shadow_fmt_ = supports(VK_FORMAT_D32_SFLOAT, shadow) ? VK_FORMAT_D32_SFLOAT : VK_FORMAT_R32_SFLOAT;
     if (depth_fmt_ != VK_FORMAT_D24_UNORM_S8_UINT) LOGI("vulkan: targets' depth is 32 bit float, no D24S8");
+    if (!gs_) LOGR("Vulkan: no geometry shaders, point lists are not drawn");
+    if (!bc_) LOGR("Vulkan: no BC textures, DXT ones are decoded on upload");
     return true;
 }
 
@@ -1664,8 +1692,8 @@ bool VulkanBackend::CreateDevice() {
     f12.timelineSemaphore = VK_TRUE;
     f12.hostQueryReset = VK_TRUE;
     VkPhysicalDeviceFeatures2 f{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, &f12};
-    f.features.geometryShader = VK_TRUE;
-    f.features.textureCompressionBC = VK_TRUE;
+    f.features.geometryShader = gs_;
+    f.features.textureCompressionBC = bc_;
     f.features.samplerAnisotropy = aniso_;
     f.features.fillModeNonSolid = non_solid_;
     f.features.tessellationShader = tess_;
@@ -1758,6 +1786,11 @@ bool VulkanBackend::CreateSwapChain() {
     ci.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
     ci.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
     ci.preTransform = caps.currentTransform;
+#ifdef __ANDROID__
+    // the picture is drawn upright for the landscape window, and the compositor turns it to the panel, which phones
+    // mount in portrait (currentTransform would ask the renderer to turn it itself)
+    if (caps.supportedTransforms & VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR) ci.preTransform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
+#endif
     ci.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
     if (!(caps.supportedCompositeAlpha & ci.compositeAlpha)) {
         ci.compositeAlpha = VkCompositeAlphaFlagBitsKHR(caps.supportedCompositeAlpha & -caps.supportedCompositeAlpha);
@@ -2918,7 +2951,7 @@ VkPipeline VulkanBackend::FindPipeline(const PsoKey& k, const DrawShaders& sh) {
     }
     if (!pso) {
         uint64_t gh;
-        const Spirv* gs = k.topo == uint32_t(Topology::Points) ? Compile(PointHlsl(), "main", "gs_5_0", gh) : nullptr;
+        const Spirv* gs = k.topo == uint32_t(Topology::Points) && gs_ ? Compile(PointHlsl(), "main", "gs_5_0", gh) : nullptr;
         // a point list needs the geometry shader that sizes its points: without it there is no point size
         if (k.topo == uint32_t(Topology::Points) && !gs) {
             psos_[h] = VK_NULL_HANDLE;
@@ -3007,7 +3040,7 @@ size_t VulkanBackend::WarmPipelines(const std::vector<const shader_record::Entry
                                     const std::unordered_map<uint64_t, WarmShader>& made) {
     Spirv gs;
     std::string err;
-    bool have_gs = CompileSpirv(PointHlsl(), "main", "gs_5_0", gs, err);
+    bool have_gs = gs_ && CompileSpirv(PointHlsl(), "main", "gs_5_0", gs, err);
     std::atomic<size_t> n{0};
     ParallelFor(list.size(), warm_.stop, [&](size_t i) {
         const shader_record::Entry& e = *list[i];
@@ -3088,7 +3121,8 @@ bool VulkanBackend::CreateTexture(Tex& tx, const TextureDesc& d, const FormatInf
     uint32_t h = d.height;
     tx.levels = d.levels;
     ImageSpec sp;
-    switch (fi.host) {
+    if (!bc_ && (fi.host == Host::BC1 || fi.host == Host::BC2 || fi.host == Host::BC3)) tx.dxt = fi.host;
+    switch (tx.dxt != Host::None ? Host::BGRA8 : fi.host) {
         case Host::BC1: sp.fmt = VK_FORMAT_BC1_RGBA_UNORM_BLOCK; break;
         case Host::BC2: sp.fmt = VK_FORMAT_BC2_UNORM_BLOCK; break;
         case Host::BC3: sp.fmt = VK_FORMAT_BC3_UNORM_BLOCK; break;
@@ -3139,7 +3173,7 @@ void VulkanBackend::UploadTextureLevel(Tex& tx, uint32_t f, uint32_t l, const st
 void VulkanBackend::UploadTexture(Tex& tx, const TextureDesc& d, const uint8_t* p, const uint32_t* colours) {
     Transition(*tx.res, kDst);
     uint32_t faces = d.cube ? 6 : 1;
-    std::vector<uint8_t> px, up;
+    std::vector<uint8_t> px, up, texels;
     // a signed texture's levels down to 32 texels are made here, a box over the level above offset by 128: the title's
     // own hold spikes along the zeros of the lens drops' bump map (-60 beside 0 at the centre of the 64 level), a dotted
     // cross through a drop drawn large. The smaller ones stay the title's: a drop's trail squeezes the map into a strip a
@@ -3169,6 +3203,10 @@ void VulkanBackend::UploadTexture(Tex& tx, const TextureDesc& d, const uint8_t* 
                 continue;
             }
             DecodeLevel(d, l, f, p, colours, px, pitch);
+            if (tx.dxt != Host::None) {
+                DecodeDxt(tx.dxt, std::max(1u, tx.res->w >> l), std::max(1u, tx.res->h >> l), px, pitch, texels, pitch);
+                px.swap(texels);
+            }
             if (tx.sign) {
                 // r g b a to the bytes of a B G R A texel
                 uint8_t x[4] = {uint8_t(tx.sign & 4 ? 0x80 : 0), uint8_t(tx.sign & 2 ? 0x80 : 0), uint8_t(tx.sign & 1 ? 0x80 : 0),
@@ -4625,8 +4663,44 @@ void VulkanBackend::Copy(const Surface& src, const Surface& dst, uint32_t count,
     }
 }
 
+// the swap chain and the surface gone, Android's window having none while the app is in the background
+void VulkanBackend::DropSurface() {
+    Flush();
+    vkDeviceWaitIdle(dev_);
+    held_.clear();
+    bb_.clear();
+    for (VkSemaphore s : present_sem_) vkDestroySemaphore(dev_, s, nullptr);
+    present_sem_.clear();
+    if (swap_) vkDestroySwapchainKHR(dev_, swap_, nullptr);
+    swap_ = VK_NULL_HANDLE;
+    vkDestroySurfaceKHR(inst_, surface_, nullptr);
+    surface_ = VK_NULL_HANDLE;
+    LOGI("vulkan: the window's surface went, the app is in the background");
+}
+
 // a new swap chain when the window's size, vsync or the surface changed; none while minimised
 void VulkanBackend::ResizeSwap() {
+#ifndef _WIN32
+    // Android: none while the app is in the background, a new surface once the window has one again
+    if (app::SurfacePaused()) {
+        if (surface_) DropSurface();
+        app::SurfaceReleased();
+        minimised_ = true;
+        return;
+    }
+    if (!surface_) {
+        VkBool32 present = VK_FALSE;
+        if (!app::VulkanSurface(inst_, &surface_) ||
+            (vkGetPhysicalDeviceSurfaceSupportKHR(phys_, qfam_, surface_, &present), !present)) {
+            if (surface_) vkDestroySurfaceKHR(inst_, surface_, nullptr);
+            surface_ = VK_NULL_HANDLE;
+            minimised_ = true;
+            return;
+        }
+        LOGI("vulkan: a new surface for the window");
+        swap_stale_ = true;
+    }
+#endif
     VkSurfaceCapabilitiesKHR caps;
     if (vkGetPhysicalDeviceSurfaceCapabilitiesKHR(phys_, surface_, &caps) != VK_SUCCESS) return;
     VkExtent2D ext = caps.currentExtent.width == UINT32_MAX ? WindowExtent() : caps.currentExtent;
@@ -4735,7 +4809,7 @@ bool VulkanBackend::AcquireImage(uint32_t& bi, VkSemaphore acquired) {
     if (!swap_ || minimised_) return false;
     VkResult r = vkAcquireNextImageKHR(dev_, swap_, UINT64_MAX, acquired, VK_NULL_HANDLE, &bi);
     if (r == VK_SUBOPTIMAL_KHR) {
-        swap_stale_ = true;
+        swap_stale_ = !kSuboptimalRotated;
     } else if (r != VK_SUCCESS) {
         swap_stale_ = true;
         return false;
@@ -4771,6 +4845,9 @@ void VulkanBackend::BuildUi() {
     ImGui_ImplVulkan_NewFrame();
     ImGui::NewFrame();
     if (app::kGame.ui) app::kGame.ui(fps_);
+#ifndef _WIN32
+    touch::Draw();
+#endif
     ImGui::Render();
 }
 
@@ -4943,7 +5020,7 @@ void VulkanBackend::QueuePresent(uint32_t bi) {
     pi.pSwapchains = &swap_;
     pi.pImageIndices = &bi;
     VkResult r = vkQueuePresentKHR(queue_, &pi);
-    if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR) swap_stale_ = true;
+    if (r == VK_ERROR_OUT_OF_DATE_KHR || (r == VK_SUBOPTIMAL_KHR && !kSuboptimalRotated)) swap_stale_ = true;
 }
 
 void VulkanBackend::ReleaseOldTextures() {

@@ -34,6 +34,8 @@ add_xbe_image(Game default.xbe game.toml ${GAME_PARTITIONS} game)
 
 # a player kit (the Zig builds, with the game in assets/): Setup and everything but the game code, for players to build
 # from their own copy
-if(XBE_ZIG_TARGET AND TARGET Game)
+if(XBE_ZIG_TARGET AND TARGET Game AND ANDROID)
+    add_xbe_android_kit(Game "Conker: Live & Reloaded")
+elseif(XBE_ZIG_TARGET AND TARGET Game)
     add_xbe_player_kit(Game "Conker: Live & Reloaded")
 endif()

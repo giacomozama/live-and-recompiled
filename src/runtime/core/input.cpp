@@ -11,6 +11,9 @@
 #include <SDL3/SDL.h>
 
 #include "app/app.h"
+#ifdef XBE_SDL
+#include "app/touch.h"
+#endif
 #include "core/log.h"
 
 namespace input {
@@ -194,6 +197,9 @@ Pad Poll(int port) {
             p.ry = int16_t(-1 - axis(SDL_GAMEPAD_AXIS_RIGHTY));
         }
     }
+#ifdef XBE_SDL
+    touch::Merge(port, p);  // the on-screen controller, Android's
+#endif
     if (app::kGame.pad) app::kGame.pad(port, p);
     return p;
 }

@@ -6,6 +6,9 @@
 #   tools/build.sh --store PATH    first unpack the digital release's DefaultPackage (or its folder) into assets/
 #   tools/build.sh --game DIR      first copy extracted files into assets/ (default.xbe, dvddata/, media/)
 #   tools/build.sh --linux         also build the native Linux port, out/build/zig-glibc/Game (SDL3, Vulkan)
+#   tools/build.sh --android       also build the Android port, out/build/zig-android/libmain.so, and the app with it in,
+#                                  out/build/android/app/outputs/apk/debug/app-debug.apk (Gradle's debug key; needs the
+#                                  NDK, the SDK and a JDK 17 to 21: ANDROID_NDK_HOME, ANDROID_HOME, JAVA_HOME)
 #   tools/build.sh --harness       also build the Linux headless harness, out/harness/conker
 #   tools/build.sh --pdb           also write Game.pdb (off again: cmake -DXBE_PDB=OFF out/build/zig-windows)
 #   tools/build.sh -j N            parallel jobs (default: nproc)
@@ -23,6 +26,7 @@ STORE=""
 FROM=""
 HARNESS=0
 LINUX=0
+ANDROID=0
 PDB=0
 
 while [ $# -gt 0 ]; do
@@ -32,9 +36,10 @@ while [ $# -gt 0 ]; do
         --game) FROM="${2:-}"; [ -n "$FROM" ] || { echo "--game needs a folder" >&2; exit 2; }; shift ;;
         --harness) HARNESS=1 ;;
         --linux) LINUX=1 ;;
+        --android) ANDROID=1 ;;
         --pdb) PDB=1 ;;
         -j) JOBS="${2:-}"; [ -n "$JOBS" ] || { echo "-j needs a number" >&2; exit 2; }; shift ;;
-        -h|--help) sed -n '2,16p' "$0"; exit 0 ;;
+        -h|--help) sed -n '2,19p' "$0"; exit 0 ;;
         *) echo "unknown option: $1" >&2; exit 2 ;;
     esac
     shift
@@ -100,6 +105,17 @@ if [ "$LINUX" = 1 ]; then
     echo "[+] native Linux port"
     cmake --build "$LIN" --target Game -j "$JOBS"
     echo "      $LIN/Game"
+fi
+
+if [ "$ANDROID" = 1 ]; then
+    echo "[+] Android port"
+    cmake -DWHAT=zig-android -P "$ROOT/tools/configure.cmake"
+    cmake --build "$ROOT/out/build/zig-android" --target Game -j "$JOBS"
+    mkdir -p "$ROOT/out/build/zig-android/apk/arm64-v8a"
+    cp "$ROOT/out/build/zig-android/libmain.so" "$ROOT/out/build/zig-android/apk/arm64-v8a/"
+    [ -n "${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}" ] || [ ! -d "$HOME/Android/Sdk" ] || export ANDROID_HOME="$HOME/Android/Sdk"
+    (cd "$ROOT/src/android" && ./gradlew -q assembleDebug -PnativeLibs="$ROOT/out/build/zig-android/apk")
+    echo "      $ROOT/out/build/android/app/outputs/apk/debug/app-debug.apk (adb install -r it)"
 fi
 
 if [ "$HARNESS" = 1 ]; then

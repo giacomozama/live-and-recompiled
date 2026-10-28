@@ -327,6 +327,72 @@ uint32_t FaceSize(const TextureDesc& d) { return (LevelOffset(d, d.levels) + 127
 
 uint32_t TotalSize(const TextureDesc& d) { return d.cube ? FaceSize(d) * 6 : LevelOffset(d, d.levels); }
 
+void DecodeDxt(Host kind, uint32_t w, uint32_t h, const std::vector<uint8_t>& blocks, uint32_t pitch,
+               std::vector<uint8_t>& out, uint32_t& row_pitch) {
+    const uint32_t bw = (w + 3) / 4, bh = (h + 3) / 4, size = kind == Host::BC1 ? 8 : 16;
+    const uint32_t slices = pitch && bh ? std::max<uint32_t>(uint32_t(blocks.size() / pitch / bh), 1) : 1;
+    row_pitch = w * 4;
+    out.assign(size_t(row_pitch) * h * slices, 0);
+    auto rgb = [](uint16_t c, uint8_t* p) {  // 565 into B G R
+        uint32_t r = c >> 11, g = (c >> 5) & 63, b = c & 31;
+        p[0] = uint8_t(b << 3 | b >> 2);
+        p[1] = uint8_t(g << 2 | g >> 4);
+        p[2] = uint8_t(r << 3 | r >> 2);
+    };
+    for (uint32_t z = 0; z < slices; z++)
+        for (uint32_t by = 0; by < bh; by++)
+            for (uint32_t bx = 0; bx < bw; bx++) {
+                size_t at = (size_t(z) * bh + by) * pitch + size_t(bx) * size;
+                if (at + size > blocks.size()) continue;
+                const uint8_t* b = &blocks[at];
+                const uint8_t* c = kind == Host::BC1 ? b : b + 8;  // the colours, after the alpha in BC2 and BC3
+                uint16_t c0 = uint16_t(c[0] | c[1] << 8), c1 = uint16_t(c[2] | c[3] << 8);
+                uint8_t pal[4][4];
+                rgb(c0, pal[0]);
+                rgb(c1, pal[1]);
+                pal[0][3] = pal[1][3] = pal[2][3] = pal[3][3] = 255;
+                // BC1 with c0 <= c1 has three colours and transparent black; BC2 and BC3 always have four
+                bool four = kind != Host::BC1 || c0 > c1;
+                for (int i = 0; i < 3; i++) {
+                    pal[2][i] = uint8_t(four ? (2 * pal[0][i] + pal[1][i] + 1) / 3 : (pal[0][i] + pal[1][i]) / 2);
+                    pal[3][i] = uint8_t(four ? (pal[0][i] + 2 * pal[1][i] + 1) / 3 : 0);
+                }
+                if (!four) pal[3][3] = 0;
+                uint32_t idx = uint32_t(c[4]) | uint32_t(c[5]) << 8 | uint32_t(c[6]) << 16 | uint32_t(c[7]) << 24;
+                uint8_t alpha[16];
+                if (kind == Host::BC2) {
+                    for (int i = 0; i < 16; i++) {
+                        uint8_t a = uint8_t(b[i / 2] >> (i & 1) * 4 & 15);
+                        alpha[i] = uint8_t(a << 4 | a);
+                    }
+                } else if (kind == Host::BC3) {
+                    uint8_t a[8] = {b[0], b[1]};
+                    if (a[0] > a[1]) {
+                        for (int i = 1; i < 7; i++) a[i + 1] = uint8_t(((7 - i) * a[0] + i * a[1] + 3) / 7);
+                    } else {
+                        for (int i = 1; i < 5; i++) a[i + 1] = uint8_t(((5 - i) * a[0] + i * a[1] + 2) / 5);
+                        a[6] = 0;
+                        a[7] = 255;
+                    }
+                    uint64_t bits = 0;
+                    for (int i = 0; i < 6; i++) bits |= uint64_t(b[2 + i]) << (8 * i);
+                    for (int i = 0; i < 16; i++) alpha[i] = a[bits >> (3 * i) & 7];
+                }
+                for (uint32_t y = 0; y < 4; y++) {
+                    uint32_t ty = by * 4 + y;
+                    if (ty >= h) break;
+                    for (uint32_t x = 0; x < 4; x++) {
+                        uint32_t tx = bx * 4 + x;
+                        if (tx >= w) break;
+                        uint32_t i = y * 4 + x;
+                        uint8_t* o = &out[(size_t(z) * h + ty) * row_pitch + size_t(tx) * 4];
+                        std::memcpy(o, pal[idx >> (2 * i) & 3], 4);
+                        if (kind != Host::BC1) o[3] = alpha[i];
+                    }
+                }
+            }
+}
+
 void DecodeLevel(const TextureDesc& d, uint32_t level, uint32_t face, const uint8_t* guest, const uint32_t* palette,
                  std::vector<uint8_t>& out, uint32_t& row_pitch) {
     const FormatInfo& f = Format(d.format);

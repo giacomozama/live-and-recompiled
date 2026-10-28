@@ -5,6 +5,9 @@
 #   zig-windows the Windows port with the pinned Zig, on either host: Game.exe, the player kit's Windows half and
 #               setup-windows.exe. On Windows it runs its own xbe_recomp
 #   profile     zig-glibc with frame pointers, for perf (docs/performance.md); its own folder, never packaged
+#   zig-android the Android port with the pinned Zig against the NDK's sysroot (cmake/zig-android.cmake): libmain.so
+#               and the APK builder's kit. Its codegen is this host's recompiler (zig-glibc's, or zig-windows' on
+#               Windows)
 #
 # Every build is the pinned Zig (fetched first if missing), so what is measured in one holds for the others: no system
 # compiler, whose C and C++ libraries differ from the ones players get.
@@ -34,8 +37,14 @@ function(xbe_configure what)
         if(NOT CMAKE_HOST_WIN32)
             list(APPEND args ${codegen})
         endif()
+    elseif(what STREQUAL "zig-android")
+        set(args -DCMAKE_TOOLCHAIN_FILE=${XBE_ROOT}/cmake/zig-android.cmake ${codegen})
+        if(CMAKE_HOST_WIN32)
+            set(args -DCMAKE_TOOLCHAIN_FILE=${XBE_ROOT}/cmake/zig-android.cmake
+                -DXBE_CODEGEN_TOOL=${XBE_BUILDS}/zig-windows/xbe_recomp.exe)
+        endif()
     else()
-        message(FATAL_ERROR "xbe_configure: zig-glibc, zig-windows or profile, not '${what}'")
+        message(FATAL_ERROR "xbe_configure: zig-glibc, zig-windows, zig-android or profile, not '${what}'")
     endif()
     execute_process(COMMAND ${CMAKE_COMMAND} -S ${XBE_ROOT} -B ${dir} -G Ninja -DCMAKE_BUILD_TYPE=Release ${args}
         COMMAND_ERROR_IS_FATAL ANY)

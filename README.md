@@ -1,7 +1,8 @@
 # Live & Recompiled
 
 An unofficial native PC port of the original Xbox *Conker: Live & Reloaded*, built on a heavily modified version of
-[Xbox XBE Recomp](https://github.com/TGP482/XboxXBERecomp). Currently supports Linux and Windows.
+[Xbox XBE Recomp](https://github.com/TGP482/XboxXBERecomp). Currently supports Linux and Windows, and experimentally
+[Android](#android).
 
 This project is not affiliated with or endorsed by Rare or Microsoft. *Conker* and *Conker: Live & Reloaded* are
 trademarks of their respective owners.
@@ -76,6 +77,37 @@ Then it is two steps: run Setup, run the game.
 
 Setup keeps nothing it generated except the game and the compiler in the working folder (unless you chose not to). Run it again after updating to a new release.
 
+## Android
+
+> [!NOTE]
+> The Android version is experimental and hasn't been tested on a device yet.
+
+The app is built on your PC, like the PC version, and the game's files are copied onto the device separately.
+
+**What you need:** a 64-bit ARM device with Android 9 or newer and a Vulkan 1.3 GPU that has push descriptors
+(recent Snapdragon, Dimensity, Exynos or Tensor phones and tablets), about 6 GB of free space on it, and your copy
+of the game (any of the supported versions above). A controller is recommended; without one, controls are drawn on
+the screen.
+
+1. **Build the app** on Windows or Linux: download `LiveAndRecompiled-<version>-android-builder-windows.zip` or
+   `-linux.tar.gz`, unpack it and run `apk-builder-windows.exe` or `./apk-builder-linux`. Pick your copy of the game
+   (only its `default.xbe` is read on the PC) and press Build APK. It downloads [Zig](https://ziglang.org) the first
+   time (about 100 MB), recompiles the game for Android and writes `LiveAndRecompiled.apk`, signed with a key it makes
+   for your PC (`android-signing.toml` in `%APPDATA%\LiveAndRecompiled` or `~/.config/LiveAndRecompiled`). Keep that
+   file: Android only installs a new build over the old one when the same key signed both. Without a display, or with
+   `--cli`, it runs in the terminal (`--help` lists the options).
+2. **Install it**: copy the APK to the device and open it (allow installing from that app when asked), or
+   `adb install LiveAndRecompiled.apk`.
+3. **Copy the game to the device**: the disc image (`.iso`), the folder with the extracted files, or the Xbox Store
+   release's `DefaultPackage` with its `DefaultPackage.data` folder.
+4. **Open the app** and pick the game: "Choose a disc image" for an `.iso`, "Choose a folder" for the rest. It checks
+   the version and unpacks the game's files into the app's own storage (a few minutes), then starts the game. You can
+   delete the copy you picked afterwards.
+
+The back button opens the menu. Settings and saves stay in the app's storage; logs are in
+`Android/data/org.liveandrecompiled.conker/files/logs` on the device's storage. To use another copy of the game,
+clear the app's storage in Android's settings (which deletes the saves too).
+
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md).
@@ -92,6 +124,7 @@ See [BUILDING.md](BUILDING.md).
 - [toml++](https://github.com/marzer/tomlplusplus) for the configs
 - [Dear ImGui](https://github.com/ocornut/imgui) for the settings overlay
 - [FLTK](https://www.fltk.org) for Setup's window
+- [micro-ecc](https://github.com/kmackay/micro-ecc) for signing the Android app
 - [SDL](https://github.com/libsdl-org/SDL) for the window, input and controllers.
 - [Zig](https://ziglang.org) (`zig c++`: Clang, LLD, mingw-w64 and glibc stubs, libc++), the compiler Setup builds the game with, on both systems.
 - [The ConkerXbox60FPSWidescreen patch](https://www.moddb.com/downloads/conkerxbox60fpswidescreen) for important information about game code.

@@ -13,8 +13,12 @@
 #else
 #include <pthread.h>
 #endif
+#ifdef __aarch64__
+#include <arm_neon.h>
+#else
 #include <smmintrin.h>
 #include <x86intrin.h>
+#endif
 
 #include <algorithm>
 #include <chrono>
@@ -107,12 +111,29 @@ constexpr size_t kVscBytes = sizeof(State{}.vsc.v), kVscBlockBytes = decltype(St
 // equal bytes, 16 at a time: most of the state is compared on every draw
 bool Same(const uint8_t* a, const uint8_t* b, size_t n) {
     size_t i = 0;
+#ifdef __aarch64__
+    uint8x16_t diff = vdupq_n_u8(0);
+    for (; i + 16 <= n; i += 16) diff = vorrq_u8(diff, veorq_u8(vld1q_u8(a + i), vld1q_u8(b + i)));
+    if (vmaxvq_u8(diff)) return false;
+#else
     __m128i diff = _mm_setzero_si128();
     for (; i + 16 <= n; i += 16)
         diff = _mm_or_si128(diff, _mm_xor_si128(_mm_loadu_si128(reinterpret_cast<const __m128i*>(a + i)),
                                                 _mm_loadu_si128(reinterpret_cast<const __m128i*>(b + i))));
     if (!_mm_testz_si128(diff, diff)) return false;
+#endif
     return i == n || !std::memcmp(a + i, b + i, n - i);
+}
+
+// XBE_PERF's stamps: the time stamp counter, or on ARM the generic timer's count; only their shares are shown
+inline uint64_t Stamp() {
+#ifdef __aarch64__
+    uint64_t t;
+    __asm__ volatile("mrs %0, cntvct_el0" : "=r"(t));
+    return t;
+#else
+    return __rdtsc();
+#endif
 }
 
 // what a 32 bit word of State is to Backend::Changed: anything else, a vertex source, a vertex program constant
@@ -187,7 +208,7 @@ public:
         auto t = PerfClock::now();
         static const bool perf = diag::Perf();
         uint64_t tsc[6];
-        if (perf) tsc[0] = __rdtsc();
+        if (perf) tsc[0] = Stamp();
         SendState(s, perf ? &tsc[1] : nullptr);
         Cmd c{Op::Draw};
         c.a = prim;
@@ -199,17 +220,17 @@ public:
             c.data = Put(indices, size_t(count) * 2);
         }
         cur_->cmds.push_back(c);
-        if (perf) tsc[3] = __rdtsc();
+        if (perf) tsc[3] = Stamp();
         for (size_t i = 0; i < 4; i++) Use(s.textures[i], &slot_uses_[kSlotTextures + i]);
         for (size_t i = 0; i < 4; i++) Use(s.palettes[i], &slot_uses_[kSlotPalettes + i]);
         for (size_t i = 0; i < 16; i++) Use(s.streams[i].vb, &slot_uses_[kSlotStreams + i]);
         Use(s.rt.header, &slot_uses_[kSlotTarget]);
         Use(s.zs.header, &slot_uses_[kSlotDepth]);
         Written(s.rt);
-        if (perf) tsc[4] = __rdtsc();
+        if (perf) tsc[4] = Stamp();
         if (cur_->cmds.size() >= kBatchCommands) Submit();
         if (perf) {
-            tsc[5] = __rdtsc();
+            tsc[5] = Stamp();
             for (int i = 0; i < 5; i++) g_perf_rec_cycles[i].fetch_add(tsc[i + 1] - tsc[i], std::memory_order_relaxed);
         }
         g_perf_capture_ns += Ns(t);
@@ -447,7 +468,7 @@ private:
                 for (size_t off = block; off < block_end; off += 64)
                     Delta(sent + off, now + off, std::min<size_t>(64, block_end - off));
             }
-        if (tsc) tsc[0] = __rdtsc();
+        if (tsc) tsc[0] = Stamp();
         std::array<uint32_t, 4> textures;
         for (size_t i = 0; i < 4; i++) textures[i] = Header(s.textures[i], &slot_headers_[kSlotTextures + i]);
         Delta(&sent_.textures, &textures, sizeof(textures));
@@ -467,7 +488,7 @@ private:
         zs.header = Header(zs.header, &slot_headers_[kSlotDepth]);
         Delta(&sent_.rt, &rt, sizeof(rt));
         Delta(&sent_.zs, &zs, sizeof(zs));
-        if (tsc) tsc[1] = __rdtsc();
+        if (tsc) tsc[1] = Stamp();
         if (s.vs.get() != sent_.vs.get()) {
             sent_.vs = s.vs;
             c.vs = int32_t(cur_->vs.size());

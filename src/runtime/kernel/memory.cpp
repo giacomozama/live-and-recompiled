@@ -13,6 +13,7 @@
 #include <windows.h>
 #else
 #include <sys/mman.h>
+#include <sys/syscall.h>
 #include <unistd.h>
 #endif
 
@@ -63,7 +64,8 @@ bool Init() {
 #else
     void* p = mmap(reinterpret_cast<void*>(0x100000000ull), size, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
     g_base = p == MAP_FAILED ? nullptr : static_cast<uint8_t*>(p);
-    int fd = g_base ? memfd_create("ram", 0) : -1;
+    // Bionic declares memfd_create from API 30, the kernel has had it since 3.17
+    int fd = g_base ? int(syscall(__NR_memfd_create, "ram", 0)) : -1;
     if (fd < 0 || ftruncate(fd, kPhysicalSize) ||
         mmap(g_base + kContiguousBase, kPhysicalSize, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED, fd, 0) == MAP_FAILED ||
         mmap(g_base + kWriteCombineBase, kPhysicalSize, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED, fd, 0) == MAP_FAILED)
@@ -87,6 +89,15 @@ bool Init() {
 // page commit map, one byte per 4 KB page
 static std::vector<uint8_t> g_committed(0x100000, 0);
 
+#ifndef _WIN32
+// the host's page, which the protection changes go by: 4 KB, or 16 KB on some ARM systems (Android 15's large page
+// devices), where a guest page shares its host page with three others
+uint64_t HostPage() {
+    static const uint64_t page = std::max<uint64_t>(uint64_t(sysconf(_SC_PAGESIZE)), kPage);
+    return page;
+}
+#endif
+
 bool Commit(uint32_t va, uint32_t size) {
     if (!size || InPhysical(va)) return true;
     uint32_t first = va & ~(kPage - 1);
@@ -98,7 +109,10 @@ bool Commit(uint32_t va, uint32_t size) {
         return false;
     }
 #else
-    if (mprotect(g_base + first, size_t(end - first), PROT_READ | PROT_WRITE)) {
+    // the host pages around the guest ones: their neighbours open too, which only matters to a guest that faults on
+    // purpose, which the Xbox's never do
+    uint64_t hp = HostPage(), hfirst = first & ~(hp - 1), hend = (end + hp - 1) & ~(hp - 1);
+    if (mprotect(g_base + hfirst, size_t(hend - hfirst), PROT_READ | PROT_WRITE)) {
         LOGE("memory: commit %08X+%X failed", first, uint32_t(end - first));
         return false;
     }
@@ -115,8 +129,17 @@ void Decommit(uint32_t va, uint32_t size) {
 #ifdef _WIN32
     VirtualFree(g_base + first, size_t(end - first), MEM_DECOMMIT);
 #else
-    madvise(g_base + first, size_t(end - first), MADV_DONTNEED);
-    mprotect(g_base + first, size_t(end - first), PROT_NONE);
+    for (uint64_t p = first; p < end; p += kPage) g_committed[size_t(p >> 12)] = 0;
+    // only the host pages none of whose guest pages is still committed
+    uint64_t hp = HostPage();
+    for (uint64_t h = first & ~(hp - 1); h < end; h += hp) {
+        bool used = false;
+        for (uint64_t p = h; p < h + hp && !used; p += kPage) used = g_committed[size_t(p >> 12)] != 0;
+        if (used) continue;
+        madvise(g_base + h, size_t(hp), MADV_DONTNEED);
+        mprotect(g_base + h, size_t(hp), PROT_NONE);
+    }
+    return;
 #endif
     for (uint64_t p = first; p < end; p += kPage) g_committed[size_t(p >> 12)] = 0;
 }

@@ -1,6 +1,11 @@
 // The log's opening lines everywhere but Windows (app/system_info.cpp): what the game runs on and with which settings.
 // The GPU is the renderer's to name, once it picked one.
+#if defined(__x86_64__) || defined(__i386__)
 #include <cpuid.h>
+#endif
+#ifdef __ANDROID__
+#include <sys/system_properties.h>
+#endif
 #include <sys/utsname.h>
 #include <unistd.h>
 
@@ -18,9 +23,21 @@ namespace app {
 
 namespace {
 
-// the distribution's name, then the kernel
+#ifdef __ANDROID__
+std::string Property(const char* key) {
+    char v[PROP_VALUE_MAX] = {};
+    __system_property_get(key, v);
+    return v;
+}
+#endif
+
+// the distribution's name (Android's version and the device), then the kernel
 std::string OsVersion() {
     std::string name;
+#ifdef __ANDROID__
+    name = "Android " + Property("ro.build.version.release") + " (API " + Property("ro.build.version.sdk") + "), " +
+           Property("ro.product.manufacturer") + " " + Property("ro.product.model");
+#endif
     std::ifstream f("/etc/os-release");
     for (std::string line; std::getline(f, line);) {
         if (line.rfind("PRETTY_NAME=", 0) != 0) continue;
@@ -33,6 +50,15 @@ std::string OsVersion() {
 }
 
 std::string CpuName() {
+#if !defined(__x86_64__) && !defined(__i386__)
+#ifdef __ANDROID__
+    std::string soc = Property("ro.soc.manufacturer") + " " + Property("ro.soc.model");
+    if (soc != " ") return soc;
+    return Property("ro.board.platform");
+#else
+    return "unknown";
+#endif
+#else
     unsigned r[4] = {};
     if (!__get_cpuid(0x80000000, &r[0], &r[1], &r[2], &r[3]) || r[0] < 0x80000004) return "unknown";
     char brand[49] = {};
@@ -44,6 +70,7 @@ std::string CpuName() {
     s.erase(0, s.find_first_not_of(' '));
     s.erase(s.find_last_not_of(' ') + 1);
     return s;
+#endif
 }
 
 }  // namespace
