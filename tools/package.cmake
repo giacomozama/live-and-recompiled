@@ -11,8 +11,8 @@
 #   cmake -DJOBS=N -P tools/package.cmake           parallel jobs (default: every core)
 # tools/package.sh and tools/package.bat run it with the same options as flags.
 #
-# Output: out/release/LiveAndRecompiled/, out/release/LiveAndRecompiled-<version>-windows.zip and, packaged on Linux,
-# out/release/LiveAndRecompiled-<version>-linux.tar.gz
+# Output: out/release/LiveAndRecompiled/, out/release/LiveAndRecompiled-<version>-windows-x86_64.zip and, packaged on Linux,
+# out/release/LiveAndRecompiled-<version>-linux-x86_64.tar.gz
 # Everything is built with the pinned Zig: Game.exe and setup-windows.exe for Windows, on either host, and on Linux
 # setup-linux and the native game's prebuilt host against glibc 2.31 (the X11, Wayland, Pango, Cairo and audio headers
 # SDL and FLTK need are Linux's): a release packaged on Windows has setup-windows.exe alone. The test runs this host's
@@ -167,7 +167,7 @@ endif()
 # one archive per platform, each a LiveAndRecompiled/ folder with that platform's Setup: a zip for Windows, and for Linux a
 # .tar.gz, which keeps setup-linux executable (unzip tools often drop the bit)
 function(archive os setup ext flags format)
-    set(file ${OUT}/${NAME}-${version}-${os}.${ext})
+    set(file ${OUT}/${NAME}-${version}-${os}-x86_64.${ext})
     file(REMOVE ${file})
     execute_process(COMMAND ${CMAKE_COMMAND} -E tar ${flags} ${file} --format=${format}
             ${NAME}/${setup} ${NAME}/LICENSE ${NAME}/THIRD_PARTY.txt

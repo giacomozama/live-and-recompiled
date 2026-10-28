@@ -6,7 +6,7 @@
 #   tools/package.sh --test-download  test with the compiler Setup downloads, not the one in toolchain/
 #   tools/package.sh -j N             parallel jobs (default: every core)
 #
-# Output: out/release/LiveAndRecompiled/, out/release/LiveAndRecompiled-<version>-windows.zip and out/release/LiveAndRecompiled-<version>-linux.tar.gz
+# Output: out/release/LiveAndRecompiled/, out/release/LiveAndRecompiled-<version>-windows-x86_64.zip and out/release/LiveAndRecompiled-<version>-linux-x86_64.tar.gz
 # env overrides: XBE_TOOLCHAIN_ROOT (the toolchain, default toolchain/)
 set -euo pipefail
 
