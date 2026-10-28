@@ -13,40 +13,27 @@ trademarks of their respective owners.
 > [!WARNING]
 > **AI disclaimer**
 >
-> ALL first-party code here is LLM generated. It was tested manually, but pretty much no code at all was typed in by humans. I think it works well, but it IS one-hundred percent, unadulterated, "vibecoded slop".
-> This was not made to gain recognition or to showcase my own skills, it was made because I wanted an enjoyable Conker: L&R experience on PC and, while I understand and even partially share concerns surrounding LLM coding, I also recognize that implementing a project like this manually would take *years* of effort and dedication while producing nothing humanity hasn't already done before and not even guaranteeing a superior final product. I don't see the value in that for such a niche game, but I welcome and encourage you to try and implement your own, manually coded version if you truly care about one existing.
-
-## Status and Known Bugs
-
-This is a beta: single player is supposed to be fully playable, but there may be uncaught bugs and/or edge cases. Playtesting and bug reports are very appreciated.
-
-Modes above 60 FPS WILL have frame interpolation glitches, as we have not achieved 100% draw matching yet.
-
-## Contributing
-
-You may open issues for requesting features or reporting bugs, and submit PRs if you fix a bug or want to add a new feature yourself. There is no guarantee it will be merged, but you won't be laughed at either. We DO accept LLM-written PRs obviously.
-
-**Bug reporting advice**
-
-If you notice a bug, you can take a frame capture by pressing F3. It will be saved in a subdirectory of the `cap` directory. *Please remove the `tex_XXXXXXX.bmp` and `.hlsl` files from the capture directory*, as they come from the game itself and must not be submitted. Then zip the directory and attach it to your bug report.
-
-If you notice frame interpolation glitches at high FPS, run the game with `XBE_INTERP_RECORD=120` (or whichever framerate you are playing at) and press F4 *immediately after* experiencing the glitch. Captures are generated inside the `cap` directory with the `interp_` prefix. Zip and attach the generated directory to your bug report.
+> ALL first-party code here is LLM generated and was NOT reviewed line-by-line. Testing was mostly done manually.
 
 ## Features
 
-- **High frame rates** - 60, 120, 180 or 240 FPS instead of the original 30 (experimental).
-- **Any aspect ratio** - Ultrawide and other displays get a wider view, with the HUD stretched to fit.
-- **Better graphics** - Anti-aliasing, additional post-processing effects, improved fur, flowing and rippling water, 
-shiny armour and swaying distant grass.
-- **Controls** - Xbox, PlayStation and Switch controllers with rumble, or keyboard and mouse with mouse look; all
-  rebindable.
+- **High frame rates** - 60, 120, 180 or 240 FPS instead of the original 30.
+- **Any aspect ratio** - Ultrawide and other displays get a wider view.
+- **Better graphics** - Anti-aliasing, additional post-processing effects, visual and gameplay enhancements.
+- **Controls** - Xbox, PlayStation and Switch controllers with rumble, or keyboard and mouse with mouse look.
 - **Skippable cutscenes** - Skip any in-engine cutscene without having seen them once first.
 
 Everything is configurable in the Esc menu and in `settings.toml`.
 
+## Status
+
+Single player is playable start to finish. It's expected to be mostly bug free and optimized almost everywhere. Some minor visual glitches might occur, especially in relation with framerates above 60 and frame interpolation.
+
+Solo Dumbots and split screen multiplayer works, but hasn't been tested thoroughly. Lan/Online play is untested altogether.
+
 ## Installation
 
-For legal reasons, releases contain none of the game. Setup performs the entire extraction and recompilation process on your PC, which might require several minutes.
+Releases contain neither the game's code nor its assets. Setup performs the entire extraction and recompilation process on your PC, which might require several minutes.
 
 **Supported versions**
 - The USA disc release (`default.xbe` SHA-1 = `2232a1b3874d67b4bb4cf53a940420d2dab59535`)
@@ -63,8 +50,9 @@ Then it is two steps: run Setup, run the game.
      puts the game's files in an `assets` folder in the game folder, where the game looks for them.
      - **Windows:** if it is installed from the Microsoft Store in its default place
        (`C:\XboxGames\Conker- Live and Reloaded\Content\Game`, not encrypted), pick that folder.
+       - **NOTE:** You have to run the original app and let it extract the game once first, otherwise the files will not decode correctly.
      - **Linux:** if you bought it on the Microsoft Store, download its package with the
-       [Xodus project](https://github.com/xodus-gaming/xodus) or copy it from a Windows install.
+       [Xodus project](https://github.com/xodus-gaming/xodus) or copy it from a Windows install. You can use streaming mode to extract the files automatically.
    - **Working folder**: `work` beside Setup by default (made if it's missing). The compiler is downloaded into it (once) and the
      game is built there. Setup removes the temporary files when done and keeps the compiler for next time, unless
      you untick "Keep the downloaded compiler".
@@ -79,10 +67,13 @@ Then it is two steps: run Setup, run the game.
    Without a display, or with any option, Setup runs in the terminal instead: `./setup-linux --cli --source
    path/to/DefaultPackage --work /tmp/conker-work --game-dir ~/Games/Conker`, `--source` is required and the other
    options default to the same as the window (`--help` lists them, including `--delete-compiler`).
-2. **Run `Game.exe`** (Windows) **or `./Game`** (Linux), in the game folder (`game` beside Setup). Settings are in `settings.toml` beside it, and in the Esc menu.
+2. **Run `Game.exe`** (Windows) **or `./Game`** (Linux), in the game folder chosen during Setup.
 
-Setup keeps nothing it generated except the game, and the compiler in the working folder (unless you chose not to). Run it again after updating
-to a new release.
+Setup keeps nothing it generated except the game and the compiler in the working folder (unless you chose not to). Run it again after updating to a new release.
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Building from source
 
@@ -91,10 +82,14 @@ See [BUILDING.md](BUILDING.md).
 ## Credits
 
 - [Xbox XBE Recomp](https://github.com/TGP482/XboxXBERecomp), the recompiler and runtime this is built on.
-- [xemu](https://github.com/xemu-project/xemu) and [Cxbx-Reloaded](https://github.com/Cxbx-Reloaded/Cxbx-Reloaded) as references for the Xbox's hardware and API behaviour. This project does not use emulation or any emulator code.
-- [SMAA](http://www.iryoku.com/smaa/) by Jorge Jimenez, Jose I. Echevarria, Belen Masia, Fernando Navarro and Diego Gutierrez (MIT), for the anti-aliasing effect.
-- [toml++](https://github.com/marzer/tomlplusplus) for the configs, [Dear ImGui](https://github.com/ocornut/imgui) for the settings overlay, [FLTK](https://www.fltk.org) for Setup's window and [SDL](https://github.com/libsdl-org/SDL) for the window, input and controllers.
+- [xemu](https://github.com/xemu-project/xemu) and [Cxbx-Reloaded](https://github.com/Cxbx-Reloaded/Cxbx-Reloaded) as references for the Xbox's hardware and API behaviour.
+- [SMAA](http://www.iryoku.com/smaa/) by Jorge Jimenez, Jose I. Echevarria, Belen Masia, Fernando Navarro and Diego Gutierrez (MIT).
+- [toml++](https://github.com/marzer/tomlplusplus) for the configs
+- [Dear ImGui](https://github.com/ocornut/imgui) for the settings overlay
+- [FLTK](https://www.fltk.org) for Setup's window
+- [SDL](https://github.com/libsdl-org/SDL) for the window, input and controllers.
 - [Zig](https://ziglang.org) (`zig c++`: Clang, LLD, mingw-w64 and glibc stubs, libc++), the compiler Setup builds the game with, on both systems.
+- [The ConkerXbox60FPSWidescreen patch](https://www.moddb.com/downloads/conkerxbox60fpswidescreen) for important information about game code.
 
 ## License
 
