@@ -22,6 +22,7 @@
 #include <imgui.h>
 
 #include "app/app.h"
+#include "audio/audio.h"
 #include "common/cutscenes.h"
 #include "common/display.h"
 #include "common/fur.h"
@@ -64,10 +65,6 @@ void Close() {
 }
 
 std::atomic<double> g_fps{0.0};
-
-// the display settings while the menu is editing them; copied back on Apply
-app::DisplayMode pending_mode = app::DisplayMode::Borderless;
-uint32_t pending_w = 0, pending_h = 0;
 
 // the display's modes, asked once
 const std::vector<app::Mode>& Modes() {
@@ -321,12 +318,13 @@ void DrawWarp() {
 
     const int current = warp::CurrentLevel();
     const char* current_name = warp::LevelName(current);
-    ImGui::Text("Level: %d %s", current, current_name ? current_name : "");
+    ImGui::SeparatorText("Current level");
+    ImGui::Text("%d %s", current, current_name ? current_name : "");
     const std::string status = warp::Status();
     if (!status.empty()) ImGui::TextDisabled("%s", status.c_str());
-    Hint("Warning: these start a new game. Don't save afterwards over a save you want to keep.");
 
     ImGui::SeparatorText("Checkpoints");
+    Hint("Warning: these start a new game. Don't save afterwards over a save you want to keep.");
     ImGui::InputTextWithHint("##filter", "filter by name or level", filter, sizeof filter);
     const std::vector<warp::Checkpoint>& list = warp::Checkpoints();
     auto matches = [](const std::string& s) {
@@ -400,17 +398,11 @@ void DrawWarp() {
 }  // namespace
 
 void Draw(double fps) {
-    // the menu's pending display settings follow the live ones each time it opens
     static bool was_open = false;
     static double last_fps = -1.0;
     static bool last_title = !g_fps_title;
     static int last_look = -1;
     const bool open = g_open.load();
-    if (open && !was_open) {
-        pending_mode = app::Get().display_mode;
-        pending_w = app::Get().width;
-        pending_h = app::Get().height;
-    }
     if (!open) g_rebind = -1;  // closing the menu cancels a rebind
 
     // the menu saves itself: once its settings have held still for kSaveDelay (not every frame of a slider's drag),
@@ -485,9 +477,11 @@ void Draw(double fps) {
 
             if (tab("Graphics")) {
                 ImGui::SeparatorText("Display");
-                int mode = int(pending_mode);
-                if (ImGui::Combo("Mode", &mode, "Fullscreen\0Borderless\0Windowed\0"))
-                    pending_mode = app::DisplayMode(mode);
+                int mode = int(s.display_mode);
+                if (ImGui::Combo("Mode", &mode, "Fullscreen\0Borderless\0Windowed\0")) {
+                    s.display_mode = app::DisplayMode(mode);
+                    app::ApplyDisplay();
+                }
 
                 const std::vector<app::Mode>& modes = Modes();
                 std::string res = "Desktop";
@@ -495,17 +489,12 @@ void Draw(double fps) {
                 for (size_t i = 0; i < modes.size(); i++) {
                     res += '\0';
                     res += std::to_string(modes[i].width) + "x" + std::to_string(modes[i].height);
-                    if (modes[i].width == pending_w && modes[i].height == pending_h) res_idx = int(i) + 1;
+                    if (modes[i].width == s.width && modes[i].height == s.height) res_idx = int(i) + 1;
                 }
                 res += '\0';
                 if (ImGui::Combo("Resolution", &res_idx, res.c_str())) {
-                    if (res_idx == 0) pending_w = pending_h = 0;
-                    else pending_w = modes[res_idx - 1].width, pending_h = modes[res_idx - 1].height;
-                }
-                if (ImGui::Button("Apply display")) {
-                    s.display_mode = pending_mode;
-                    s.width = pending_w;
-                    s.height = pending_h;
+                    if (res_idx == 0) s.width = s.height = 0;
+                    else s.width = modes[res_idx - 1].width, s.height = modes[res_idx - 1].height;
                     app::ApplyDisplay();
                 }
                 // the camera follows the setting live; only the TV type the console reports waits for a restart
@@ -590,6 +579,26 @@ void Draw(double fps) {
 
             if (tab("Audio")) {
                 Slider("Volume %", &s.volume, 0, 100, app::Settings{}.volume);
+                {
+                    static std::vector<audio::Device> devices;
+                    if (devices.empty() || ImGui::IsWindowAppearing()) devices = audio::Devices();
+                    std::string current = "System default";
+                    for (const audio::Device& d : devices)
+                        if (d.id == s.audio_device) current = d.name;
+                    if (!s.audio_device.empty() && current == "System default") current += " (selected device missing)";
+                    if (ImGui::BeginCombo("Output device", current.c_str())) {
+                        if (ImGui::Selectable("System default", s.audio_device.empty())) {
+                            s.audio_device.clear();
+                            audio::SelectDevice(s.audio_device);
+                        }
+                        for (const audio::Device& d : devices)
+                            if (ImGui::Selectable(d.name.c_str(), d.id == s.audio_device)) {
+                                s.audio_device = d.id;
+                                audio::SelectDevice(s.audio_device);
+                            }
+                        ImGui::EndCombo();
+                    }
+                }
                 ImGui::Checkbox("Mute in background", &s.mute_in_background);
                 Hint("No sound while you are in another window.", true);
                 end_tab();

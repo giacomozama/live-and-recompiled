@@ -7,6 +7,9 @@
 
 namespace audio {
 
+std::vector<Device> Devices() { return {}; }
+void SelectDevice(const std::string&) {}
+
 void StartOutput(std::function<void(float*, uint32_t)> render) {
     std::thread([render] {
         std::vector<float> b(kRate / 100 * 2);

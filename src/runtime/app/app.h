@@ -34,6 +34,7 @@ struct Settings {
     uint32_t ambient_occlusion = 0;
     uint32_t ambient_occlusion_radius = 30;
     uint32_t volume = 100;           // the game's sound in %, the mixer's output scaled by its square
+    std::string audio_device;         // an audio::Device id, "" the system default
     bool mute_in_background = false;  // silent while the game window lacks the focus (Background)
     bool shader_warmup = true;       // make the shaders shaders.rec lists while the title boots
     std::string renderer = "vulkan";  // which gpu::Backend draws, read at launch (gpu/backend.cpp)
