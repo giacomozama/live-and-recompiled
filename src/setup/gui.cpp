@@ -20,6 +20,13 @@
 #include <thread>
 #include <vector>
 
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <sys/wait.h>
+#include <unistd.h>
+#endif
+
 #include "setup.h"
 
 namespace fs = std::filesystem;
@@ -66,7 +73,8 @@ struct Window {
     Fl_Text_Buffer* text = nullptr;
     std::thread worker;
     bool running = false, close_when_done = false, overwrite = false;
-    bool built = false;      // the last run finished: the Recompile button stays off until something above it changes
+    bool built = false;      // the last run finished: the button reads Play until something above it changes
+    fs::path exe;            // the game this window built
     bool build_ok = false;   // set by the worker before it hands over to Finished
     std::mutex lock;
     std::string pending;  // what the build said and the window has not shown yet
@@ -302,7 +310,7 @@ void Refresh(Window& u) {
     u.status->labelcolor(p.ok ? kOk : kBad);
     u.status->redraw();
     u.install->activate();
-    if (!p.ok || u.running || u.built) u.install->deactivate();
+    if ((!p.ok && !u.built) || u.running) u.install->deactivate();
 }
 
 void Lock(Window& u, bool busy) {
@@ -322,20 +330,49 @@ void Finished(void*) {
     if (u.worker.joinable()) u.worker.join();
     u.running = false;
     u.built = u.build_ok;
+    if (u.built) u.exe = Read(u).game_dir / u.kit.game;
     Lock(u, false);
-    u.install->label(u.built ? "Recompiled" : "Recompile");
+    u.install->label(u.built ? "Play" : "Start");
     u.close->label("Close");
     u.close->activate();
     Refresh(u);
     if (u.close_when_done) u.win->hide();
 }
 
+// the finished game, on its own: it keeps running after this window closes
+void Launch(const fs::path& exe) {
+#ifdef _WIN32
+    std::wstring cmd = L"\"" + exe.wstring() + L"\"", dir = exe.parent_path().wstring();
+    STARTUPINFOW si{sizeof si};
+    PROCESS_INFORMATION pi{};
+    if (CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, FALSE, 0, nullptr, dir.c_str(), &si, &pi)) {
+        CloseHandle(pi.hThread);
+        CloseHandle(pi.hProcess);
+    }
+#else
+    pid_t pid = fork();
+    if (pid == 0) {
+        setsid();
+        if (chdir(exe.parent_path().c_str()) == 0) execl(exe.c_str(), exe.c_str(), (char*)nullptr);
+        _exit(127);
+    }
+    if (pid > 0) {
+        std::thread([pid]() { waitpid(pid, nullptr, 0); }).detach();  // no zombie when it quits
+    }
+#endif
+}
+
 void Start(Fl_Widget*, void*) {
     Window& u = *g_ui;
     if (u.running) return;
+    if (u.built) {
+        Launch(u.exe);
+        u.win->hide();
+        return;
+    }
     u.running = true;
     Lock(u, true);
-    u.install->label("Recompiling ...");
+    u.install->label("Working ...");
     u.install->deactivate();
     u.text->text("");
     u.close->label("Cancel");
@@ -362,7 +399,7 @@ void Browse(Row& row, bool file) {
 void Changed(Fl_Widget*, void*) {
     if (g_ui->running) return;
     g_ui->built = false;
-    g_ui->install->label("Recompile");
+    g_ui->install->label("Start");
     Refresh(*g_ui);
 }
 
@@ -460,7 +497,7 @@ int RunWindow(const Options& defaults) {
     u.keep->labelsize(13);
     y += 2 * row_h + 12;
 
-    u.install = new FlatButton(W - M - browse_w - 8 - 150, y, 150, row_h, "Recompile");
+    u.install = new FlatButton(W - M - browse_w - 8 - 150, y, 150, row_h, "Start");
     u.install->callback(Start);
     u.install->color(kAccent);
     u.install->labelcolor(FL_WHITE);

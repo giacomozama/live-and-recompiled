@@ -23,6 +23,7 @@ struct Options {
 // the kit's own facts: what the window shows before anything is chosen
 struct KitInfo {
     std::string title;
+    std::string game;                     // the executable's file name, in the game folder
     std::string error;                    // set when the kit cannot be read
 };
 

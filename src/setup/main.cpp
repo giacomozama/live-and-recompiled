@@ -887,6 +887,8 @@ KitInfo ReadKit() {
     toml::table t, o;
     if (!ParseToml("kit.toml", t, info.error)) return info;
     info.title = t["title"].value_or(std::string("the game"));
+    info.game = t["exe"].value_or(std::string());
+    if (std::string(kHost) == "windows" && !info.game.empty()) info.game += ".exe";
     ParseToml(std::string(kHost) + ".toml", o, info.error);
     return info;
 }

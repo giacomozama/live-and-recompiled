@@ -13,7 +13,7 @@ trademarks of their respective owners.
 > [!WARNING]
 > **AI disclaimer**
 >
-> ALL first-party code here is LLM generated and was NOT reviewed line-by-line. Testing was mostly done manually.
+> ALL first-party code here is LLM generated and was NOT reviewed line-by-line.
 
 ## Features
 
