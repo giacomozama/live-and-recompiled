@@ -19,5 +19,5 @@ set(CMAKE_LINK_DEPENDS_USE_LINKER OFF)
 # default. The runtime links "xaudio2" (the Windows SDK's name); mingw-w64 ships it as xaudio2_8.
 set(XBE_ZIG_TARGET x86_64-windows-gnu)
 set(XBE_XAUDIO2 xaudio2_8)
-set(CMAKE_C_FLAGS_INIT "-target ${XBE_ZIG_TARGET} -mcpu=x86_64_v2 -g0 -D_WIN32_WINNT=0x0A00 -DWINVER=0x0A00")
-set(CMAKE_CXX_FLAGS_INIT "-target ${XBE_ZIG_TARGET} -mcpu=x86_64_v2 -g0 -D_WIN32_WINNT=0x0A00 -DWINVER=0x0A00")
+set(CMAKE_C_FLAGS_INIT "-target ${XBE_ZIG_TARGET} -mcpu=x86_64_v2 -g0")
+set(CMAKE_CXX_FLAGS_INIT "-target ${XBE_ZIG_TARGET} -mcpu=x86_64_v2 -g0")
