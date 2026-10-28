@@ -458,7 +458,8 @@ int main(int argc, char** argv) {
     // one log a session: a relaunch into another image carries on its predecessor's
     std::string log = app::kGame.log;
     if (app::Instance() > 1) log += "-" + std::to_string(app::Instance());
-    logx::Init((app::ExeDir() / "logs").string(), log, relaunched);
+    logx::Init((app::StateDir() / "logs").string(), log, relaunched);
+    app::MoveOldData();
     app::Load();
     if (app::kGame.init) app::kGame.init();
     SDL_SetHint(SDL_HINT_APP_NAME, app::Utf8(app::kGame.title).c_str());
@@ -482,7 +483,7 @@ int main(int argc, char** argv) {
                                          SDL_WINDOW_HIGH_PIXEL_DENSITY);
     if (!app::g_window) {
         LOGE("SDL: no window: %s", SDL_GetError());
-        app::Alert(L"The game window could not open, see the log in the logs folder.");
+        app::Alert(L"The game window could not open, see the log: " + std::filesystem::path(logx::Path()).wstring());
         return 1;
     }
     app::StoreDesktop();
@@ -503,8 +504,8 @@ int main(int argc, char** argv) {
     app::AddInputDevices();
     if (app::kGame.window) app::kGame.window(app::g_window);
     std::string hdd = app::Instance() > 1 ? "hdd" + std::to_string(app::Instance()) : "hdd";
-    if (!kernel::Boot(std::move(game.xbe), IMAGE_XBE, game.dir.string(), (app::ExeDir() / hdd).string())) {
-        app::Alert(L"The game failed to start, see the log in the logs folder.");
+    if (!kernel::Boot(std::move(game.xbe), IMAGE_XBE, game.dir.string(), (app::DataDir() / hdd).string())) {
+        app::Alert(L"The game failed to start, see the log: " + std::filesystem::path(logx::Path()).wstring());
         return 1;
     }
 

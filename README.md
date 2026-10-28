@@ -25,6 +25,11 @@ trademarks of their respective owners.
 
 Everything is configurable in the Esc menu and in `settings.toml`.
 
+Settings and saves live in `%APPDATA%\LiveAndRecompiled` on Windows and in `~/.config/LiveAndRecompiled` and
+`~/.local/share/LiveAndRecompiled` on Linux; logs and caches in `%LOCALAPPDATA%\LiveAndRecompiled`, or
+`~/.local/state` and `~/.cache` on Linux. Put an empty `portable.txt` beside the game's executable to keep them all
+in its folder instead.
+
 ## Status
 
 Single player is playable start to finish. It's expected to be mostly bug free and optimized almost everywhere. Some minor visual glitches might occur, especially in relation with framerates above 60 and frame interpolation.

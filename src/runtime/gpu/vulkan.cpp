@@ -2942,7 +2942,7 @@ VkPipeline VulkanBackend::FindPipeline(const PsoKey& k, const DrawShaders& sh) {
 
 void VulkanBackend::StartWarmUp() {
     // a second instance on this PC shares the files: it reads them only
-    record_.Open(app::ExeDir(), RecordLayout(), app::Instance() <= 1);
+    record_.Open(app::CacheDir(), RecordLayout(), app::Instance() <= 1);
     std::vector<shader_record::Entry> entries = record_.TakeEntries();
     shader_record::Programs programs = record_.TakePrograms();
     if (!app::Get().shader_warmup || entries.empty()) return;
@@ -4661,11 +4661,11 @@ void VulkanBackend::StartCapture() {
     char stamp[32];
     snprintf(stamp, sizeof(stamp), "%02d%02d%02d_%u", tm.tm_hour, tm.tm_min, tm.tm_sec, cap_seq_);
     std::error_code ec;
-    cap_dir_ = std::filesystem::weakly_canonical(app::ExeDir() / diag::CaptureDir() / stamp, ec);
+    cap_dir_ = std::filesystem::weakly_canonical(app::StateDir() / diag::CaptureDir() / stamp, ec);
     // two presses in one second: the second gets its own folder
     for (int n = 2; std::filesystem::exists(cap_dir_, ec); n++)
         cap_dir_ = std::filesystem::weakly_canonical(
-            app::ExeDir() / diag::CaptureDir() / (std::string(stamp) + "-" + std::to_string(n)), ec);
+            app::StateDir() / diag::CaptureDir() / (std::string(stamp) + "-" + std::to_string(n)), ec);
     std::filesystem::create_directories(cap_dir_, ec);
     cap_ = OpenFile(cap_dir_ / "frame.txt", "w");
     cap_i_ = cap_rt_ = 0;
@@ -4900,9 +4900,9 @@ void VulkanBackend::SaveRecorded() {
     char stamp[32];
     snprintf(stamp, sizeof(stamp), "interp_%02d%02d%02d", tm.tm_hour, tm.tm_min, tm.tm_sec);
     std::error_code ec;
-    std::filesystem::path dir = app::ExeDir() / diag::CaptureDir() / stamp;
+    std::filesystem::path dir = app::StateDir() / diag::CaptureDir() / stamp;
     for (int n = 2; std::filesystem::exists(dir, ec); n++)
-        dir = app::ExeDir() / diag::CaptureDir() / (std::string(stamp) + "-" + std::to_string(n));
+        dir = app::StateDir() / diag::CaptureDir() / (std::string(stamp) + "-" + std::to_string(n));
     std::filesystem::create_directories(dir, ec);
     FILE* notes = OpenFile(dir / "notes.txt", "w");
     uint32_t saved = 0;

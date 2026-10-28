@@ -1,4 +1,4 @@
-// the settings file beside the exe
+// the settings file in ConfigDir
 #include <algorithm>
 #include <atomic>
 #include <cstdio>
@@ -19,7 +19,7 @@ const char* kModes[] = {"fullscreen", "borderless", "windowed"};
 // a player's devices: [player1] to [player4], keyboard, mouse and controller (input.h), the game adding its own
 const char* kSlotKeys[input::kKinds] = {"keyboard", "mouse", "controller"};
 
-std::filesystem::path File() { return ExeDir() / kGame.settings; }
+std::filesystem::path File() { return ConfigDir() / kGame.settings; }
 
 }  // namespace
 

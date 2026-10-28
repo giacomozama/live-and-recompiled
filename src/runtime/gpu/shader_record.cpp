@@ -1,4 +1,4 @@
-// shaders.rec and shader_programs.bin beside the exe, see shader_record.h
+// shaders.rec and shader_programs.bin in app::CacheDir, see shader_record.h
 #include "gpu/shader_record.h"
 
 #include <cstring>

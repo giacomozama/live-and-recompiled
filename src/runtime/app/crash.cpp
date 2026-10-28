@@ -159,7 +159,7 @@ void LogGuestThread(kernel::Thread& t, bool current) {
 }
 
 void WriteDump(EXCEPTION_POINTERS* e) {
-    auto dir = ExeDir() / "CrashDumps";
+    auto dir = StateDir() / "CrashDumps";
     CreateDirectoryW(dir.c_str(), nullptr);
     SYSTEMTIME t;
     GetLocalTime(&t);

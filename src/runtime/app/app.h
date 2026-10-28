@@ -67,6 +67,15 @@ bool Widescreen();
 float FrameAspect();
 
 std::filesystem::path ExeDir();
+// where the game writes (paths.cpp), each folder made: the platform's for the user (%APPDATA% and %LOCALAPPDATA%, the
+// XDG folders elsewhere), or ExeDir with a portable.txt beside the exe
+std::filesystem::path ConfigDir();  // the settings file
+std::filesystem::path DataDir();    // the hard disk: saves
+std::filesystem::path StateDir();   // logs, crash dumps, captures
+std::filesystem::path CacheDir();   // shaders.rec and shader_programs.bin
+// at launch, after the log is open: a settings file, hard disks and shader records left beside the exe by an older
+// build go to their folders above, when those have none yet
+void MoveOldData();
 // the game in assets (game_files.cpp): its folder and this executable's xbe, from the extracted files or a disc
 // image (.iso), which it mounts as D:; false after telling the player what is missing
 struct GameFiles {
@@ -140,7 +149,7 @@ struct GameInfo {
     const wchar_t* short_title;  // message boxes
     const wchar_t* name;         // window classes, crash dumps, handover event
     const char* log;             // log prefix
-    const char* settings;        // settings file beside the exe
+    const char* settings;        // settings file in ConfigDir
     const wchar_t* splash;       // .bmp or .png beside the exe
     const wchar_t* missing;      // message when neither the game files nor a disc image are found
     std::vector<std::pair<const char*, const char*>> images;  // xbe file name, executable name

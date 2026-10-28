@@ -1,5 +1,5 @@
 #pragma once
-// The shaders and pipelines a run made, kept beside the exe so the next run can make them before the frames that
+// The shaders and pipelines a run made, kept in app::CacheDir so the next run can make them before the frames that
 // need them. shaders.rec holds what each was made from and may be shared: vertex programs are named by hash only.
 // Their microcode, the title's own, goes in shader_programs.bin, which stays on the machine that played.
 #include <cstdint>
