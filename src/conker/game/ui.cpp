@@ -63,6 +63,7 @@ constexpr uint32_t kFpsTitle = app::kMsgApp + 0x40;
 constexpr int kMouse1 = 0x01, kEscape = 0x1B, kF1 = 0x70;
 
 std::atomic<bool> g_open{false};
+float g_fade = 1.0f;  // the menu's alpha as it fades in; render thread only
 // the quit prompt alone, over the game (the frontend's Start)
 std::atomic<bool> g_quit{false};
 // the port of the controller that opened the menu, -1 a keyboard
@@ -670,6 +671,7 @@ void Draw(double fps) {
     } else if (was_open) {
         app::SaveChanged();
     }
+    const bool opened_before = was_open;
     was_open = open;
 
     // not from here: setting the title from the render thread could deadlock on the window thread's UiLock; post
@@ -734,6 +736,13 @@ void Draw(double fps) {
     ImGui::SetNextWindowSize(ImVec2(std::max(display.x - margin * 2.0f, 1.0f), std::max(display.y - margin * 2.0f, 1.0f)),
                              ImGuiCond_Always);
     if (!was_open) ImGui::SetNextWindowFocus();
+    // the menu fades in with the blur behind it (vulkan.cpp Redisplay: the same time and curve)
+    static double opened_at = 0.0;
+    if (!opened_before) opened_at = ImGui::GetTime();
+    float fade = std::min(float((ImGui::GetTime() - opened_at) / 0.11), 1.0f);
+    fade = fade * fade * (3.0f - 2.0f * fade);
+    g_fade = fade;
+    ImGui::PushStyleVar(ImGuiStyleVar_Alpha, fade);
     bool keep_open = true;
     if (ImGui::Begin("Settings", &keep_open,
                      ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoCollapse |
@@ -781,7 +790,7 @@ void Draw(double fps) {
                 static int faded_tab = -1;
                 static double faded_at = 0.0;
                 if (faded_tab != mine) faded_tab = mine, faded_at = ImGui::GetTime();
-                ImGui::PushStyleVar(ImGuiStyleVar_Alpha, std::min(float((ImGui::GetTime() - faded_at) / 0.15), 1.0f));
+                ImGui::PushStyleVar(ImGuiStyleVar_Alpha, std::min(float((ImGui::GetTime() - faded_at) / 0.15), 1.0f) * g_fade);
                 ImGui::BeginChild("##page", ImVec2(0, -footer), ImGuiChildFlags_NavFlattened);
                 if (g_pad.scroll != 0.0f) ImGui::SetScrollY(ImGui::GetScrollY() + g_pad.scroll);
                 return true;
@@ -1013,7 +1022,12 @@ void Draw(double fps) {
             }
             if (tab("Quit")) {
                 ImGui::TextUnformatted("Quit the game? Progress since the last save is lost.");
+                const auto shade = [](float f) { return ImVec4(kDanger.x * f, kDanger.y * f, kDanger.z * f, 1.0f); };
+                ImGui::PushStyleColor(ImGuiCol_Button, shade(0.75f));
+                ImGui::PushStyleColor(ImGuiCol_ButtonHovered, kDanger);
+                ImGui::PushStyleColor(ImGuiCol_ButtonActive, shade(0.6f));
                 if (ImGui::Button("Quit game")) want_quit = true;
+                ImGui::PopStyleColor(3);
                 end_tab();
             }
             {
@@ -1074,6 +1088,7 @@ void Draw(double fps) {
         ImGui::PopStyleVar(2);
     }
     ImGui::End();
+    ImGui::PopStyleVar();
     if (!keep_open) Close();  // the window's X
 }
 

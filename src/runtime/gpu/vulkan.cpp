@@ -204,6 +204,33 @@ float4 grade(O i) : SV_Target {
 // apply (the picture at t0, the occlusion at t1) darkens the picture by it. b1: px the picture's 1 / size, the reach,
 // the strength; frame the guest size and A, B of depth = A + B / w; vp the viewport's x y scale and offset; pr and pr2
 // the projection's x row (x, z, w) and y row (y, z, w)
+// the picture behind the host menu, blurred (Redisplay): hblur takes the whole picture at t0 down to half its size and
+// blurs it across, vblur blurs that down. b1: px the target's 1 / size, and the spread of a tap in its pixels (0: none)
+const char* kMenuBlurHlsl = R"(
+cbuffer B : register(b1) { float4 px; };
+Texture2D a : register(t0);
+SamplerState ls : register(s0);
+struct O { float4 p : SV_Position; float2 uv : TEXCOORD0; };
+O vs(uint id : SV_VertexID) {
+    O o;
+    o.uv = float2((id << 1) & 2, id & 2);
+    o.p = float4(o.uv * float2(2, -2) + float2(-1, 1), 0, 1);
+    return o;
+}
+float4 Blur(float2 uv, float2 dir) {
+    float4 sum = 0;
+    float weights = 0;
+    [unroll] for (int k = -4; k <= 4; k++) {
+        float wt = exp(-k * k / 8.0);
+        sum += a.SampleLevel(ls, uv + dir * k, 0) * wt;
+        weights += wt;
+    }
+    return sum / weights;
+}
+float4 hblur(O i) : SV_Target { return Blur(i.uv, float2(px.x * px.z, 0)); }
+float4 vblur(O i) : SV_Target { return Blur(i.uv, float2(0, px.y * px.z)); }
+)";
+
 const char* kOcclusionHlsl = R"(
 cbuffer B : register(b1) { float4 px; float4 frame; float4 vp; float4 pr; float4 pr2; };
 Texture2D a : register(t0);
@@ -1364,6 +1391,10 @@ private:
     // first, held until their time (Due, Show); the time between frames, smoothed, which the pictures share out
     std::vector<ImageRef> gen_pics_;
     ImageRef shown_;  // the picture Present showed last, for Redisplay
+    // Redisplay blurs it more the longer the title is held, from kBlurSeconds after the first; the half size targets
+    // it goes through
+    std::chrono::steady_clock::time_point held_since_{};
+    ImageRef menu_blur_[2];
     uint32_t gen_taken_ = 0;
     bool replay_ = false;
     struct Run {
@@ -5007,6 +5038,7 @@ void VulkanBackend::CountFps(uint32_t pictures) {
 // The frame's draws go to the GPU first; the swap chain image is acquired after, and only its picture and the overlay
 // wait for it
 void VulkanBackend::Present(const Surface& front) {
+    held_since_ = {};
     FlushRun();
     PerfScope perf_present{g_perf.present};
     if (cap_) {
@@ -5104,8 +5136,14 @@ void VulkanBackend::Present(const Surface& front) {
     ApplySettings();
 }
 
-// the title held: its last picture again under the overlay, a frame with no draws of its own
+// the title held: its last picture again under the overlay, a frame with no draws of its own, blurred a little more as
+// the hold goes on
 void VulkanBackend::Redisplay() {
+    constexpr float kBlurSeconds = 0.11f, kBlurSpread = 1.5f;  // to full, and a tap's reach in half size pixels
+    using Clock = std::chrono::steady_clock;
+    if (held_since_ == Clock::time_point{}) held_since_ = Clock::now();
+    float k = std::min(std::chrono::duration<float>(Clock::now() - held_since_).count() / kBlurSeconds, 1.0f);
+    k = k * k * (3.0f - 2.0f * k);
     ShowHeld();
     ResizeSwap();
     Submit(false);
@@ -5116,7 +5154,29 @@ void VulkanBackend::Redisplay() {
     if (AcquireImage(bi, f.acquired[0])) {
         BeginCommands(f.present[0]);
         if (shown_) Transition(*shown_, kRead);  // a remade target copied its picture out of it
-        DrawFrame(shown_ ? shown_->view : VK_NULL_HANDLE, bi);
+        VkImageView picture = shown_ ? shown_->view : VK_NULL_HANDLE;
+        if (shown_ && k > 0.0f) {
+            uint32_t w = std::max(shown_->w / 2, 1u), h = std::max(shown_->h / 2, 1u);
+            bool ok = true;
+            for (ImageRef& im : menu_blur_) {
+                if (im && im->w == w && im->h == h) continue;
+                if (im) Retire(std::move(im));
+                im = NewImage({.fmt = kBgra, .w = w, .h = h,
+                               .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT});
+                if (!im) ok = false;
+            }
+            if (ok) {
+                const float p[8] = {1.0f / w, 1.0f / h, kBlurSpread * k, 0};
+                const VkImageView from_picture[3] = {shown_->Sampled(), VK_NULL_HANDLE, VK_NULL_HANDLE};
+                Pass(kMenuBlurHlsl, "hblur", kBgra, *menu_blur_[0], w, h, from_picture, p, -1);
+                Transition(*menu_blur_[0], kRead);
+                const VkImageView from_half[3] = {menu_blur_[0]->Sampled(), VK_NULL_HANDLE, VK_NULL_HANDLE};
+                Pass(kMenuBlurHlsl, "vblur", kBgra, *menu_blur_[1], w, h, from_half, p, -1);
+                Transition(*menu_blur_[1], kRead);
+                picture = menu_blur_[1]->view;
+            }
+        }
+        DrawFrame(picture, bi);
         Submit(false, f.acquired[0], present_sem_[bi]);
         QueuePresent(bi);
         shown = 1;
