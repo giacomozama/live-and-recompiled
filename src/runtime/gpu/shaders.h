@@ -70,6 +70,12 @@ struct PixelKey {
 // one shape of a program. pre runs in the pixel shader before the combiner stages, after the textures are fetched (before
 // the fixed function's stages, which fetch as they go), and may change v0 and v1; PS_TWO_SIDED is 1 there when the back faces take the back colours. plain: the shading reads
 // no constants of its own (no clock, fill or top), so a draw in the state of the one before may reuse its pipeline.
+// screen, when set, copies the draw's render target just before each of its draws, what the draw blends over, for its
+// shaders to read as Texture2D xscreen (t5) with SamplerState xscreen_smp (s5), linear and clamped, at the pixel's
+// SV_Position over the copy's size. post runs in the pixel shader after the final combiner, before the alpha test, and
+// may change outc; DEPTH_PASS is 1 there in depth_alpha's (and a g_surface_depth surface's) depth pass, 0 otherwise.
+// coords runs in the pixel shader before the textures are fetched and may change tc0..tc3, which every stage then
+// reads by, whatever its kind; what it declares outside braces the later hooks see.
 struct ShadingField {
     const float* data = nullptr;  // w x h, rows of w
     uint32_t w = 0, h = 0;
@@ -91,11 +97,14 @@ struct ProgramShading {
     const char* also[3] = {};
     const char* pre = "";
     bool plain = false;
+    bool screen = false;
+    const char* post = "";
+    const char* coords = "";
 };
 inline std::vector<ProgramShading> g_program_shading;  // filled before the title boots, unchanged after
 
 // A game's look at the draws of a vertex program of the title's, on the render thread: seen gets each draw whose
-// program's translation contains match, before the draw is made (one in the state of the draw before too), with the
+// program's translation contains match (and also, when set), before the draw is made (one in the state of the draw before too), with the
 // input registers regs names of its first vertices, or of vertices spread evenly over it; frame runs at each present.
 struct WatchedDraw {
     const float (*v[16])[4] = {};  // per input register asked for and supplied: its value at each vertex, else null
@@ -112,6 +121,7 @@ struct ProgramWatch {
     uint16_t regs = 1;       // bit per input register, v0 alone by default
     bool spread = false;     // vertices spread over the draw rather than its first
     uint32_t vertices = 16;  // at most
+    const char* also = "";
 };
 inline std::vector<ProgramWatch> g_program_watch;  // filled before the title boots, unchanged after
 

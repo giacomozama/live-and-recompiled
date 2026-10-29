@@ -79,6 +79,7 @@ std::string Common(uint32_t shading = 0) {
     if (shading) s += "    float4 xc;\n    float4 xs[16];\n";
     s += "};\n";
     if (shading && Shading(shading).field) s += "Texture2D<float> xfield : register(t4);\nSamplerState xfield_smp : register(s4);\n";
+    if (shading && Shading(shading).screen) s += "Texture2D xscreen : register(t5);\nSamplerState xscreen_smp : register(s5);\n";
     if (shading) s += Shading(shading).functions;
     return s;
 }
@@ -775,8 +776,10 @@ uint64_t MatchProgramShading(const std::vector<uint32_t>& prog) {
 uint32_t MatchProgramWatch(const std::vector<uint32_t>& prog) {
     if (g_program_watch.empty()) return 0;
     std::string s = VertexProgramHlsl(prog, 0xFFFF);
-    for (size_t i = 0; i < g_program_watch.size(); i++)
-        if (s.find(g_program_watch[i].match) != std::string::npos) return uint32_t(i + 1);
+    for (size_t i = 0; i < g_program_watch.size(); i++) {
+        const ProgramWatch& w = g_program_watch[i];
+        if (s.find(w.match) != std::string::npos && s.find(w.also) != std::string::npos) return uint32_t(i + 1);
+    }
     return 0;
 }
 
@@ -995,6 +998,7 @@ std::string PixelHlsl(const PixelKey& k) {
     s += k.two_sided ? "    float4 v0 = front ? i.d0 : i.b0, v1 = front ? i.d1 : i.b1;\n" : "    float4 v0 = i.d0, v1 = i.d1;\n";
     s += "    if (misc.w == 0) v1 = float4(0, 0, 0, 1);\n";
     s += "    float4 fogin = float4(fogcolor.rgb, saturate(i.fogamt));\n";
+    if (k.shading && *Shading(k.shading).coords) s += std::string(Shading(k.shading).coords) + "\n";
     std::string body;
     std::string pre;
     if (k.shading && *Shading(k.shading).pre)
@@ -1079,6 +1083,8 @@ std::string PixelHlsl(const PixelKey& k) {
         body += "cur.rgb = saturate(cur.rgb + v1.rgb);\n";
         body += "float4 outc = float4(lerp(fogin.rgb, cur.rgb, fogin.a), cur.a);\n";
     }
+    if (k.shading && *Shading(k.shading).post)
+        body += F("#define DEPTH_PASS %d\n", k.depth_pass ? 1 : 0) + Shading(k.shading).post + "\n#undef DEPTH_PASS\n";
     body += soft ? "outc.a = softalphatest(outc.a);\n" : "alphatest(outc.a);\n";
     if (k.depth_pass) body += F("if (outc.a < %g) discard;\n", std::bit_cast<float>(k.depth_pass));
     body += Hooks().Output() + "return outc;\n}\n";

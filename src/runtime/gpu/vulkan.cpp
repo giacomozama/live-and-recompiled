@@ -111,13 +111,13 @@ constexpr uint32_t kQueries = 8192;  // occlusion queries in flight, several fra
 constexpr uint32_t kNoQuery = ~0u;
 constexpr size_t kSamplersKept = 2048;  // distinct stage samplers before the cache starts over
 
-// the descriptor set every pipeline takes, pushed per draw: HLSL's b0 b1, t0 to t4 and s0 to s4 (CompileSpirv shifts
-// the registers to these); t4 and s4 are a ProgramShading's field, the dummy elsewhere
+// the descriptor set every pipeline takes, pushed per draw: HLSL's b0 b1, t0 to t5 and s0 to s5 (CompileSpirv shifts
+// the registers to these); t4 and s4 are a ProgramShading's field, t5 and s5 its copy of the screen, the dummy elsewhere
 constexpr uint32_t kBindCb = 0;
 constexpr uint32_t kBindTex = 2;
-constexpr uint32_t kBindSampler = 7;
+constexpr uint32_t kBindSampler = 8;
 constexpr uint32_t kBindViews = kBindSampler - kBindTex;
-constexpr uint32_t kBindings = 12;
+constexpr uint32_t kBindings = 14;
 
 // layouts by use, a depth image's attachment layout aside
 constexpr VkImageLayout kRead = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
@@ -617,6 +617,7 @@ struct DrawTextures {
     float k[4] = {1, 1, 1, 1};  // texels per render scale texel
     float wide[4] = {};         // host texels per console texel of a target read into a smaller one, 0 otherwise
     bool exact[4] = {};         // stage samples a target where it lies, without the half texel back
+    VkImageView screen = VK_NULL_HANDLE;  // ProgramShading::screen's copy of the target, null without one
 };
 
 using Spirv = std::vector<uint32_t>;
@@ -881,7 +882,7 @@ private:
         Image* depth = nullptr;
         bool operator==(const Attach&) const = default;
     };
-    // what a draw's descriptors hold: b0 and b1, t0 to t3, s0 to s3
+    // what a draw's descriptors hold: b0 and b1, t0 to t5, s0 to s5
     struct Bindings {
         VkDescriptorBufferInfo cb[2] = {};
         VkImageView view[kBindViews] = {};  // left null: the dummy 2D image, and blit_[0]
@@ -957,7 +958,7 @@ private:
                       Assembled& a, bool patches);
     bool BindTargets(const State& s);
     void EnsureVertexShader(const State& s, const Assembled& a, DrawShaders& sh);
-    bool BindStageTexturesAndTargets(const State& s, DrawTextures& stages);
+    bool BindStageTexturesAndTargets(const State& s, DrawTextures& stages, bool screen = false);
     Image* BindTexture(const State& s, int stage, DrawTextures& stages);
     Image* BindTargetTexture(const State& s, int stage, const TextureDesc& d, Target& t, DrawTextures& stages);
     Image* BindGuestTexture(const State& s, int stage, const TextureDesc& d, const FormatInfo& fi,
@@ -1805,7 +1806,7 @@ bool VulkanBackend::CreateSwapChain() {
     return true;
 }
 
-// one push descriptor set for every pipeline: b0 b1, t0 to t4, s0 to s4
+// one push descriptor set for every pipeline: b0 b1, t0 to t5, s0 to s5
 bool VulkanBackend::CreateLayout() {
     VkDescriptorSetLayoutBinding b[kBindings] = {};
     for (uint32_t i = 0; i < kBindings; i++) {
@@ -3362,12 +3363,22 @@ VkSampler VulkanBackend::FindSampler(const SamplerDesc& sd) {
     return s;
 }
 
-bool VulkanBackend::BindStageTexturesAndTargets(const State& s, DrawTextures& stages) {
+bool VulkanBackend::BindStageTexturesAndTargets(const State& s, DrawTextures& stages, bool screen) {
     auto perf_t = PerfClock::now();
     draw_rt_ = bound_rt_;
     draw_ds_ = bound_ds_;
     stages.sampled = SampledStages(s);
     for (int i = 0; i < 4; i++) stages.res[i] = BindTexture(s, i, stages);
+    // the frame under a ProgramShading::screen draw, the copy a stage reading the target would share
+    if (screen && draw_rt_ && !draw_rt_->depth) {
+        Target& t = *draw_rt_;
+        bool fresh = t.fb && t.fb_draw == draw_serial_;
+        if (!fresh) {
+            t.fb_draw = draw_serial_;
+            fresh = Feedback(t) != nullptr;
+        }
+        if (fresh) stages.screen = t.fb->view;
+    }
     g_perf.bind += PerfMs(perf_t);
     // textures may have recorded copies that unbound the targets
     return BindTargets(s);
@@ -3478,6 +3489,7 @@ void VulkanBackend::UploadConstants(const State& s, const DrawShaders& sh, const
     }
     if (sh.shading) FillShadingConstants(s, sh.shading, c);
     if (sh.shading && g_program_shading[sh.shading - 1].field) b.view[4] = FieldView(sh.shading);
+    if (sh.shading && g_program_shading[sh.shading - 1].screen) b.view[5] = stages.screen;
     if (!last_dc_ok_ || std::memcmp(&c, &last_c_, sizeof(c)) != 0) {
         last_dc_ = Upload(sizeof(DrawConstants));
         std::memcpy(last_dc_.cpu, &c, sizeof(c));
@@ -4240,7 +4252,8 @@ void VulkanBackend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t
 
     // stage textures, then the pixel shader made for them
     DrawTextures stages{};  // zeroed: KeptDraw compares it whole
-    if (!BindStageTexturesAndTargets(s, stages)) return CountedSkip(s, "textures");
+    if (!BindStageTexturesAndTargets(s, stages, sh.shading && g_program_shading[sh.shading - 1].screen))
+        return CountedSkip(s, "textures");
     lap = PerfClock::now();  // bind times itself
     PixelKey pk = MakePixelKey(s, stages.info);
     pk.quad = sh.quad;
@@ -4298,6 +4311,7 @@ void VulkanBackend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t
         fprintf(cap_, " pkey %016llX%s%s%s%s", (unsigned long long)sh.pkey, flat ? " screen" : "",
                 surface < 0 ? "" : surface ? " surface taken" : " surface refused", zpso ? " depth pass" : "",
                 DescribeInputs(s, start, indices, 2).c_str());
+        if (sh.shading) fprintf(cap_, " | shading %u%s", sh.shading, stages.screen ? " screen copy" : "");
         fprintf(cap_, "\n     fog chip %u en %u mode %X params %g %g rs en %u table %u | fogp %g %g %g %g color %08X | final %08X %08X",
                 s.chip_fog, s.fog_enable, s.fog_mode, s.fog_param[0], s.fog_param[1], s.rs[kRsFogEnable],
                 s.rs[kRsFogTableMode], c.fog[0], c.fog[1], c.fog[2], c.fog[3], s.rs[kRsFogColor],

@@ -3,12 +3,14 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdlib>
 #include <array>
 #include <regex>
 #include <string>
 #include <unordered_map>
 #include <vector>
 
+#include "core/log.h"
 #include "gpu/shaders.h"
 
 bool water::g_dynamic = false;
@@ -37,10 +39,10 @@ constexpr float kExtent = kGrid * kCell;
 constexpr float kStep = 1.0f / 60;    // seconds a step, at most kSteps a frame
 constexpr int kSteps = 4;
 constexpr float kSpeed2 = 0.06f;      // (speed * step / cell)^2, under 0.5 to stay stable: 0.24 cells a step, some 57 units a second
-constexpr float kDamping = 0.975f;    // a step: a wave's height halves in some 0.45 seconds
+constexpr float kDamping = 0.982f;    // a step: a wave's height halves in some 0.65 seconds
 constexpr float kDropDepth = 4;       // units
 constexpr float kDropRadius = 6;
-constexpr float kFollow = kExtent / 4;  // the sheet moves to a drop this far from its centre
+constexpr float kFollow = kExtent / 4;  // the sheet moves to what disturbs it this far from its centre
 
 // Characters are skinned by programs alike but for registers: v[p] (p 0 or 1) scaled by c[S].x, two bones at
 // c[108 + v[p+1].x] and c[108 + v[p+1].y], three rows each to view space, weighed by v[p+2].x and .y; c96..c98 are the
@@ -60,6 +62,11 @@ constexpr float kBodyBelow = 45;      // to this far below, fading over the last
 constexpr uint32_t kSurfaceSamples = 1024;
 constexpr float kSurfaceCell = 32;
 constexpr size_t kSurfaceCells = 1 << 18;  // past this many the map starts again
+// A pool's mesh is a few long triangles, its vertices hundreds of units apart, too few for the squares under a body:
+// its heights are kept by kPoolCell square too, a few apart each, and a body over no square of the river's takes the
+// one nearest its own height in its pool square or one beside it.
+constexpr float kPoolCell = 1024;
+constexpr int kPoolLevels = 4;
 
 // The footprint knows how much of a body is in the water, not how fast it came: a dive would sink in no deeper than a
 // wade. A body's points, gathered by nearness into one group per character and followed from frame to frame by it,
@@ -150,13 +157,131 @@ constexpr const char* kPsTail = R"(
     }
 })";
 
+// The cave's pools (CFE8DDFEFA94FA5B) have a program of their own: their mesh rises and falls along its normals (v3) by
+// a sine series of the clock (ilu_exp, c110's terms) into R11, the level's space (v1 by c132.x), a noise volume drifts
+// over them (t1 at v0 by c123..c125) on a cell texture (t0), a mask fades the shore (t3); they blend over the cave and
+// Conker mirrored under them at the surface's alpha. Then the game draws Conker mirrored again over the water, so his
+// reflection never moves with it. c96..c98 take R11 to view space: their rows over their length take a point back from
+// view space to the level's, the space the rings and the characters' skin are in, for programs whose rows aren't unit.
+constexpr const char* kPoolMatch = "(mac_mul(((i.v3).xyzz), ((R6).yyyy)) + ((R11).xyzz))";
+constexpr const char* kPoolScale = "mac_mul(((c[132]).xxxw), ((i.v1).xyzw))";
+constexpr float kPoolShift = 30;     // units the textures are read off by per unit of slope
+constexpr float kPoolMurk = 0.35f;   // how far what lies under the surface is clouded toward its colour
+constexpr float kPoolBlur = 0.003f;  // screen widths what lies under it is softened over
+constexpr float kPoolGain = 2.5f;    // the sheet's ripples on a pool, seen from above, against a river's
+constexpr float kPoolRipple = 24;    // units, about the shortest ripple the sheet holds
+
+// the level's position (the game's waves in) in x0, and how much the surface faces up (1 flat, 0 from 25 degrees off)
+// in x1.x
+constexpr const char* kPoolVs = R"(    {
+        float3 rx = normalize(c[96].xyz), ry = normalize(c[97].xyz), rz = normalize(c[98].xyz);
+        float3 d = float3(dot(R11.xyz, c[96].xyz), dot(R11.xyz, c[97].xyz), dot(R11.xyz, c[98].xyz));
+        float3 n = float3(dot(i.v3.xyz, c[96].xyz), dot(i.v3.xyz, c[97].xyz), dot(i.v3.xyz, c[98].xyz));
+        o.x0 = float4(rx * d.x + ry * d.y + rz * d.z, 1);
+        n = rx * n.x + ry * n.y + rz * n.z;
+        o.x1 = float4(smoothstep(0.9, 0.98, n.y * rsqrt(max(dot(n, n), 1e-12))), 0, 0, 0);
+    })";
+
+// the tessellated surface lifted by the ripples where it faces up, taken to the screen again as the
+// program does
+constexpr const char* kPoolDs = R"(    {
+        float3 mp = o.x0.xyz;
+        float h = 0;
+        float2 xz = mp.xz, dh = 0;
+        FIELD(POOL_GAIN)
+        h *= saturate(o.x1.x);
+        float3 rx = normalize(c[96].xyz), ry = normalize(c[97].xyz), rz = normalize(c[98].xyz);
+        float3 m = float3(mp.x, mp.y + h, mp.z);
+        float4 v = float4(dot(m, rx) + c[96].w, dot(m, ry) + c[97].w, dot(m, rz) + c[98].w, 1);
+        float4 cp = float4(dot(v, c[99]), dot(v, c[100]), dot(v, c[101]), dot(v, c[102]));
+        float w = magclamp(cp.w);
+        float3 sp = cp.xyz * c[58].xyz / w + c[59].xyz;
+        o.pos = float4((sp.x * 2 / surf.x - 1) * w, (1 - sp.y * 2 / surf.y) * w, sp.z * surf.z * w, w);
+    })";
+
+// Per pixel, before the textures are read: the slope of the ripples moves the cell texture and the noise
+// volume as far as the surface tilts (kPoolShift, through the coordinates' change across the screen), and what lies
+// under the surface (the copy of the screen just before it) is read bent by it, the slopes shaded and lit as the
+// river's are. After the final combiner the game's surface is laid over that at its own alpha, so the blend writes the
+// whole and what shows through moves with the water; the depth pass, if any, keeps the game's alpha.
+constexpr const char* kPoolCoords = R"(
+    float3 xunder = 0, xlight = 0;
+    float xshade = 1;
+    {
+        float h = 0;
+        float2 xz = i.x0.xz, dh = 0;
+        // units a pixel across the surface: ripples shorter than some 16 pixels fade out before they alias into stripes
+        float2 ax = ddx(xz), ay = ddy(xz);
+        float foot = max(max(length(ax), length(ay)), 1e-6);
+        FIELD(POOL_GAIN * saturate(POOL_RIPPLE / foot / 8 - 1))
+        dh *= saturate(i.x1.x);
+        // the textures read off as far as the surface tilts, in their units: the ratio of their area to the level's on
+        // the screen, which stays steady where the surface turns edge on
+        float area = abs(ax.x * ay.y - ay.x * ax.y);
+        float2 shift = -dh * POOL_SHIFT;
+        float2 b0x = ddx(tc0.xy), b0y = ddy(tc0.xy), b1x = ddx(tc1.xy), b1y = ddy(tc1.xy);
+        float s0 = area > 1e-9 ? sqrt(abs(b0x.x * b0y.y - b0y.x * b0x.y) / area) : 0;
+        float s1 = area > 1e-9 ? sqrt(abs(b1x.x * b1y.y - b1y.x * b1x.y) / area) : 0;
+        tc0.xy += shift * s0 * tc0.w;
+        tc1.xy += shift * s1 * tc1.w;
+        float3 rx = normalize(c[96].xyz), ry = normalize(c[97].xyz), rz = normalize(c[98].xyz);
+        float3 tilt = float3(-dh.x, 0, -dh.y);
+        float2 bend = float2(dot(tilt, rx), -dot(tilt, ry)) * REFRACT;
+        uint sw, sh;
+        xscreen.GetDimensions(sw, sh);
+        // murky: what lies under is read soft, five taps a little apart
+        float2 at = i.pos.xy / float2(sw, sh) + bend, soft = POOL_BLUR * float2(1, float(sw) / float(sh));
+        xunder = (2 * xscreen.SampleLevel(xscreen_smp, at, 0).rgb + xscreen.SampleLevel(xscreen_smp, at + soft, 0).rgb +
+                  xscreen.SampleLevel(xscreen_smp, at - soft, 0).rgb +
+                  xscreen.SampleLevel(xscreen_smp, at + float2(soft.x, -soft.y), 0).rgb +
+                  xscreen.SampleLevel(xscreen_smp, at - float2(soft.x, -soft.y), 0).rgb) / 6;
+        xshade = 1 - clamp(0.8 * dot(dh, float2(0.6, 0.8)), -0.15, 0.15);
+        float3 tv = float3(c[96].w, c[97].w, c[98].w);
+        float3 eye = -(rx * tv.x + ry * tv.y + rz * tv.z);
+        float3 e = normalize(eye - float3(xz.x, i.x0.y + h, xz.y)), n = normalize(float3(-dh.x, 1, -dh.y));
+        float3 flat = float3(0, 1, 0), sun = normalize(float3(0.4, 0.8, 0.45));
+        if (e.y < 0) { n = -n; flat = -flat; }
+        float fresnel = pow(1 - saturate(dot(n, e)), 5) - pow(1 - saturate(dot(flat, e)), 5);
+        float glint = pow(saturate(dot(reflect(-e, n), sun)), 80) - pow(saturate(dot(reflect(-e, flat), sun)), 80);
+        xlight = (0.25 * fresnel + 0.4 * glint) * float3(0.9, 0.95, 1);
+    }
+)";
+constexpr const char* kPoolPost = R"(
+#if !DEPTH_PASS
+    xunder = lerp(xunder, outc.rgb * 0.8, POOL_MURK);  // and clouded toward the water's own colour
+    outc.rgb = lerp(xunder, outc.rgb, saturate(outc.a)) * xshade + xlight;
+    outc.a = 1;
+#endif
+)";
+
 struct Drop {
     float x, y, z;
 };
+
+// XBE_TRACE_WATER: a line a second of what reached the sheet, to tell a pool that doesn't ripple from one whose
+// ripples don't show
+bool Trace() {
+    static const bool trace = std::getenv("XBE_TRACE_WATER") != nullptr;
+    return trace;
+}
+struct TraceCounts {
+    float since = 0;
+    int frames = 0, drops = 0, pool_draws = 0, points = 0, over = 0, near = 0;
+    float pool_lo = 1e30f, pool_hi = -1e30f, body_lo = 1e30f, body_hi = -1e30f, level_lo = 1e30f, level_hi = -1e30f;
+    float bx = 0, bz = 0;
+};
+TraceCounts g_trace;
 std::vector<Drop> g_seen, g_last;  // this frame's rings' centres, last frame's
 std::unordered_map<uint64_t, float> g_surface;  // the water's height by square
+struct PoolLevels {
+    float y[kPoolLevels];
+    int n = 0;
+};
+std::unordered_map<uint64_t, PoolLevels> g_pool;  // the pools' heights by kPoolCell square
 float g_clock = 0;  // seconds of frames
 std::vector<std::array<float, 3>> g_body;  // this frame's skin points
+float g_eye_x = 0, g_eye_z = 0;  // the camera in the level, from the characters' view
+bool g_eye = false;
 
 // the sheet: height now and a step before, its centre, and how many times it moved on
 std::vector<float> g_now(kGrid * kGrid), g_before(kGrid * kGrid), g_next(kGrid * kGrid);
@@ -213,6 +338,9 @@ void SeenSkin(const gpu::WatchedDraw& d) {
     const float* view[3] = {d.c[96].data(), d.c[97].data(), d.c[98].data()};
     for (const float* row : view)
         if (std::abs(Dot3(row, row) - 1) > 0.02f) return;  // no rotation: not the view
+    g_eye_x = -(view[0][0] * view[0][3] + view[1][0] * view[1][3] + view[2][0] * view[2][3]);
+    g_eye_z = -(view[0][2] * view[0][3] + view[1][2] * view[1][3] + view[2][2] * view[2][3]);
+    g_eye = true;
     const float* scale = d.c[k.scale].data();
     for (uint32_t i = 0; i < d.vertices && g_body.size() < kBodyPoints; i++) {
         const float *at = d.v[k.p][i], *bones = d.v[k.p + 1][i], *weights = d.v[k.p + 2][i];
@@ -250,8 +378,46 @@ void SeenWater(const gpu::WatchedDraw& d) {
     }
 }
 
-// the surface's height at x z, the mean of the squares there and beside it that hold water
-bool LevelAt(float x, float z, float& y) {
+// a pool's vertices that face up (v1, before the game's waves, and v3), taken back to the level's space, kept by square
+// as the river's
+void SeenPool(const gpu::WatchedDraw& d) {
+    const float (*v)[4] = d.v[1];
+    const float (*n)[4] = d.v[3];
+    if (!v || !n) return;
+    float row[3][3];
+    for (int j = 0; j < 3; j++) {
+        const float* r = d.c[96 + j].data();
+        float len = std::sqrt(Dot3(r, r));
+        if (len < 1e-6f) return;
+        for (int k = 0; k < 3; k++) row[j][k] = r[k] / len;
+    }
+    if (g_surface.size() > kSurfaceCells) g_surface.clear();
+    if (g_pool.size() > kSurfaceCells) g_pool.clear();
+    float scale = d.c[132][0];
+    for (uint32_t k = 0; k < d.vertices; k++) {
+        float p[3] = {v[k][0] * scale, v[k][1] * scale, v[k][2] * scale}, w[3] = {}, up[3] = {};
+        for (int j = 0; j < 3; j++) {
+            float dv = Dot3(d.c[96 + j].data(), p), dn = Dot3(d.c[96 + j].data(), n[k]);
+            for (int e = 0; e < 3; e++) {
+                w[e] += row[j][e] * dv;
+                up[e] += row[j][e] * dn;
+            }
+        }
+        if (up[1] < 0.9f * std::sqrt(Dot3(up, up))) continue;
+        int i = int(std::floor(w[0] / kSurfaceCell)), j = int(std::floor(w[2] / kSurfaceCell));
+        g_surface[SurfaceKey(i, j)] = w[1];
+        PoolLevels& l = g_pool[SurfaceKey(int(std::floor(w[0] / kPoolCell)), int(std::floor(w[2] / kPoolCell)))];
+        if (l.n < kPoolLevels && std::none_of(l.y, l.y + l.n, [&](float y) { return std::abs(y - w[1]) < 8; }))
+            l.y[l.n++] = w[1];
+        g_trace.pool_lo = std::min(g_trace.pool_lo, w[1]);
+        g_trace.pool_hi = std::max(g_trace.pool_hi, w[1]);
+    }
+    g_trace.pool_draws++;
+}
+
+// the surface's height at x z, the mean of the squares there and beside it that hold water, else the pool's height
+// there nearest near
+bool LevelAt(float x, float z, float near, float& y) {
     int ci = int(std::floor(x / kSurfaceCell)), cj = int(std::floor(z / kSurfaceCell)), n = 0;
     float sum = 0;
     for (int j = cj - 1; j <= cj + 1; j++) {
@@ -262,8 +428,27 @@ bool LevelAt(float x, float z, float& y) {
             n++;
         }
     }
-    if (n) y = sum / float(n);
-    return n != 0;
+    if (n) {
+        y = sum / float(n);
+        return true;
+    }
+    ci = int(std::floor(x / kPoolCell));
+    cj = int(std::floor(z / kPoolCell));
+    float best = -1;
+    for (int j = cj - 1; j <= cj + 1; j++) {
+        for (int i = ci - 1; i <= ci + 1; i++) {
+            auto it = g_pool.find(SurfaceKey(i, j));
+            if (it == g_pool.end()) continue;
+            for (int k = 0; k < it->second.n; k++) {
+                float off = std::abs(it->second.y[k] - near);
+                if (best < 0 || off < best) {
+                    best = off;
+                    y = it->second.y[k];
+                }
+            }
+        }
+    }
+    return best >= 0;
 }
 
 // the sheet moved so its centre is on x z, by whole cells, what it held kept where it lies; at rest the first time
@@ -307,7 +492,7 @@ void Wade() {
     int reach = int(kBodyRadius * 3 / kCell) + 1;
     for (const auto& p : g_body) {
         float level;
-        if (!LevelAt(p[0], p[2], level)) continue;
+        if (!LevelAt(p[0], p[2], p[1], level)) continue;
         float depth = level - p[1];
         if (depth < -kBodyAbove || depth > kBodyBelow) continue;
         float weight = std::min(1.0f, (depth + kBodyAbove) / kBodyAbove) *
@@ -366,12 +551,11 @@ void Dive() {
         if (was != g_groups.end()) g.past = std::move(was->past);
         std::erase_if(g.past, [](const Sample& o) { return o.t < g_clock - kRecent; });
         float level;
-        if (LevelAt(g.x, g.z, level) && g.low <= level) {
+        if (LevelAt(g.x, g.z, g.y, level) && g.low <= level) {
             auto above = std::find_if(g.past.rbegin(), g.past.rend(), [&](const Sample& o) { return o.low > level; });
             float span = above != g.past.rend() ? g_clock - above->t : 0;
             float speed = span > 0 ? (above->y - g.y) / span : 0;
-            if (speed >= kEntrySpeed) {
-                if (!g_placed || std::hypot(g.x - g_cx, g.z - g_cz) > kFollow) Recentre(g.x, g.z);
+            if (speed >= kEntrySpeed && g_placed) {
                 Press(g.x, g.z, kEntryDepth * std::min(speed / kEntryFull, 1.5f), kEntryRadius);
             }
             if (above != g.past.rend()) g.past.clear();  // once: it is in now
@@ -394,26 +578,73 @@ void Step() {
     g_now.swap(g_next);
 }
 
+// this frame's bodies against the surface, and once a second the line
+void TraceFrame(float dt) {
+    TraceCounts& t = g_trace;
+    t.frames++;
+    for (const auto& p : g_body) {
+        t.points++;
+        t.body_lo = std::min(t.body_lo, p[1]);
+        t.body_hi = std::max(t.body_hi, p[1]);
+        t.bx = p[0];
+        t.bz = p[2];
+        float level;
+        if (!LevelAt(p[0], p[2], p[1], level)) continue;
+        t.over++;
+        t.level_lo = std::min(t.level_lo, level);
+        t.level_hi = std::max(t.level_hi, level);
+        float depth = level - p[1];
+        if (depth >= -kBodyAbove && depth <= kBodyBelow) t.near++;
+    }
+    t.since += dt;
+    if (t.since < 1) return;
+    float most = 0;
+    for (float h : g_now) most = std::max(most, std::abs(h));
+    LOGR("water: %d frames, %d drops, %d pool draws y %.0f..%.0f, %zu squares | body points %d (last %.0f %.0f) y "
+         "%.0f..%.0f, %d over water (level %.0f..%.0f), %d near its surface | sheet %s at %.0f %.0f, %.0f from the "
+         "body, highest %.2f",
+         t.frames, t.drops, t.pool_draws, t.pool_lo, t.pool_hi, g_surface.size(), t.points, t.bx, t.bz, t.body_lo,
+         t.body_hi, t.over, t.level_lo, t.level_hi, t.near, g_placed ? "placed" : "unplaced", g_cx, g_cz,
+         std::hypot(t.bx - g_cx, t.bz - g_cz), most);
+    t = {};
+}
+
 void Frame() {
     auto now = std::chrono::steady_clock::now();
     float dt = g_then.time_since_epoch().count() ? std::chrono::duration<float>(now - g_then).count() : 0;
     g_then = now;
     g_clock += dt;
+    std::vector<Drop> fresh;  // the rings in their first frame
     for (const Drop& d : g_seen) {
         bool old = std::any_of(g_last.begin(), g_last.end(),
                                [&](const Drop& o) { return std::abs(o.x - d.x) < 3 && std::abs(o.z - d.z) < 3; });
-        if (old) continue;
-        if (!g_placed || std::hypot(d.x - g_cx, d.z - g_cz) > kFollow) Recentre(d.x, d.z);
-        Press(d.x, d.z);
+        if (!old) fresh.push_back(d);
     }
+    // The sheet goes to what disturbs the water nearest the camera, a new ring or a body in it, where it may not
+    // have been yet: one place a frame, so a second character wading further off (the submarine) doesn't
+    // pull it back and forth, dropping the trail behind Conker each time; its own ripples fall off the sheet's edge.
+    float best = -1, bx = 0, bz = 0;
+    auto consider = [&](float x, float z) {
+        float d = g_eye ? std::hypot(x - g_eye_x, z - g_eye_z) : 0;
+        if (best < 0 || d < best) {
+            best = d;
+            bx = x;
+            bz = z;
+        }
+    };
+    for (const Drop& d : fresh) consider(d.x, d.z);
+    for (const auto& p : g_body) {
+        float level;
+        if (LevelAt(p[0], p[2], p[1], level) && std::abs(level - p[1]) <= kBodyBelow) consider(p[0], p[2]);
+    }
+    if (best >= 0 && (!g_placed || std::hypot(bx - g_cx, bz - g_cz) > kFollow)) Recentre(bx, bz);
+    for (const Drop& d : fresh) {
+        Press(d.x, d.z);
+        g_trace.drops++;
+    }
+    if (Trace()) TraceFrame(dt);
     g_last.swap(g_seen);
     g_seen.clear();
-    for (const auto& p : g_body) {  // the sheet goes to a body in the water, where it may not have been yet
-        float level;
-        if (!LevelAt(p[0], p[2], level) || std::abs(level - p[1]) > kBodyBelow) continue;
-        if (!g_placed || std::hypot(p[0] - g_cx, p[2] - g_cz) > kFollow) Recentre(p[0], p[2]);
-        break;
-    }
     Dive();
     if (g_placed) Wade();
     g_body.clear();
@@ -460,7 +691,29 @@ void water::Init() {
                                       .fill = Fill,
                                       .tess = ds.c_str(),
                                       .field = Field});
+    static const std::string pool_functions = "#define REFRACT " + std::to_string(kRefract) + "\n#define POOL_GAIN " + std::to_string(kPoolGain) +
+                                              "\n#define POOL_MURK " + std::to_string(kPoolMurk) +
+                                              "\n#define POOL_BLUR " + std::to_string(kPoolBlur) + "\n#define POOL_SHIFT " +
+                                              std::to_string(kPoolShift) + "\n#define POOL_RIPPLE " +
+                                              std::to_string(kPoolRipple) + "\n" + kField;
+    gpu::g_program_shading.push_back({.match = kPoolMatch,
+                                      .on = &g_dynamic,
+                                      .vs = kPoolVs,
+                                      .fill = Fill,
+                                      .tess = kPoolDs,
+                                      .field = Field,
+                                      .functions = pool_functions.c_str(),
+                                      .also = {kPoolScale},
+                                      .screen = true,
+                                      .post = kPoolPost,
+                                      .coords = kPoolCoords});
     gpu::g_program_watch.push_back({.match = kRingMatch, .seen = Seen, .frame = Frame});
     gpu::g_program_watch.push_back({.match = kMatch, .seen = SeenWater, .spread = true, .vertices = kSurfaceSamples});
     gpu::g_program_watch.push_back({.match = kSkinMatch, .seen = SeenSkin, .regs = 0xF, .spread = true});
+    gpu::g_program_watch.push_back({.match = kPoolMatch,
+                                    .seen = SeenPool,
+                                    .regs = 0xA,
+                                    .spread = true,
+                                    .vertices = kSurfaceSamples,
+                                    .also = kPoolScale});
 }
