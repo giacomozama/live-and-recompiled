@@ -413,6 +413,7 @@ void Pad(int port, input::Pad& pad) {
         pad.buttons = 0;
         pad.lx = pad.ly = pad.rx = pad.ry = 0;
         std::memset(pad.analog, 0, sizeof pad.analog);
+        ui::Muzzle(port);
         return;
     }
 
@@ -448,6 +449,7 @@ void Pad(int port, input::Pad& pad) {
     if (down(kLT)) pad.analog[6] = 0xFF;  // left trigger
     if (down(kRT)) pad.analog[7] = 0xFF;  // right trigger
 
+    ui::Unmuzzle(port, pad);  // what shut the menu stays unpressed until it is let go
     gamepad::Pad(port, pad);  // A on the frontend's Options opens the settings menu
     mouse::Pad(port, pad);  // the mouse, while it looks, takes the right stick
     if (port != 0) return;

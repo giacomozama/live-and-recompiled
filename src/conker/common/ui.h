@@ -2,6 +2,8 @@
 
 #include <cstdint>
 
+#include "core/input.h"
+
 // ImGui settings menu and fps readout, wired through GameInfo::ui and GameInfo::message (see game_info.cpp);
 // implemented in src/conker/game/ui.cpp. That file compiles to stubs on the headless harness, where ImGui and the
 // real Win32 headers are absent, so nothing here may pull either in.
@@ -28,6 +30,11 @@ void ShowQuit();
 
 // Escape as the console's Start: down, and not the press that shut the menu or the prompt. Any thread
 bool EscStart();
+
+// the game's pad on that port, polled: while the menu holds it neutral it Muzzle()s the port, and after the menu
+// shuts Unmuzzle() keeps each button held then (the B or A that shut it) off the pad until it is let go. Game thread
+void Muzzle(int port);
+void Unmuzzle(int port, input::Pad& pad);
 
 // settings.toml options (app::Option): the fps overlay and the fps in the window title
 extern bool g_fps_overlay;

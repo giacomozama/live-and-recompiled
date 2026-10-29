@@ -21,6 +21,7 @@
 #include <vector>
 
 #include <imgui.h>
+#include <imgui_internal.h>  // ImGuiItemFlags_NoNav
 
 #include "app/app.h"
 #include "audio/audio.h"
@@ -71,7 +72,9 @@ std::atomic<bool> g_esc_swallow{false};
 
 // the main tab to show next frame (Show asks for Controls, the bumpers turn), -1 none; the tab drawn now; the player
 // the Controls tab shows
-constexpr int kMainTabs = 6, kControlsTab = 3;
+constexpr int kMainTabs = 7, kControlsTab = 3, kQuitTab = 6;
+// the Quit tab's colour
+constexpr ImVec4 kDanger(0.93f, 0.33f, 0.33f, 1.0f);
 std::atomic<int> g_tab_target{-1};
 int g_tab_now = 0;
 int g_player_now = 0;
@@ -432,7 +435,16 @@ void DrawWarp() {
             if (filter[0] && !matches(row)) continue;
             if (ImGui::Selectable(row, checkpoint == i, ImGuiSelectableFlags_AllowDoubleClick)) {
                 checkpoint = i;
-                if (ImGui::IsMouseDoubleClicked(0) && warp::GoCheckpoint(i)) Close();
+                // a second A on the same row soon after the first is a double click
+                static int tapped = -1;
+                static double tapped_at = 0.0;
+                bool again = ImGui::IsMouseDoubleClicked(0);
+                if (ImGui::IsKeyPressed(ImGuiKey_GamepadFaceDown, false)) {
+                    const double now = ImGui::GetTime();
+                    again = again || (tapped == i && now - tapped_at < 0.5);
+                    tapped = i, tapped_at = now;
+                }
+                if (again && warp::GoCheckpoint(i)) Close();
             }
         }
         ImGui::EndListBox();
@@ -522,7 +534,13 @@ Buttons ReadPad(int port) {
 
 // the menu or prompt is up and an item holds the keyboard or the pad: B shuts nothing then
 bool Busy() {
-    return g_rebind >= 0 || ImGui::IsAnyItemActive() ||
+    // the cursor is in a child window of its own (a list box), or the menu layer: B steps out of it first
+    const ImGuiContext& g = *ImGui::GetCurrentContext();
+    const ImGuiWindow* nav = g.NavWindow;
+    const bool inside = nav && ((nav != nav->RootWindow && !(nav->RootWindowForNav->Flags & ImGuiWindowFlags_Popup) &&
+                                 nav->RootWindowForNav->ParentWindow) ||
+                                g.NavLayer != ImGuiNavLayer_Main);
+    return g_rebind >= 0 || inside || ImGui::IsAnyItemActive() ||
            ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel);
 }
 
@@ -596,23 +614,33 @@ void PadFrame(bool open, bool quit) {
     io.AddKeyEvent(ImGuiKey_GamepadFaceDown, drive.a);
     io.AddKeyEvent(ImGuiKey_GamepadFaceRight, drive.b);
     io.AddKeyEvent(ImGuiKey_GamepadFaceUp, drive.y);
-    io.AddKeyEvent(ImGuiKey_GamepadDpadUp, drive.up);
-    io.AddKeyEvent(ImGuiKey_GamepadDpadDown, drive.down);
-    io.AddKeyEvent(ImGuiKey_GamepadDpadLeft, drive.left);
-    io.AddKeyEvent(ImGuiKey_GamepadDpadRight, drive.right);
-    io.AddKeyAnalogEvent(ImGuiKey_GamepadLStickLeft, drive.lx < 0, std::max(-drive.lx, 0.0f));
-    io.AddKeyAnalogEvent(ImGuiKey_GamepadLStickRight, drive.lx > 0, std::max(drive.lx, 0.0f));
-    io.AddKeyAnalogEvent(ImGuiKey_GamepadLStickUp, drive.ly > 0, std::max(drive.ly, 0.0f));
-    io.AddKeyAnalogEvent(ImGuiKey_GamepadLStickDown, drive.ly < 0, std::max(-drive.ly, 0.0f));
+    // the left stick presses the d-pad's keys (ImGui moves the cursor with those alone, and repeats them as they are
+    // held): past half way along the axis it leans on more, and let go again at a third
+    static bool stick_up = false, stick_down = false, stick_left = false, stick_right = false;
+    auto lean = [](float v, bool& on, bool along) {
+        on = along && v > (on ? 0.33f : 0.5f);
+        return on;
+    };
+    const bool horizontal = std::fabs(drive.lx) > std::fabs(drive.ly);
+    lean(-drive.lx, stick_left, horizontal), lean(drive.lx, stick_right, horizontal);
+    lean(drive.ly, stick_up, !horizontal), lean(-drive.ly, stick_down, !horizontal);
+    io.AddKeyEvent(ImGuiKey_GamepadDpadUp, drive.up || stick_up);
+    io.AddKeyEvent(ImGuiKey_GamepadDpadDown, drive.down || stick_down);
+    io.AddKeyEvent(ImGuiKey_GamepadDpadLeft, drive.left || stick_left);
+    io.AddKeyEvent(ImGuiKey_GamepadDpadRight, drive.right || stick_right);
 }
 
 // the quit prompt's body: the menu's own Quit button and the prompt alone share it. Cancel is where the pad starts
 bool QuitBody() {
     ImGui::TextUnformatted("Quit the game? Progress since the last save is lost.");
+    ImGui::Dummy(ImVec2(0.0f, ImGui::GetFontSize() * 0.8f));
+    const ImGuiStyle& st = ImGui::GetStyle();
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(st.FramePadding.x * 2.0f, st.FramePadding.y * 1.5f));
     if (ImGui::Button("Quit")) app::Quit();  // only posts: the window thread closes
     ImGui::SameLine();
     const bool cancel = ImGui::Button("Cancel");
     ImGui::SetItemDefaultFocus();
+    ImGui::PopStyleVar();
     return !cancel;
 }
 
@@ -670,9 +698,12 @@ void Draw(double fps) {
         const ImGuiWindowFlags flags =
             ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_AlwaysAutoResize |
             ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav;
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(ImGui::GetStyle().WindowPadding.x * 0.45f,
+                                                                ImGui::GetStyle().WindowPadding.y * 0.35f));
         if (ImGui::Begin("##fps", nullptr, flags))
             ImGui::Text("%.0f FPS (%.2f ms)", fps, fps > 0.0 ? 1000.0 / fps : 0.0);
         ImGui::End();
+        ImGui::PopStyleVar();
     }
 
     // the prompt alone: a modal over the game, which is held. It goes when Cancel, B or Esc shut it
@@ -681,7 +712,8 @@ void Draw(double fps) {
         const ImVec2 display = ImGui::GetIO().DisplaySize;
         ImGui::SetNextWindowPos(ImVec2(display.x * 0.5f, display.y * 0.5f), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
         bool up = false;
-        if (ImGui::BeginPopupModal("Quit?", nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoMove)) {
+        if (ImGui::BeginPopupModal("Quit?", nullptr,
+                                   ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoTitleBar)) {
             up = QuitBody();
             if (!up) ImGui::CloseCurrentPopup();
             ImGui::EndPopup();
@@ -711,41 +743,52 @@ void Draw(double fps) {
         ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(base.FramePadding.x * 1.25f, base.FramePadding.y * 1.5f));
         ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(base.ItemSpacing.x, base.ItemSpacing.y * 1.25f));
         bool keys_shown = false;
+        bool want_quit = false;
+        const float row_y = ImGui::GetCursorPosY();
         if (ImGui::BeginTabBar("##tabs")) {
             // each tab scrolls on its own above the footer line
             const float footer = ImGui::GetFrameHeightWithSpacing() + ImGui::GetStyle().ItemSpacing.y * 2.0f;
             const int target = g_tab_target.exchange(-1);
             int index = 0;
+            // the tabs' pills: the selected one's, and the hovered or pad-focused one's, drawn together so that a tab that
+            // is being picked has the accent the frame it is picked and the one before it lets go (ImGui moves the
+            // selection a frame later)
+            struct Pill {
+                ImVec2 lo, hi;
+                const char* name;
+                bool hot;
+            } pills[kMainTabs] = {};
+            int shown = 0, pending = -1;
             auto tab = [&](const char* name) {
                 const int mine = index++;
                 // the pad's cursor is the tab's highlight alone, no border (the tab draws its cursor as it begins)
                 ImGui::PushStyleColor(ImGuiCol_NavCursor, ImVec4(0, 0, 0, 0));
+                ImGui::PushStyleColor(ImGuiCol_Text, mine == kQuitTab ? kDanger : ImGui::GetStyleColorVec4(ImGuiCol_Text));
                 const bool selected =
                     ImGui::BeginTabItem(name, nullptr, target == mine ? ImGuiTabItemFlags_SetSelected : 0);
-                ImGui::PopStyleColor();
-                if (Arrived(g_main_focus) && !selected) g_tab_target.store(mine);
-                // the selected tab, and the one hovered or under the pad's cursor, as a pill (ImGui rounds a tab's top
-                // corners alone): over the tab, so its label again
-                if (selected || ImGui::IsItemHovered() || ImGui::IsItemFocused()) {
-                    const ImGuiStyle& st = ImGui::GetStyle();
-                    const ImVec2 lo = ImGui::GetItemRectMin(), hi = ImGui::GetItemRectMax();
-                    ImDrawList* dl = ImGui::GetWindowDrawList();
-                    ImVec4 fill = selected ? st.Colors[ImGuiCol_CheckMark] : ImVec4(1.0f, 1.0f, 1.0f, 0.07f);
-                    if (selected) fill.w = 0.80f;
-                    dl->AddRectFilled(lo, hi, ImGui::GetColorU32(fill), st.TabRounding);
-                    const ImVec2 size = ImGui::CalcTextSize(name);
-                    dl->AddText(ImVec2(std::round((lo.x + hi.x - size.x) * 0.5f), std::round((lo.y + hi.y - size.y) * 0.5f)),
-                                ImGui::GetColorU32(ImGuiCol_Text), name);
-                }
+                ImGui::PopStyleColor(2);
+                const bool arrived = Arrived(g_main_focus) && !selected;
+                if (arrived) g_tab_target.store(mine);
+                // drawn once the tabs are all in (below), when the one that is becoming selected is known
+                pills[mine] = {ImGui::GetItemRectMin(), ImGui::GetItemRectMax(), name,
+                               ImGui::IsItemHovered()};
+                if (selected) shown = mine;
+                if (!selected && (arrived || target == mine || ImGui::IsItemClicked())) pending = mine;
                 if (!selected) return false;
                 g_tab_now = mine;
                 ImGui::Dummy(ImVec2(0.0f, ImGui::GetFontSize() * 0.6f));  // air between the tabs and the page
+                // a page fades in as its tab is picked (the one before is already gone: only the shown tab is submitted)
+                static int faded_tab = -1;
+                static double faded_at = 0.0;
+                if (faded_tab != mine) faded_tab = mine, faded_at = ImGui::GetTime();
+                ImGui::PushStyleVar(ImGuiStyleVar_Alpha, std::min(float((ImGui::GetTime() - faded_at) / 0.15), 1.0f));
                 ImGui::BeginChild("##page", ImVec2(0, -footer), ImGuiChildFlags_NavFlattened);
                 if (g_pad.scroll != 0.0f) ImGui::SetScrollY(ImGui::GetScrollY() + g_pad.scroll);
                 return true;
             };
             auto end_tab = [] {
                 ImGui::EndChild();
+                ImGui::PopStyleVar();
                 ImGui::EndTabItem();
             };
 
@@ -968,7 +1011,54 @@ void Draw(double fps) {
                 DrawWarp();
                 end_tab();
             }
+            if (tab("Quit")) {
+                ImGui::TextUnformatted("Quit the game? Progress since the last save is lost.");
+                if (ImGui::Button("Quit game")) want_quit = true;
+                end_tab();
+            }
+            {
+                // ImGui rounds a tab's top corners alone, so its backgrounds are clear and the pills are ours, over the
+                // tabs: their labels again
+                if (pending >= 0) shown = pending;
+                // a hover that was there as the selection changed (a bumper, a click) is not shown until the mouse moves:
+                // it would sit beside the new selection as a second highlight
+                static int last_shown = -1;
+                static ImVec2 anchor;
+                static bool hush = true;
+                const ImVec2 mouse = ImGui::GetIO().MousePos;
+                if (shown != last_shown) last_shown = shown, anchor = mouse, hush = true;
+                else if (hush && (mouse.x != anchor.x || mouse.y != anchor.y)) hush = false;
+                const ImGuiStyle& st = ImGui::GetStyle();
+                ImDrawList* dl = ImGui::GetWindowDrawList();
+                for (int i = 0; i < index; i++) {
+                    const Pill& p = pills[i];
+                    if (i != shown && !(p.hot && !hush)) continue;
+                    const bool danger = i == kQuitTab;  // Quit is red, not the accent
+                    ImVec4 fill = danger ? kDanger : st.Colors[ImGuiCol_CheckMark];
+                    fill.w = i == shown ? 0.80f : 0.0f;
+                    if (i != shown) fill = danger ? ImVec4(kDanger.x, kDanger.y, kDanger.z, 0.16f) : ImVec4(1.0f, 1.0f, 1.0f, 0.07f);
+                    dl->AddRectFilled(p.lo, p.hi, ImGui::GetColorU32(fill), st.TabRounding);
+                    const ImVec2 size = ImGui::CalcTextSize(p.name);
+                    dl->AddText(ImVec2(std::round((p.lo.x + p.hi.x - size.x) * 0.5f), std::round((p.lo.y + p.hi.y - size.y) * 0.5f)),
+                                ImGui::GetColorU32(i == kQuitTab && i != shown ? kDanger : st.Colors[ImGuiCol_Text]), p.name);
+                }
+            }
             ImGui::EndTabBar();
+
+            // Close at the tab row's far right, flat like the tabs and rounded all round. B is the pad's way out: the
+            // pad's cursor never lands on it
+            const ImVec2 after = ImGui::GetCursorPos();
+            const ImGuiStyle& st = ImGui::GetStyle();
+            const float width = ImGui::CalcTextSize("Close").x + st.FramePadding.x * 2.0f;
+            ImGui::SetCursorPos(ImVec2(after.x + ImGui::GetContentRegionAvail().x - width, row_y));
+            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(1.0f, 1.0f, 1.0f, 0.07f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(1.0f, 1.0f, 1.0f, 0.12f));
+            ImGui::PushItemFlag(ImGuiItemFlags_NoNav, true);
+            if (ImGui::Button("Close")) Close();
+            ImGui::PopItemFlag();
+            ImGui::PopStyleColor(3);
+            ImGui::SetCursorPos(after);
         }
         if (!keys_shown) g_rebind = -1;  // leaving the Controls tab cancels a rebind
 
@@ -976,16 +1066,8 @@ void Draw(double fps) {
         ImGui::AlignTextToFramePadding();
         ImGui::TextDisabled("Stick or d-pad move, LB / RB turn the tabs, A select, B back. F1 or Start + Back open and close this menu. "
                             "Changes are saved automatically.");
-        const char* close = "Close";
-        const char* quit_label = "Quit game";
-        const float pad = ImGui::GetStyle().FramePadding.x * 2.0f;
-        const float spacing = ImGui::GetStyle().ItemSpacing.x;
-        ImGui::SameLine(ImGui::GetContentRegionMax().x - ImGui::CalcTextSize(close).x - ImGui::CalcTextSize(quit_label).x -
-                        pad * 2.0f - spacing);
-        if (ImGui::Button(close)) Close();
-        ImGui::SameLine();
-        if (ImGui::Button(quit_label)) ImGui::OpenPopup("Quit?");
-        if (ImGui::BeginPopupModal("Quit?", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        if (want_quit) ImGui::OpenPopup("Quit?");
+        if (ImGui::BeginPopupModal("Quit?", nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoTitleBar)) {
             if (!QuitBody()) ImGui::CloseCurrentPopup();
             ImGui::EndPopup();
         }
@@ -1060,6 +1142,33 @@ void ShowQuit() {
     app::Post(mouse::kRefresh);
 }
 
+// the game's pad, per port: the menu held it neutral since the game last polled; the buttons (bits 0-15) and analog
+// buttons (16-23) that were held as it shut, until each is let go
+bool g_muzzled[input::kPorts] = {};
+uint32_t g_stuck[input::kPorts] = {};
+
+uint32_t Pressed(const input::Pad& pad) {
+    uint32_t bits = pad.buttons;
+    for (int i = 0; i < 8; i++)
+        if (pad.analog[i] > 0x40) bits |= 1u << (16 + i);
+    return bits;
+}
+
+void Muzzle(int port) {
+    if (port >= 0 && port < input::kPorts) g_muzzled[port] = true;
+}
+
+void Unmuzzle(int port, input::Pad& pad) {
+    if (port < 0 || port >= input::kPorts) return;
+    const uint32_t held = Pressed(pad);
+    if (g_muzzled[port]) g_muzzled[port] = false, g_stuck[port] = held;
+    g_stuck[port] &= held;
+    if (!g_stuck[port]) return;
+    pad.buttons &= uint16_t(~g_stuck[port]);
+    for (int i = 0; i < 8; i++)
+        if (g_stuck[port] & (1u << (16 + i))) pad.analog[i] = 0;
+}
+
 bool EscStart() {
     if (!app::KeyDown(kEscape)) {
         g_esc_swallow.store(false);
@@ -1090,6 +1199,10 @@ int Owner() { return -1; }
 void ShowQuit() {}
 
 bool EscStart() { return false; }
+
+void Muzzle(int) {}
+
+void Unmuzzle(int, input::Pad&) {}
 
 }  // namespace ui
 
