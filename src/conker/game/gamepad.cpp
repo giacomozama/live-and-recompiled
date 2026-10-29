@@ -59,14 +59,15 @@ X86_FUNC(sub_00203B50) {
 // The frontend (level 29, the pub) shows the picture in focus, byte [0x77625E]: 0 Xbox Live, 1 Options (to Live's
 // right), 2 Chapters, 3 to 5 the three games (0x205361 shows its UI page, the frontend's own at [0x85E550]). Options
 // is a page of Yes / No settings, so A on its picture opens the settings menu instead and the game never sees it.
-// Start there opens the settings menu instead (Esc asks to quit), and Start with Back opens the settings menu anywhere (ui.cpp watches the
-// pads for it), so the game never sees the two together.
+// Start there opens the settings menu instead and Back asks to quit (as Esc does) instead of the game's Xbox Live
+// prompt, and Start with Back opens the settings menu anywhere (ui.cpp watches the pads for it), so the game never sees
+// the two together.
 void gamepad::Pad(int port, input::Pad& pad) {
     constexpr int kFrontend = 29;
     constexpr uint32_t kPicture = 0x77625E, kFrontendUi = 0x85E550;
     constexpr int kOptions = 1;
     constexpr uint16_t kStart = 1 << 4, kBack = 1 << 5;
-    static bool was_down[input::kPorts] = {}, start_was[input::kPorts] = {};
+    static bool was_down[input::kPorts] = {}, start_was[input::kPorts] = {}, back_was[input::kPorts] = {};
     if (port < 0 || port >= input::kPorts) return;
     if ((pad.buttons & (kStart | kBack)) == (kStart | kBack)) pad.buttons &= uint16_t(~(kStart | kBack));
     const bool frontend = warp::CurrentLevel() == kFrontend && kernel::R32(kFrontendUi);
@@ -76,6 +77,13 @@ void gamepad::Pad(int port, input::Pad& pad) {
     if (frontend && start) {
         pad.buttons &= uint16_t(~kStart);
         if (start_pressed) ui::Show(false, port);
+    }
+    const bool back = pad.buttons & kBack;
+    const bool back_pressed = back && !back_was[port];
+    back_was[port] = back;
+    if (frontend && back) {
+        pad.buttons &= uint16_t(~kBack);
+        if (back_pressed) ui::ShowQuit();
     }
     const bool down = pad.analog[0] > 0x40;  // A, past where the game takes it as pressed
     const bool pressed = down && !was_down[port];

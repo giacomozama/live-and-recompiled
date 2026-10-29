@@ -692,7 +692,7 @@ void PadFrame(bool open, bool quit) {
     io.AddKeyEvent(ImGuiKey_GamepadDpadRight, drive.right || stick_right);
 }
 
-// the quit prompt's body: the menu's own Quit button and the prompt alone share it. Cancel is where the pad starts
+// the quit prompt's body. Cancel is where the pad starts, and B is Cancel too (ImGui's own back out leaves a modal up)
 bool QuitBody() {
     ImGui::TextUnformatted("Quit the game? Progress since the last save is lost.");
     ImGui::Dummy(ImVec2(0.0f, ImGui::GetFontSize() * 0.8f));
@@ -703,7 +703,7 @@ bool QuitBody() {
     const bool cancel = ImGui::Button("Cancel");
     ImGui::SetItemDefaultFocus();
     ImGui::PopStyleVar();
-    return !cancel;
+    return !cancel && !g_pad.b;
 }
 
 }  // namespace
@@ -782,7 +782,7 @@ void Draw(double fps) {
             if (!up) ImGui::CloseCurrentPopup();
             ImGui::EndPopup();
         }
-        // the prompt on its own sounds like the menu (inside the menu, its Cues call covers it)
+        // the prompt sounds like the menu
         static bool was_quit = false;
         if (!open) Cues(was_quit, false);
         was_quit = up;
@@ -818,7 +818,6 @@ void Draw(double fps) {
         ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(base.FramePadding.x * 1.25f, base.FramePadding.y * 1.5f));
         ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(base.ItemSpacing.x, base.ItemSpacing.y * 1.25f));
         bool keys_shown = false;
-        bool want_quit = false;
         const float row_y = ImGui::GetCursorPosY();
         if (ImGui::BeginTabBar("##tabs")) {
             // each tab scrolls on its own above the footer line
@@ -1103,7 +1102,7 @@ void Draw(double fps) {
                 ImGui::PushStyleColor(ImGuiCol_Button, shade(0.75f));
                 ImGui::PushStyleColor(ImGuiCol_ButtonHovered, kDanger);
                 ImGui::PushStyleColor(ImGuiCol_ButtonActive, shade(0.6f));
-                if (ImGui::Button("Quit game")) want_quit = true;
+                if (ImGui::Button("Quit game")) app::Quit();  // the tab is the prompt: no second one
                 ImGui::PopStyleColor(3);
                 end_tab();
             }
@@ -1157,11 +1156,6 @@ void Draw(double fps) {
         ImGui::AlignTextToFramePadding();
         ImGui::TextDisabled("Stick or d-pad move, LB / RB turn the tabs, A select, B back. F1 or Start + Back open and close this menu. "
                             "Changes are saved automatically.");
-        if (want_quit) ImGui::OpenPopup("Quit?");
-        if (ImGui::BeginPopupModal("Quit?", nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoTitleBar)) {
-            if (!QuitBody()) ImGui::CloseCurrentPopup();
-            ImGui::EndPopup();
-        }
         ImGui::PopStyleVar(2);
     }
     ImGui::End();
