@@ -17,6 +17,7 @@
 #include "xdk/d3d8.h"
 #include "xdk/dsound.h"
 
+#include "common/characters.h"
 #include "common/cutscenes.h"
 #include "common/display.h"
 #include "common/fur.h"
@@ -193,6 +194,51 @@ void ConkerFurDistant(X86Context& ctx, uint8_t* base) {
     static const char* env = std::getenv("XBE_FUR_DISTANT");
     if (!(env ? env[0] != '0' : fur::g_distant)) return;
     ctx.xmm[0].f[0] = std::min(ctx.xmm[0].f[0], ctx.xmm[3].f[0] * 0.4f);
+}
+
+// 0x7F1E0 (edi the player in [0x84A5F8], 0x6D0 each, the viewport's index at [esp+0x28]) picks the model a player
+// or bot is drawn with, of the [player+0x510] in its list at [player+0x50C]: its distance from the viewport's camera,
+// weighed by the field of view, under 1000 the full model (0), under 5300 the middle one, past that the far blob
+// (500 and 730 outside multiplayer), then a few cases that force the full one. At 0x7F452 the pick in ebx is clamped
+// to the list and stored at [player+0x3A8], which the draw (0x7FB00), its skeleton ([player+0x4EC]) and the effects
+// that skip coarse models ([0x7819D5], 0x822B0) read. characters::g_max_lod picks the full model always.
+bool characters::g_max_lod = true;
+
+// [[hook]] at 0x7F452, before the clamp
+void ConkerCharacterLod(X86Context& ctx, uint8_t* base) {
+    (void)base;
+    if (characters::g_max_lod) ctx.ebx = 0;
+}
+
+// 0x1310D0 paces a player's refresh in 0x7F96B's branch (the arg the player, esi its pacing: the frame last seen, the
+// share built up): each frame its share grows by 0x978D0's, 1 when its size on screen ([player+0x67C]) isn't known
+// yet, else that size / 100 (halved in split screen), and a whole share runs it, at most 4 players a frame (the
+// count at 0x131129). A far one ran a few times a second. With characters::g_max_lod each runs every frame.
+// [[hook]] at 0x1310EF, xmm0 the frame's share
+void ConkerCharacterPace(X86Context& ctx, uint8_t* base) {
+    (void)base;
+    if (characters::g_max_lod) ctx.xmm[0].f[0] = std::max(ctx.xmm[0].f[0], 1.0f);
+}
+
+// [[hook]] at 0x131129, ecx the players run this frame with this one
+void ConkerCharacterPaceCount(X86Context& ctx, uint8_t* base) {
+    (void)base;
+    if (characters::g_max_lod) ctx.ecx = std::min<uint32_t>(ctx.ecx, 1);
+}
+
+// 0x2C5260 (eax the player, kept at [0x7FAAB8]): whether a player's animation skips this frame, al 1 to hold its
+// pose (0x2C53C0). In multiplayer it weighs the player's largest size on screen of the viewports ([player+0x67C]
+// on): above [0x75E9E0] it animates every frame, above [0x75E9DC] every 2nd, above [0x75E9D8] every 4th, else every
+// 8th, each player on its own frames ((frame [0x7F9F60] ^ [player+0x60]) & 1, 3 or 7). A far one moved at 15 FPS
+// or less. With characters::g_max_lod none skips.
+X86_EXTERN_FUNC(__imp__sub_002C5260);
+X86_FUNC(sub_002C5260) {
+    if (characters::g_max_lod) {
+        kernel::W32(0x7FAAB8, ctx.eax);
+        kernel::Return(ctx, ctx.eax & ~0xFFu, 0);
+        return;
+    }
+    __imp__sub_002C5260(ctx, base);
 }
 
 // 0x4C950: the controller layer's init. It first opens the pads XGetDevices reports (0x3D19C0, which marks each

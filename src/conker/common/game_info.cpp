@@ -1,4 +1,5 @@
 #include "app/app.h"
+#include "common/characters.h"
 #include "common/cutscenes.h"
 #include "common/display.h"
 #include "common/fur.h"
@@ -45,6 +46,7 @@ const app::GameInfo app::kGame = {
                 {"grass_fade", &grass::g_fade, nullptr},  // distant grass fades out, else solid however far (hooks.cpp)
                 {"fur_shading", &fur::g_shading, nullptr},  // lit, soft edged fur shells (src/conker/common/fur.cpp)
                 {"fur_distant", &fur::g_distant, nullptr},  // distant fur keeps all its shells (hooks.cpp)
+                {"character_max_lod", &characters::g_max_lod, nullptr},  // players keep their full model (hooks.cpp)
                 {"dynamic_water", &water::g_dynamic, nullptr},  // flowing, rippling water (src/conker/common/water.cpp)
                 {"per_pixel_lighting", &lighting::g_per_pixel, nullptr},  // lit per pixel (src/conker/common/lighting.cpp)
                 {"floor_depth", &reflection::g_floor_depth, nullptr}},  // floors over reflections blur by their own depth (reflection.cpp)

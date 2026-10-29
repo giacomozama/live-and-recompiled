@@ -23,6 +23,7 @@
 
 #include "app/app.h"
 #include "audio/audio.h"
+#include "common/characters.h"
 #include "common/cutscenes.h"
 #include "common/display.h"
 #include "common/fur.h"
@@ -568,6 +569,10 @@ void Draw(double fps) {
                 Hint("Softer, more natural-looking fur.", true);
                 ImGui::Checkbox("Full distant fur", &fur::g_distant);
                 Hint("Fur stays thick far away instead of thinning out.", true);
+
+                ImGui::SeparatorText("Characters");
+                ImGui::Checkbox("Force max character LoD", &characters::g_max_lod);
+                Hint("Players and bots keep their full model and smooth animation however far away.", true);
 
                 ImGui::SeparatorText("Grass");
                 ImGui::Checkbox("Wind on distant grass", &grass::g_wind);

@@ -370,6 +370,18 @@ at = 0x8210C   # fur shells: a distant object's count as at the near range's edg
 call = "ConkerFurDistant"
 
 [[hook]]
+at = 0x7F452   # a player's model: the full one however far (characters::g_max_lod)
+call = "ConkerCharacterLod"
+
+[[hook]]
+at = 0x1310EF  # a player's refresh pacing: a whole share each frame (characters::g_max_lod)
+call = "ConkerCharacterPace"
+
+[[hook]]
+at = 0x131129  # and no cap of 4 players a frame on it
+call = "ConkerCharacterPaceCount"
+
+[[hook]]
 at = 0x1A968F  # grass patch: all its blades, solid (grass::g_max_lod, g_fade)
 call = "ConkerGrassFull"
 
