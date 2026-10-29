@@ -59,18 +59,28 @@ X86_FUNC(sub_00203B50) {
 // The frontend (level 29, the pub) shows the picture in focus, byte [0x77625E]: 0 Xbox Live, 1 Options (to Live's
 // right), 2 Chapters, 3 to 5 the three games (0x205361 shows its UI page, the frontend's own at [0x85E550]). Options
 // is a page of Yes / No settings, so A on its picture opens the settings menu instead and the game never sees it.
+// Start (or Esc) there asks to quit instead, and Start with Back opens the settings menu anywhere (ui.cpp watches the
+// pads for it), so the game never sees the two together.
 void gamepad::Pad(int port, input::Pad& pad) {
     constexpr int kFrontend = 29;
     constexpr uint32_t kPicture = 0x77625E, kFrontendUi = 0x85E550;
     constexpr int kOptions = 1;
-    static bool was_down[input::kPorts] = {};
+    constexpr uint16_t kStart = 1 << 4, kBack = 1 << 5;
+    static bool was_down[input::kPorts] = {}, start_was[input::kPorts] = {};
     if (port < 0 || port >= input::kPorts) return;
+    if ((pad.buttons & (kStart | kBack)) == (kStart | kBack)) pad.buttons &= uint16_t(~(kStart | kBack));
+    const bool frontend = warp::CurrentLevel() == kFrontend && kernel::R32(kFrontendUi);
+    const bool start = pad.buttons & kStart;
+    const bool start_pressed = start && !start_was[port];
+    start_was[port] = start;
+    if (frontend && start) {
+        pad.buttons &= uint16_t(~kStart);
+        if (start_pressed) ui::ShowQuit();
+    }
     const bool down = pad.analog[0] > 0x40;  // A, past where the game takes it as pressed
     const bool pressed = down && !was_down[port];
     was_down[port] = down;
-    if (!down || warp::CurrentLevel() != kFrontend || !kernel::R32(kFrontendUi) ||
-        int8_t(mem::Base()[kPicture]) != kOptions)
-        return;
+    if (!down || !frontend || int8_t(mem::Base()[kPicture]) != kOptions) return;
     pad.analog[0] = 0;
-    if (pressed) ui::Show(true);
+    if (pressed) ui::Show(true, port);
 }

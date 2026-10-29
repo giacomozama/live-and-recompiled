@@ -152,6 +152,9 @@ set_source_files_properties(${XBE_ROOT_DIR}/src/runtime/gpu/vulkan.cpp PROPERTIE
     COMPILE_DEFINITIONS "ENABLE_HLSL;IMGUI_IMPL_VULKAN_USE_VOLK" COMPILE_OPTIONS -Wno-nullability-completeness)
 set_source_files_properties(${imgui_SOURCE_DIR}/backends/imgui_impl_vulkan.cpp PROPERTIES
     INCLUDE_DIRECTORIES "${XBE_VULKAN_INCLUDES}" COMPILE_DEFINITIONS IMGUI_IMPL_VULKAN_USE_VOLK)
+# the settings menu reads the pads itself (ui.cpp), so neither of ImGui's backends does
+set_source_files_properties(${imgui_SOURCE_DIR}/backends/imgui_impl_win32.cpp PROPERTIES
+    COMPILE_DEFINITIONS IMGUI_IMPL_WIN32_DISABLE_GAMEPAD)
 # glslang's libraries in the order they link
 set(XBE_GLSLANG_LIBS glslang glslang-default-resource-limits)
 

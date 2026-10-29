@@ -59,17 +59,48 @@ namespace {
 constexpr uint32_t kFpsTitle = app::kMsgApp + 0x40;
 
 // virtual-key codes the menu reads
-constexpr int kMouse1 = 0x01, kInsert = 0x2D, kEscape = 0x1B;
+constexpr int kMouse1 = 0x01, kEscape = 0x1B, kF1 = 0x70;
 
 std::atomic<bool> g_open{false};
-// Show asked for the Controls tab: the next frame picks it
-std::atomic<bool> g_show_controls{false};
+// the quit prompt alone, over the game (the frontend's Start)
+std::atomic<bool> g_quit{false};
+// the port of the controller that opened the menu, -1 a keyboard
+std::atomic<int> g_owner{-1};
+// Escape went to shut the menu or the prompt: it is not the game's Start until it is let go
+std::atomic<bool> g_esc_swallow{false};
 
-// the menu shows or goes; the game is held while it is up (kernel::Hold), but for a multiplayer match, which runs on
-// for the other players (Draw lets go or holds again as a match starts or ends under the menu)
+// the main tab to show next frame (Show asks for Controls, the bumpers turn), -1 none; the tab drawn now; the player
+// the Controls tab shows
+constexpr int kMainTabs = 6, kControlsTab = 3;
+std::atomic<int> g_tab_target{-1};
+int g_tab_now = 0;
+int g_player_now = 0;
+
+// ImGui picks a tab when it is clicked or activated, not when the cursor reaches it: a tab the cursor arrives on is
+// picked, so the page under it is there to move down into. The tab the cursor was on, to tell arriving
+bool Arrived(ImGuiID& was) {
+    const bool focused = ImGui::IsItemFocused();
+    const bool arrived = focused && was != ImGui::GetItemID();
+    if (focused) was = ImGui::GetItemID();
+    return arrived;
+}
+ImGuiID g_main_focus = 0;
+
+// the game is held while the menu or the prompt is up (kernel::Hold), but for a multiplayer match, which runs on for
+// the other players (Draw lets go or holds again as a match starts or ends under the menu)
+void Hold() { kernel::Hold((g_open.load() || g_quit.load()) && !warp::Multiplayer()); }
+
+// the menu shows or goes
 void SetOpen(bool open) {
     g_open.store(open);
-    kernel::Hold(open && !warp::Multiplayer());
+    if (!open) g_owner.store(-1);
+    Hold();
+}
+
+// the prompt shows or goes
+void SetQuit(bool quit) {
+    g_quit.store(quit);
+    Hold();
 }
 
 // the menu shut from the render thread (its X, a warp): the window thread takes the cursor back as Message does
@@ -77,6 +108,12 @@ void Close() {
     SetOpen(false);
     app::Post(mouse::kRefresh);
 }
+
+// what the pads did this frame for the menu to read (PadFrame sets it, render thread)
+struct PadEdges {
+    bool a = false, b = false, y = false;  // A, B and Y just pressed
+    float scroll = 0.0f;        // pixels the right stick scrolls the page
+} g_pad;
 
 std::atomic<double> g_fps{0.0};
 
@@ -124,7 +161,7 @@ void PollRebind() {
     } mirror;
     g_rebind_settle = AnyDown() ? (g_rebind_settle ? kSettleFrames : 0) : std::max(g_rebind_settle - 1, 0);
     if (g_rebind < 0) return;
-    if (app::KeyDown(kEscape)) {
+    if (app::KeyDown(kEscape) || g_pad.b) {
         g_rebind = -1;
         g_rebind_settle = kSettleFrames;
         return;
@@ -262,7 +299,7 @@ void DrawController(int player) {
 void DrawMouse(int mode, int player) {
     ImGui::SeparatorText("Mouse");
     ImGui::Checkbox("Mouse look", &mouse::g_look[mode][player]);
-    Hint("Move the mouse to look around. Press Esc or Alt+Tab to get the cursor back.", true);
+    Hint("Move the mouse to look around. Open this menu (F1) or press Alt+Tab to get the cursor back.", true);
     Slider("Horizontal %", &mouse::g_sensitivity[mode][player], 10, 500, mouse::kDefaultSensitivity);
     Slider("Vertical %", &mouse::g_sensitivity_y[mode][player], 10, 500, mouse::kDefaultSensitivity);
     ImGui::Checkbox("Invert Y", &mouse::g_invert_y[mode][player]);
@@ -276,7 +313,7 @@ void DrawKeys(int mode, int player) {
     g_cancel_hovered = false;  // the waiting row sets it again as it draws
     ImGui::SeparatorText("Keyboard");
     Hint("Each action can have two keys or mouse buttons. Click a slot, then press the key you want.");
-    Hint("Right-click a slot to clear it. Picking a key that is already used swaps the two.");
+    Hint("Right-click a slot (Y on a controller) to clear it. Picking a key that is already used swaps the two.");
     // a frame per part of the controller; the frame names the part, so a row only names its action
     struct Row {
         int action;
@@ -302,7 +339,8 @@ void DrawKeys(int mode, int player) {
     for (const Group& g : kGroups) {
         ImGui::TableNextColumn();
         ImGui::PushID(g.title);
-        ImGui::BeginChild("##group", ImVec2(0, 0), ImGuiChildFlags_Borders | ImGuiChildFlags_AutoResizeY);
+        ImGui::BeginChild("##group", ImVec2(0, 0),
+                          ImGuiChildFlags_Borders | ImGuiChildFlags_AutoResizeY | ImGuiChildFlags_NavFlattened);
         ImGui::SeparatorText(g.title);
         // label, the action's keys side by side, then its Reset; the keys line up down the frame
         const float spacing = ImGui::GetStyle().ItemInnerSpacing.x;
@@ -331,7 +369,9 @@ void DrawKeys(int mode, int player) {
                 }
                 // right click unbinds, but not while a rebind waits or has just taken its key: then the click is
                 // Mouse 2 being bound, which PollRebind takes before this button sees it
-                if (ImGui::IsItemClicked(ImGuiMouseButton_Right) && g_rebind < 0 && !g_rebind_settle)
+                // (Y on a slot the pad has focused does too)
+                if ((ImGui::IsItemClicked(ImGuiMouseButton_Right) || (g_pad.y && ImGui::IsItemFocused())) &&
+                    g_rebind < 0 && !g_rebind_settle)
                     g_keys[mode][player][r.action][s] = 0;
                 ImGui::PopID();
             }
@@ -444,6 +484,138 @@ void DrawWarp() {
     Hint("Loads the level first. Nothing plays if that level doesn't have it.");
 }
 
+// the pads' buttons the menu reads, one port's or all the ones that drive it together
+struct Buttons {
+    bool a = false, b = false, y = false, start = false, back = false;
+    bool lb = false, rb = false, lt = false, rt = false;
+    bool up = false, down = false, left = false, right = false;
+    float lx = 0.0f, ly = 0.0f, ry = 0.0f;  // sticks, -1 to 1, up positive, past a dead zone
+
+    void Add(const Buttons& o) {
+        a |= o.a, b |= o.b, y |= o.y, start |= o.start, back |= o.back;
+        lb |= o.lb, rb |= o.rb, lt |= o.lt, rt |= o.rt;
+        up |= o.up, down |= o.down, left |= o.left, right |= o.right;
+        if (std::fabs(o.lx) > std::fabs(lx)) lx = o.lx;
+        if (std::fabs(o.ly) > std::fabs(ly)) ly = o.ly;
+        if (std::fabs(o.ry) > std::fabs(ry)) ry = o.ry;
+    }
+};
+
+float Stick(int16_t v) {
+    constexpr float kDead = 0.25f;
+    const float a = (std::fabs(float(v)) / 32768.0f - kDead) / (1.0f - kDead);
+    return a <= 0.0f ? 0.0f : std::copysign(std::min(a, 1.0f), float(v));
+}
+
+Buttons ReadPad(int port) {
+    Buttons b;
+    const input::Pad p = input::Raw(port);
+    if (!p.connected) return b;
+    b.up = p.buttons & (1 << 0), b.down = p.buttons & (1 << 1), b.left = p.buttons & (1 << 2);
+    b.right = p.buttons & (1 << 3), b.start = p.buttons & (1 << 4), b.back = p.buttons & (1 << 5);
+    b.a = p.analog[0] > 0x40, b.b = p.analog[1] > 0x40, b.y = p.analog[3] > 0x40;
+    b.rb = p.analog[4] > 0x40, b.lb = p.analog[5] > 0x40;  // black and white are the right and left bumpers
+    b.lt = p.analog[6] > 0x80, b.rt = p.analog[7] > 0x80;
+    b.lx = Stick(p.lx), b.ly = Stick(p.ly), b.ry = Stick(p.ry);
+    return b;
+}
+
+// the menu or prompt is up and an item holds the keyboard or the pad: B shuts nothing then
+bool Busy() {
+    return g_rebind >= 0 || ImGui::IsAnyItemActive() ||
+           ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel);
+}
+
+// the pads, once a frame, before the menu draws. Start with Back opens or shuts the menu from any pad, and while the
+// menu or the prompt is up the pads drive ImGui's navigation: the left stick and d-pad move, A activates, B backs
+// out, LB and RB turn the tabs, the right stick scrolls the page. (ImGui's backends read
+// no pads: the game is held, and X, which opens ImGui's window switcher, and the shoulders, which tweak, stay ours.)
+// In a match, which runs on, only the pad that opened the menu drives it.
+void PadFrame(bool open, bool quit) {
+    ImGuiIO& io = ImGui::GetIO();
+    io.BackendFlags |= ImGuiBackendFlags_HasGamepad;
+    const bool shown = open || quit;
+    const bool match = warp::Multiplayer();
+    const int owner = g_owner.load();
+
+    Buttons drive;
+    bool combo = false;
+    int combo_port = -1;
+    for (int port = 0; port < input::kPorts; port++) {
+        const Buttons b = ReadPad(port);
+        if (b.start && b.back) combo = true, combo_port = port;
+        if (shown && (!match || port == owner)) drive.Add(b);
+    }
+
+    static Buttons last;
+    static bool was_shown = false, was_combo = false, fed = false;
+    static double toggled = -1.0;
+    const double now = ImGui::GetTime();
+    g_pad = PadEdges{};
+    if (shown && !was_shown) last = drive;  // the buttons held as it opened are not presses
+    was_shown = shown;
+    auto pressed = [&](bool Buttons::*button) { return drive.*button && !(last.*button); };
+
+    // Start with Back; a second after Start shut it alone does not open it again
+    const bool combo_pressed = combo && !was_combo;
+    was_combo = combo;
+    if (combo_pressed && now - toggled > 0.3) {
+        toggled = now;
+        if (open) Close();
+        else ui::Show(false, combo_port);
+        last = drive;
+        return;
+    }
+    // Start alone shuts the menu or the prompt
+    if (shown && pressed(&Buttons::start)) {
+        toggled = now;
+        if (open) Close();
+        else SetQuit(false);
+        last = drive;
+        return;
+    }
+
+    g_pad.b = pressed(&Buttons::b);
+    g_pad.y = pressed(&Buttons::y);
+    if (open) {
+        if (g_pad.b && !Busy()) {  // B with nothing to back out of
+            Close();
+            last = drive;
+            return;
+        }
+        const int step = (pressed(&Buttons::rb) ? 1 : 0) - (pressed(&Buttons::lb) ? 1 : 0);
+        if (step)
+            g_tab_target.store((g_tab_now + kMainTabs + step) % kMainTabs);
+        if (!ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel))
+            g_pad.scroll = -drive.ry * std::fabs(drive.ry) * 1100.0f * (ImGui::GetFontSize() / 13.0f) * io.DeltaTime;
+    }
+    last = drive;
+
+    if (!shown && !fed) return;
+    fed = shown;
+    io.AddKeyEvent(ImGuiKey_GamepadFaceDown, drive.a);
+    io.AddKeyEvent(ImGuiKey_GamepadFaceRight, drive.b);
+    io.AddKeyEvent(ImGuiKey_GamepadFaceUp, drive.y);
+    io.AddKeyEvent(ImGuiKey_GamepadDpadUp, drive.up);
+    io.AddKeyEvent(ImGuiKey_GamepadDpadDown, drive.down);
+    io.AddKeyEvent(ImGuiKey_GamepadDpadLeft, drive.left);
+    io.AddKeyEvent(ImGuiKey_GamepadDpadRight, drive.right);
+    io.AddKeyAnalogEvent(ImGuiKey_GamepadLStickLeft, drive.lx < 0, std::max(-drive.lx, 0.0f));
+    io.AddKeyAnalogEvent(ImGuiKey_GamepadLStickRight, drive.lx > 0, std::max(drive.lx, 0.0f));
+    io.AddKeyAnalogEvent(ImGuiKey_GamepadLStickUp, drive.ly > 0, std::max(drive.ly, 0.0f));
+    io.AddKeyAnalogEvent(ImGuiKey_GamepadLStickDown, drive.ly < 0, std::max(-drive.ly, 0.0f));
+}
+
+// the quit prompt's body: the menu's own Quit button and the prompt alone share it. Cancel is where the pad starts
+bool QuitBody() {
+    ImGui::TextUnformatted("Quit the game? Progress since the last save is lost.");
+    if (ImGui::Button("Quit")) app::Quit();  // only posts: the window thread closes
+    ImGui::SameLine();
+    const bool cancel = ImGui::Button("Cancel");
+    ImGui::SetItemDefaultFocus();
+    return !cancel;
+}
+
 }  // namespace
 
 void Draw(double fps) {
@@ -451,10 +623,12 @@ void Draw(double fps) {
     static double last_fps = -1.0;
     static bool last_title = !g_fps_title;
     static int last_look = -1;
+    PadFrame(g_open.load(), g_quit.load());
     const bool open = g_open.load();
+    const bool quit = g_quit.load();
     if (!open) g_rebind = -1;  // closing the menu cancels a rebind
     if (open && !was_open) g_controls_mode = keyboard::ActiveMode();
-    if (open && kernel::Held() == warp::Multiplayer()) kernel::Hold(!warp::Multiplayer());
+    if ((open || quit) && kernel::Held() == warp::Multiplayer()) kernel::Hold(!warp::Multiplayer());
 
     // the menu saves itself: once its settings have held still for kSaveDelay (not every frame of a slider's drag),
     // and as it shuts
@@ -501,27 +675,56 @@ void Draw(double fps) {
         ImGui::End();
     }
 
+    // the prompt alone: a modal over the game, which is held. It goes when Cancel, B or Esc shut it
+    if (quit && !open) {
+        if (!ImGui::IsPopupOpen("Quit?")) ImGui::OpenPopup("Quit?");
+        const ImVec2 display = ImGui::GetIO().DisplaySize;
+        ImGui::SetNextWindowPos(ImVec2(display.x * 0.5f, display.y * 0.5f), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+        bool up = false;
+        if (ImGui::BeginPopupModal("Quit?", nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoMove)) {
+            up = QuitBody();
+            if (!up) ImGui::CloseCurrentPopup();
+            ImGui::EndPopup();
+        }
+        if (!up) {
+            SetQuit(false);
+            app::Post(mouse::kRefresh);
+        }
+    }
     if (!open) return;
 
     app::Settings& s = app::Get();
-    // first opened (there is no imgui.ini, so each launch): about half the display, centred, never smaller than the
-    // keyboard bindings need nor larger than the display
+    // the whole display but for a margin; the mouse can still reach every edge
     const ImVec2 display = ImGui::GetIO().DisplaySize;
     const float scale = ImGui::GetFontSize() / 13.0f;  // the minimums were set with ImGui's 13 px font
-    const ImVec2 size(std::min(std::max(display.x * 0.45f, 720.0f * scale), display.x),
-                      std::min(std::max(display.y * 0.65f, 640.0f * scale), display.y));
-    ImGui::SetNextWindowSize(size, ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowPos(ImVec2(display.x * 0.5f, display.y * 0.5f), ImGuiCond_FirstUseEver, ImVec2(0.5f, 0.5f));
+    const float margin = std::max(std::round(std::min(display.x, display.y) * 0.04f), 12.0f * scale);
+    ImGui::SetNextWindowPos(ImVec2(margin, margin), ImGuiCond_Always);
+    ImGui::SetNextWindowSize(ImVec2(std::max(display.x - margin * 2.0f, 1.0f), std::max(display.y - margin * 2.0f, 1.0f)),
+                             ImGuiCond_Always);
+    if (!was_open) ImGui::SetNextWindowFocus();
     bool keep_open = true;
-    if (ImGui::Begin("Settings", &keep_open)) {
+    if (ImGui::Begin("Settings", &keep_open,
+                     ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoCollapse |
+                         ImGuiWindowFlags_NoSavedSettings)) {
+        // roomier rows, so the pad's cursor is easy to follow and a thumb-sized target is easy to hit
+        const ImGuiStyle& base = ImGui::GetStyle();
+        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(base.FramePadding.x * 1.25f, base.FramePadding.y * 1.5f));
+        ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(base.ItemSpacing.x, base.ItemSpacing.y * 1.25f));
         bool keys_shown = false;
         if (ImGui::BeginTabBar("##tabs")) {
             // each tab scrolls on its own above the footer line
             const float footer = ImGui::GetFrameHeightWithSpacing() + ImGui::GetStyle().ItemSpacing.y * 2.0f;
-            const bool show_controls = g_show_controls.exchange(false);
-            auto tab = [&](const char* name, ImGuiTabItemFlags flags = 0) {
-                if (!ImGui::BeginTabItem(name, nullptr, flags)) return false;
-                ImGui::BeginChild("##page", ImVec2(0, -footer));
+            const int target = g_tab_target.exchange(-1);
+            int index = 0;
+            auto tab = [&](const char* name) {
+                const int mine = index++;
+                const bool selected =
+                    ImGui::BeginTabItem(name, nullptr, target == mine ? ImGuiTabItemFlags_SetSelected : 0);
+                if (Arrived(g_main_focus) && !selected) g_tab_target.store(mine);
+                if (!selected) return false;
+                g_tab_now = mine;
+                ImGui::BeginChild("##page", ImVec2(0, -footer), ImGuiChildFlags_NavFlattened);
+                if (g_pad.scroll != 0.0f) ImGui::SetScrollY(ImGui::GetScrollY() + g_pad.scroll);
                 return true;
             };
             auto end_tab = [] {
@@ -675,35 +878,32 @@ void Draw(double fps) {
                 end_tab();
             }
 
-            if (tab("Controls", show_controls ? ImGuiTabItemFlags_SetSelected : 0)) {
-                if (ImGui::BeginTabBar("##player")) {
-                    for (int p = 0; p < input::kPorts; p++) {
-                        const std::string name = "Player " + std::to_string(p + 1);
-                        if (!ImGui::BeginTabItem(name.c_str())) continue;
-                        ImGui::PushID(p);
-                        DrawDevices(p);
-                        DrawController(p);
-                        // the devices are the player's in both; the mouse settings and keys below are the set's
-                        // picked here
-                        ImGui::SeparatorText("Controls for");
-                        ImGui::RadioButton("Single player", &g_controls_mode, keyboard::kSinglePlayer);
-                        ImGui::SameLine();
-                        ImGui::RadioButton("Multiplayer matches", &g_controls_mode, keyboard::kMultiplayer);
-                        Hint(keyboard::ActiveMode() == keyboard::kMultiplayer ? "In a match: multiplayer's are in use."
-                                                                              : "Single player's are in use now.");
-                        const int mode = g_controls_mode;
-                        if (mode == keyboard::kMultiplayer && ImGui::Button("Copy single player's keys and mouse")) {
-                            keyboard::CopyToMultiplayer(p);
-                            g_rebind = -1;
-                        }
-                        DrawMouse(mode, p);
-                        DrawKeys(mode, p);
-                        keys_shown = true;
-                        ImGui::PopID();
-                        ImGui::EndTabItem();
-                    }
-                    ImGui::EndTabBar();
+            if (tab("Controls")) {
+                // whose controls: a list, not a second row of tabs, so the pad's cursor goes straight down the page
+                std::string players;
+                for (int p = 0; p < input::kPorts; p++) players += "Player " + std::to_string(p + 1) + '\0';
+                ImGui::Combo("Player", &g_player_now, players.c_str());
+                const int p = g_player_now;
+                ImGui::PushID(p);
+                DrawDevices(p);
+                DrawController(p);
+                // the devices are the player's in both; the mouse settings and keys below are the set's
+                // picked here
+                ImGui::SeparatorText("Controls for");
+                ImGui::RadioButton("Single player", &g_controls_mode, keyboard::kSinglePlayer);
+                ImGui::SameLine();
+                ImGui::RadioButton("Multiplayer matches", &g_controls_mode, keyboard::kMultiplayer);
+                Hint(keyboard::ActiveMode() == keyboard::kMultiplayer ? "In a match: multiplayer's are in use."
+                                                                      : "Single player's are in use now.");
+                const int mode = g_controls_mode;
+                if (mode == keyboard::kMultiplayer && ImGui::Button("Copy single player's keys and mouse")) {
+                    keyboard::CopyToMultiplayer(p);
+                    g_rebind = -1;
                 }
+                DrawMouse(mode, p);
+                DrawKeys(mode, p);
+                keys_shown = true;
+                ImGui::PopID();
                 end_tab();
             }
 
@@ -757,18 +957,22 @@ void Draw(double fps) {
 
         ImGui::Separator();
         ImGui::AlignTextToFramePadding();
-        ImGui::TextDisabled("Press Esc to open or close this menu. Changes are saved automatically.");
-        const char* quit = "Quit game";
-        ImGui::SameLine(ImGui::GetContentRegionMax().x - ImGui::CalcTextSize(quit).x -
-                        ImGui::GetStyle().FramePadding.x * 2.0f);
-        if (ImGui::Button(quit)) ImGui::OpenPopup("Quit?");
+        ImGui::TextDisabled("Stick or d-pad move, LB / RB turn the tabs, A select, B back. F1 or Start + Back open and close this menu. "
+                            "Changes are saved automatically.");
+        const char* close = "Close";
+        const char* quit_label = "Quit game";
+        const float pad = ImGui::GetStyle().FramePadding.x * 2.0f;
+        const float spacing = ImGui::GetStyle().ItemSpacing.x;
+        ImGui::SameLine(ImGui::GetContentRegionMax().x - ImGui::CalcTextSize(close).x - ImGui::CalcTextSize(quit_label).x -
+                        pad * 2.0f - spacing);
+        if (ImGui::Button(close)) Close();
+        ImGui::SameLine();
+        if (ImGui::Button(quit_label)) ImGui::OpenPopup("Quit?");
         if (ImGui::BeginPopupModal("Quit?", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
-            ImGui::TextUnformatted("Quit the game? Progress since the last save is lost.");
-            if (ImGui::Button("Quit")) app::Quit();  // only posts: the window thread closes
-            ImGui::SameLine();
-            if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
+            if (!QuitBody()) ImGui::CloseCurrentPopup();
             ImGui::EndPopup();
         }
+        ImGui::PopStyleVar(2);
     }
     ImGui::End();
     if (!keep_open) Close();  // the window's X
@@ -779,8 +983,19 @@ bool Message(void* hwnd, uint32_t msg, uintptr_t wp, intptr_t lp, intptr_t* resu
         case app::kMsgKeyDown:
             // not on auto repeat; the menu window and the game both take the key, the menu only when open
             // Escape cancels a rebind waiting for its key instead (PollRebind)
-            if ((wp == kEscape || wp == kInsert) && !(lp & (1 << 30)) && !(wp == kEscape && g_rebinding.load())) {
-                SetOpen(!g_open.load());
+            // F1 opens and shuts the menu; Esc shuts it or the prompt, and otherwise is the game's Start (EscStart)
+            if ((wp == kEscape || wp == kF1) && !(lp & (1 << 30)) && !(wp == kEscape && g_rebinding.load())) {
+                if (wp == kF1) {
+                    g_quit.store(false);
+                    g_owner.store(-1);
+                    SetOpen(!g_open.load());
+                } else if (g_open.load() || g_quit.load()) {
+                    g_esc_swallow.store(true);
+                    g_quit.store(false);
+                    SetOpen(false);
+                } else {
+                    break;
+                }
                 mouse::Refresh(hwnd);  // the cursor is free while the menu is up
                 if (result) *result = 0;
                 return true;
@@ -810,12 +1025,30 @@ bool Message(void* hwnd, uint32_t msg, uintptr_t wp, intptr_t lp, intptr_t* resu
     return false;
 }
 
-bool Open() { return g_open.load(); }
+bool Open() { return g_open.load() || g_quit.load(); }
 
-void Show(bool controls) {
-    if (controls) g_show_controls.store(true);
+void Show(bool controls, int port) {
+    if (controls) g_tab_target.store(kControlsTab);
+    g_quit.store(false);
+    g_owner.store(port);
     SetOpen(true);
     app::Post(mouse::kRefresh);  // the window thread lets the cursor go, as Message does
+}
+
+int Owner() { return g_owner.load(); }
+
+void ShowQuit() {
+    if (g_open.load()) return;
+    SetQuit(true);
+    app::Post(mouse::kRefresh);
+}
+
+bool EscStart() {
+    if (!app::KeyDown(kEscape)) {
+        g_esc_swallow.store(false);
+        return false;
+    }
+    return !g_esc_swallow.load() && !Open();
 }
 
 }  // namespace ui
@@ -833,7 +1066,13 @@ bool Message(void*, uint32_t, uintptr_t, intptr_t, intptr_t*) { return false; }
 
 bool Open() { return false; }
 
-void Show(bool) {}
+void Show(bool, int) {}
+
+int Owner() { return -1; }
+
+void ShowQuit() {}
+
+bool EscStart() { return false; }
 
 }  // namespace ui
 

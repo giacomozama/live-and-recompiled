@@ -165,7 +165,7 @@ void HandleEvent(const void* sdl_event) {
 
 thread_local bool t_presence = false;
 
-Pad Poll(int port) {
+Pad Raw(int port) {
     Pad p;
     {
         std::lock_guard lock(g_lock);
@@ -194,6 +194,11 @@ Pad Poll(int port) {
             p.ry = int16_t(-1 - axis(SDL_GAMEPAD_AXIS_RIGHTY));
         }
     }
+    return p;
+}
+
+Pad Poll(int port) {
+    Pad p = Raw(port);
     if (app::kGame.pad) app::kGame.pad(port, p);
     return p;
 }

@@ -58,7 +58,7 @@ namespace {
 // Windows only
 enum : int {
     kUp = 0x26, kDown = 0x28, kLeft = 0x25, kRight = 0x27,
-    kSpace = 0x20, kEnter = 0x0D, kBackspace = 0x08, kTab = 0x09, kEscape = 0x1B, kInsert = 0x2D,
+    kSpace = 0x20, kEnter = 0x0D, kBackspace = 0x08, kTab = 0x09, kEscape = 0x1B, kF1 = 0x70,
     kLShift = 0xA0, kLCtrl = 0xA2, kLAlt = 0xA4,
     kMouse1 = 0x01, kMouse2 = 0x02, kMouse3 = 0x04,
 };
@@ -248,7 +248,7 @@ std::string ActionDefault(int action) {
 
 const char* KeyName(int vk) { return vk ? Named(vk) : "-"; }
 
-bool Bindable(int vk) { return vk > 0 && vk < 0x100 && vk != kEscape && vk != kInsert && Named(vk); }
+bool Bindable(int vk) { return vk > 0 && vk < 0x100 && vk != kEscape && vk != kF1 && Named(vk); }
 
 void ResetKey(int mode, int player, int action) {
     if (mode < 0 || mode >= kModes || player < 0 || player >= input::kPorts || action < 0 || action >= kActions)
@@ -409,7 +409,7 @@ void Pad(int port, input::Pad& pad) {
     // a multiplayer match the game runs on under the menu (ui.cpp), and only the players with a keyboard or mouse, which
     // work the menu, stand still
     if (ui::Open() && (!warp::Multiplayer() || input::Has(port, input::Kind::Keyboard) ||
-                       input::Has(port, input::Kind::Mouse))) {
+                       input::Has(port, input::Kind::Mouse) || port == ui::Owner())) {
         pad.buttons = 0;
         pad.lx = pad.ly = pad.rx = pad.ry = 0;
         std::memset(pad.analog, 0, sizeof pad.analog);
@@ -431,7 +431,9 @@ void Pad(int port, input::Pad& pad) {
     if (down(kDpadDown)) pad.buttons |= kPadDown;
     if (down(kDpadLeft)) pad.buttons |= kPadLeft;
     if (down(kDpadRight)) pad.buttons |= kPadRight;
-    if (down(kStart)) pad.buttons |= kPadStart;
+    // Escape is the console's Start, for the keyboards (the menu's own Esc is not: ui::EscStart)
+    if (down(kStart) || ((port == 0 || input::Has(port, input::Kind::Keyboard)) && ui::EscStart()))
+        pad.buttons |= kPadStart;
     if (down(kBack)) pad.buttons |= kPadBack;
     if (down(kLS)) pad.buttons |= kPadLS;
     if (down(kRS)) pad.buttons |= kPadRS;

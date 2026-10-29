@@ -13,11 +13,21 @@ void Draw(double fps);
 // the GameInfo::message hook: window thread, each message after ImGui's; true consumes it, result is returned
 bool Message(void* hwnd, uint32_t msg, uintptr_t wp, intptr_t lp, intptr_t* result);
 
-// whether the menu is showing; safe from any thread
+// whether the menu or the quit prompt is showing; safe from any thread
 bool Open();
 
-// shows the menu, on its Controls tab when asked (the game's Options pages open it); any thread
-void Show(bool controls);
+// shows the menu, on its Controls tab when asked (the game's Options pages open it); any thread. The port is the
+// controller that opened it, -1 for a keyboard: in a multiplayer match, which runs on, it alone drives the menu
+void Show(bool controls, int port = -1);
+
+// the port of the controller that opened the menu, -1 none (Open() and no controller, or not open)
+int Owner();
+
+// shows the quit prompt on its own (the frontend's Start), the game held under it; any thread
+void ShowQuit();
+
+// Escape as the console's Start: down, and not the press that shut the menu or the prompt. Any thread
+bool EscStart();
 
 // settings.toml options (app::Option): the fps overlay and the fps in the window title
 extern bool g_fps_overlay;

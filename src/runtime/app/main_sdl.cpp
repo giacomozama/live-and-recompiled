@@ -431,7 +431,12 @@ void PixelSize(uint32_t& w, uint32_t& h) {
     h = uint32_t(std::max(ph, 0));
 }
 
-void UiNewFrame() { ImGui_ImplSDL3_NewFrame(); }
+void UiNewFrame() {
+    ImGui_ImplSDL3_NewFrame();
+    // the backend, opening no pads of its own (Manual), says there are none: ImGui would drop the pad keys the menu
+    // feeds it (ui.cpp)
+    ImGui::GetIO().BackendFlags |= ImGuiBackendFlags_HasGamepad;
+}
 
 void Pace(uint32_t vblanks) {
     using clock = std::chrono::steady_clock;
@@ -505,6 +510,7 @@ int main(int argc, char** argv) {
     // the renderer's thread starts each frame: the cursor's shape is set on the window thread alone
     io.ConfigFlags |= ImGuiConfigFlags_NoMouseCursorChange;
     ImGui_ImplSDL3_InitForVulkan(app::g_window);
+    ImGui_ImplSDL3_SetGamepadMode(ImGui_ImplSDL3_GamepadMode_Manual, nullptr, 0);  // the menu feeds its own (ui.cpp)
 
     input::Init();
     app::AddInputDevices();
