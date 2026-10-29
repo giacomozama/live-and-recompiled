@@ -705,7 +705,7 @@ void Draw(double fps) {
     bool keep_open = true;
     if (ImGui::Begin("Settings", &keep_open,
                      ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoCollapse |
-                         ImGuiWindowFlags_NoSavedSettings)) {
+                         ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoSavedSettings)) {
         // roomier rows, so the pad's cursor is easy to follow and a thumb-sized target is easy to hit
         const ImGuiStyle& base = ImGui::GetStyle();
         ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(base.FramePadding.x * 1.25f, base.FramePadding.y * 1.5f));
@@ -718,11 +718,28 @@ void Draw(double fps) {
             int index = 0;
             auto tab = [&](const char* name) {
                 const int mine = index++;
+                // the pad's cursor is the tab's highlight alone, no border (the tab draws its cursor as it begins)
+                ImGui::PushStyleColor(ImGuiCol_NavCursor, ImVec4(0, 0, 0, 0));
                 const bool selected =
                     ImGui::BeginTabItem(name, nullptr, target == mine ? ImGuiTabItemFlags_SetSelected : 0);
+                ImGui::PopStyleColor();
                 if (Arrived(g_main_focus) && !selected) g_tab_target.store(mine);
+                // the selected tab, and the one hovered or under the pad's cursor, as a pill (ImGui rounds a tab's top
+                // corners alone): over the tab, so its label again
+                if (selected || ImGui::IsItemHovered() || ImGui::IsItemFocused()) {
+                    const ImGuiStyle& st = ImGui::GetStyle();
+                    const ImVec2 lo = ImGui::GetItemRectMin(), hi = ImGui::GetItemRectMax();
+                    ImDrawList* dl = ImGui::GetWindowDrawList();
+                    ImVec4 fill = selected ? st.Colors[ImGuiCol_CheckMark] : ImVec4(1.0f, 1.0f, 1.0f, 0.07f);
+                    if (selected) fill.w = 0.80f;
+                    dl->AddRectFilled(lo, hi, ImGui::GetColorU32(fill), st.TabRounding);
+                    const ImVec2 size = ImGui::CalcTextSize(name);
+                    dl->AddText(ImVec2(std::round((lo.x + hi.x - size.x) * 0.5f), std::round((lo.y + hi.y - size.y) * 0.5f)),
+                                ImGui::GetColorU32(ImGuiCol_Text), name);
+                }
                 if (!selected) return false;
                 g_tab_now = mine;
+                ImGui::Dummy(ImVec2(0.0f, ImGui::GetFontSize() * 0.6f));  // air between the tabs and the page
                 ImGui::BeginChild("##page", ImVec2(0, -footer), ImGuiChildFlags_NavFlattened);
                 if (g_pad.scroll != 0.0f) ImGui::SetScrollY(ImGui::GetScrollY() + g_pad.scroll);
                 return true;
