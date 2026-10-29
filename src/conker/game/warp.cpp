@@ -22,6 +22,7 @@
 // on the missing-data screen as a level load does (docs/conker.md), so there the level is started from its first
 // checkpoint instead and the cutscene waits until it runs.
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <cstdio>
 #include <cstdlib>
@@ -73,7 +74,7 @@ std::deque<Request> g_requests;
 std::string g_status;
 std::vector<int> g_cutscenes;
 int g_cutscenes_level = -1;
-int g_level = -1;
+std::atomic<int> g_level{-1};  // read without g_lock: the controls look at it on every pad poll
 
 // the cutscene asked for, checked by the hook on 0x4EC10 when it starts in its own level; main thread
 int g_want_level = -1, g_want_index = -1;
@@ -229,10 +230,9 @@ const char* LevelName(int level) {
     return p ? reinterpret_cast<const char*>(kernel::HostPtr(p)) : nullptr;
 }
 
-int CurrentLevel() {
-    std::lock_guard<std::mutex> l(g_lock);
-    return g_level;
-}
+int CurrentLevel() { return g_level.load(std::memory_order_relaxed); }
+
+bool Multiplayer() { return CurrentLevel() >= kLevels; }
 
 bool GoCheckpoint(int index) {
     if (index < 0 || index >= kCheckpointCount) return SetStatus("no checkpoint " + std::to_string(index)), false;

@@ -21,21 +21,28 @@ enum Action : int {
     kActions
 };
 
-// settings.toml [playerN.keys]: up to two Windows virtual-key codes (a key or a mouse button) per action and player,
-// either one drives it, 0 unbound; read live, so the menu rebinds
+// each player has two sets of controls, keys and mouse settings alike: one for the story and every menu, one for
+// multiplayer matches (which load past the story's levels; the multiplayer frontend keeps the first)
+enum Mode : int { kSinglePlayer, kMultiplayer, kModes };
+int ActiveMode();  // the set the running level uses; any thread
+
+// settings.toml [playerN.keys] (multiplayer: [playerN.multiplayer.keys]): up to two Windows virtual-key codes (a key
+// or a mouse button) per action and player, either one drives it, 0 unbound; read live, so the menu rebinds
 constexpr int kSlots = 2;
-extern int g_keys[input::kPorts][kActions][kSlots];
+extern int g_keys[kModes][input::kPorts][kActions][kSlots];
 
 const char* ActionLabel(int action);  // for the F1 menu, "Move up"
 std::string ActionDefault(int action);  // its default keys' names, "E, Mouse 2"
 const char* KeyName(int vk);          // "W", "Space", "Mouse 4"; "-" for 0, null for a key that cannot be bound
 bool Bindable(int vk);                // not Escape / Insert, which open the menu
-void ResetKeys(int player);           // the default layout
-void ResetKey(int player, int action);  // one action's default keys
-bool IsDefault(int player, int action);
+void ResetKeys(int mode, int player);              // the default layout
+void ResetKey(int mode, int player, int action);   // one action's default keys
+bool IsDefault(int mode, int player, int action);
+void CopyToMultiplayer(int player);  // single player's keys and mouse settings into multiplayer's
 
-// the GameInfo::load / save hooks: each [playerN] table's keys and mouse settings in settings.toml; player 1's are
-// also read from the old [keys] table and mouse_ keys when its table has none
+// the GameInfo::load / save hooks: each [playerN] table's keys and mouse settings in settings.toml, multiplayer's in
+// its [playerN.multiplayer] (single player's when it has none); player 1's are also read from the old [keys] table
+// and mouse_ keys when its table has none
 void Load(const void* table);
 void Save(void* table);
 

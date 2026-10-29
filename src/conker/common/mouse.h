@@ -2,6 +2,7 @@
 
 #include <cstdint>
 
+#include "common/keyboard.h"
 #include "core/input.h"
 
 // Mouse look: each player's mouse turns their camera as the right stick does (src/conker/game/mouse.cpp). The window
@@ -9,13 +10,14 @@
 // right stick.
 namespace mouse {
 
-// per player, settings.toml [playerN] mouse_look, mouse_sensitivity (percent, horizontal), mouse_sensitivity_y
-// (percent, vertical) and mouse_invert_y; read live, so the menu applies them
-extern bool g_look[input::kPorts];
-extern uint32_t g_sensitivity[input::kPorts];
-extern uint32_t g_sensitivity_y[input::kPorts];
+// per set of controls (keyboard::Mode) and player, settings.toml [playerN] (or [playerN.multiplayer]) mouse_look,
+// mouse_sensitivity (percent, horizontal), mouse_sensitivity_y (percent, vertical) and mouse_invert_y; read live, so
+// the menu applies them, and the running level's set is the one used
+extern bool g_look[keyboard::kModes][input::kPorts];
+extern uint32_t g_sensitivity[keyboard::kModes][input::kPorts];
+extern uint32_t g_sensitivity_y[keyboard::kModes][input::kPorts];
 constexpr uint32_t kDefaultSensitivity = 100;  // both, and what the menu resets them to
-extern bool g_invert_y[input::kPorts];
+extern bool g_invert_y[keyboard::kModes][input::kPorts];
 
 // posted to the game window when the setting changes off the window thread (WM_APP + 0x41); Message refreshes
 constexpr uint32_t kRefresh = 0x8000 + 0x41;

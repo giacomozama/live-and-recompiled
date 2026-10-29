@@ -17,6 +17,8 @@
 //
 // Every player's actions can be rebound, to up to two keys or mouse buttons each: in the menu (Esc), or in
 // settings.toml's [playerN.keys] tables by key name (move_up = 'W', a = ['Space', 'Mouse 1'], 'none' unbinds).
+// Multiplayer has a set of its own, keys and mouse settings both, in [playerN.multiplayer]: it starts as a copy of
+// single player's, and is used in multiplayer matches only (its menus keep single player's).
 //
 // With mouse look on (src/conker/game/mouse.cpp) the mouse also turns the camera, over the camera keys while it moves.
 #include <algorithm>
@@ -41,12 +43,13 @@
 #include "app/app.h"
 #include "common/stickwatch.h"
 #include "common/ui.h"
+#include "common/warp.h"
 #include "core/input.h"
 #include "core/log.h"
 
 namespace keyboard {
 
-int g_keys[input::kPorts][kActions][kSlots];
+int g_keys[kModes][input::kPorts][kActions][kSlots];
 
 namespace {
 
@@ -127,8 +130,8 @@ bool SameName(const char* a, const char* b) {
     return *a == *b;
 }
 
-bool Down(int port, Action a) {
-    for (int vk : g_keys[port][a])
+bool Down(int mode, int port, Action a) {
+    for (int vk : g_keys[mode][port][a])
         if (vk && input::KeyDown(port, vk)) return true;
     return false;
 }
@@ -183,14 +186,14 @@ void OnSquare(double degrees, int16_t& x, int16_t& y) {
 }
 
 // the left stick from the movement keys; false while neither they nor a held spin drive it
-bool MoveStick(int port, int16_t& x, int16_t& y) {
+bool MoveStick(int mode, int port, int16_t& x, int16_t& y) {
     Thumb& t = g_thumb[port];
     const int64_t now = NowUs();
     const double dt = std::clamp(double(now - t.last) / 1e6, 0.0, 0.1);
     t.last = now;
 
-    const int16_t kx = Axis(Down(port, kMoveLeft), Down(port, kMoveRight));
-    const int16_t ky = Axis(Down(port, kMoveDown), Down(port, kMoveUp));
+    const int16_t kx = Axis(Down(mode, port, kMoveLeft), Down(mode, port, kMoveRight));
+    const int16_t ky = Axis(Down(mode, port, kMoveDown), Down(mode, port, kMoveUp));
     if (kx == 0 && ky == 0) {  // no key, or two opposite ones
         if (!t.held) return false;
         if (t.released == 0) t.released = now;
@@ -224,11 +227,14 @@ bool MoveStick(int port, int16_t& x, int16_t& y) {
 }
 
 [[maybe_unused]] const bool g_defaults = [] {  // before Load, at static init
-    for (int p = 0; p < input::kPorts; p++) ResetKeys(p);
+    for (int m = 0; m < kModes; m++)
+        for (int p = 0; p < input::kPorts; p++) ResetKeys(m, p);
     return true;
 }();
 
 }  // namespace
+
+int ActiveMode() { return warp::Multiplayer() ? kMultiplayer : kSinglePlayer; }
 
 const char* ActionLabel(int action) { return action >= 0 && action < kActions ? kInfo[action].label : ""; }
 
@@ -243,19 +249,31 @@ const char* KeyName(int vk) { return vk ? Named(vk) : "-"; }
 
 bool Bindable(int vk) { return vk > 0 && vk < 0x100 && vk != kEscape && vk != kInsert && Named(vk); }
 
-void ResetKey(int player, int action) {
-    if (player < 0 || player >= input::kPorts || action < 0 || action >= kActions) return;
-    g_keys[player][action][0] = kInfo[action].vk;
-    g_keys[player][action][1] = kInfo[action].vk2;
+void ResetKey(int mode, int player, int action) {
+    if (mode < 0 || mode >= kModes || player < 0 || player >= input::kPorts || action < 0 || action >= kActions)
+        return;
+    g_keys[mode][player][action][0] = kInfo[action].vk;
+    g_keys[mode][player][action][1] = kInfo[action].vk2;
 }
 
-void ResetKeys(int player) {
-    for (int a = 0; a < kActions; a++) ResetKey(player, a);
+void ResetKeys(int mode, int player) {
+    for (int a = 0; a < kActions; a++) ResetKey(mode, player, a);
 }
 
-bool IsDefault(int player, int action) {
-    return player >= 0 && player < input::kPorts && action >= 0 && action < kActions &&
-           g_keys[player][action][0] == kInfo[action].vk && g_keys[player][action][1] == kInfo[action].vk2;
+bool IsDefault(int mode, int player, int action) {
+    if (mode < 0 || mode >= kModes || player < 0 || player >= input::kPorts || action < 0 || action >= kActions)
+        return false;
+    const int(&keys)[kSlots] = g_keys[mode][player][action];
+    return keys[0] == kInfo[action].vk && keys[1] == kInfo[action].vk2;
+}
+
+void CopyToMultiplayer(int player) {
+    if (player < 0 || player >= input::kPorts) return;
+    std::memcpy(g_keys[kMultiplayer][player], g_keys[kSinglePlayer][player], sizeof g_keys[kSinglePlayer][player]);
+    mouse::g_look[kMultiplayer][player] = mouse::g_look[kSinglePlayer][player];
+    mouse::g_sensitivity[kMultiplayer][player] = mouse::g_sensitivity[kSinglePlayer][player];
+    mouse::g_sensitivity_y[kMultiplayer][player] = mouse::g_sensitivity_y[kSinglePlayer][player];
+    mouse::g_invert_y[kMultiplayer][player] = mouse::g_invert_y[kSinglePlayer][player];
 }
 
 #ifdef KEYBOARD_TOML
@@ -311,12 +329,20 @@ toml::table SaveKeys(const int (&player)[kActions][kSlots]) {
 }
 
 // a player's mouse settings, from their table (or the file's top level, where player 1's were before)
-void LoadMouse(const toml::table& t, int p) {
-    mouse::g_look[p] = t["mouse_look"].value_or(mouse::g_look[p]);
-    mouse::g_sensitivity[p] = t["mouse_sensitivity"].value_or(mouse::g_sensitivity[p]);
-    mouse::g_sensitivity_y[p] = t["mouse_sensitivity_y"].value_or(mouse::g_sensitivity_y[p]);
-    mouse::g_invert_y[p] = t["mouse_invert_y"].value_or(mouse::g_invert_y[p]);
+void LoadMouse(const toml::table& t, int m, int p) {
+    mouse::g_look[m][p] = t["mouse_look"].value_or(mouse::g_look[m][p]);
+    mouse::g_sensitivity[m][p] = t["mouse_sensitivity"].value_or(mouse::g_sensitivity[m][p]);
+    mouse::g_sensitivity_y[m][p] = t["mouse_sensitivity_y"].value_or(mouse::g_sensitivity_y[m][p]);
+    mouse::g_invert_y[m][p] = t["mouse_invert_y"].value_or(mouse::g_invert_y[m][p]);
 }
+
+void SaveMouse(toml::table& t, int m, int p) {
+    t.insert_or_assign("mouse_look", mouse::g_look[m][p]);
+    t.insert_or_assign("mouse_sensitivity", int64_t(mouse::g_sensitivity[m][p]));
+    t.insert_or_assign("mouse_sensitivity_y", int64_t(mouse::g_sensitivity_y[m][p]));
+    t.insert_or_assign("mouse_invert_y", mouse::g_invert_y[m][p]);
+}
+
 
 std::string PlayerTable(int p) { return "player" + std::to_string(p + 1); }
 
@@ -328,11 +354,18 @@ void Load(const void* table) {
         const toml::table* player = t[PlayerTable(p)].as_table();
         const bool keys = player && (*player)["keys"].as_table();
         const bool look = player && (*player)["mouse_look"];
-        if (p == 0 && !keys) LoadKeys(t["keys"].as_table(), g_keys[0]);
-        if (p == 0 && !look) LoadMouse(t, 0);
-        if (!player) continue;
-        LoadKeys((*player)["keys"].as_table(), g_keys[p]);
-        LoadMouse(*player, p);
+        if (p == 0 && !keys) LoadKeys(t["keys"].as_table(), g_keys[kSinglePlayer][0]);
+        if (p == 0 && !look) LoadMouse(t, kSinglePlayer, 0);
+        if (player) {
+            LoadKeys((*player)["keys"].as_table(), g_keys[kSinglePlayer][p]);
+            LoadMouse(*player, kSinglePlayer, p);
+        }
+        // a player's multiplayer set starts as their single player one: what its table leaves out stays so
+        CopyToMultiplayer(p);
+        const toml::table* multi = player ? (*player)["multiplayer"].as_table() : nullptr;
+        if (!multi) continue;
+        LoadKeys((*multi)["keys"].as_table(), g_keys[kMultiplayer][p]);
+        LoadMouse(*multi, kMultiplayer, p);
     }
 }
 
@@ -342,11 +375,12 @@ void Save(void* table) {
     for (int p = 0; p < input::kPorts; p++) {
         toml::table* player = t[PlayerTable(p)].as_table();
         if (!player) player = t.insert_or_assign(PlayerTable(p), toml::table{}).first->second.as_table();
-        player->insert_or_assign("mouse_look", mouse::g_look[p]);
-        player->insert_or_assign("mouse_sensitivity", int64_t(mouse::g_sensitivity[p]));
-        player->insert_or_assign("mouse_sensitivity_y", int64_t(mouse::g_sensitivity_y[p]));
-        player->insert_or_assign("mouse_invert_y", mouse::g_invert_y[p]);
-        player->insert_or_assign("keys", SaveKeys(g_keys[p]));
+        SaveMouse(*player, kSinglePlayer, p);
+        player->insert_or_assign("keys", SaveKeys(g_keys[kSinglePlayer][p]));
+        toml::table multi;
+        SaveMouse(multi, kMultiplayer, p);
+        multi.insert_or_assign("keys", SaveKeys(g_keys[kMultiplayer][p]));
+        player->insert_or_assign("multiplayer", std::move(multi));
     }
 }
 
@@ -363,41 +397,46 @@ void Pad(int port, input::Pad& pad) {
     if (port == 0 || input::Has(port, input::Kind::Keyboard) || input::Has(port, input::Kind::Mouse))
         pad.connected = true;
 
-    // the settings menu is up: hand the game neutral pads so every player stands still while one is in the UI
-    if (ui::Open()) {
+    // the settings menu is up: hand the game neutral pads so every player stands still while one is in the UI. In
+    // a multiplayer match the game runs on under the menu (ui.cpp), and only the players with a keyboard or mouse, which
+    // work the menu, stand still
+    if (ui::Open() && (!warp::Multiplayer() || input::Has(port, input::Kind::Keyboard) ||
+                       input::Has(port, input::Kind::Mouse))) {
         pad.buttons = 0;
         pad.lx = pad.ly = pad.rx = pad.ry = 0;
         std::memset(pad.analog, 0, sizeof pad.analog);
         return;
     }
 
-    if (int16_t x, y; MoveStick(port, x, y)) {
+    const int mode = ActiveMode();
+    auto down = [&](Action a) { return Down(mode, port, a); };
+    if (int16_t x, y; MoveStick(mode, port, x, y)) {
         pad.lx = x;
         pad.ly = y;
     }
-    if (Down(port, kCamUp) || Down(port, kCamDown) || Down(port, kCamLeft) || Down(port, kCamRight)) {
-        pad.rx = Axis(Down(port, kCamLeft), Down(port, kCamRight));
-        pad.ry = Axis(Down(port, kCamDown), Down(port, kCamUp));
+    if (down(kCamUp) || down(kCamDown) || down(kCamLeft) || down(kCamRight)) {
+        pad.rx = Axis(down(kCamLeft), down(kCamRight));
+        pad.ry = Axis(down(kCamDown), down(kCamUp));
     }
 
-    if (Down(port, kDpadUp)) pad.buttons |= kPadUp;
-    if (Down(port, kDpadDown)) pad.buttons |= kPadDown;
-    if (Down(port, kDpadLeft)) pad.buttons |= kPadLeft;
-    if (Down(port, kDpadRight)) pad.buttons |= kPadRight;
-    if (Down(port, kStart)) pad.buttons |= kPadStart;
-    if (Down(port, kBack)) pad.buttons |= kPadBack;
-    if (Down(port, kLS)) pad.buttons |= kPadLS;
-    if (Down(port, kRS)) pad.buttons |= kPadRS;
+    if (down(kDpadUp)) pad.buttons |= kPadUp;
+    if (down(kDpadDown)) pad.buttons |= kPadDown;
+    if (down(kDpadLeft)) pad.buttons |= kPadLeft;
+    if (down(kDpadRight)) pad.buttons |= kPadRight;
+    if (down(kStart)) pad.buttons |= kPadStart;
+    if (down(kBack)) pad.buttons |= kPadBack;
+    if (down(kLS)) pad.buttons |= kPadLS;
+    if (down(kRS)) pad.buttons |= kPadRS;
 
     // analog face buttons: A B X Y black(RB) white(LB) LT RT
-    if (Down(port, kA)) pad.analog[0] = 0xFF;
-    if (Down(port, kB)) pad.analog[1] = 0xFF;
-    if (Down(port, kX)) pad.analog[2] = 0xFF;
-    if (Down(port, kY)) pad.analog[3] = 0xFF;
-    if (Down(port, kRB)) pad.analog[4] = 0xFF;  // black / right bumper
-    if (Down(port, kLB)) pad.analog[5] = 0xFF;  // white / left bumper
-    if (Down(port, kLT)) pad.analog[6] = 0xFF;  // left trigger
-    if (Down(port, kRT)) pad.analog[7] = 0xFF;  // right trigger
+    if (down(kA)) pad.analog[0] = 0xFF;
+    if (down(kB)) pad.analog[1] = 0xFF;
+    if (down(kX)) pad.analog[2] = 0xFF;
+    if (down(kY)) pad.analog[3] = 0xFF;
+    if (down(kRB)) pad.analog[4] = 0xFF;  // black / right bumper
+    if (down(kLB)) pad.analog[5] = 0xFF;  // white / left bumper
+    if (down(kLT)) pad.analog[6] = 0xFF;  // left trigger
+    if (down(kRT)) pad.analog[7] = 0xFF;  // right trigger
 
     mouse::Pad(port, pad);  // the mouse, while it looks, takes the right stick
     if (port != 0) return;
@@ -405,7 +444,7 @@ void Pad(int port, input::Pad& pad) {
     stickwatch::Tick();  // XBE_STICK_WATCH: F11 finds the code that reads the right stick
 
     // the first key of each: the rest are in the settings log
-    auto key = [](Action a) { return KeyName(g_keys[0][a][0]); };
+    auto key = [&](Action a) { return KeyName(g_keys[mode][0][a][0]); };
     LOG_FIRST(1, "input: keyboard controls active (move %s%s%s%s, camera %s%s%s%s, A %s, B %s, X %s, Y %s)",
               key(kMoveUp), key(kMoveLeft), key(kMoveDown), key(kMoveRight), key(kCamUp), key(kCamLeft),
               key(kCamDown), key(kCamRight), key(kA), key(kB), key(kX), key(kY));

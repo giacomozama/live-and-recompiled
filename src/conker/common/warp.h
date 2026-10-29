@@ -22,8 +22,12 @@ const std::vector<Checkpoint>& Checkpoints();
 constexpr int kLevels = 75;
 const char* LevelName(int level);
 
-// the running level, -1 before the first
+// the running level, -1 before the first; any thread
 int CurrentLevel();
+
+// a multiplayer match, which loads past the story's levels (the multiplayer frontend, Mp_Frontend, is not one); any
+// thread
+bool Multiplayer();
 
 // start a new game at checkpoint `index`, with the progress of the checkpoints before it. These three are false
 // when refused at once, the reason in Status
