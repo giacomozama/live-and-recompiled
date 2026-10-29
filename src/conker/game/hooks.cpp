@@ -21,7 +21,6 @@
 #include "common/cutscenes.h"
 #include "common/display.h"
 #include "common/fur.h"
-#include "common/gamepad.h"
 #include "common/grass.h"
 
 namespace {
@@ -130,35 +129,6 @@ X86_FUNC(sub_0004FF00) {
         return;
     }
     __imp__sub_0004FF00(ctx, base);
-}
-
-// 0x4D1F0: player edx's control scheme (*eax), invert aim (*edi, which the scheme 0x4D470/0x4D6E0 takes to negate
-// the stick's y) and vibration (0x806FE0 + port*0x14, which 0x3D2910 needs set to start a rumble). Out of Xbox Live
-// they come from the bytes the pause and frontend menus show, INVERT_AIM at 0x84B140 (zero inverts) and VIBRATION at
-// 0x84B141 (non-zero rumbles), one pair for all players, kept in the save (the 0x118 bytes at 0x84B130, new game
-// defaults by 0x352410). The function runs for each player in turn (0x4D320, the player whose actions struct
-// 0x763260 + edx*0x1B0 it fills), so the player's own settings go into the bytes before each read; the game's menus
-// and a save loaded don't change them.
-bool gamepad::g_invert_aim[input::kPorts] = {};
-bool gamepad::g_vibration[input::kPorts] = {true, true, true, true};
-uint32_t gamepad::g_vibration_percent[input::kPorts] = {100, 100, 100, 100};
-
-// the motors' speeds the game sets (XInputSetState, the player's port) scaled; a change applies from the next rumble
-void gamepad::Rumble(int port, uint16_t& left, uint16_t& right) {
-    if (port < 0 || port >= input::kPorts) return;
-    const uint32_t percent = std::min(g_vibration_percent[port], 100u);
-    left = uint16_t(uint32_t(left) * percent / 100);
-    right = uint16_t(uint32_t(right) * percent / 100);
-}
-
-X86_EXTERN_FUNC(__imp__sub_0004D1F0);
-X86_FUNC(sub_0004D1F0) {
-    const uint32_t player = ctx.edx;
-    if (player < uint32_t(input::kPorts)) {
-        base[0x84B140] = gamepad::g_invert_aim[player] ? 0 : 1;
-        base[0x84B141] = gamepad::g_vibration[player] ? 1 : 0;
-    }
-    __imp__sub_0004D1F0(ctx, base);
 }
 
 // 0x1A9540: draws one grass patch (a node renderer, [patch+0x5C] its fade). A patch at full strength binds the wind

@@ -446,6 +446,7 @@ void Pad(int port, input::Pad& pad) {
     if (down(kLT)) pad.analog[6] = 0xFF;  // left trigger
     if (down(kRT)) pad.analog[7] = 0xFF;  // right trigger
 
+    gamepad::Pad(port, pad);  // A on the frontend's Options opens the settings menu
     mouse::Pad(port, pad);  // the mouse, while it looks, takes the right stick
     if (port != 0) return;
     camscan::Tick(pad);  // XBE_CAMSCAN: the camera angle search watches the stick the game gets

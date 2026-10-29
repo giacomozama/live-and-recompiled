@@ -62,6 +62,8 @@ constexpr uint32_t kFpsTitle = app::kMsgApp + 0x40;
 constexpr int kMouse1 = 0x01, kInsert = 0x2D, kEscape = 0x1B;
 
 std::atomic<bool> g_open{false};
+// Show asked for the Controls tab: the next frame picks it
+std::atomic<bool> g_show_controls{false};
 
 // the menu shows or goes; the game is held while it is up (kernel::Hold), but for a multiplayer match, which runs on
 // for the other players (Draw lets go or holds again as a match starts or ends under the menu)
@@ -516,8 +518,9 @@ void Draw(double fps) {
         if (ImGui::BeginTabBar("##tabs")) {
             // each tab scrolls on its own above the footer line
             const float footer = ImGui::GetFrameHeightWithSpacing() + ImGui::GetStyle().ItemSpacing.y * 2.0f;
-            auto tab = [&](const char* name) {
-                if (!ImGui::BeginTabItem(name)) return false;
+            const bool show_controls = g_show_controls.exchange(false);
+            auto tab = [&](const char* name, ImGuiTabItemFlags flags = 0) {
+                if (!ImGui::BeginTabItem(name, nullptr, flags)) return false;
                 ImGui::BeginChild("##page", ImVec2(0, -footer));
                 return true;
             };
@@ -672,7 +675,7 @@ void Draw(double fps) {
                 end_tab();
             }
 
-            if (tab("Controls")) {
+            if (tab("Controls", show_controls ? ImGuiTabItemFlags_SetSelected : 0)) {
                 if (ImGui::BeginTabBar("##player")) {
                     for (int p = 0; p < input::kPorts; p++) {
                         const std::string name = "Player " + std::to_string(p + 1);
@@ -809,6 +812,12 @@ bool Message(void* hwnd, uint32_t msg, uintptr_t wp, intptr_t lp, intptr_t* resu
 
 bool Open() { return g_open.load(); }
 
+void Show(bool controls) {
+    if (controls) g_show_controls.store(true);
+    SetOpen(true);
+    app::Post(mouse::kRefresh);  // the window thread lets the cursor go, as Message does
+}
+
 }  // namespace ui
 
 #else  // no ImGui here (the headless harness): the menu and the hook do nothing
@@ -823,6 +832,8 @@ void Draw(double) {}
 bool Message(void*, uint32_t, uintptr_t, intptr_t, intptr_t*) { return false; }
 
 bool Open() { return false; }
+
+void Show(bool) {}
 
 }  // namespace ui
 

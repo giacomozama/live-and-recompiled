@@ -16,6 +16,9 @@ bool Message(void* hwnd, uint32_t msg, uintptr_t wp, intptr_t lp, intptr_t* resu
 // whether the menu is showing; safe from any thread
 bool Open();
 
+// shows the menu, on its Controls tab when asked (the game's Options pages open it); any thread
+void Show(bool controls);
+
 // settings.toml options (app::Option): the fps overlay and the fps in the window title
 extern bool g_fps_overlay;
 extern bool g_fps_title;
