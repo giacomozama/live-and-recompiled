@@ -89,6 +89,63 @@ bool Arrived(ImGuiID& was) {
     return arrived;
 }
 ImGuiID g_main_focus = 0;
+bool g_tab_arrived = false;  // the cursor reached a tab this frame (its page follows); render thread only
+
+// the sounds of the menu, for the keyboard and the pads alone: a tab or setting changing, and the cursor moving.
+// A key or pad press counts for a moment, until the mouse is used
+void Cues(bool opened_before, bool settings_changed) {
+    static constexpr ImGuiKey kNav[] = {ImGuiKey_UpArrow,        ImGuiKey_DownArrow,      ImGuiKey_LeftArrow,
+                                        ImGuiKey_RightArrow,     ImGuiKey_Enter,          ImGuiKey_KeypadEnter,
+                                        ImGuiKey_Space,          ImGuiKey_Tab,            ImGuiKey_PageUp,
+                                        ImGuiKey_PageDown,       ImGuiKey_GamepadDpadUp,  ImGuiKey_GamepadDpadDown,
+                                        ImGuiKey_GamepadDpadLeft, ImGuiKey_GamepadDpadRight, ImGuiKey_GamepadFaceDown,
+                                        ImGuiKey_GamepadL1,      ImGuiKey_GamepadR1};
+    static double key_at = -1.0, mouse_at = -1.0, select_at = -1.0, move_at = -1.0;
+    static bool was_popup = false;
+    static ImGuiID nav = 0, active = 0;
+    static double active_at = 0.0;
+    static bool active_keys = false;
+    static const ImGuiWindow* nav_window = nullptr;
+    static int tab = 0;
+    const double now = ImGui::GetTime();
+    for (ImGuiKey k : kNav)
+        if (ImGui::IsKeyPressed(k)) key_at = now;
+    if (ImGui::IsMouseDown(ImGuiMouseButton_Left) || ImGui::IsMouseDown(ImGuiMouseButton_Right)) mouse_at = now;
+    const bool by_keys = key_at > mouse_at && now - key_at < 0.3;
+    const ImGuiContext& g = *ImGui::GetCurrentContext();
+    const ImGuiID id = g.NavId;
+    // an item taken up (a slider), or the cursor going into a list (the checkpoints) to pick from it
+    const bool activated = g.ActiveId != 0 && g.ActiveId != active && g.ActiveIdSource != ImGuiInputSource_Mouse;
+    // ... and let go of; a button's press is over at once and is not
+    const bool released = g.ActiveId == 0 && active != 0 && active_keys && now - active_at > 0.1;
+    if (g.ActiveId != active) active_at = now, active_keys = g.ActiveIdSource != ImGuiInputSource_Mouse;
+    active = g.ActiveId;
+    const ImGuiWindow* win = g.NavWindow;
+    const bool entered = win != nav_window && win && (win->Flags & ImGuiWindowFlags_ChildWindow) &&
+                         !(win->ChildFlags & ImGuiChildFlags_NavFlattened) && !(win->Flags & ImGuiWindowFlags_Popup);
+    const bool left = win != nav_window && nav_window && !entered;
+    nav_window = win;
+    const bool moved = id != nav && opened_before;
+    nav = id;
+    const bool tab_changed = g_tab_now != tab && opened_before;
+    tab = g_tab_now;
+    // a dropdown opening or closing
+    const bool popup = ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel);
+    const bool popup_changed = popup != was_popup && opened_before;
+    was_popup = popup;
+    // the bumpers turn the tabs without a key, so a tab is by the mouse only while it was just used
+    const bool by_mouse = now - mouse_at < 0.3;
+    const bool select = ((tab_changed && !by_mouse) || ((settings_changed || popup_changed || activated || entered) && by_keys)) &&
+                        now - select_at >= 0.05;
+    if (!app::Get().menu_sounds) return;
+    if (select) {
+        audio::Play(audio::Cue::Select);
+        select_at = move_at = now;
+    } else if ((moved || released || left) && by_keys && !g_tab_arrived && !popup_changed && now - move_at >= 0.05) {
+        audio::Play(audio::Cue::Move);
+        move_at = now;
+    }
+}
 
 // the game is held while the menu or the prompt is up (kernel::Hold), but for a multiplayer match, which runs on for
 // the other players (Draw lets go or holds again as a match starts or ends under the menu)
@@ -96,6 +153,10 @@ void Hold() { kernel::Hold((g_open.load() || g_quit.load()) && !warp::Multiplaye
 
 // the menu shows or goes
 void SetOpen(bool open) {
+    // whatever is held as the menu shuts stays off the game's pads until it is let go, even if the game never polled
+    // them while the menu was up (it is held then)
+    if (!open && g_open.load())
+        for (int port = 0; port < input::kPorts; port++) ui::Muzzle(port);
     g_open.store(open);
     if (!open) g_owner.store(-1);
     Hold();
@@ -663,10 +724,11 @@ void Draw(double fps) {
     // and as it shuts
     static std::string seen;
     static double seen_at = 0.0;
+    bool settings_changed = false;
     if (open) {
         std::string now = app::SettingsText();
         const double t = ImGui::GetTime();
-        if (now != seen) seen = std::move(now), seen_at = t;
+        if (now != seen) settings_changed = was_open, seen = std::move(now), seen_at = t;
         else if (t - seen_at >= kSaveDelay) app::SaveChanged();
     } else if (was_open) {
         app::SaveChanged();
@@ -720,6 +782,10 @@ void Draw(double fps) {
             if (!up) ImGui::CloseCurrentPopup();
             ImGui::EndPopup();
         }
+        // the prompt on its own sounds like the menu (inside the menu, its Cues call covers it)
+        static bool was_quit = false;
+        if (!open) Cues(was_quit, false);
+        was_quit = up;
         if (!up) {
             SetQuit(false);
             app::Post(mouse::kRefresh);
@@ -776,8 +842,17 @@ void Draw(double fps) {
                 const bool selected =
                     ImGui::BeginTabItem(name, nullptr, target == mine ? ImGuiTabItemFlags_SetSelected : 0);
                 ImGui::PopStyleColor(2);
+                // ImGui picks the first item to hold the cursor from the first press of a direction, which then moves
+                // nothing: the open tab holds it from the start
+                if (selected && ImGui::GetCurrentContext()->NavId == 0) {
+                    ImGuiContext& g = *ImGui::GetCurrentContext();
+                    const ImVec2 origin = g.CurrentWindow->Pos;
+                    ImGui::SetNavID(ImGui::GetItemID(), g.NavLayer, g.CurrentFocusScopeId,
+                                    ImRect(ImGui::GetItemRectMin().x - origin.x, ImGui::GetItemRectMin().y - origin.y,
+                                           ImGui::GetItemRectMax().x - origin.x, ImGui::GetItemRectMax().y - origin.y));
+                }
                 const bool arrived = Arrived(g_main_focus) && !selected;
-                if (arrived) g_tab_target.store(mine);
+                if (arrived) g_tab_target.store(mine), g_tab_arrived = true;
                 // drawn once the tabs are all in (below), when the one that is becoming selected is known
                 pills[mine] = {ImGui::GetItemRectMin(), ImGui::GetItemRectMax(), name,
                                ImGui::IsItemHovered()};
@@ -944,6 +1019,8 @@ void Draw(double fps) {
                 }
                 ImGui::Checkbox("Mute in background", &s.mute_in_background);
                 Hint("No sound while you are in another window.", true);
+                ImGui::Checkbox("Menu sounds", &s.menu_sounds);
+                Hint("The sounds of changing tabs and settings and of moving around this menu with the keyboard or a pad.", true);
                 end_tab();
             }
 
@@ -1089,6 +1166,8 @@ void Draw(double fps) {
     }
     ImGui::End();
     ImGui::PopStyleVar();
+    Cues(opened_before, settings_changed);
+    g_tab_arrived = false;
     if (!keep_open) Close();  // the window's X
 }
 

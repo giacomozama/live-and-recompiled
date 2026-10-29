@@ -35,6 +35,7 @@ struct Settings {
     uint32_t ambient_occlusion_radius = 30;
     uint32_t volume = 100;           // the game's sound in %, the mixer's output scaled by its square
     std::string audio_device;         // an audio::Device id, "" the system default
+    bool menu_sounds = true;          // the settings menu's sounds (audio::Play)
     bool mute_in_background = false;  // silent while the game window lacks the focus (Background)
     bool shader_warmup = true;       // make the shaders shaders.rec lists while the title boots
     std::string gpu;                  // the name of the graphics adapter to draw with, "" the best there is (read at launch)

@@ -68,6 +68,7 @@ void Load() {
     s.ambient_occlusion_radius = t["ambient_occlusion_radius"].value_or(s.ambient_occlusion_radius);
     s.volume = std::min<uint32_t>(t["volume"].value_or(s.volume), 100);
     s.audio_device = t["audio_device"].value_or(s.audio_device);
+    s.menu_sounds = t["menu_sounds"].value_or(s.menu_sounds);
     s.mute_in_background = t["mute_in_background"].value_or(s.mute_in_background);
     s.shader_warmup = t["shader_warmup"].value_or(s.shader_warmup);
     s.gpu = t["gpu"].value_or(s.gpu);
@@ -110,6 +111,7 @@ toml::table Table() {
                   {"ambient_occlusion_radius", int64_t(s.ambient_occlusion_radius)},
                   {"volume", int64_t(s.volume)},
                   {"audio_device", s.audio_device},
+                  {"menu_sounds", s.menu_sounds},
                   {"mute_in_background", s.mute_in_background},
                   {"shader_warmup", s.shader_warmup},
                   {"gpu", s.gpu},

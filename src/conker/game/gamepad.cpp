@@ -59,7 +59,7 @@ X86_FUNC(sub_00203B50) {
 // The frontend (level 29, the pub) shows the picture in focus, byte [0x77625E]: 0 Xbox Live, 1 Options (to Live's
 // right), 2 Chapters, 3 to 5 the three games (0x205361 shows its UI page, the frontend's own at [0x85E550]). Options
 // is a page of Yes / No settings, so A on its picture opens the settings menu instead and the game never sees it.
-// Start (or Esc) there asks to quit instead, and Start with Back opens the settings menu anywhere (ui.cpp watches the
+// Start there opens the settings menu instead (Esc asks to quit), and Start with Back opens the settings menu anywhere (ui.cpp watches the
 // pads for it), so the game never sees the two together.
 void gamepad::Pad(int port, input::Pad& pad) {
     constexpr int kFrontend = 29;
@@ -75,7 +75,7 @@ void gamepad::Pad(int port, input::Pad& pad) {
     start_was[port] = start;
     if (frontend && start) {
         pad.buttons &= uint16_t(~kStart);
-        if (start_pressed) ui::ShowQuit();
+        if (start_pressed) ui::Show(false, port);
     }
     const bool down = pad.analog[0] > 0x40;  // A, past where the game takes it as pressed
     const bool pressed = down && !was_down[port];

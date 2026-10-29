@@ -603,7 +603,10 @@ void Run(X86Context& ctx, const std::vector<Done>& done) {
 void Start() {
     if (g_started) return;
     g_started = true;
-    audio::StartOutput(Render);
+    audio::StartOutput([](float* out, uint32_t frames) {
+        Render(out, frames);
+        audio::MixCues(out, frames);  // after Render, which returns early while a host menu is up
+    });
     // the APU's free running 48 kHz sample counter (0xFE80200C): XACT times fades, stops and transitions with it, so
     // with the scratch register left at 0 its clock never moved and timed events never ended
     std::thread([] {
