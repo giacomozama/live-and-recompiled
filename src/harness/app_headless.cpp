@@ -34,6 +34,17 @@ int Instance() {
     }();
     return n;
 }
+int PortArg() {
+    static const int n = [] {
+        const char* e = std::getenv("PORT");
+        return e ? std::atoi(e) : 0;
+    }();
+    return n;
+}
+const std::string& JoinArg() {
+    static const std::string s = std::getenv("JOIN") ? std::getenv("JOIN") : "";
+    return s;
+}
 void* Window() { return nullptr; }
 
 bool OpenSplash() { return false; }

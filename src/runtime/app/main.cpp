@@ -278,6 +278,26 @@ int Instance() {
     return n;
 }
 
+int PortArg() {
+    static const int n = [] {
+        const wchar_t* p = std::wcsstr(GetCommandLineW(), L"--port");
+        return p ? std::clamp(_wtoi(p + 6), 0, 65535) : 0;
+    }();
+    return n;
+}
+
+const std::string& JoinArg() {
+    static const std::string s = [] {
+        const wchar_t* p = std::wcsstr(GetCommandLineW(), L"--join");
+        std::string out;
+        if (!p) return out;
+        for (p += 6; *p == L' ' || *p == L'='; p++) {}
+        for (; *p && *p != L' ' && *p != L'"'; p++) out += char(*p);
+        return out;
+    }();
+    return s;
+}
+
 void* Window() { return g_hwnd; }
 
 std::recursive_mutex& UiLock() {

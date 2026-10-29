@@ -36,6 +36,8 @@ std::atomic<bool> g_background{false};  // Background(): set by the window's foc
 
 SDL_Window* g_window = nullptr;
 int g_instance = 0;
+int g_port = 0;
+std::string g_join;
 uint32_t g_user = 0;  // the event type Post, ApplyDisplay and OpenGameWindow send to the window thread
 enum : int32_t { kUserPost, kUserApply, kUserOpen };
 std::atomic<uint64_t> g_desktop{0};  // width << 32 | height, read on any thread
@@ -309,6 +311,8 @@ std::filesystem::path ExeDir() {
 }
 
 int Instance() { return g_instance; }
+int PortArg() { return g_port; }
+const std::string& JoinArg() { return g_join; }
 
 void* Window() { return g_window; }
 
@@ -452,6 +456,8 @@ int main(int argc, char** argv) {
     bool relaunched = false;
     for (int i = 1; i < argc; i++) {
         if (!std::strcmp(argv[i], "--instance") && i + 1 < argc) app::g_instance = std::clamp(std::atoi(argv[++i]), 0, 8);
+        else if (!std::strcmp(argv[i], "--port") && i + 1 < argc) app::g_port = std::clamp(std::atoi(argv[++i]), 0, 65535);
+        else if (!std::strcmp(argv[i], "--join") && i + 1 < argc) app::g_join = argv[++i];
         else if (!std::strcmp(argv[i], "--relaunched")) relaunched = true;
     }
     app::InstallCrashHandler();

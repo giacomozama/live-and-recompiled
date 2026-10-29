@@ -40,7 +40,8 @@ struct Settings {
     std::string gpu;                  // the name of the graphics adapter to draw with, "" the best there is (read at launch)
     std::string renderer = "vulkan";  // which gpu::Backend draws, read at launch (gpu/backend.cpp)
     std::string aspect = "auto";     // "W:H" ("4:3", "16:9", "21:9", ...), or "auto": the output's own shape
-    std::string join_ip;                   // co-op: a host past the LAN the system link search also asks
+    std::string join_ip;              // host[:port]: a system link host past the LAN (or on this PC) the search also asks
+    uint32_t system_link_port = 3074;  // the UDP port system link binds, read as the network starts
 };
 
 Settings& Get();
@@ -86,6 +87,8 @@ struct GameFiles {
 };
 bool FindGame(GameFiles& game);
 int Instance();  // --instance N on the command line, 0 without: a second copy on this PC for system link tests
+int PortArg();   // --port N on the command line, 0 without: this copy's system link port, over the setting
+const std::string& JoinArg();  // --join host[:port] on the command line, "" without: over the join_ip setting
 void* Window();  // HWND on Windows, SDL_Window elsewhere
 
 // The platform's window as the game's hooks see it, the same on Windows and on the SDL window elsewhere.

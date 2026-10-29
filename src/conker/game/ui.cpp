@@ -16,6 +16,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cwchar>
+#include <initializer_list>
 #include <string>
 #include <vector>
 
@@ -38,6 +39,13 @@
 #include "core/input.h"
 #include "gpu/backend.h"
 #include "kernel/kernel.h"
+
+namespace xnet {
+// runtime xdk/xnet.cpp
+std::string LocalAddress();
+uint16_t Port();
+int PortError();
+}
 
 namespace ui {
 
@@ -153,6 +161,21 @@ void Hint(const char* text, bool checkbox = false) {
     ImGui::TextWrapped("%s", text);
     ImGui::PopStyleColor();
     if (indent > 0) ImGui::Unindent(indent);
+    ImGui::PopFont();
+}
+
+// a hint as a dotted list, under the setting before it as Hint
+void Hints(std::initializer_list<const char*> lines) {
+    const ImGuiStyle& style = ImGui::GetStyle();
+    ImGui::PushFont(nullptr, std::max(std::round(style.FontSizeBase * 0.8f), 11.0f));
+    ImGui::SetCursorPosY(ImGui::GetCursorPosY() - style.ItemSpacing.y * 0.5f);
+    ImGui::PushStyleColor(ImGuiCol_Text, style.Colors[ImGuiCol_TextDisabled]);
+    for (const char* line : lines) {
+        ImGui::Bullet();
+        ImGui::SameLine();
+        ImGui::TextWrapped("%s", line);  // wrapped lines line up under the first, past the bullet
+    }
+    ImGui::PopStyleColor();
     ImGui::PopFont();
 }
 
@@ -664,6 +687,42 @@ void Draw(double fps) {
                     }
                     ImGui::EndTabBar();
                 }
+                end_tab();
+            }
+
+            if (tab("Multiplayer")) {
+                ImGui::SeparatorText("System link");
+                // edited in a copy and set as the field is left or Enter pressed: system link resolves the address
+                // each time it changes (xnet.cpp JoinAddress), and a half typed name is a DNS lookup
+                static char host[256];
+                if (ImGui::IsWindowAppearing()) std::snprintf(host, sizeof host, "%s", s.join_ip.c_str());
+                ImGui::InputTextWithHint("Host address", "empty to host, or for the LAN", host, sizeof host);
+                if (ImGui::IsItemDeactivatedAfterEdit()) s.join_ip = host;
+                if (!app::JoinArg().empty()) ImGui::Text("This copy joins %s (--join)", app::JoinArg().c_str());
+                Hints({"Empty to host, or to find games on this network (hosts on port 3074).",
+                       "Past the LAN: the host's public IP or name.",
+                       "Another copy on this PC: 127.0.0.1.",
+                       "Add :port if the host's port isn't 3074."});
+                int port = int(s.system_link_port);
+                ImGui::BeginDisabled(app::PortArg() != 0);
+                if (ImGui::InputInt("System link port", &port, 0, 0)) s.system_link_port = uint32_t(std::clamp(port, 1, 65535));
+                ImGui::EndDisabled();
+                if (app::PortArg()) ImGui::Text("This copy uses %d (--port)", app::PortArg());
+                Hints({"UDP, 3074 as on the console.",
+                       "Hosting for players past the LAN: forward it on your router.",
+                       "Each extra copy on this PC needs its own: launch it with --port N.",
+                       "A change starts from the next launch."});
+                static std::string lan;
+                static uint16_t in_use = 0;
+                static int error = 0;
+                if (lan.empty() || ImGui::IsWindowAppearing())
+                    lan = xnet::LocalAddress(), in_use = xnet::Port(), error = xnet::PortError();
+                ImGui::SeparatorText("This PC");
+                ImGui::Text("LAN IP: %s", lan.c_str());
+                if (!in_use) ImGui::Text("Port: not open yet (system link starts with the game's network)");
+                else if (!error) ImGui::Text("Port: UDP %u", in_use);
+                else ImGui::TextColored(ImVec4(1.0f, 0.45f, 0.35f, 1.0f), "Port: UDP %u couldn't be opened (%s)", in_use,
+                                        error == 10048 ? "another program or copy has it" : "blocked");
                 end_tab();
             }
 

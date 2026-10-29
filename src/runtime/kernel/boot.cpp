@@ -3,6 +3,7 @@
 #include <cstring>
 #include <cstdlib>
 #include <fstream>
+#include <vector>
 
 #include "app/app.h"
 #include "kernel/kernel.h"
@@ -206,11 +207,16 @@ void Relaunch(const char* exe) {
     ssize_t n = readlink("/proc/self/exe", self, sizeof(self) - 1);
     std::string path = std::string(self, n > 0 ? size_t(n) : 0);
     path = path.substr(0, path.find_last_of('/') + 1) + exe;
-    // as on Windows: the instance kept, no boot splash again, the ports given back for the new process to bind
+    // as on Windows: the instance, system link port and join address kept, no boot splash again, the ports given back for the new
+    // process to bind
     xnet::CloseSockets();
-    std::string instance = std::to_string(app::Instance());
-    if (app::Instance()) execl(path.c_str(), path.c_str(), "--relaunched", "--instance", instance.c_str(), nullptr);
-    else execl(path.c_str(), path.c_str(), "--relaunched", nullptr);
+    std::string instance = std::to_string(app::Instance()), port = std::to_string(app::PortArg());
+    std::vector<const char*> args{path.c_str(), "--relaunched"};
+    if (app::Instance()) args.insert(args.end(), {"--instance", instance.c_str()});
+    if (app::PortArg()) args.insert(args.end(), {"--port", port.c_str()});
+    if (!app::JoinArg().empty()) args.insert(args.end(), {"--join", app::JoinArg().c_str()});
+    args.push_back(nullptr);
+    execv(path.c_str(), const_cast<char* const*>(args.data()));
     LOGE("relaunch: cannot start %s (%d)", path.c_str(), errno);
     logx::Flush();
     std::_Exit(1);
