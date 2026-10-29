@@ -3,6 +3,7 @@
 #include "common/cutscenes.h"
 #include "common/display.h"
 #include "common/fur.h"
+#include "common/gamepad.h"
 #include "common/grass.h"
 #include "common/keyboard.h"
 #include "common/lighting.h"
@@ -40,8 +41,7 @@ const app::GameInfo app::kGame = {
                 {"fps_in_title", &ui::g_fps_title, nullptr},
                 {"frame_rate", nullptr, &display::g_frame_rate},  // 30, 60, 120, 180 or 240 (src/conker/game/display.cpp)
                 {"skippable_cutscenes", &cutscenes::g_skippable, nullptr},  // LT skips any cutscene (hooks.cpp)
-                {"rope_physics", &rope::g_physics, nullptr},  // ropes swing as a weighted chain (rope.cpp)
-                {"grass_wind", &grass::g_wind, nullptr},  // distant grass sways too (hooks.cpp)
+                {"rope_physics", &rope::g_physics, nullptr},  // ropes swing as a weighted chain (rope.cpp)                {"grass_wind", &grass::g_wind, nullptr},  // distant grass sways too (hooks.cpp)
                 {"grass_max_lod", &grass::g_max_lod, nullptr},  // distant grass keeps all its blades (hooks.cpp)
                 {"grass_fade", &grass::g_fade, nullptr},  // distant grass fades out, else solid however far (hooks.cpp)
                 {"fur_shading", &fur::g_shading, nullptr},  // lit, soft edged fur shells (src/conker/common/fur.cpp)
@@ -50,7 +50,8 @@ const app::GameInfo app::kGame = {
                 {"dynamic_water", &water::g_dynamic, nullptr},  // flowing, rippling water (src/conker/common/water.cpp)
                 {"per_pixel_lighting", &lighting::g_per_pixel, nullptr},  // lit per pixel (src/conker/common/lighting.cpp)
                 {"floor_depth", &reflection::g_floor_depth, nullptr}},  // floors over reflections blur by their own depth (reflection.cpp)
-    // the [playerN] tables: each player's keyboard bindings and mouse look (src/conker/game/keyboard.cpp, mouse.cpp)
+    // the [playerN] tables: each player's keyboard bindings, mouse look, invert aim and vibration
+    // (src/conker/game/keyboard.cpp, mouse.cpp, hooks.cpp)
     .load = keyboard::Load,
     .save = keyboard::Save,               // writes them
     .init = Init,                         // after the settings load: the fps cap, fur and waves
@@ -59,6 +60,6 @@ const app::GameInfo app::kGame = {
     .message = ui::Message,               // window messages first; true takes one
     .ui = ui::Draw,                       // ImGui drawing each frame
     .pad = keyboard::Pad,                 // each player's keyboard and mouse as their pad (src/conker/game/keyboard.cpp)
-    .rumble = nullptr,                    // changes a rumble before it is set
+    .rumble = gamepad::Rumble,            // each player's rumble at their vibration % (src/conker/game/hooks.cpp)
     .aspect = display::Aspect,            // the camera patch draws the display's shape (src/conker/game/display.cpp)
 };

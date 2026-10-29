@@ -28,6 +28,7 @@
 #include "common/cutscenes.h"
 #include "common/display.h"
 #include "common/fur.h"
+#include "common/gamepad.h"
 #include "common/grass.h"
 #include "common/keyboard.h"
 #include "common/lighting.h"
@@ -241,6 +242,18 @@ void DrawDevices(int player) {
     bool auto_assign = input::AutoAssign();
     if (ImGui::Checkbox("New controllers go to the first player without one", &auto_assign))
         input::SetAutoAssign(auto_assign);
+}
+
+// a player's controller options, the game's own two (they replace its Options menu's)
+void DrawController(int player) {
+    ImGui::SeparatorText("Controller");
+    ImGui::Checkbox("Invert aim", &gamepad::g_invert_aim[player]);
+    Hint("Up on the right stick aims down while aiming. The camera and the mouse aren't affected.", true);
+    ImGui::Checkbox("Vibration", &gamepad::g_vibration[player]);
+    ImGui::BeginDisabled(!gamepad::g_vibration[player]);
+    Slider("Vibration %", &gamepad::g_vibration_percent[player], 0, 100, 100);
+    ImGui::EndDisabled();
+    Hint("How hard the controller shakes. Takes effect from the next rumble.");
 }
 
 // a player's mouse look, in one set of controls
@@ -666,6 +679,7 @@ void Draw(double fps) {
                         if (!ImGui::BeginTabItem(name.c_str())) continue;
                         ImGui::PushID(p);
                         DrawDevices(p);
+                        DrawController(p);
                         // the devices are the player's in both; the mouse settings and keys below are the set's
                         // picked here
                         ImGui::SeparatorText("Controls for");

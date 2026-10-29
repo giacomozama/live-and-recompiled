@@ -38,6 +38,7 @@
 #endif
 
 #include "common/camscan.h"
+#include "common/gamepad.h"
 #include "common/keyboard.h"
 #include "common/mouse.h"
 #include "app/app.h"
@@ -359,6 +360,10 @@ void Load(const void* table) {
         if (player) {
             LoadKeys((*player)["keys"].as_table(), g_keys[kSinglePlayer][p]);
             LoadMouse(*player, kSinglePlayer, p);
+            gamepad::g_invert_aim[p] = (*player)["invert_aim"].value_or(gamepad::g_invert_aim[p]);
+            gamepad::g_vibration[p] = (*player)["vibration"].value_or(gamepad::g_vibration[p]);
+            gamepad::g_vibration_percent[p] =
+                std::min((*player)["vibration_percent"].value_or(gamepad::g_vibration_percent[p]), 100u);
         }
         // a player's multiplayer set starts as their single player one: what its table leaves out stays so
         CopyToMultiplayer(p);
@@ -376,6 +381,9 @@ void Save(void* table) {
         toml::table* player = t[PlayerTable(p)].as_table();
         if (!player) player = t.insert_or_assign(PlayerTable(p), toml::table{}).first->second.as_table();
         SaveMouse(*player, kSinglePlayer, p);
+        player->insert_or_assign("invert_aim", gamepad::g_invert_aim[p]);
+        player->insert_or_assign("vibration", gamepad::g_vibration[p]);
+        player->insert_or_assign("vibration_percent", int64_t(gamepad::g_vibration_percent[p]));
         player->insert_or_assign("keys", SaveKeys(g_keys[kSinglePlayer][p]));
         toml::table multi;
         SaveMouse(multi, kMultiplayer, p);
