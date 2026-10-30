@@ -451,9 +451,9 @@ void Pad(int port, input::Pad& pad) {
     if (down(kRT)) pad.analog[7] = 0xFF;  // right trigger
 
     ui::Unmuzzle(port, pad);  // what shut the menu stays unpressed until it is let go
-    gamepad::Pad(port, pad);  // A on the frontend's Options opens the settings menu
+    menus::Pad(port, pad);  // the mouse points and clicks on the game's menu lists and the pub's pictures
+    gamepad::Pad(port, pad);  // A on the frontend's Options opens the settings menu, the mouse's too
     mouse::Pad(port, pad);  // the mouse, while it looks, takes the right stick
-    menus::Pad(port, pad);  // and on the game's menu lists it points and clicks
     if (port != 0) return;
     camscan::Tick(pad);  // XBE_CAMSCAN: the camera angle search watches the stick the game gets
     stickwatch::Tick();  // XBE_STICK_WATCH: F11 finds the code that reads the right stick

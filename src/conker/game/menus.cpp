@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cctype>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
@@ -12,12 +13,14 @@
 #include <set>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 
 #include "app/app.h"
 #include "core/input.h"
 #include "core/log.h"
 #include "cpu/x86_ops.h"
 #include "kernel/memory.h"
+#include "xdk/d3d8.h"
 #include "xdk/hle.h"
 
 #include "common/menus.h"
@@ -247,7 +250,9 @@ X86_FUNC(sub_00240570) {
 // menus::Pad, on the menu's player's polls: the cursor (the window letterboxes the back buffer to app::FrameAspect)
 // goes through the quad under it back to the texture, where it hits an item or not. The cursor moved over an item
 // turns the list's cursor to it by presses of up or down, one at a time while the list's cursor answers, a left
-// click on one does the same and then presses A, and each notch of the wheel presses up or down (menus::Wheel). XBE_TRACE_MENU_MOUSE logs the list and its panel as they change, and
+// click on one does the same and then presses A, and each notch of the wheel presses up or down (menus::Wheel). With
+// no list, in the pub, each notch presses left (away from the player) or right, from picture to picture, and a click
+// presses A on the one in front. XBE_TRACE_MENU_MOUSE logs the list and its panel as they change, and
 // each click.
 namespace {
 
@@ -255,6 +260,8 @@ constexpr uint32_t kListItems = 0x849924, kListCount = 0x7768D4, kListCursor = 0
 constexpr uint32_t kItemSize = 0x398, kItemGreyed = 0x103;
 constexpr int kMaxItems = 32, kMaxQuads = 64;
 constexpr float kTexture = 256.0f;  // the list's texture, a side
+constexpr int64_t kShownUs = 150000;  // a list or prompt not drawn for this long is gone
+constexpr float kSlack = 4.0f;  // units around an item's text (the texture's) or a prompt (pixels) that still hit it
 
 struct Item {
     float x0, y0, x1, y1;  // the texture's units around its middle; x0 > x1 when no glyph was drawn
@@ -445,22 +452,269 @@ void ConkerPanelQuad(X86Context& ctx, uint8_t* base) {
         }
 }
 
+// The prompts of single player's pause screen ("A Quit?", "B Resume", "Y Options") are the pause UI's: each button's
+// icon an image the sprite routines (0x356000..0x35A000) draw as a quad already in the back buffer's pixels, by
+// DrawVerticesUP from one of kSpriteDraws (the vertices on the stack: count, then data and stride). The icons are the
+// UI's own copies of a_butt, b_butt, x_butt and y_butt: 32 by 32 DXT textures, told apart by their colour (Button).
+// ConkerSpriteDraw keeps the box of each quad drawn with one of them on stage 0, the shadow's drawn just before it in
+// with it; a prompt reaches from its icon to the next icon right of it, its label between. menus::Paused, from the
+// pause screen's input each frame, says the screen is up.
 namespace {
 
-constexpr uint16_t kPadUp = 1 << 0, kPadDown = 1 << 1;
-constexpr int64_t kShownUs = 150000;  // a list not drawn for this long is gone
+struct Prompt {
+    float x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+    int64_t seen_us = 0;
+    // a word's look this frame, to tell the highlighted one: its tallest glyph, and the colour of its glyphs past the
+    // shadow (the brightest, ARGB)
+    float glyph = 0;
+    uint32_t colour = 0;
+};
+std::mutex g_prompt_lock;
+Prompt g_prompts[4];  // by face button: A B X Y, under g_prompt_lock
+std::atomic<int64_t> g_pause_us{0};
+constexpr int64_t kSameFrameUs = 8000;  // the shadow and the icon over it, drawn moments apart
+
+// the face button whose prompt is under the point, -1 none
+int PromptAt(float x, float y, int64_t now) {
+    std::lock_guard lock(g_prompt_lock);
+    int best = -1;
+    for (int b = 0; b < 4; b++) {
+        const Prompt& pr = g_prompts[b];
+        if (now - pr.seen_us > kShownUs) continue;
+        // its label runs right to the next icon, or as far again as its icon is wide for the last
+        float right = pr.x1 + (pr.x1 - pr.x0) * 2.5f;
+        for (int o = 0; o < 4; o++)
+            if (o != b && now - g_prompts[o].seen_us <= kShownUs && g_prompts[o].x0 > pr.x0)
+                right = std::min(right, g_prompts[o].x0 - kSlack);
+        const float pad = (pr.y1 - pr.y0) * 0.25f;
+        if (x >= pr.x0 - kSlack && x <= right && y >= pr.y0 - pad && y <= pr.y1 + pad) best = b;
+    }
+    return best;
+}
+
+Prompt g_words[2];  // the quit prompt's Yes and No, under g_prompt_lock
+
+// face: the button clicked, -1 none, -2 Yes, -3 No
+void LogPrompts(float x, float y, int face, int64_t now) {
+    LOGR("menu mouse: pause click at %.1f,%.1f on button %d", x, y, face);
+    constexpr const char* kNames[] = {"A", "B", "X", "Y", "Yes", "No"};
+    std::lock_guard lock(g_prompt_lock);
+    for (int b = 0; b < 6; b++) {
+        const Prompt& pr = b < 4 ? g_prompts[b] : g_words[b - 4];
+        LOGR("menu mouse:   %s: %.1f,%.1f to %.1f,%.1f, %lld ms ago", kNames[b], pr.x0, pr.y0, pr.x1, pr.y1,
+             (long long)((now - pr.seen_us) / 1000));
+    }
+}
+
+// the face button a texture is the icon of (0 A, 1 B, 2 X, 3 Y), -1 for any other: a 32 by 32 DXT texture (format
+// word +0xC: colour 15:8, log2 sizes from bit 20) whose coloured blocks average green, red, blue or yellow (a
+// yellowish green for A, an orange yellow for Y). Each block's two end colours (RGB565 at +8 and +0xA of DXT3 and
+// DXT5's 16 bytes) count, greys and blacks not.
+int Button(uint32_t tex) {
+    static std::unordered_map<uint64_t, int> known;  // by the texture and its texels, game thread
+    const uint64_t key = uint64_t(tex) << 32 | R32(tex + 4);
+    if (const auto it = known.find(key); it != known.end()) return it->second;
+    int& b = known[key];
+    b = -1;
+    const uint32_t format = R32(tex + 0xC), colour = format >> 8 & 0xFF;
+    if ((colour != 0x0E && colour != 0x0F) || (format >> 20 & 0xF) != 5 || (format >> 24 & 0xF) != 5) return b;
+    const uint32_t texels = mem::VirtualFromPhysical(R32(tex + 4) & 0x0FFFFFFF);
+    constexpr uint32_t kBytes = 8 * 8 * 16;
+    if (!texels || !mem::IsCommitted(texels) || !mem::IsCommitted(texels + kBytes - 1)) return b;
+    float r = 0, g = 0, bl = 0;
+    for (uint32_t k = 0; k < 64; k++)
+        for (uint32_t e = 0; e < 2; e++) {
+            const uint16_t c = kernel::G<uint16_t>(texels + k * 16 + 8 + e * 2);
+            const float cr = float(c >> 11) / 31, cg = float(c >> 5 & 63) / 63, cb = float(c & 31) / 31;
+            if (std::max({cr, cg, cb}) - std::min({cr, cg, cb}) < 0.25f) continue;
+            r += cr, g += cg, bl += cb;
+        }
+    if (r + g + bl <= 0) return b;
+    // green over red is about 1.2 for A, 0.8 for Y and 0.4 for B
+    if (bl > r && bl > g) b = 2;
+    else if (g > r && g > bl) b = 0;
+    else if (r > g * 1.8f && r > bl) b = 1;
+    else if (r > bl && g > bl) b = 3;
+    if (TraceMouse()) LOGR("menu mouse: texture %08X colour %.2f %.2f %.2f, button %d", tex, r, g, bl, b);
+    return b;
+}
+
+}  // namespace
+
+// [[hook]] before each of the sprite routines' DrawVerticesUP calls (kSpriteDraws in game.toml): a button's icon, while
+// the pause screen is up
+void ConkerSpriteDraw(X86Context& ctx, uint8_t* base) {
+    (void)base;
+    const int64_t now = NowUs();
+    if (now - g_pause_us.load(std::memory_order_relaxed) > kShownUs) return;
+    uint32_t tex;
+    {
+        std::lock_guard lock(d3d::Lock());
+        tex = d3d::State().textures[0];
+    }
+    if (!tex) return;
+    const int b = Button(tex);
+    const uint32_t count = R32(ctx.esp + 4), data = R32(ctx.esp + 8), stride = R32(ctx.esp + 12);
+    if (!count || count > 64 || stride < 8 || !data) return;
+    float x0 = 1e9f, y0 = 1e9f, x1 = -1e9f, y1 = -1e9f;
+    for (uint32_t i = 0; i < count; i++) {
+        const float x = F32(data + i * stride), y = F32(data + i * stride + 4);
+        x0 = std::min(x0, x), x1 = std::max(x1, x), y0 = std::min(y0, y), y1 = std::max(y1, y);
+    }
+    if (TraceMouse()) {  // each texture the pause screen's sprites use, once
+        static std::set<uint32_t> seen;
+        if (seen.insert(tex).second)
+            LOGR("menu mouse: pause sprite texture %08X (texels %08X) at %.1f,%.1f to %.1f,%.1f, button %d", tex,
+                 R32(tex + 4), x0, y0, x1, y1, b);
+    }
+    if (b < 0) return;
+    std::lock_guard lock(g_prompt_lock);
+    Prompt& pr = g_prompts[b];
+    if (now - pr.seen_us <= kSameFrameUs) {
+        pr.x0 = std::min(pr.x0, x0), pr.y0 = std::min(pr.y0, y0);
+        pr.x1 = std::max(pr.x1, x1), pr.y1 = std::max(pr.y1, y1);
+    } else {
+        pr = {x0, y0, x1, y1, now};
+    }
+    pr.seen_us = now;
+}
+
+// The quit prompt (page 2 of the pause screen) asks with the words Yes and No, which the pause UI highlights by the
+// pad's down and up; on A, 0x203C87 takes the larger value of its layers 7 and 3, 0 for No (back to the page
+// before) and else Yes (0x1F9AB0, quit). Every string is drawn by 0x3D3D00 (the text at [esp+4], from character ecx),
+// each glyph a quad of four 28-byte vertices at 0x807230 sent at 0x3D3981; on the pause screen they are in the text's
+// own units, which the vertex shader takes through c0..c3 and then the viewport's scale and offset (c-38, c-37).
+// While Yes or No draws, ConkerTextQuad keeps its glyphs' box in the back buffer's pixels, and how tall and bright it is
+// drawn. The cursor moved over one presses down (Yes) or up (No) until the prompt highlights it (Highlighted: the word
+// drawn taller or brighter), and a click on one presses A, and ConkerQuitChoice, where the prompt tests the value,
+// makes it the word clicked.
+namespace {
+
+int g_word = 0;  // the string drawing is Yes (1) or No (2), game thread
+std::atomic<int> g_quit_choice{-1};  // the word clicked: 1 Yes, 0 No, -1 none
+std::atomic<int64_t> g_quit_choice_us{0};
+constexpr int64_t kChoiceUs = 500000;  // a click's choice waits this long for the prompt's A
+
+// Yes 1, No 2, else 0: the string at va, its spaces aside, in any case
+int Word(uint32_t va) {
+    std::string w;
+    for (uint32_t i = 0; i < 8; i++) {
+        const uint16_t c = kernel::G<uint16_t>(va + i * 2);
+        if (!c) break;
+        if (c == ' ') continue;
+        if (c >= 0x80) return 0;
+        w += char(std::tolower(c));
+    }
+    return w == "yes" ? 1 : w == "no" ? 2 : 0;
+}
+
+// the word under the point, 0 none
+int WordAt(float x, float y, int64_t now) {
+    std::lock_guard lock(g_prompt_lock);
+    for (int w = 0; w < 2; w++) {
+        const Prompt& pr = g_words[w];
+        if (now - pr.seen_us <= kShownUs && x >= pr.x0 - kSlack && x <= pr.x1 + kSlack && y >= pr.y0 - kSlack &&
+            y <= pr.y1 + kSlack)
+            return w + 1;
+    }
+    return 0;
+}
+
+// the word the quit prompt highlights, 1 Yes or 2 No, -1 unknown: the one drawn taller, or else brighter
+int Highlighted(int64_t now) {
+    std::lock_guard lock(g_prompt_lock);
+    const Prompt& yes = g_words[0];
+    const Prompt& no = g_words[1];
+    if (now - yes.seen_us > kShownUs || now - no.seen_us > kShownUs) return -1;
+    if (yes.glyph > no.glyph * 1.04f) return 1;
+    if (no.glyph > yes.glyph * 1.04f) return 2;
+    auto light = [](uint32_t c) { return int(c >> 16 & 0xFF) + int(c >> 8 & 0xFF) + int(c & 0xFF); };
+    const int ly = light(yes.colour), ln = light(no.colour);
+    if (ly > ln + 24) return 1;
+    if (ln > ly + 24) return 2;
+    return -1;
+}
+
+}  // namespace
+
+X86_EXTERN_FUNC(__imp__sub_003D3D00);
+X86_FUNC(sub_003D3D00) {
+    const uint32_t text = R32(ctx.esp + 4);
+    const bool pause = NowUs() - g_pause_us.load(std::memory_order_relaxed) <= kShownUs;
+    g_word = pause && text ? Word(text + ctx.ecx * 2) : 0;
+    __imp__sub_003D3D00(ctx, base);
+    g_word = 0;
+}
+
+// [[hook]] before 0x3D3981, a glyph's quad sent: into Yes's or No's box
+void ConkerTextQuad(X86Context& ctx, uint8_t* base) {
+    (void)ctx, (void)base;
+    if (!g_word) return;
+    constexpr uint32_t kQuad = 0x807230, kVertex = 0x1C;
+    constexpr size_t kC0 = 96, kScale = 96 - 38, kOffset = 96 - 37;  // c0, c-38, c-37 in hardware order
+    float x0 = 1e9f, y0 = 1e9f, x1 = -1e9f, y1 = -1e9f;
+    const uint32_t colour = R32(kQuad + 0x10);  // the first vertex's diffuse
+    {
+        d3d::FlushPending();
+        std::lock_guard lock(d3d::Lock());
+        const gpu::State& st = d3d::State();
+        const bool programmable = st.vs_handle & 1;
+        for (uint32_t i = 0; i < 4; i++) {
+            const uint32_t v = kQuad + i * kVertex;
+            float x = F32(v), y = F32(v + 4);
+            if (programmable) {
+                const float z = F32(v + 8);
+                float c[4];
+                for (int r = 0; r < 4; r++) {
+                    const auto& m = st.vsc[kC0 + size_t(r)];
+                    c[r] = x * m[0] + y * m[1] + z * m[2] + m[3];
+                }
+                if (!(std::fabs(c[3]) > 1e-6f)) return;
+                x = c[0] / c[3] * st.vsc[kScale][0] + st.vsc[kOffset][0];
+                y = c[1] / c[3] * st.vsc[kScale][1] + st.vsc[kOffset][1];
+            }
+            x0 = std::min(x0, x), x1 = std::max(x1, x), y0 = std::min(y0, y), y1 = std::max(y1, y);
+        }
+    }
+    const int64_t now = NowUs();
+    std::lock_guard lock(g_prompt_lock);
+    Prompt& pr = g_words[g_word - 1];
+    if (now - pr.seen_us <= kSameFrameUs) {
+        pr.x0 = std::min(pr.x0, x0), pr.y0 = std::min(pr.y0, y0);
+        pr.x1 = std::max(pr.x1, x1), pr.y1 = std::max(pr.y1, y1);
+    } else {
+        pr = {x0, y0, x1, y1, now};
+    }
+    pr.seen_us = now;
+    pr.glyph = std::max(pr.glyph, y1 - y0);
+    auto light = [](uint32_t c) { return (c >> 16 & 0xFF) + (c >> 8 & 0xFF) + (c & 0xFF); };
+    if (light(colour) >= light(pr.colour)) pr.colour = colour;
+}
+
+// [[hook]] before 0x203CE9, the quit prompt's A: eax the value it goes by (0 No), the word clicked instead
+void ConkerQuitChoice(X86Context& ctx, uint8_t* base) {
+    (void)base;
+    const int choice = g_quit_choice.exchange(-1);
+    if (choice < 0 || NowUs() - g_quit_choice_us.load() > kChoiceUs) return;
+    ctx.eax = uint32_t(choice);
+}
+
+namespace {
+
+constexpr uint16_t kPadUp = 1 << 0, kPadDown = 1 << 1, kPadLeft = 1 << 2, kPadRight = 1 << 3;
 constexpr int64_t kPressUs = 70000, kGapUs = 70000;  // a press held, then let go, long enough for a frame to see each
-constexpr float kSlack = 4.0f;  // texture units around an item's text that still hit it
 
 struct Pointer {
     float x = -1, y = -1;  // the cursor in the window when last seen
     bool button = false;  // the left button, as last seen
     int target = -1;  // the item the list's cursor goes to
     bool pick = false;  // and A once it is there
-    uint16_t press = 0;  // the d-pad press held, or 0 with press_a
-    bool press_a = false;
+    uint16_t press = 0;  // the d-pad press held, or 0 with face
+    int face = -1;  // the face button held (its analog: A B X Y), or -1
     int64_t press_us = 0;  // the press's start
     int from = -1;  // the list's cursor when it was pressed
+    int word = 0;  // the quit prompt's word (1 Yes, 2 No) the highlight goes to, 0 none
+    int steps = 0;  // presses toward it so far
 };
 Pointer g_pointer;  // game thread
 std::atomic<int> g_wheel{0};  // the wheel's turn not stepped yet, 120 a notch
@@ -545,6 +799,8 @@ int Hit(const List& l, float x, float y) {
 
 void menus::Wheel(int turn) { g_wheel.fetch_add(turn); }
 
+void menus::Paused() { g_pause_us.store(NowUs(), std::memory_order_relaxed); }
+
 void menus::Pad(int port, input::Pad& pad) {
     if (input::t_presence || port != MenuPort()) return;
     Pointer& p = g_pointer;
@@ -554,33 +810,106 @@ void menus::Pad(int port, input::Pad& pad) {
         std::lock_guard lock(g_list_lock);
         l = g_shown;
     }
-    if (ui::Open() || app::Background() || now - l.shown_us > kShownUs) {
+    // no list: the pub's pictures, while the frontend shows them (its UI at [0x85E550])
+    constexpr int kFrontend = 29;
+    constexpr uint32_t kFrontendUi = 0x85E550;
+    const bool list = now - l.shown_us <= kShownUs;
+    const bool pub = !list && warp::CurrentLevel() == kFrontend && R32(kFrontendUi);
+    const bool pause = !list && !pub && now - g_pause_us.load(std::memory_order_relaxed) <= kShownUs;
+    if (ui::Open() || app::Background() || (!list && !pub && !pause)) {
         p = {};
+        p.button = app::KeyDown(1);  // the click that shut the settings menu is not one here
         g_wheel.store(0);
         return;
     }
 
     // a press runs its course: held, then let go
-    if (p.press || p.press_a) {
+    if (p.press || p.face >= 0) {
         if (now - p.press_us < kPressUs) {
-            if (p.press_a) pad.analog[0] = 0xFF;
+            if (p.face >= 0) pad.analog[p.face] = 0xFF;
             else pad.buttons |= p.press;
             return;
         }
         if (now - p.press_us < kPressUs + kGapUs) return;
         // the list's cursor did not answer the step: leave it where it is
         if (p.press && l.cursor == p.from) p.target = -1, p.pick = false;
-        p.press = 0, p.press_a = false;
+        p.press = 0, p.face = -1;
     }
 
     // a notch of the wheel: a step, over where the cursor points
     if (const int w = g_wheel.load(); std::abs(w) >= kNotch) {
         g_wheel.fetch_sub(w > 0 ? kNotch : -kNotch);
         p.target = -1, p.pick = false;
-        p.press = w > 0 ? kPadUp : kPadDown;
+        p.press = pub ? (w > 0 ? kPadLeft : kPadRight) : w > 0 ? kPadUp : kPadDown;
         p.from = -1;  // a step past the end is no reason to stop anything
         p.press_us = now;
         pad.buttons |= p.press;
+        return;
+    }
+
+    // the pub: a click anywhere picks the picture in front (gamepad::Pad takes A on Options for the settings menu)
+    if (pub) {
+        float wx, wy, ww, wh;
+        const bool button = app::KeyDown(1), clicked = button && !p.button && app::Cursor(wx, wy, ww, wh);
+        p.button = button;
+        if (!clicked) return;
+        p.face = 0;
+        p.press_us = now;
+        pad.analog[0] = 0xFF;
+        return;
+    }
+
+    // single player's pause screen: a click on a prompt presses its button; on the quit prompt the cursor moved over
+    // Yes or No moves the highlight there, and a click on one answers with it
+    if (pause) {
+        float x = -1, y = -1, wx = -1, wy = -1, bw = 640, bh = 480;
+        const bool button = app::KeyDown(1), clicked = button && !p.button;
+        p.button = button;
+        const bool in = CursorInFrame(x, y, wx, wy, bw, bh);
+        const bool moved = wx != p.x || wy != p.y;
+        p.x = wx, p.y = wy;
+        if (!clicked) {
+            if (const int word = in && moved ? WordAt(x, y, now) : 0; word && word != p.word) p.word = word, p.steps = 0;
+            if (!p.word) return;
+            // while the other is lit (or once on arriving when which is lit is not known), the press that lights it:
+            // the prompt's highlight goes by down to Yes and up to No, though the two sit side by side
+            const int lit = Highlighted(now);
+            const uint16_t toward =
+                (lit > 0 ? lit != p.word && p.steps < 2 : p.steps < 1) ? (p.word == 1 ? kPadDown : kPadUp) : 0;
+            if (toward && TraceMouse()) {
+                std::lock_guard lock(g_prompt_lock);
+                LOGR("menu mouse: over %s, lit %d (Yes %.1f high %08X, No %.1f high %08X), presses %s",
+                     p.word == 1 ? "Yes" : "No", lit, g_words[0].glyph, g_words[0].colour, g_words[1].glyph,
+                     g_words[1].colour, toward == kPadDown ? "down" : "up");
+            }
+            if (!toward) {
+                p.word = 0;
+                return;
+            }
+            p.steps++;
+            p.press = toward;
+            p.from = -1;
+            p.press_us = now;
+            pad.buttons |= toward;
+            return;
+        }
+        p.word = 0;
+        // the quit prompt's words: the one clicked is the answer, and A gives it
+        if (const int word = in ? WordAt(x, y, now) : 0) {
+            if (TraceMouse()) LogPrompts(x, y, word == 1 ? -2 : -3, now);
+            g_quit_choice_us.store(now);
+            g_quit_choice.store(word == 1 ? 1 : 0);
+            p.face = 0;
+            p.press_us = now;
+            pad.analog[0] = 0xFF;
+            return;
+        }
+        const int face = in ? PromptAt(x, y, now) : -1;
+        if (TraceMouse()) LogPrompts(x, y, face, now);
+        if (face < 0) return;
+        p.face = face;
+        p.press_us = now;
+        pad.analog[face] = 0xFF;
         return;
     }
 
@@ -608,14 +937,14 @@ void menus::Pad(int port, input::Pad& pad) {
         p.press = p.target > l.cursor ? kPadDown : kPadUp;
         p.from = l.cursor;
     } else if (p.pick) {
-        p.press_a = true;
+        p.face = 0;
         p.target = -1, p.pick = false;
     } else {
         p.target = -1;
         return;
     }
     p.press_us = now;
-    if (p.press_a) pad.analog[0] = 0xFF;
+    if (p.face >= 0) pad.analog[p.face] = 0xFF;
     else pad.buttons |= p.press;
 }
 

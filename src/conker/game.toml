@@ -441,3 +441,72 @@ call = "ConkerListGlyph"
 [[hook]]
 at = 0x2175B2  # a panel quad sent: the list's texture on the screen, for the mouse
 call = "ConkerPanelQuad"
+
+[[hook]]
+at = 0x3D3981  # a glyph's quad sent: the quit prompt's Yes and No, for the mouse
+call = "ConkerTextQuad"
+
+[[hook]]
+at = 0x203CE9  # the quit prompt's A: the word the mouse clicked
+call = "ConkerQuitChoice"
+
+# kSpriteDraws: the sprite routines' DrawVerticesUP calls, single player's pause prompts' icons among them, for the mouse
+[[hook]]
+at = 0x356E21
+call = "ConkerSpriteDraw"
+
+[[hook]]
+at = 0x3570D5
+call = "ConkerSpriteDraw"
+
+[[hook]]
+at = 0x357303
+call = "ConkerSpriteDraw"
+
+[[hook]]
+at = 0x35784D
+call = "ConkerSpriteDraw"
+
+[[hook]]
+at = 0x357CE4
+call = "ConkerSpriteDraw"
+
+[[hook]]
+at = 0x357F9A
+call = "ConkerSpriteDraw"
+
+[[hook]]
+at = 0x3582AA
+call = "ConkerSpriteDraw"
+
+[[hook]]
+at = 0x3585D6
+call = "ConkerSpriteDraw"
+
+[[hook]]
+at = 0x3587C1
+call = "ConkerSpriteDraw"
+
+[[hook]]
+at = 0x358958
+call = "ConkerSpriteDraw"
+
+[[hook]]
+at = 0x358C87
+call = "ConkerSpriteDraw"
+
+[[hook]]
+at = 0x359174
+call = "ConkerSpriteDraw"
+
+[[hook]]
+at = 0x35957A
+call = "ConkerSpriteDraw"
+
+[[hook]]
+at = 0x35988A
+call = "ConkerSpriteDraw"
+
+[[hook]]
+at = 0x359DDA
+call = "ConkerSpriteDraw"
