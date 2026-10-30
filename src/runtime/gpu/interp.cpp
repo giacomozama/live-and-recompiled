@@ -195,6 +195,7 @@ struct Snap {
     // why its kept vertices are drawn as the frame has them and not moved part way (Settle): null to move them, ""
     // for a reason not worth a watch line
     const char* still = "";
+    int32_t from = -1;  // the draw of the frame before its kept vertices move part way from (Settle); -1 none
 };
 
 static_assert(std::is_trivially_destructible_v<Snap>, "a frame's snaps cleared without a destructor each");
@@ -751,6 +752,59 @@ const char* Judge(const Frame& prev, const Frame& cur, const Snap& sn, const Sna
     return moved ? nullptr : "";
 }
 
+// The program of a draw, a follower's its leader's
+uint64_t ProgramOf(const Frame& f, size_t i) {
+    const Snap& sn = f.snaps[i];
+    return f.snaps[sn.leader < 0 ? i : size_t(sn.leader)].program;
+}
+
+// How far a draw's first kept vertex moved from was's, squared, and the larger side of its box in this frame
+std::pair<float, float> StepOf(const Frame& prev, const Frame& cur, const Snap& sn, const Snap& was) {
+    uint32_t comps = std::min<uint32_t>(sn.type >> 4, 2);
+    const uint8_t* a = prev.raw.data() + was.raw_at + sn.offset;
+    const uint8_t* b = cur.raw.data() + sn.raw_at + sn.offset;
+    float step = 0, side = 0;
+    for (uint32_t c = 0; c < comps; c++) {
+        float x, y, lo = INFINITY, hi = -INFINITY;
+        std::memcpy(&x, a + c * 4, 4);
+        std::memcpy(&y, b + c * 4, 4);
+        step += (y - x) * (y - x);
+        for (uint32_t v = 0; v < sn.verts; v++) {
+            std::memcpy(&y, b + v * sn.stride + c * 4, 4);
+            lo = std::min(lo, y), hi = std::max(hi, y);
+        }
+        side = std::max(side, hi - lo);
+    }
+    return {step, side};
+}
+
+// A string's letters are paired with the frame before's in draw order, so when a letter scrolled in or out the rest
+// were paired with their neighbours: those of the same glyph (the dashes, the two s's of a scrolling 'ass') judged
+// carried along whole and went half way to each other (capture 023908 pics 54, 60, 80). So of the draws near the one
+// it was paired with, of its program, the one it moved least from, of the same glyph and carried whole; another than
+// the paired one only within the sprite's own size
+void Nearest(const Frame& prev, Frame& cur, uint32_t n, SpriteBox& box) {
+    constexpr int32_t kNear = 3;
+    Snap& sn = cur.snaps[n];
+    int32_t base = sn.from;
+    uint64_t program = ProgramOf(cur, n);
+    float best = sn.still && *sn.still ? INFINITY : StepOf(prev, cur, sn, prev.snaps[size_t(base)]).first;
+    for (int32_t d = -kNear; d <= kNear; d++) {
+        int32_t q = base + d;
+        if (!d || q < 0 || size_t(q) >= prev.snaps.size()) continue;
+        const Snap& was = prev.snaps[size_t(q)];
+        if (was.verts != sn.verts || was.stride != sn.stride || was.offset != sn.offset || was.type != sn.type ||
+            ProgramOf(prev, size_t(q)) != program)
+            continue;
+        auto [step, side] = StepOf(prev, cur, sn, was);
+        if (step >= best || step > side * side) continue;
+        SpriteBox other;
+        const char* still = Judge(prev, cur, sn, was, other);
+        if (still && *still) continue;
+        best = step, box = other, sn.still = still, sn.from = q;
+    }
+}
+
 // The frame's draws with kept vertices judged once, before its pictures are drawn again (Snap::still). A sprite moved
 // whole that touches one held for its shape is held too, and so on along what touches it: the peephole is its circle
 // and four pieces fitting around it, and the circle carried along whole while the pieces shrank went part way from
@@ -760,10 +814,13 @@ void Settle(const Frame& prev, Frame& cur) {
     boxes.clear();
     for (uint32_t n = 0; n < cur.snaps.size(); n++) {
         Snap& sn = cur.snaps[n];
+        sn.from = -1;
         if (!sn.verts) continue;
         const Snap* was = MovedFrom(prev, cur, n);
         SpriteBox box;
         sn.still = was ? Judge(prev, cur, sn, *was, box) : "";
+        if (was) sn.from = int32_t(was - prev.snaps.data());
+        if (was) Nearest(prev, cur, n, box);
         if (sn.still && !box.shaped) continue;
         box.n = n;
         box.target = sn.leader < 0 ? sn.target : cur.snaps[size_t(sn.leader)].target;
@@ -2005,7 +2062,7 @@ bool MoveVertices(uint32_t n, float t, Blended how, State& s, uint32_t& start, U
     const Snap& sn = cur.snaps[n];
     if (!sn.verts) return false;
     // judged before the frame's pictures (Settle); a draw held, or with nothing to move, is drawn as the frame has it
-    const Snap* was = MovedFrom(prev, cur, n);
+    const Snap* was = sn.from >= 0 ? &prev.snaps[size_t(sn.from)] : nullptr;
     bool watch = g_pass.on && Watched(ProgramOf(s));
     if (!was || sn.still) {
         if (watch && was && sn.still && *sn.still) {
