@@ -21,8 +21,8 @@
 // held. With XBE_MOUSE_CALIBRATE set, F9 steps the stick through them while logging how fast the player camera
 // turns (see Calibrate and Probe).
 //
-// While mouse look is on (the default) for a player who has a mouse, the game window has the focus and the menu is
-// shut, the cursor is hidden and held inside the window. Alt-tab or Esc (the menu) lets it go. The SDL window (not Windows) holds it in relative mode and sends the
+// While mouse look is on (the default) for a player who has a mouse, the game window has the focus, the menu is shut
+// and the game shows no menu of its own (the frontend, a pause menu), the cursor is hidden and held inside the window. Alt-tab or Esc (the menu) lets it go. The SDL window (not Windows) holds it in relative mode and sends the
 // motion as app::kMsgMouseMotion instead.
 //
 // On the headless harness there is no window and no mouse, so everything but the option globals compiles out.
@@ -57,6 +57,7 @@
 #include "app/app.h"
 #include "common/display.h"
 #include "common/ui.h"
+#include "common/warp.h"
 #include "core/input.h"
 #include "core/log.h"
 #include "kernel/memory.h"
@@ -135,6 +136,15 @@ constexpr int64_t kRestUs = 100000;
 
 std::atomic<bool> g_held{false};
 
+// the game shows a menu of its own, so the cursor goes free: the frontend (level 29, every menu before a game), a
+// match's pause menu ([0x862D90] set while it is up, 0x1F77C0) or any other (InMenu, within kMenuUs). Kept by
+// the game thread (Pad), which posts kRefresh when it turns
+constexpr int kFrontend = 29;
+constexpr uint32_t kMatchPaused = 0x862D90;
+constexpr int64_t kMenuUs = 200000;
+std::atomic<int64_t> g_menu_us{0};
+std::atomic<bool> g_game_menu{false};
+
 int64_t Now() {
     using namespace std::chrono;
     return duration_cast<microseconds>(steady_clock::now().time_since_epoch()).count();
@@ -201,15 +211,17 @@ void Release() { app::HoldMouse(false); }
 
 }  // namespace
 
+void InMenu() { g_menu_us.store(Now(), std::memory_order_relaxed); }
+
 void Refresh(void* window) {
 #ifdef _WIN32
     HWND hwnd = static_cast<HWND>(window);
-    const bool want = AnyLook() && !ui::Open() && hwnd && GetForegroundWindow() == hwnd && !IsIconic(hwnd);
+    const bool want = AnyLook() && !ui::Open() && !g_game_menu.load() && hwnd && GetForegroundWindow() == hwnd && !IsIconic(hwnd);
     if (want) Hold(hwnd);  // again while held: the window may have moved or changed size
     else if (g_held.load()) Release();
 #else
     (void)window;
-    const bool want = AnyLook() && !ui::Open() && app::Focused();
+    const bool want = AnyLook() && !ui::Open() && !g_game_menu.load() && app::Focused();
     if (want || g_held.load()) app::HoldMouse(want);
 #endif
     if (want != g_held.exchange(want)) {
@@ -643,6 +655,9 @@ void TankAim(uint32_t player) {
 void Pad(int port, input::Pad& pad) {
     if (input::t_presence || port < 0 || port >= kPorts) return;
     const int64_t now = Now();
+    const bool menu = warp::CurrentLevel() == kFrontend || (warp::Multiplayer() && mem::Base()[kMatchPaused]) ||
+                      now - g_menu_us.load(std::memory_order_relaxed) < kMenuUs;
+    if (menu != g_game_menu.exchange(menu)) app::Post(kRefresh);
     std::lock_guard lock(g_pad_lock);
     Look& l = g_looks[port];
     const int mode = keyboard::ActiveMode();
@@ -702,6 +717,8 @@ uint32_t g_sensitivity_y[keyboard::kModes][input::kPorts] = {
 bool g_invert_y[keyboard::kModes][input::kPorts] = {};
 
 void Message(void*, uint32_t, uintptr_t, intptr_t) {}
+
+void InMenu() {}
 
 void Refresh(void*) {}
 

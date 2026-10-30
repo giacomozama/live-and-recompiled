@@ -18,9 +18,13 @@ bool Message(void* hwnd, uint32_t msg, uintptr_t wp, intptr_t lp, intptr_t* resu
 // whether the menu or the quit prompt is showing; safe from any thread
 bool Open();
 
-// shows the menu, on its Controls tab when asked (the game's Options pages open it); any thread. The port is the
-// controller that opened it, -1 for a keyboard: in a multiplayer match, which runs on, it alone drives the menu
-void Show(bool controls, int port = -1);
+// the tab Show opens on: the one last shown, Controls (the game's Options pages) or Multiplayer (the Online Play
+// menu's Options)
+enum class Tab { Last, Controls, Multiplayer };
+
+// shows the menu on that tab; any thread. The port is the controller that opened it, -1 for a keyboard: in a
+// multiplayer match, which runs on, it alone drives the menu
+void Show(Tab tab, int port = -1);
 
 // the port of the controller that opened the menu, -1 none (Open() and no controller, or not open)
 int Owner();

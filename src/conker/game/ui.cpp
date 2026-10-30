@@ -71,9 +71,9 @@ std::atomic<int> g_owner{-1};
 // Escape went to shut the menu or the prompt: it is not the game's Start until it is let go
 std::atomic<bool> g_esc_swallow{false};
 
-// the main tab to show next frame (Show asks for Controls, the bumpers turn), -1 none; the tab drawn now; the player
+// the main tab to show next frame (Show asks for one, the bumpers turn), -1 none; the tab drawn now; the player
 // the Controls tab shows
-constexpr int kMainTabs = 7, kControlsTab = 3, kQuitTab = 6;
+constexpr int kMainTabs = 7, kControlsTab = 3, kMultiplayerTab = 4, kQuitTab = 6;
 // the Quit tab's colour
 constexpr ImVec4 kDanger(0.93f, 0.33f, 0.33f, 1.0f);
 std::atomic<int> g_tab_target{-1};
@@ -642,7 +642,7 @@ void PadFrame(bool open, bool quit) {
     if (combo_pressed && now - toggled > 0.3) {
         toggled = now;
         if (open) Close();
-        else ui::Show(false, combo_port);
+        else ui::Show(ui::Tab::Last, combo_port);
         last = drive;
         return;
     }
@@ -1053,7 +1053,7 @@ void Draw(double fps) {
             }
 
             if (tab("Multiplayer")) {
-                ImGui::SeparatorText("System link");
+                ImGui::SeparatorText("Online play");
                 // edited in a copy and set as the field is left or Enter pressed: system link resolves the address
                 // each time it changes (xnet.cpp JoinAddress), and a half typed name is a DNS lookup
                 static char host[256];
@@ -1067,7 +1067,7 @@ void Draw(double fps) {
                        "Add :port if the host's port isn't 3074."});
                 int port = int(s.system_link_port);
                 ImGui::BeginDisabled(app::PortArg() != 0);
-                if (ImGui::InputInt("System link port", &port, 0, 0)) s.system_link_port = uint32_t(std::clamp(port, 1, 65535));
+                if (ImGui::InputInt("Online play port", &port, 0, 0)) s.system_link_port = uint32_t(std::clamp(port, 1, 65535));
                 ImGui::EndDisabled();
                 if (app::PortArg()) ImGui::Text("This copy uses %d (--port)", app::PortArg());
                 Hints({"UDP, 3074 as on the console.",
@@ -1081,7 +1081,7 @@ void Draw(double fps) {
                     lan = xnet::LocalAddress(), in_use = xnet::Port(), error = xnet::PortError();
                 ImGui::SeparatorText("This PC");
                 ImGui::Text("LAN IP: %s", lan.c_str());
-                if (!in_use) ImGui::Text("Port: not open yet (system link starts with the game's network)");
+                if (!in_use) ImGui::Text("Port: not open yet (it opens with Online Play)");
                 else if (!error) ImGui::Text("Port: UDP %u", in_use);
                 else ImGui::TextColored(ImVec4(1.0f, 0.45f, 0.35f, 1.0f), "Port: UDP %u couldn't be opened (%s)", in_use,
                                         error == 10048 ? "another program or copy has it" : "blocked");
@@ -1214,8 +1214,9 @@ bool Message(void* hwnd, uint32_t msg, uintptr_t wp, intptr_t lp, intptr_t* resu
 
 bool Open() { return g_open.load() || g_quit.load(); }
 
-void Show(bool controls, int port) {
-    if (controls) g_tab_target.store(kControlsTab);
+void Show(Tab tab, int port) {
+    if (tab == Tab::Controls) g_tab_target.store(kControlsTab);
+    else if (tab == Tab::Multiplayer) g_tab_target.store(kMultiplayerTab);
     g_quit.store(false);
     g_owner.store(port);
     SetOpen(true);
@@ -1280,7 +1281,7 @@ bool Message(void*, uint32_t, uintptr_t, intptr_t, intptr_t*) { return false; }
 
 bool Open() { return false; }
 
-void Show(bool, int) {}
+void Show(Tab, int) {}
 
 int Owner() { return -1; }
 

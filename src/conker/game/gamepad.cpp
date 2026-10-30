@@ -9,6 +9,7 @@
 #include "xdk/hle.h"
 
 #include "common/gamepad.h"
+#include "common/mouse.h"
 #include "common/ui.h"
 #include "common/warp.h"
 
@@ -44,15 +45,17 @@ X86_FUNC(sub_0004D1F0) {
 // 0x203B50: the pause menu's input, once a frame while paused (0x204060). Its page is [0x849AF8]: 0 the pause screen,
 // 1 Options (the two options' Yes / No, layers 6 and 2 of the pause UI at [0x85E554]), 2 the quit confirmation, which
 // goes back to the page in [0x849AFC]. Y (0x800 in the pausing player's buttons) turns between 0 and 1. The turn to
-// Options is taken back before a frame draws it, and the settings menu opens on its Controls tab instead.
+// Options is taken back before a frame draws it, and the settings menu opens on its Controls tab instead. While it
+// runs the cursor is free (mouse::InMenu).
 X86_EXTERN_FUNC(__imp__sub_00203B50);
 X86_FUNC(sub_00203B50) {
     constexpr uint32_t kPage = 0x849AF8;
     const uint32_t was = kernel::R32(kPage);
+    mouse::InMenu();
     __imp__sub_00203B50(ctx, base);
     if (was == 0 && kernel::R32(kPage) == 1) {
         kernel::W32(kPage, 0);
-        ui::Show(true);
+        ui::Show(ui::Tab::Controls);
     }
 }
 
@@ -76,7 +79,7 @@ void gamepad::Pad(int port, input::Pad& pad) {
     start_was[port] = start;
     if (frontend && start) {
         pad.buttons &= uint16_t(~kStart);
-        if (start_pressed) ui::Show(false, port);
+        if (start_pressed) ui::Show(ui::Tab::Last, port);
     }
     const bool back = pad.buttons & kBack;
     const bool back_pressed = back && !back_was[port];
@@ -90,5 +93,5 @@ void gamepad::Pad(int port, input::Pad& pad) {
     was_down[port] = down;
     if (!down || !frontend || int8_t(mem::Base()[kPicture]) != kOptions) return;
     pad.analog[0] = 0;
-    if (pressed) ui::Show(true, port);
+    if (pressed) ui::Show(ui::Tab::Controls, port);
 }

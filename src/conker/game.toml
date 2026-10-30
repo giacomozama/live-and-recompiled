@@ -394,3 +394,34 @@ on_true = 0x2D5674
 at = 0x158E38  # the rope's step: a weighted chain in substeps of the frame instead of the console's pass (rope::g_physics)
 call = "ConkerRopeStep"
 on_true = 0x15919D
+
+# multiplayer menus without Xbox Live (src/conker/game/menus.cpp)
+[[hook]]
+at = 0x23605A  # frontend multiplayer menu: its cursor back on System Link, one up for Xbox Live gone
+after = true
+call = "ConkerMpMenuCursor"
+
+[[hook]]
+at = 0x23607F  # and back on Xbox Live or Dumbots
+after = true
+call = "ConkerMpMenuCursor"
+
+[[hook]]
+at = 0x1F8CEC  # match pause menu, main page: Xbox Live out of the items, Controller shown as Options
+call = "ConkerPauseItems"
+
+[[hook]]
+at = 0x1F8DEB  # its A: Options opens the settings menu, the rest past the fixed Xbox Live and Controller tests
+call = "ConkerPauseOptions"
+on_true = 0x1F8E97
+on_false = 0x1F8E37
+
+[[hook]]
+at = 0x23A2DE  # Online Play menu: its items with Options after them
+after = true
+call = "ConkerOnlineItems"
+
+[[hook]]
+at = 0x240517  # an item list's handler call: the Online Play menu's Options opens the settings menu instead
+call = "ConkerOnlineOptions"
+on_true = 0x24051A

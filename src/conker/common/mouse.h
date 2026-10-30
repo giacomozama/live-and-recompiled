@@ -28,6 +28,10 @@ void Message(void* hwnd, uint32_t msg, uintptr_t wp, intptr_t lp);
 // takes or lets go of the cursor as the setting, the F1 menu and the window's focus ask; window thread
 void Refresh(void* hwnd);
 
+// one of the game's menus ran this frame (single player's pause menu, a menu list), so the cursor goes free while
+// they run; game thread
+void InMenu();
+
 // from keyboard::Pad: the last frame's motion of the port's mice as right stick, while the cursor is held
 void Pad(int port, input::Pad& pad);
 
