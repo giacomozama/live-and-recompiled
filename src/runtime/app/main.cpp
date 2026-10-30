@@ -309,6 +309,13 @@ void ApplyDisplay() { PostMessageW(g_hwnd, kApplyDisplay, 0, 0); }
 void OpenGameWindow(bool apply) { SendMessageW(g_hwnd, kOpenWindow, apply, 0); }
 
 bool KeyDown(int vk) { return (GetAsyncKeyState(vk) & 0x8000) != 0; }
+bool Cursor(float& x, float& y, float& w, float& h) {
+    POINT p;
+    RECT r;
+    if (!g_hwnd || !GetCursorPos(&p) || !ScreenToClient(g_hwnd, &p) || !GetClientRect(g_hwnd, &r)) return false;
+    x = float(p.x), y = float(p.y), w = float(r.right), h = float(r.bottom);
+    return p.x >= 0 && p.y >= 0 && p.x < r.right && p.y < r.bottom;
+}
 void Post(uint32_t msg) {
     if (g_hwnd) PostMessageW(g_hwnd, msg, 0, 0);
 }

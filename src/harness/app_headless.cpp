@@ -64,6 +64,7 @@ void Pace(uint32_t) {}
 
 // no keyboard, window or display: the pad script drives port 0
 bool KeyDown(int) { return false; }
+bool Cursor(float&, float&, float&, float&) { return false; }
 void Post(uint32_t) {}
 void SetTitle(const std::wstring&) {}
 bool Focused() { return false; }

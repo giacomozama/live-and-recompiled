@@ -40,6 +40,7 @@
 #include "common/camscan.h"
 #include "common/gamepad.h"
 #include "common/keyboard.h"
+#include "common/menus.h"
 #include "common/mouse.h"
 #include "app/app.h"
 #include "common/stickwatch.h"
@@ -452,6 +453,7 @@ void Pad(int port, input::Pad& pad) {
     ui::Unmuzzle(port, pad);  // what shut the menu stays unpressed until it is let go
     gamepad::Pad(port, pad);  // A on the frontend's Options opens the settings menu
     mouse::Pad(port, pad);  // the mouse, while it looks, takes the right stick
+    menus::Pad(port, pad);  // and on the game's menu lists it points and clicks
     if (port != 0) return;
     camscan::Tick(pad);  // XBE_CAMSCAN: the camera angle search watches the stick the game gets
     stickwatch::Tick();  // XBE_STICK_WATCH: F11 finds the code that reads the right stick

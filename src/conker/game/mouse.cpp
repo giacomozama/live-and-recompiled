@@ -56,6 +56,7 @@
 
 #include "app/app.h"
 #include "common/display.h"
+#include "common/menus.h"
 #include "common/ui.h"
 #include "common/warp.h"
 #include "core/input.h"
@@ -247,6 +248,9 @@ void Message(void* hwnd, uint32_t msg, uintptr_t wp, intptr_t lp) {
             Refresh(hwnd);
             break;
         case app::kMsgSize:
+        case app::kMsgMouseWheel:
+            menus::Wheel(int16_t(uint16_t(wp >> 16)));
+            break;
         case app::kMsgMove:
         case kRefresh:
             Refresh(hwnd);

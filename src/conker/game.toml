@@ -425,3 +425,19 @@ call = "ConkerOnlineItems"
 at = 0x240517  # an item list's handler call: the Online Play menu's Options opens the settings menu instead
 call = "ConkerOnlineOptions"
 on_true = 0x24051A
+
+[[hook]]
+at = 0x20D4F9  # a menu list's item text: the glyphs that follow are its, for the mouse
+call = "ConkerListItem"
+
+[[hook]]
+at = 0x20D4FE  # after it: the list shown once its last item is
+call = "ConkerListItemDrawn"
+
+[[hook]]
+at = 0x3D343A  # a glyph placed, before its clip test: into the item's rect
+call = "ConkerListGlyph"
+
+[[hook]]
+at = 0x2175B2  # a panel quad sent: the list's texture on the screen, for the mouse
+call = "ConkerPanelQuad"

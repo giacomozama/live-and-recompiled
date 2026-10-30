@@ -94,13 +94,14 @@ void* Window();  // HWND on Windows, SDL_Window elsewhere
 
 // The platform's window as the game's hooks see it, the same on Windows and on the SDL window elsewhere.
 // GameInfo::message's numbers are Win32's; the SDL window sends these the Win32 way too: kMsgKeyDown with the
-// virtual-key code in wp and bit 30 of lp set on auto repeat, kMsgActivate with LOWORD(wp) 0 when the window loses
+// virtual-key code in wp and bit 30 of lp set on auto repeat, kMsgMouseWheel as WM_MOUSEWHEEL, kMsgActivate with LOWORD(wp) 0 when the window loses
 // the focus, kMsgSize and kMsgMove without arguments, and messages Post sent.
 enum : uint32_t {
     kMsgMove = 0x0003,
     kMsgSize = 0x0005,
     kMsgActivate = 0x0006,
     kMsgKeyDown = 0x0100,
+    kMsgMouseWheel = 0x020A,  // the signed turn in HIWORD(wp), 120 a notch, away from the player positive
     kMsgApp = 0x8000,                  // WM_APP: a game's own from here
     // raw relative motion: int32 dx in wp's low half and dy in its high half (MotionWp), the mouse's input::Device id
     // in lp; on the SDL window only while HoldMouse holds it
@@ -109,6 +110,9 @@ enum : uint32_t {
 inline uintptr_t MotionWp(int32_t dx, int32_t dy) { return uintptr_t(uint32_t(dx)) | uintptr_t(uint32_t(dy)) << 32; }
 // a key or mouse button held, by Windows virtual-key code (the codes settings.toml's key names stand for); any thread
 bool KeyDown(int vk);
+// the cursor in the game window's client area, in its own units (w by h the area); false without a window or when the
+// cursor is outside it; any thread
+bool Cursor(float& x, float& y, float& w, float& h);
 void Post(uint32_t msg);                    // any thread: msg to GameInfo::message on the window thread
 void Quit();                                // any thread: closes the window, as its X does
 void SetTitle(const std::wstring& title);   // window thread

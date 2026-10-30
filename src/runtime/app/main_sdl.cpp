@@ -236,6 +236,15 @@ bool Handle(const SDL_Event& e) {
             if (e.button.which != SDL_TOUCH_MOUSEID && e.button.which != SDL_PEN_MOUSEID)
                 input::Button(e.button.which, VkOfButton(e.button.button), e.type == SDL_EVENT_MOUSE_BUTTON_DOWN);
             break;
+        case SDL_EVENT_MOUSE_WHEEL: {
+            // in notches, which may come as fractions: the rest is kept for the next
+            static float rest = 0;
+            rest += e.wheel.direction == SDL_MOUSEWHEEL_FLIPPED ? -e.wheel.y : e.wheel.y;
+            const int turn = int(rest * 120);
+            rest -= float(turn) / 120;
+            if (turn) Send(kMsgMouseWheel, uintptr_t(uint16_t(int16_t(std::clamp(turn, -32768, 32767)))) << 16);
+            break;
+        }
         case SDL_EVENT_KEYBOARD_ADDED:
             AddKeyboard(e.kdevice.which);
             break;
@@ -344,6 +353,15 @@ bool KeyDown(int vk) {
     if (vk == kVkAlt) return keys[SDL_SCANCODE_LALT] || keys[SDL_SCANCODE_RALT];
     SDL_Scancode sc = ScancodeOf()[size_t(vk)];
     return sc != SDL_SCANCODE_UNKNOWN && keys[sc];
+}
+
+bool Cursor(float& x, float& y, float& w, float& h) {
+    if (!g_window || SDL_GetMouseFocus() != g_window) return false;
+    int ww = 0, wh = 0;
+    SDL_GetMouseState(&x, &y);
+    SDL_GetWindowSize(g_window, &ww, &wh);
+    w = float(ww), h = float(wh);
+    return x >= 0 && y >= 0 && x < w && y < h;
 }
 
 void Post(uint32_t msg) { PushUser(kUserPost, msg); }
