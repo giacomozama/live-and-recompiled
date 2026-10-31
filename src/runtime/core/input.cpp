@@ -132,13 +132,14 @@ void UpdatePads() {
 
 void Init() {
     // WGI reads the triggers apart and HIDAPI takes PlayStation and Switch pads. Reads come from the guest's threads,
-    // so SDL's own thread takes the device notices.
+    // so SDL's own thread takes the device notices. The Windows build here is Zig's mingw-w64, whose headers have no
+    // windows.gaming.input.h, so SDL compiles without WGI: XInput and DirectInput stay on for the Xbox pads it would
+    // have handled. HIDAPI's Xbox driver is off by default on Windows, so with them off no Xbox pad is seen at all.
+    // RawInput stays off, as XInput covers the same pads and the two together can drop one on the wireless adapter.
     SDL_SetHint(SDL_HINT_JOYSTICK_THREAD, "1");
     SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");
     SDL_SetHint(SDL_HINT_JOYSTICK_WGI, "1");
     SDL_SetHint(SDL_HINT_JOYSTICK_RAWINPUT, "0");
-    SDL_SetHint(SDL_HINT_XINPUT_ENABLED, "0");
-    SDL_SetHint(SDL_HINT_JOYSTICK_DIRECTINPUT, "0");
     if (!SDL_Init(SDL_INIT_GAMEPAD)) {
         LOGE("input: SDL failed to start, no controllers: %s", SDL_GetError());
         return;
