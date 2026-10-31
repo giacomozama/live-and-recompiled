@@ -74,7 +74,7 @@ Roboto Regular v2.138 (https://github.com/googlefonts/roboto-2), the overlay's f
 Copyright 2015 Google Inc. Licensed under the Apache License, Version 2.0; its text is with glslang's below.
 
 
-SDL 3.4.16 (https://github.com/libsdl-org/SDL)
+SDL 3.4.18 (https://github.com/libsdl-org/SDL)
 
 Copyright (C) 1997-2026 Sam Lantinga <slouken@libsdl.org>
 

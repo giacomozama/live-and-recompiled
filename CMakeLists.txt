@@ -5,6 +5,9 @@ project(game LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+# no C++ modules here, and clang-scan-deps cannot drive `zig c++` (it is a wrapper, not the compiler): the scan the
+# Windows build would otherwise make of every C++ source, dependencies' included, fails
+set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
 
 # the recompiler, the runtime and add_xbe_image()
 include(cmake/XbeRecomp.cmake)
