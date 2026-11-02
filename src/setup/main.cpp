@@ -12,15 +12,15 @@
 //   setup-windows.exe, setup-linux                      a window: pick the game, the working folder and the folder
 //                                                       the game is made in (the last two start as the defaults)
 //   setup-windows.exe, setup-linux --cli --source PATH [--work DIR] [--game-dir DIR]
-//                                  [--jobs N] [--keep] [--delete-compiler] [--toolchain DIR] [--root DIR] [--fetch-toolchain]
+//                                  [--jobs N] [--keep] [--toolchain DIR] [--root DIR] [--fetch-toolchain]
 //
 // Run with no arguments, Setup opens the window (when there is a display), with any it runs on the console. --source
 // is the game: its DefaultPackage (the digital release's package, unpacked for you), a disc image (.iso), a folder
 // with the extracted default.xbe, or a folder holding one of these. The game's files are put in
 // assets/ below the game folder, where the game looks for them, unless they are already there. --work is where the
 // kit, the compiler and, while building, the generated code and objects go (work, beside Setup); --game-dir is where the game is linked (game, beside Setup). Both are made when missing.
-// --keep leaves the generated code and the unpacked kit in the work folder, --delete-compiler removes the unpacked
-// compiler when done (it stays by default, for the next install); --toolchain uses another copy of the target's
+// --keep leaves the generated code and the unpacked kit in the work folder (the unpacked compiler is always removed
+// when done); --toolchain uses another copy of the target's
 // compiler of the kit's version; --root is the folder Setup
 // would be in; --fetch-toolchain only unpacks the compiler.
 #include <miniz.h>
@@ -968,7 +968,7 @@ bool Build(const Options& opt) {
     };
     clear();
     // what a finished (or cancelled) install leaves in the work folder, as the player chose: the unpacked kit and the
-    // generated code with it, and the compiler
+    // generated code with it; the compiler always goes
     auto finish = [&]() {
         if (!opt.keep) {
             clear();
@@ -976,7 +976,7 @@ bool Build(const Options& opt) {
             for (const char* f : {"kit.toml", "windows.toml", "linux.toml", ".payload", "unpack.log"})
                 fs::remove(work / f, ec);
         }
-        if (!opt.keep_compiler) fs::remove_all(work / "toolchain", ec);
+        fs::remove_all(work / "toolchain", ec);
         fs::remove(work, ec);  // only when it is empty now
     };
     fs::create_directories(gen, ec);
@@ -1131,7 +1131,6 @@ int main(int argc, char** argv) {
         bool more = i + 1 < argc;
         if (a == "--jobs" && more) opt.jobs = unsigned(std::max(1, std::atoi(argv[++i])));
         else if (a == "--keep") opt.keep = true;
-        else if (a == "--delete-compiler") opt.keep_compiler = false;
         else if (a == "--fetch-toolchain") fetch_only = true;
         else if (a == "--cli") cli = true;
         else if (a == "--gui") gui = true;
@@ -1149,12 +1148,12 @@ int main(int argc, char** argv) {
         else if (a == "--root" && more) i++;
         else if (a == "--help" || a == "-h") {
             std::printf("usage: setup [--cli] [--source GAME] [--work DIR] [--game-dir DIR] "
-                        "[--jobs N] [--keep] [--delete-compiler] [--toolchain DIR] [--root DIR] [--fetch-toolchain]\n"
+                        "[--jobs N] [--keep] [--toolchain DIR] [--root DIR] [--fetch-toolchain]\n"
                         "  no options: a window with the same choices\n");
             return 0;
         } else {
             std::fprintf(stderr, "usage: setup [--cli] [--source GAME] [--work DIR] [--game-dir DIR] "
-                                 "[--jobs N] [--keep] [--delete-compiler] [--toolchain DIR] [--root DIR] [--fetch-toolchain] "
+                                 "[--jobs N] [--keep] [--toolchain DIR] [--root DIR] [--fetch-toolchain] "
                                  "[--unpack PACKAGE OUTDIR]\n");
             return 2;
         }

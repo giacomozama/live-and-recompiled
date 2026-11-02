@@ -59,8 +59,7 @@ Then it is two steps: run Setup, run the game.
      - **Linux:** if you bought it on the Microsoft Store, download its package with the
        [Xodus project](https://github.com/xodus-gaming/xodus) or copy it from a Windows install. You can use streaming mode to extract the files automatically.
    - **Working folder**: `work` beside Setup by default (made if it's missing). The compiler that comes inside Setup is unpacked into it (once) and the
-     game is built there. Setup removes the temporary files when done and keeps the compiler for next time, unless
-     you untick "Keep the unpacked compiler".
+     game is built there. Setup removes the temporary files and the unpacked compiler when done.
    - **Game folder**: `game` beside Setup by default; where the game is made, with the game's files in an `assets` folder inside it.
 
    Press Recompile. Setup checks your copy is a supported version, unpacks the compiler (first time only), recompiles
@@ -76,10 +75,10 @@ Then it is two steps: run Setup, run the game.
 
    Without a display, or with any option, Setup runs in the terminal instead: `./setup-linux --cli --source
    path/to/DefaultPackage --work /tmp/conker-work --game-dir ~/Games/Conker`, `--source` is required and the other
-   options default to the same as the window (`--help` lists them, including `--delete-compiler`).
+   options default to the same as the window (`--help` lists them).
 2. **Run `Game.exe`** (Windows) **or `./Game`** (Linux), in the game folder chosen during Setup.
 
-Setup keeps nothing it generated except the game and the compiler in the working folder (unless you chose not to). Run it again after updating to a new release.
+Setup keeps nothing it generated except the game. Run it again after updating to a new release.
 
 ## Contributing
 

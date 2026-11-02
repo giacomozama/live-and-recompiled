@@ -65,7 +65,6 @@ struct Window {
     Row source, work, game;
     Fl_Box* status = nullptr;
     Fl_Check_Button* keep = nullptr;
-    Fl_Check_Button* keep_compiler = nullptr;
     Fl_Button* install = nullptr;
     Fl_Button* close = nullptr;
     Fl_Progress* bar = nullptr;
@@ -300,7 +299,6 @@ Options Read(Window& u) {
     o.work = ToPath(u.work.input->value());
     o.game_dir = ToPath(u.game.input->value());
     o.keep = u.keep->value();
-    o.keep_compiler = u.keep_compiler->value();
     return o;
 }
 
@@ -318,8 +316,7 @@ void Lock(Window& u, bool busy) {
                          static_cast<Fl_Widget*>(u.source.browse_file), static_cast<Fl_Widget*>(u.work.input),
                          static_cast<Fl_Widget*>(u.work.browse), static_cast<Fl_Widget*>(u.game.input),
                          static_cast<Fl_Widget*>(u.game.browse),
-                         static_cast<Fl_Widget*>(u.keep),
-                         static_cast<Fl_Widget*>(u.keep_compiler)}) {
+                         static_cast<Fl_Widget*>(u.keep)}) {
         if (busy) w->deactivate();
         else w->activate();
     }
@@ -487,15 +484,11 @@ int RunWindow(const Options& defaults) {
     u.game.browse->callback([](Fl_Widget*, void*) { Browse(g_ui->game, false); });
     y += 20;
 
-    u.keep_compiler = new CheckBox(M, y, W - 2 * M, row_h, "Keep the unpacked compiler (about 400 MB), so the next run is quicker");
-    u.keep_compiler->value(defaults.keep_compiler);
-    u.keep_compiler->labelcolor(kMuted);
-    u.keep_compiler->labelsize(13);
-    u.keep = new CheckBox(M, y + row_h, W - 2 * M, row_h, "Keep temporary files (for troubleshooting)");
+    u.keep = new CheckBox(M, y, W - 2 * M, row_h, "Keep temporary files (for troubleshooting)");
     u.keep->value(defaults.keep);
     u.keep->labelcolor(kMuted);
     u.keep->labelsize(13);
-    y += 2 * row_h + 12;
+    y += row_h + 12;
 
     u.install = new FlatButton(W - M - browse_w - 8 - 150, y, 150, row_h, "Start");
     u.install->callback(Start);
