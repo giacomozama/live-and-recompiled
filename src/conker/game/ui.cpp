@@ -74,7 +74,7 @@ std::atomic<bool> g_esc_swallow{false};
 
 // the main tab to show next frame (Show asks for one, the bumpers turn), -1 none; the tab drawn now; the player
 // the Controls tab shows
-constexpr int kMainTabs = 7, kControlsTab = 3, kMultiplayerTab = 4, kQuitTab = 6;
+constexpr int kMainTabs = 8, kControlsTab = 4, kMultiplayerTab = 5, kQuitTab = 7;
 // the Quit tab's colour
 constexpr ImVec4 kDanger(0.93f, 0.33f, 0.33f, 1.0f);
 std::atomic<int> g_tab_target{-1};
@@ -876,6 +876,22 @@ void Draw(double fps) {
                 ImGui::EndTabItem();
             };
 
+            if (tab("General")) {
+                ImGui::SeparatorText("Language");
+                {
+                    // the languages the game has text for (aid/text), in XC_LANGUAGE order
+                    static const char* const kKeys[] = {"english", "japanese", "german", "french", "spanish", "italian"};
+                    constexpr int kCount = int(std::size(kKeys));
+                    int lang = 0;
+                    for (int i = 0; i < kCount; i++)
+                        if (s.language == kKeys[i]) lang = i;
+                    if (ImGui::Combo("Text", &lang, "English\0Japanese\0German\0French\0Spanish\0Italian\0"))
+                        s.language = kKeys[lang];
+                    Hint("The game's menus and on-screen text. Starts from the next launch. The voices stay in English.");
+                }
+                end_tab();
+            }
+
             if (tab("Graphics")) {
                 ImGui::SeparatorText("Display");
                 int mode = int(s.display_mode);
@@ -995,19 +1011,6 @@ void Draw(double fps) {
                      "faster.", true);
                 ImGui::Checkbox("Rope physics", &rope::g_physics);
                 Hint("Ropes swing realistically when Conker hangs on them.", true);
-
-                ImGui::SeparatorText("Language");
-                {
-                    // the languages the game has text for (aid/text), in XC_LANGUAGE order
-                    static const char* const kKeys[] = {"english", "japanese", "german", "french", "spanish", "italian"};
-                    constexpr int kCount = int(std::size(kKeys));
-                    int lang = 0;
-                    for (int i = 0; i < kCount; i++)
-                        if (s.language == kKeys[i]) lang = i;
-                    if (ImGui::Combo("Text", &lang, "English\0Japanese\0German\0French\0Spanish\0Italian\0"))
-                        s.language = kKeys[lang];
-                    Hint("The game's menus and on-screen text. Starts from the next launch. The voices stay in English.");
-                }
                 end_tab();
             }
 
