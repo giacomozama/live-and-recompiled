@@ -409,6 +409,35 @@ bool ConkerScriptTimer(X86Context& ctx, uint8_t* base) {
     return true;
 }
 
+// 0x2D9FD0 (edi the player): eases the signed word [player+0x1D4] toward [player+0x1D6] once a frame, by a twelfth
+// of the gap and one more, never past it. The target comes from the ground Conker stands on (0x2D5340: the material
+// [player+0x298] & 0x1F in the table at 0x59D820, against [player+0x110]): on BarnOutside's thatched roof it drops
+// to about -172 on landing and climbs back to 0 by some 6 a 60th of a second. Right after the ease 0x2E34D0 kills
+// the player outright, health [player+0x3AE] to 0, once the value is under -93. The console eased it 30 times a
+// second, and against that climbing target it bottomed out near -72; at 60 FPS, eased twice as often, it chased the
+// target down to -94 or -95 (deathwatch captures 135519, 135938), and Conker dropped dead on the roof. Above 30 it
+// eases once a console frame (two ticks), as on the console.
+X86_EXTERN_FUNC(__imp__sub_002D9FD0);
+X86_FUNC(sub_002D9FD0) {
+    static const bool every = std::getenv("XBE_EASE_EVERY_FRAME") != nullptr;
+    if (every || display::GameRate() <= 30) {
+        __imp__sub_002D9FD0(ctx, base);
+        return;
+    }
+    const uint32_t now = display::Ticks(), ticks = base[0x7FA250];
+    uint32_t frames = now / 2 - (now - std::min(now, ticks)) / 2;  // console frames this frame's ticks end
+    int16_t cur, target;
+    std::memcpy(&cur, base + ctx.edi + 0x1D4, 2);
+    std::memcpy(&target, base + ctx.edi + 0x1D6, 2);
+    for (; frames && cur != target; frames--) {
+        const int32_t step = (int32_t(target) - int32_t(cur)) / 12;  // the function's divide, toward zero
+        const int16_t next = int16_t(cur < target ? cur + step + 1 : cur + step - 1);
+        cur = cur < target ? std::min(next, target) : std::max(next, target);
+    }
+    std::memcpy(base + ctx.edi + 0x1D4, &cur, 2);
+    kernel::Return(ctx, ctx.eax, 0);
+}
+
 // 0x1A510 (emitter, flag; stdcall): a sound emitter's state machine, run once a frame for each (0x2D440). It counts
 // two timers down by the frame's step ([0x7FA218]): +0xE8 to its next cue, which plays the cue (0x1A4C0) when it
 // runs out, and +0x168 to its stop. XACT starts a 3D cue's stream once the cue is played and positioned, so the cue
