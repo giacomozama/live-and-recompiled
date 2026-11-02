@@ -43,7 +43,27 @@ struct Settings {
     std::string aspect = "auto";     // "W:H" ("4:3", "16:9", "21:9", ...), or "auto": the output's own shape
     std::string join_ip;              // host[:port]: a system link host past the LAN (or on this PC) the search also asks
     uint32_t system_link_port = 3074;  // the UDP port system link binds, read as the network starts
+    // the console's language (XC_LANGUAGE), by its name in kLanguages; the title reads it once at boot
+    std::string language = "english";
 };
+
+// the console's languages: the language setting's name for each and its XC_LANGUAGE number
+struct Language {
+    const char* key;
+    const char* name;
+    uint32_t code;
+};
+inline constexpr Language kLanguages[] = {
+    {"english", "English", 1},   {"japanese", "Japanese", 2},     {"german", "German", 3},
+    {"french", "French", 4},     {"spanish", "Spanish", 5},       {"italian", "Italian", 6},
+    {"korean", "Korean", 7},     {"chinese", "Chinese", 8},       {"portuguese", "Portuguese", 9},
+};
+// the language setting's XC_LANGUAGE, English for a name it doesn't know
+inline uint32_t LanguageCode(const std::string& key) {
+    for (const Language& l : kLanguages)
+        if (key == l.key) return l.code;
+    return 1;
+}
 
 Settings& Get();
 void Load();

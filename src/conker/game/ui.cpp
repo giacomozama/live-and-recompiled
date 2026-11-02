@@ -995,6 +995,19 @@ void Draw(double fps) {
                      "faster.", true);
                 ImGui::Checkbox("Rope physics", &rope::g_physics);
                 Hint("Ropes swing realistically when Conker hangs on them.", true);
+
+                ImGui::SeparatorText("Language");
+                {
+                    // the languages the game has text for (aid/text), in XC_LANGUAGE order
+                    static const char* const kKeys[] = {"english", "japanese", "german", "french", "spanish", "italian"};
+                    constexpr int kCount = int(std::size(kKeys));
+                    int lang = 0;
+                    for (int i = 0; i < kCount; i++)
+                        if (s.language == kKeys[i]) lang = i;
+                    if (ImGui::Combo("Text", &lang, "English\0Japanese\0German\0French\0Spanish\0Italian\0"))
+                        s.language = kKeys[lang];
+                    Hint("The game's menus and on-screen text. Starts from the next launch. The voices stay in English.");
+                }
                 end_tab();
             }
 
@@ -1085,7 +1098,7 @@ void Draw(double fps) {
                     lan = xnet::LocalAddress(), in_use = xnet::Port(), error = xnet::PortError();
                 ImGui::SeparatorText("This PC");
                 ImGui::Text("LAN IP: %s", lan.c_str());
-                if (!in_use) ImGui::Text("Port: not open yet (it opens with Online Play)");
+                if (!in_use) ImGui::Text("Port: not open yet (it opens with Online)");
                 else if (!error) ImGui::Text("Port: UDP %u", in_use);
                 else ImGui::TextColored(ImVec4(1.0f, 0.45f, 0.35f, 1.0f), "Port: UDP %u couldn't be opened (%s)", in_use,
                                         error == 10048 ? "another program or copy has it" : "blocked");

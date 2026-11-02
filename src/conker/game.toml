@@ -417,12 +417,12 @@ on_true = 0x1F8E97
 on_false = 0x1F8E37
 
 [[hook]]
-at = 0x23A2DE  # Online Play menu: its items with Options after them
+at = 0x23A2DE  # Online menu: its items with Options after them
 after = true
 call = "ConkerOnlineItems"
 
 [[hook]]
-at = 0x240517  # an item list's handler call: the Online Play menu's Options opens the settings menu instead
+at = 0x240517  # an item list's handler call: the Online menu's Options opens the settings menu instead
 call = "ConkerOnlineOptions"
 on_true = 0x24051A
 

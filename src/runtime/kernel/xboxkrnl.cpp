@@ -1279,13 +1279,19 @@ KERNEL_EXPORT(29, ExSaveNonVolatileSetting, 4) {
 // settings and hardware
 
 // widescreen (a 4:3 output plays the console's 4:3), 480p
+// the language setting, as the title boots: it reads the language once, so a change waits for the next launch
+static uint32_t Language() {
+    static const uint32_t code = app::LanguageCode(app::Get().language);
+    return code;
+}
+
 static uint32_t VideoFlags() { return (app::Widescreen() ? 0x00010000 : 0) | 0x00080000; }
 
 KERNEL_EXPORT(24, ExQueryNonVolatileSetting, 5) {
     uint32_t index = a[0], type_out = a[1], value = a[2], len = a[3], result_len = a[4];
     uint32_t v = 0;
     switch (index) {
-        case 7: v = 1; break;                      // XC_LANGUAGE english
+        case 7: v = Language(); break;             // XC_LANGUAGE
         case 8: v = VideoFlags(); break;          // XC_VIDEO_FLAGS
         case 9: v = 0x00010001; break;             // XC_AUDIO_FLAGS stereo
         case 0x103: v = 0x00400100; break;         // XC_FACTORY_AV_REGION NTSC-M
@@ -1298,7 +1304,7 @@ KERNEL_EXPORT(24, ExQueryNonVolatileSetting, 5) {
         // the whole EEPROM image: user settings live at 0xC0 onwards
         if (type_out) W32(type_out, 3);  // REG_BINARY
         if (value && len >= 0x100) {
-            W32(value + 0xE8, 1);                     // language
+            W32(value + 0xE8, Language());            // language
             W32(value + 0xEC, VideoFlags());          // video flags
             W32(value + 0xF0, 0x00010001);            // audio flags
             W32(value + 0x58, 0x00400100);            // factory video standard

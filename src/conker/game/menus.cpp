@@ -1,5 +1,5 @@
 // The multiplayer menus without Xbox Live: the frontend's multiplayer menu drops its Xbox Live item and calls System
-// Link Online Play, and the pause menu of a match drops Xbox Live and its Controller item becomes Options, which opens
+// Link Online, and the pause menu of a match drops Xbox Live and its Controller item becomes Options, which opens
 // the settings menu. The mouse works the game's menu lists.
 #include <algorithm>
 #include <atomic>
@@ -33,13 +33,34 @@ namespace {
 using kernel::R32;
 using kernel::W32;
 
-// a UTF-16 string in guest memory, written once
+// a UTF-16 string in guest memory from UTF-8 (the basic plane), written once
 uint32_t GuestText(const char* s) {
-    uint32_t n = 0;
-    while (s[n]) n++;
-    const uint32_t va = mem::AllocSystem((n + 1) * 2);
-    for (uint32_t i = 0; i <= n; i++) kernel::G<uint16_t>(va + i * 2) = uint8_t(s[i]);
+    std::u16string text;
+    for (const unsigned char* p = reinterpret_cast<const unsigned char*>(s); *p;) {
+        char16_t c = *p++;
+        if (c >= 0xE0 && p[0] && p[1]) c = char16_t((c & 0x0F) << 12 | (p[0] & 0x3F) << 6 | (p[1] & 0x3F)), p += 2;
+        else if (c >= 0xC0 && p[0]) c = char16_t((c & 0x1F) << 6 | (p[0] & 0x3F)), p += 1;
+        text += c;
+    }
+    const uint32_t va = mem::AllocSystem(uint32_t(text.size() + 1) * 2);
+    for (size_t i = 0; i <= text.size(); i++) kernel::G<uint16_t>(va + uint32_t(i) * 2) = text.c_str()[i];
     return va;
+}
+
+// The language the game picked at boot (0x2A7840: XC_LANGUAGE 2 to 6, else English as 1), the folder of
+// aid/text it reads; the labels this file gives the menus come in it, the game's own label kept for Japanese
+enum : uint32_t { kEnglish = 1, kJapanese, kGerman, kFrench, kSpanish, kItalian };
+uint32_t GameLanguage() { return R32(0x7FA1DC); }
+// en, de, fr, es, it; null for Japanese
+const char* InLanguage(const char* en, const char* de, const char* fr, const char* es, const char* it) {
+    switch (GameLanguage()) {
+        case kJapanese: return nullptr;
+        case kGerman: return de;
+        case kFrench: return fr;
+        case kSpanish: return es;
+        case kItalian: return it;
+        default: return en;
+    }
 }
 
 }  // namespace
@@ -48,8 +69,8 @@ uint32_t GuestText(const char* s) {
 // slot of its label in the frontend's strings ([0x849800], a pointer each, resolved from the key names at 0x6BDAB0),
 // its handler and a condition, up to an item of slot 0. 0x75E760 is Xbox Live (slot 0xC9), System Link (0xC8),
 // Dumbots (0xC7) and Profiles (0x2FD); 0x75E718 the same with one more item. Xbox Live's item goes from both, and
-// System Link's slot points at "Online Play", as does the slot of its own menu's title (0x118, the menu 0x23A2E3 runs,
-// only reached from this one). The game runs in English: XC_LANGUAGE is 1.
+// System Link's slot points at "Online", as does the slot of its own menu's title (0x118, the menu 0x23A2E3 runs,
+// only reached from this one).
 X86_EXTERN_FUNC(__imp__sub_00236030);
 X86_FUNC(sub_00236030) {
     constexpr uint32_t kLists[] = {0x75E760, 0x75E718}, kStrings = 0x849800;
@@ -61,7 +82,7 @@ X86_FUNC(sub_00236030) {
             for (uint32_t k = 0; k < 12; k += 4) W32(list + i * 12 + k, R32(list + (i + 1) * 12 + k));
         } while (R32(list + i++ * 12));
     }
-    static const uint32_t online = GuestText("Online Play");
+    static const uint32_t online = GuestText("Online");  // the same in every language
     if (const uint32_t strings = R32(kStrings)) {
         W32(strings + kSystemLink * 4, online);
         W32(strings + kSystemLinkTitle * 4, online);
@@ -77,7 +98,7 @@ void ConkerMpMenuCursor(X86Context& ctx, uint8_t* base) {
     if (base[kCursor] > 0) base[kCursor]--;
 }
 
-// The Online Play menu (System Link's, 0x23A2B0) runs the list 0x75E578: Play (slot 0x11A) and Host (0x119), with
+// The Online menu (System Link's, 0x23A2B0) runs the list 0x75E578: Play (slot 0x11A) and Host (0x119), with
 // another list right after it. A copy with Options (FT_Options, slot 0x38) after them takes its place: [[hook]] after
 // the push of 0x75E578 at 0x23A2DE. Options has no handler of its own: ConkerOnlineOptions takes its A.
 namespace {
@@ -104,7 +125,7 @@ void ConkerOnlineItems(X86Context& ctx, uint8_t* base) {
 }
 
 // [[hook]] before 0x240517, where the item list 0x2401F0 runs calls the handler of the item A picked (eax the item):
-// the Online Play menu's Options opens the settings menu on its Multiplayer tab instead (any pad drives it, out of a
+// the Online menu's Options opens the settings menu on its Multiplayer tab instead (any pad drives it, out of a
 // match), and the call is skipped (0x24051A)
 bool ConkerOnlineOptions(X86Context& ctx, uint8_t* base) {
     (void)base;
@@ -595,17 +616,35 @@ std::atomic<int> g_quit_choice{-1};  // the word clicked: 1 Yes, 0 No, -1 none
 std::atomic<int64_t> g_quit_choice_us{0};
 constexpr int64_t kChoiceUs = 500000;  // a click's choice waits this long for the prompt's A
 
+// a string to match the prompt's words by: its spaces aside, ASCII letters in lower case, up to 16 characters
+std::u16string WordKey(uint32_t va) {
+    std::u16string w;
+    for (uint32_t i = 0; i < 16; i++) {
+        char16_t c = kernel::G<uint16_t>(va + i * 2);
+        if (!c) break;
+        if (c == u' ') continue;
+        if (c >= u'A' && c <= u'Z') c = char16_t(c + 32);
+        w += c;
+    }
+    return w;
+}
+
+// the prompt's Yes and No in the language the game runs in: the text the string lookup (0x3F9CB0) found for the
+// keys YES and NO, the English words until it has
+std::mutex g_yes_no_lock;
+std::u16string g_yes_no[2] = {u"yes", u"no"};
+
+void KeepYesNo(int word, uint32_t text) {
+    std::lock_guard hold(g_yes_no_lock);
+    g_yes_no[word] = WordKey(text);
+}
+
 // Yes 1, No 2, else 0: the string at va, its spaces aside, in any case
 int Word(uint32_t va) {
-    std::string w;
-    for (uint32_t i = 0; i < 8; i++) {
-        const uint16_t c = kernel::G<uint16_t>(va + i * 2);
-        if (!c) break;
-        if (c == ' ') continue;
-        if (c >= 0x80) return 0;
-        w += char(std::tolower(c));
-    }
-    return w == "yes" ? 1 : w == "no" ? 2 : 0;
+    const std::u16string w = WordKey(va);
+    if (w.empty()) return 0;
+    std::lock_guard hold(g_yes_no_lock);
+    return w == g_yes_no[0] ? 1 : w == g_yes_no[1] ? 2 : 0;
 }
 
 // the word under the point, 0 none
@@ -980,12 +1019,14 @@ void Relabel(uint32_t table) {
     static uint32_t done = 0;  // the table last relabelled; the frontend loads its own again each time
     if (table == done || R32(table + 0xC)) return;
     done = table;
-    static const uint32_t multiplayer = GuestText("Multiplayer"), blank = GuestText(" ");
+    static const char* multiplayer_text =
+        InLanguage("Multiplayer", "Mehrspieler", "Multijoueur", "Multijugador", "Multigiocatore");
+    static const uint32_t multiplayer = multiplayer_text ? GuestText(multiplayer_text) : 0, blank = GuestText(" ");
     const uint32_t count = R32(R32(table) + 4), entries = R32(table + 4), text = R32(table + 8);
     for (uint32_t i = 0; i < count; i++) {
         const uint32_t entry = entries + i * 6;
         const std::string was = Narrow(text + R32(entry + 2) * 2);
-        const uint32_t now = was == "Xbox Live" ? multiplayer : was == "& Co" ? blank : 0;
+        const uint32_t now = was == "Xbox Live" ? multiplayer : was == "& Co" ? blank : 0;  // 0 for Japanese
         if (now) W32(entry + 2, (now - text) / 2);  // the offset wraps as the game adds it
     }
 }
@@ -993,12 +1034,16 @@ void Relabel(uint32_t table) {
 
 X86_EXTERN_FUNC(__imp__sub_003F9CB0);
 X86_FUNC(sub_003F9CB0) {
-    const uint32_t table = R32(ctx.esp + 4), key = R32(ctx.esp + 8);
+    // the table, the key and where the text found goes ([out], the table's empty string when the key is missing)
+    const uint32_t table = R32(ctx.esp + 4), key = R32(ctx.esp + 8), out = R32(ctx.esp + 0xC);
+    const std::string name = key ? Narrow(key) : std::string();
     if (key) {
-        const std::string name = Narrow(key);
         Trace(name);
         constexpr std::string_view kPosition = "_POSITION_X";
         if (table && name.size() > kPosition.size() && name.ends_with(kPosition)) Relabel(table);
     }
     __imp__sub_003F9CB0(ctx, base);
+    const int word = name == "YES" ? 0 : name == "NO" ? 1 : -1;
+    if (word >= 0 && out && int32_t(ctx.eax) >= 0)  // -1: not found, or found empty
+        if (const uint32_t text = R32(out)) KeepYesNo(word, text);
 }

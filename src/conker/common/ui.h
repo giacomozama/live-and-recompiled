@@ -18,7 +18,7 @@ bool Message(void* hwnd, uint32_t msg, uintptr_t wp, intptr_t lp, intptr_t* resu
 // whether the menu or the quit prompt is showing; safe from any thread
 bool Open();
 
-// the tab Show opens on: the one last shown, Controls (the game's Options pages) or Multiplayer (the Online Play
+// the tab Show opens on: the one last shown, Controls (the game's Options pages) or Multiplayer (the Online
 // menu's Options)
 enum class Tab { Last, Controls, Multiplayer };
 
