@@ -25,6 +25,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -80,6 +81,9 @@ uint32_t GameRate() { return Rate(); }
 
 std::atomic<uint32_t> g_ticks{0};
 uint32_t Ticks() { return g_ticks.load(std::memory_order_relaxed); }
+
+std::atomic<float> g_camera_fov{50.0f};
+float CameraFov() { return g_camera_fov.load(std::memory_order_relaxed); }
 
 void Init() { SetFrameRate(g_frame_rate); }
 
@@ -161,10 +165,11 @@ void ConkerCameraAspect(X86Context& ctx, uint8_t* base) {
     (void)base;
     static float shown = 0;
     float frame = app::FrameAspect();
+    uint32_t v = kernel::R32(ctx.ecx + ctx.eax + 0x264);
+    float vfov;
+    std::memcpy(&vfov, &v, 4);
+    if (std::isfinite(vfov) && vfov > 0.0f) display::g_camera_fov.store(vfov, std::memory_order_relaxed);
     if (frame != shown) {
-        uint32_t v = kernel::R32(ctx.ecx + ctx.eax + 0x264);
-        float vfov;
-        std::memcpy(&vfov, &v, 4);
         LOGR("display: camera fov %.2f x %.2f degrees, drawn %.2f wide", ctx.xmm[1].f[0], vfov,
              ctx.xmm[1].f[0] * frame * 0.75f);
         shown = frame;

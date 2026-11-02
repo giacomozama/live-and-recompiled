@@ -4,7 +4,7 @@
 // motion) up for the player whose mouse it came from (input::Owner). The third
 // person, first person and weapon cameras all turn by the stick in 0x2F99A0 (hooked at the end of the file): Turn
 // adds the motion, in degrees, to the turn it works out each frame, so each camera takes the mouse as it takes the
-// stick, inside its own limits.
+// stick, inside its own limits. Not a match's sniper scope, which takes the mouse as right stick (see Turn).
 //
 // A tank's aim mode goes by the driver's camera instead, which TankAim turns (hooked on 0x3F4E0 at the end of the
 // file).
@@ -533,9 +533,17 @@ constexpr int64_t kTurnedUs = 250000;
 // when the tank (0x2BAEC0, which calls 0x2F99A0 from 0x2BBB4F) last ran for a player, and when TankAim last saw
 // them aiming it; while they aim, the cameras' turns leave the motion alone and TankAim turns the aim (the driver
 // aims it, see there). Out of aim mode the mouse turns the cameras in the tank as anywhere.
-constexpr uint32_t kTankTurnReturn = 0x2BBB54;
+constexpr uint32_t kTankTurnReturn = 0x2BBB54, kWeaponTurnReturn = 0x2FBC10;
 std::atomic<int64_t> g_tank_us[kPorts] = {}, g_aim_us[kPorts] = {};
 constexpr int64_t kAimUs = 100000;
+
+// a match's weapon camera out of its scope, turned by the mouse: the game keeps where its scope looks for the next
+// time it comes up only while it sees the right stick move, so while the mouse turns it Pad holds the stick at its
+// first step in the mouse's direction (0.45 degrees a second, a turn too small to see) for kNudgeUs, and the
+// game keeps up
+std::atomic<int64_t> g_nudge_us[kPorts] = {};
+std::atomic<int> g_nudge_x[kPorts] = {};
+constexpr int64_t kNudgeUs = 60000;
 
 bool InTank(int port, int64_t now) { return now - g_tank_us[port].load(std::memory_order_relaxed) < kTurnedUs; }
 bool Aiming(int port, int64_t now) {
@@ -553,7 +561,15 @@ bool Aiming(int port, int64_t now) {
 // mouse moves those too, the pitch only as far as the camera's limits allow, and the eased values the view follows
 // (+0x10, +0x4C) as far, so the mouse turns at once while the stick's turn eases as the game has it. A caller takes
 // one or the other, never both. The motion is taken once a frame, and every camera turned in that frame gets it.
-void Turn(uint32_t actions, uint32_t turn, uint32_t ret) {
+//
+// Not the weapon camera (0x2FB960, which calls it from 0x2FBC0B; a sniper's scope): its turn adds to an aim off the
+// player's facing, and the game keeps where the scope looks for the next time it comes up (in the camera, at +0x124
+// among others) only from the stick's own turn, so a scope the mouse turned came up again where the stick last left
+// it. There, in a multiplayer match and while the view is zoomed in (display::CameraFov under kScopedFov), the mouse
+// drives the right stick (Pad), as for a camera that does not come here, and the game turns the scope, the player and
+// what it keeps as with a stick. So it does in an aircraft (the player in esi, their state kFlying), which flies by
+// the stick. Aiming out of the scope, and single player, keep the mouse's own turn.
+void Turn(uint32_t actions, uint32_t turn, uint32_t ret, uint32_t player) {
     constexpr uint32_t kPlayer1Actions = 0x763260, kActionsSize = 0x1B0;
     constexpr uint32_t kYaw = 0x04, kYawTurn = 0x08, kYawEased = 0x10;
     constexpr uint32_t kPitch = 0x40, kPitchTurn = 0x44, kPitchEased = 0x4C;
@@ -562,6 +578,23 @@ void Turn(uint32_t actions, uint32_t turn, uint32_t ret) {
     const uint32_t port = (actions - kPlayer1Actions) / kActionsSize;
     const int mode = keyboard::ActiveMode();
     if (port >= uint32_t(kPorts) || !g_look[mode][port] || !g_held.load() || !Readable(turn, kPitchEased + 4)) return;
+    if (ret == kWeaponTurnReturn && warp::Multiplayer()) {
+        // a match's scope (the view zoomed in), or an aircraft (the player's state at +0xA4 is kFlying while they
+        // fly one, and the plane steers by the stick): Pad turns them by the stick
+        constexpr float kScopedFov = 45.0f;
+        constexpr uint32_t kPlayerState = 0xA4, kFlying = 0x429;
+        const float fov = display::CameraFov();
+        const bool flying = Readable(player + kPlayerState, 4) && R32(player + kPlayerState) == kFlying;
+        const int stick = fov < kScopedFov ? 1 : flying ? 2 : 0;
+        static std::atomic<int> was{0};
+        if (stick != was.exchange(stick))
+            LOGR("mouse: the weapon camera is %s (the view %.1f degrees high)",
+                 stick == 1   ? "a scope, turned as right stick"
+                 : stick == 2 ? "an aircraft's, turned as right stick"
+                              : "turned by the mouse",
+                 fov);
+        if (stick) return;
+    }
     if (ret == kTankTurnReturn) g_tank_us[port].store(Now(), std::memory_order_relaxed);
     if (Aiming(int(port), Now())) return;
     const uint32_t settings = R32(turn);
@@ -596,6 +629,10 @@ void Turn(uint32_t actions, uint32_t turn, uint32_t ret) {
     }
     if (!dx && !dy) return;
     LOG_FIRST(1, "mouse: look turns the camera");
+    if (ret == kWeaponTurnReturn && dx) {
+        g_nudge_x[port].store(dx > 0 ? 1 : -1, std::memory_order_relaxed);
+        g_nudge_us[port].store(Now(), std::memory_order_relaxed);
+    }
 
     // counts into degrees: right lowers the yaw, up raises the pitch (as the stick does); raw y grows downward
     const float yaw = float(dx) * kDegreesPerCount * float(g_sensitivity[mode][port]) / 100.0f;
@@ -674,6 +711,8 @@ void Pad(int port, input::Pad& pad) {
     // a camera Turn reaches takes the motion itself, the tank's aim TankAim; the stick is for the rest
     if (Aiming(port, now) || now - g_turned_us[port].load(std::memory_order_relaxed) < kTurnedUs) {
         l.x.Reset(), l.y.Reset();
+        if (warp::Multiplayer() && now - g_nudge_us[port].load(std::memory_order_relaxed) < kNudgeUs)
+            Stick(pad, g_nudge_x[port].load(std::memory_order_relaxed), 0);
         return;
     }
 
@@ -728,7 +767,7 @@ void Refresh(void*) {}
 
 void Pad(int, input::Pad&) {}
 
-void Turn(uint32_t, uint32_t, uint32_t) {}
+void Turn(uint32_t, uint32_t, uint32_t, uint32_t) {}
 
 void TankAim(uint32_t) {}
 
@@ -744,11 +783,11 @@ void TankAim(uint32_t) {}
 // to what it worked out (mouse::Turn).
 X86_EXTERN_FUNC(__imp__sub_002F99A0);
 X86_FUNC(sub_002F99A0) {
-    const uint32_t actions = ctx.eax, turn = ctx.ecx;
+    const uint32_t actions = ctx.eax, turn = ctx.ecx, player = ctx.esi;
     uint32_t ret;
     std::memcpy(&ret, base + ctx.esp, 4);
     __imp__sub_002F99A0(ctx, base);
-    mouse::Turn(actions, turn, ret);
+    mouse::Turn(actions, turn, ret, player);
 }
 
 // 0x3F4E0 (the player in eax): the player's camera in a vehicle, among much else; the tank's aim (mouse::TankAim)

@@ -24,4 +24,7 @@ void Init();
 // and the headless harness keeps the console's 4:3 unless asked
 float Aspect(float display);
 
+// the height in degrees the last camera projected sees ([camera+0x264], 50 unzoomed): a sniper's scope narrows it
+float CameraFov();
+
 }  // namespace display
