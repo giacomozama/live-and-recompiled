@@ -14,6 +14,7 @@
 #include <cstdlib>
 
 #include "app/app.h"
+#include "core/diag.h"
 #include "gpu/interp.h"
 #include "kernel/kernel.h"
 #include "xdk/d3d8.h"
@@ -108,11 +109,17 @@ d3d::DrawTag g_before_effect;
 bool g_in_effect = false;
 }  // namespace
 
-// [[hook]] at 0xD9AAF, before the effect's draw
+// [[hook]] at 0xD9AAF, before the effect's draw. ebx: the effect's type; with XBE_PERF its draws are counted under
+// the type's name (d3d::DrawTag::label)
 void ConkerEffectDraw(X86Context& ctx, uint8_t* base) {
     (void)base;
-    if (!Tagging()) return;
-    g_before_effect = d3d::SetDrawTag({ctx.esi, ctx.ebp, true});
+    if (!Tagging() && !diag::Perf()) return;
+    uint32_t label = 0;
+    if (diag::Perf() && ctx.ebx < 127) {
+        label = 0x590650 + ctx.ebx * 0x70 + 8;
+        d3d::CountLabel(label);
+    }
+    g_before_effect = d3d::SetDrawTag({ctx.esi, ctx.ebp, true, label});
     g_in_effect = true;
 }
 

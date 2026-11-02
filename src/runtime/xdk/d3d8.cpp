@@ -3,12 +3,15 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cstdio>
+#include <cstring>
 #include <map>
 #include <string>
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
+#include <vector>
 
 #include "app/app.h"
 #include "core/diag.h"
@@ -612,7 +615,22 @@ gpu::interp::Tag TagOfDraw() {
 }
 }  // namespace
 
+// XBE_PERF: per label, how many were counted (CountLabel), their draws and vertices this second
+namespace {
+struct LabelCount {
+    uint64_t calls = 0, draws = 0, verts = 0;
+};
+std::unordered_map<uint32_t, LabelCount> g_label_counts;
+}  // namespace
+
+void CountLabel(uint32_t label) {
+    if (!diag::Perf() || !label) return;
+    std::lock_guard<std::recursive_mutex> lock(g_lock);
+    g_label_counts[label].calls++;
+}
+
 DrawTag SetDrawTag(DrawTag tag) {
+    if (tag.piece && !tag.label) tag.label = g_tag.label;
     // called around each piece of every model drawn (a battle's 16000 a frame): no lock nor walk when nothing was
     // pushed since the last
     if (Dev(kDevPush) == g_walk) return std::exchange(g_tag, tag);
@@ -997,6 +1015,36 @@ HLE_STDCALL(D3DDevice_Swap, 1) {
         last = now;
         if (ms > 250 && g_presents > 2) LOGR("d3d: frame %u took %.0f ms", g_presents.load(), ms);
         if (loadtrace::On()) loadtrace::Frame(g_presents, ms);
+    }
+    if (diag::Perf()) {
+        // the labelled draws (SetDrawTag's label: Conker's effect types) a frame, the most first
+        using clock = std::chrono::steady_clock;
+        static clock::time_point start = clock::now();
+        static uint32_t frames = 0;
+        frames++;
+        if (clock::now() - start >= std::chrono::seconds(1)) {
+            std::vector<std::pair<uint32_t, LabelCount>> list(g_label_counts.begin(), g_label_counts.end());
+            std::sort(list.begin(), list.end(),
+                      [](const auto& a, const auto& b) { return a.second.draws > b.second.draws; });
+            std::string line;
+            double n = frames;
+            uint64_t all = 0;
+            for (const auto& [label, c] : list) all += c.draws;
+            for (size_t i = 0; i < list.size() && i < 8; i++) {
+                const auto& [label, c] = list[i];
+                std::string name(reinterpret_cast<const char*>(HostPtr(label)),
+                                 strnlen(reinterpret_cast<const char*>(HostPtr(label)), 0x48));
+                if (name.rfind("CHAREFFECTS_TYPE_", 0) == 0) name.erase(0, 17);
+                char part[160];
+                std::snprintf(part, sizeof(part), "%s%s %.1f (%.0f draws %.1fk verts)", i ? ", " : "", name.c_str(),
+                              c.calls / n, c.draws / n, c.verts / n / 1000.0);
+                line += part;
+            }
+            if (!list.empty()) LOGR("perf: labelled %.0f draws a frame: %s", all / n, line.c_str());
+            g_label_counts.clear();
+            start = clock::now();
+            frames = 0;
+        }
     }
     // the kept display is shown until the title presents its own
     kernel::SetSavedDataAddress(0);
@@ -1579,6 +1627,11 @@ void BackendDraw(uint32_t prim, uint32_t start, uint32_t count, const uint8_t* i
     if (!g_backend) return;
     LodNote(prim, count);
     gpu::interp::g_draw_tag = TagOfDraw();
+    if (g_tag.label && diag::Perf()) {
+        LabelCount& c = g_label_counts[g_tag.label];
+        c.draws++;
+        c.verts += count;
+    }
     struct Untag {
         ~Untag() { gpu::interp::g_draw_tag = {}; }
     } untag;

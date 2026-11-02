@@ -30,11 +30,16 @@ void LodTraceRun(X86Context& ctx, uint32_t data, uint32_t owner = 0);
 // them, the commands pushed before are read first. {0, 0} tags nothing. Returns the tag it replaces. group: the
 // object's draws come in no fixed order (an effect's particles), so its tag says only whose draw it is, and its draws
 // are told apart among themselves by how near they are (gpu::interp::Tag::group)
+// label (XBE_PERF only, not part of the tag's key): the guest address of a name the draws are counted under, logged
+// once a second as 'perf: labelled'; a tag set with none inside a labelled one keeps its label (an effect's models)
 struct DrawTag {
     uint32_t object = 0, piece = 0;
     bool group = false;
+    uint32_t label = 0;
 };
 DrawTag SetDrawTag(DrawTag tag);
+// XBE_PERF: one more of what label names (an effect drawn), beside the draws counted under it
+void CountLabel(uint32_t label);
 
 // Whether a title's loading screen, about to be drawn into the front buffer, should be drawn. Each one shown is a
 // Present the loader waits on, and those drawn unshown still cost the GPU their whole picture in the first frame

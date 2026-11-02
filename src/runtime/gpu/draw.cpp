@@ -12,14 +12,18 @@
 #endif
 #include "gpu/dxgi_formats.h"
 
+#include <algorithm>
 #include <atomic>
 #include <bit>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <string>
 #include <unordered_map>
 #include <utility>
+#include <vector>
 
 #include "core/diag.h"
 #include "core/log.h"
@@ -865,9 +869,9 @@ void LogPerf() {
              p.compile / n, p.clear / n, p.copy / n, p.sync / n, p.present / n, p.swap / n, p.wait / n,
              (el - host) / n);
         LOGR("perf: draw steps per frame: setup %.2f vs %.2f ps %.2f pso %.2f consts %.2f record %.2f | %.0f of %.0f "
-             "draws in the state before, drawn as %.0f runs (%.0f reused)",
+             "draws in the state before (%.0f with registers of their own), drawn as %.0f runs (%.0f reused)",
              p.d_setup / n, p.d_vs / n, p.d_ps / n, p.d_pso / n, p.d_consts / n, p.d_record / n, p.fast / n,
-             p.draws / n, p.runs / n, p.reused / n);
+             p.draws / n, p.own_constants / n, p.runs / n, p.reused / n);
         {
             uint64_t cyc[5], all = 0;
             for (int i = 0; i < 5; i++) all += cyc[i] = g_perf_rec_cycles[i].exchange(0);
@@ -892,6 +896,29 @@ void LogPerf() {
              p.sig_bytes / n / 1048576.0, p.texups / n, p.texup_bytes / n / 1048576.0, p.newtex / n,
              p.targets / n, p.rtups / n, p.shrinks / n, p.syncs / n, p.lates / n,
              (unsigned long long)p.shaders, (unsigned long long)p.psos);
+        {
+            // the programs that took the most time, with why their draws missed the fast path: changed (state set
+            // between), unkept (the draw before not kept), gated (capture, post effects, a surface's depth), inputs
+            // (vertex layout or buffers), ring (constants no longer at the ring's end), reads (a register it reads
+            // changed), targets; consts: fast, with its registers uploaded (KeptConstants)
+            std::vector<std::pair<uint64_t, ProgramPerf>> list(g_perf_programs.begin(), g_perf_programs.end());
+            std::sort(list.begin(), list.end(), [](const auto& a, const auto& b) { return a.second.ms > b.second.ms; });
+            static const char* const kWhyName[] = {"fast", "changed", "unkept", "gated", "inputs", "ring", "reads",
+                                                   "targets", "consts"};
+            for (size_t i = 0; i < list.size() && i < 12; i++) {
+                const auto& [prog, pp] = list[i];
+                std::string why;
+                for (int w = 0; w < ProgramPerf::kWhyCount; w++) {
+                    if (!pp.why[w]) continue;
+                    char part[48];
+                    std::snprintf(part, sizeof(part), " %s %.0f", kWhyName[w], pp.why[w] / n);
+                    why += part;
+                }
+                LOGR("perf: programs %2zu: %llX %.2f ms %.0f draws %.1fk verts |%s", i + 1, (unsigned long long)prog,
+                     pp.ms / n, pp.draws / n, pp.verts / n / 1000.0, why.c_str());
+            }
+            g_perf_programs.clear();
+        }
         g_perf = Perf{};
         perf_start = PerfClock::now();
         perf_frames = 0;

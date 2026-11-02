@@ -953,6 +953,7 @@ private:
     void Push(const Bindings& b);
     void PushRaw(const Bindings& b);
     bool FastDraw(const State& s, uint32_t prim, uint32_t start, uint32_t count, const uint8_t* indices, bool patches);
+    bool KeptConstants(const State& s, const Assembled* a);
     void KeepDraw(const Assembled& a, const DrawShaders& sh, const DrawTextures& stages, VkPipeline pso,
                   const Bindings& b, GuestExtent size);
     void BeginCommands(VkCommandBuffer cmd);
@@ -1272,9 +1273,11 @@ private:
         Topology topology = Topology::Triangles;
         bool strip = false, pretransformed = false;
         std::array<VertexElement, 16> elements{};
+        bool plain = false;  // no shading program: its registers feed the vertex shader alone (KeptConstants)
     };
     KeptDraw kept_;
     bool same_state_ = false;  // Changed: nothing the kept draw drew with has changed since
+    ProgramPerf::Why fast_why_ = ProgramPerf::kFast;  // XBE_PERF: why FastDraw turned the draw down
     std::unordered_map<uint64_t, VkPipeline> psos_;
     shader_record::Recorder record_;
     // WarmUp's results by source hash and pipeline key, taken by Compile and EnsurePipeline as they first need them
@@ -3899,13 +3902,9 @@ bool VulkanBackend::ReuseRun(const State& s) {
     while (kept_run_next_ < kept_runs_.size() && kept_runs_[kept_run_next_].first < pass_serial_) kept_run_next_++;
     if (kept_run_next_ >= kept_runs_.size() || kept_runs_[kept_run_next_].first != pass_serial_) return false;
     const KeptRun& r = kept_runs_[kept_run_next_];
-    if (!last_vc_ok_ || !last_dc_ok_ || kept_.b.cb[0].buffer != last_vc_.buf || kept_.b.cb[0].offset != last_vc_.off ||
-        kept_.b.cb[1].buffer != last_dc_.buf || kept_.b.cb[1].offset != last_dc_.off)
-        return false;
-    if (!kept_.reads.Same(s.vsc.data(), last_vsc_.data())) return false;
-    if (CurrentFrame().used > kUploadSize - kUploadReserve) return false;
     if (bound_rt_ != kept_.rt || bound_ds_ != kept_.ds || bound_ms_ != kept_.ms || (!bound_rt_ && !bound_ds_))
         return false;
+    if (!KeptConstants(s, nullptr)) return false;
     FlushRun();
     EnsureRendering();
     if (kept_.pso != drawn_.pso) {
@@ -4402,6 +4401,24 @@ void VulkanBackend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t
     }
     if (!replay_) WatchDraw(s, start, count, indices);
     PerfScope perf_draw{g_perf.draw};
+    // XBE_PERF: the draw's time and path under its program (g_perf_programs), the frame's own draws only
+    struct ProgramScope {
+        ProgramPerf* pp = nullptr;
+        ProgramPerf::Why why = ProgramPerf::kFast;
+        PerfClock::time_point t;
+        ~ProgramScope() {
+            if (!pp) return;
+            pp->ms += PerfMs(t);
+            pp->why[why]++;
+        }
+    } prog_scope;
+    if (diag::Perf() && !replay_) {
+        bool prog = (s.vs_handle & 1) && s.vs && !s.vs->program.empty();
+        prog_scope.pp = &g_perf_programs[prog ? s.vs->hash : s.vs_handle];
+        prog_scope.pp->draws++;
+        prog_scope.pp->verts += count;
+        prog_scope.t = PerfClock::now();
+    }
     g_perf.draws++;
     frame_draws_++;
     draw_serial_++;
@@ -4413,12 +4430,18 @@ void VulkanBackend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t
     bool same = std::exchange(same_state_, false) && &s != &sprite_;
     bool patches = tess_ && TessellatedDraw(s, prim);
     // the effects watch for the first screen space draw, which a draw like a 3D one isn't
+    fast_why_ = ProgramPerf::kFast;
     if (same && kept_.ok && !cap_ && (!PostWanted() || post_done_ || kept_.solid) &&
         !(kept_.surface && SurfaceDepth(s, start, count, indices)) &&
         ((replay_ && ReuseRun(s)) || FastDraw(s, prim, start, count, indices, patches))) {
         g_perf.fast++;
+        prog_scope.why = fast_why_ == ProgramPerf::kConsts ? ProgramPerf::kConsts : ProgramPerf::kFast;
         return;
     }
+    prog_scope.why = !same                 ? ProgramPerf::kChanged
+                     : !kept_.ok           ? ProgramPerf::kUnkept
+                     : fast_why_ != ProgramPerf::kFast ? fast_why_
+                                                       : ProgramPerf::kGated;
     kept_.ok = false;
     FlushRun();
     if (replay_ && &s != &sprite_ && !cap_) {
@@ -4608,6 +4631,7 @@ void VulkanBackend::KeepDraw(const Assembled& a, const DrawShaders& sh, const Dr
     kept_.strip = a.strip;
     kept_.pretransformed = a.pretransformed;
     kept_.elements = a.elements;
+    kept_.plain = !sh.shading;
 }
 
 // a draw whose state is the kept draw's but for its vertices and constants: false, nothing recorded, when anything it
@@ -4615,6 +4639,49 @@ void VulkanBackend::KeepDraw(const Assembled& a, const DrawShaders& sh, const Dr
 // follow the frame. Its targets, textures and depth copy are the kept draw's: in one state nothing but another
 // command (Changed) changes them, a guest texture is checked for writes once a frame anyway, and a kept draw was no
 // depth copy
+// XBE_KEPT_CONSTANTS=0: a draw in the kept draw's state whose registers changed goes the whole way, as before
+static bool KeptConstantsOn() {
+    static const bool on = [] {
+        const char* e = std::getenv("XBE_KEPT_CONSTANTS");
+        return !(e && *e == '0');
+    }();
+    return on;
+}
+
+// The constants for a draw in the kept draw's state (FastDraw, ReuseRun): the kept draw's, still in the ring, when the
+// registers its program reads hold the same; else, its state being the kept draw's in all but those, its registers
+// uploaded and bound in their place (kept_.b), so it keeps the kept draw's pipeline and textures. The zombies' death
+// puffs (2F4A85DC) are 4 vertices a draw, each with its position in a register: some 740 a frame, each set up the whole
+// way, took the render thread 3 ms and Zombie Fest below 60. The draw constants (cb[1]) come of the state alone, so
+// stay. Not for a shading program, whose registers pick its passes. While the effects still look for the frame's first
+// screen space draw and its view, which the registers decide (TrackPost), only a draw that is 3D as the kept one was
+// (FastDraw's gate: kept_.solid), the view taken from it as the whole way would; a, the draw's assembly, null when
+// unknown (ReuseRun), which then goes the whole way
+bool VulkanBackend::KeptConstants(const State& s, const Assembled* a) {
+    fast_why_ = ProgramPerf::kRing;
+    if (!last_vc_ok_ || !last_dc_ok_ || kept_.b.cb[0].buffer != last_vc_.buf || kept_.b.cb[0].offset != last_vc_.off ||
+        kept_.b.cb[1].buffer != last_dc_.buf || kept_.b.cb[1].offset != last_dc_.off)
+        return false;
+    if (CurrentFrame().used > kUploadSize - kUploadReserve) return false;
+    if (kept_.reads.Same(s.vsc.data(), last_vsc_.data())) {
+        fast_why_ = ProgramPerf::kFast;
+        return true;
+    }
+    fast_why_ = ProgramPerf::kReads;
+    if (!kept_.plain || !KeptConstantsOn()) return false;
+    if (PostWanted() && !post_done_) {
+        if (!a || !kept_.solid || ScreenSpaceDraw(s, *a)) return false;
+        TrackPost(s, false);
+    }
+    last_vc_ = Upload(sizeof(s.vsc.v));
+    std::memcpy(last_vc_.cpu, s.vsc.data(), sizeof(s.vsc.v));
+    last_vsc_ = s.vsc.v;
+    kept_.b.cb[0] = {last_vc_.buf, last_vc_.off, sizeof(s.vsc.v)};
+    g_perf.own_constants++;
+    fast_why_ = ProgramPerf::kConsts;
+    return true;
+}
+
 bool VulkanBackend::FastDraw(const State& s, uint32_t prim, uint32_t start, uint32_t count, const uint8_t* indices,
                              bool patches) {
     Assembled& a = asm_;
@@ -4624,6 +4691,7 @@ bool VulkanBackend::FastDraw(const State& s, uint32_t prim, uint32_t start, uint
     }
     auto lap = PerfClock::now();
     // the inputs the shaders and pipeline were made for
+    fast_why_ = ProgramPerf::kInputs;
     if (a.regs != kept_.regs || a.decode != kept_.decode || a.topology != kept_.topology || a.strip != kept_.strip ||
         a.pretransformed != kept_.pretransformed)
         return false;
@@ -4634,14 +4702,10 @@ bool VulkanBackend::FastDraw(const State& s, uint32_t prim, uint32_t start, uint
     }
     bool quad = count <= kQuadVertices && !s.rs[kRsZEnable] && a.topology != Topology::Points;
     if (quad != kept_.quad) return false;
-    // the constants still in the ring, holding what the shaders read
-    if (!last_vc_ok_ || !last_dc_ok_ || kept_.b.cb[0].buffer != last_vc_.buf || kept_.b.cb[0].offset != last_vc_.off ||
-        kept_.b.cb[1].buffer != last_dc_.buf || kept_.b.cb[1].offset != last_dc_.off)
-        return false;
-    if (!kept_.reads.Same(s.vsc.data(), last_vsc_.data())) return false;
-    if (CurrentFrame().used > kUploadSize - kUploadReserve) return false;
+    fast_why_ = ProgramPerf::kTargets;
     if (bound_rt_ != kept_.rt || bound_ds_ != kept_.ds || bound_ms_ != kept_.ms || (!bound_rt_ && !bound_ds_))
         return false;
+    if (!KeptConstants(s, &a)) return false;
     const DrawTextures& stages = kept_.stages;
     g_perf.d_setup += PerfLap(lap);
 

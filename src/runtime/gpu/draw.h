@@ -10,6 +10,7 @@
 #include <filesystem>
 #include <string>
 #include <thread>
+#include <unordered_map>
 #include <vector>
 
 #include "core/diag.h"
@@ -78,6 +79,7 @@ struct Perf {
     uint64_t fast = 0;  // draws that took the kept draw's state up again (FastDraw)
     uint64_t runs = 0;  // runs of fast draws drawn as one
     uint64_t reused = 0;  // runs a frame drawn again took from the frame's own
+    uint64_t own_constants = 0;  // fast draws (or reused runs) with registers of their own uploaded (KeptConstants)
     uint64_t redrawn = 0;  // draws a frame drawn again took from the frame's own whole-way draws (ReuseDraw)
     // drawn again the whole way instead: changed for the picture (moved vertices, a decal), the frame's draw not kept
     // (a FastDraw one, fur, a depth pass), or refused (ring, targets, textures)
@@ -85,6 +87,16 @@ struct Perf {
     uint64_t redraw_textures = 0;  // refused: its stages of other kinds than the frame's draw had
 };
 inline Perf g_perf;
+// XBE_PERF: the frame's own draws (not frame generation's) per vertex program (its hash, or the fixed function's
+// handle), on the render thread: the time Draw took, how many took the kept draw's state (FastDraw), and why the rest
+// did not (ProgramPerf::kWhy), logged as 'perf: programs' with the most time first
+struct ProgramPerf {
+    enum Why { kFast, kChanged, kUnkept, kGated, kInputs, kRing, kReads, kTargets, kConsts, kWhyCount };
+    double ms = 0;
+    uint64_t draws = 0, verts = 0;
+    uint64_t why[kWhyCount] = {};
+};
+inline std::unordered_map<uint64_t, ProgramPerf> g_perf_programs;
 // the milliseconds since t, then t is now
 inline double PerfLap(PerfClock::time_point& t) {
     auto now = PerfClock::now();
