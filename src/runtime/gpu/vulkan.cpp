@@ -1179,6 +1179,7 @@ private:
     bool non_solid_ = false;
     bool tess_ = false;  // ProgramShading::tess
     bool precise_ = false;
+    bool demote_ = false;  // shaderDemoteToHelperInvocation: HLSL's discard and clip compile to it
     bool custom_border_ = false;
     bool dynamic_rendering_ext_ = false;
     uint32_t custom_border_max_ = 0;
@@ -1370,6 +1371,8 @@ private:
         uint64_t fence;
     };
     VkQueryPool query_pool_ = VK_NULL_HANDLE;
+    std::vector<uint64_t> query_use_;  // per query, the fence value of the submission that last used it (0 none)
+    uint64_t query_done_ = 0;          // Completed() as last asked for them: asked again only for a query past it
     bool queries_failed_ = false;
     uint32_t query_next_ = 0;
     std::vector<Query> counted_;  // since the last ClearReport
@@ -1693,6 +1696,7 @@ bool VulkanBackend::PickDevice() {
         non_solid_ = f.features.fillModeNonSolid;
         tess_ = f.features.tessellationShader;
         precise_ = f.features.occlusionQueryPrecise;
+        demote_ = f13.shaderDemoteToHelperInvocation;
         custom_border_ = HasExtension(exts, VK_EXT_CUSTOM_BORDER_COLOR_EXTENSION_NAME);
         dynamic_rendering_ext_ = HasExtension(exts, VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME);
     }
@@ -1740,6 +1744,8 @@ bool VulkanBackend::CreateDevice() {
     border.customBorderColorWithoutFormat = VK_TRUE;
     VkPhysicalDeviceVulkan13Features f13{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES, custom_border_ ? &border : nullptr};
     f13.dynamicRendering = VK_TRUE;
+    // glslang writes discard as OpDemoteToHelperInvocation, which a shader may only use with the feature on
+    f13.shaderDemoteToHelperInvocation = demote_;
     VkPhysicalDeviceVulkan12Features f12{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES, &f13};
     f12.timelineSemaphore = VK_TRUE;
     f12.hostQueryReset = VK_TRUE;
@@ -1976,12 +1982,17 @@ void VulkanBackend::CreateBlitSamplers() {
 }
 
 bool VulkanBackend::InitUi() {
-    VkDescriptorPoolSize ps{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 16};
+    // ImGui's backend (1.92 on) binds a texture and its sampler as two sets, a sampled image and a sampler: a pool
+    // without those types fails the allocation on a strict driver (MoltenVK), which lost the overlay and with it the
+    // frame's picture; other drivers let it pass
+    const VkDescriptorPoolSize ps[] = {{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 16},
+                                       {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 16},
+                                       {VK_DESCRIPTOR_TYPE_SAMPLER, 16}};
     VkDescriptorPoolCreateInfo pi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
     pi.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
-    pi.maxSets = 16;
-    pi.poolSizeCount = 1;
-    pi.pPoolSizes = &ps;
+    pi.maxSets = 32;
+    pi.poolSizeCount = uint32_t(std::size(ps));
+    pi.pPoolSizes = ps;
     if (vkCreateDescriptorPool(dev_, &pi, nullptr, &ui_pool_) != VK_SUCCESS) return false;
     ImGui_ImplVulkan_InitInfo ii{};
     ii.ApiVersion = VK_API_VERSION_1_3;
@@ -4108,6 +4119,7 @@ bool VulkanBackend::EnsureQueries() {
         return false;
     }
     vkResetQueryPool(dev_, query_pool_, 0, kQueries);
+    query_use_.assign(kQueries, 0);
     return true;
 }
 
@@ -4115,9 +4127,24 @@ bool VulkanBackend::EnsureQueries() {
 // begun inside the draw's render pass and ended there
 uint32_t VulkanBackend::BeginCountedDraw(const State& s) {
     if (replay_ || !s.simple[kMCountEnable >> 2] || !EnsureQueries()) return kNoQuery;
-    uint32_t query = query_next_++ % kQueries;
+    // the next query the GPU is done with: a host reset of one a submission still uses (the ring come round within
+    // the frames in flight, many counted draws a frame) is invalid, and MoltenVK's validation caught it
+    const uint64_t recording = fence_value_ + 1;
+    uint32_t query = kNoQuery;
+    for (uint32_t tries = 0; tries < kQueries; tries++) {
+        const uint32_t q = query_next_++ % kQueries;
+        if (query_use_[q] > query_done_ && query_use_[q] < recording) query_done_ = Completed();
+        if (query_use_[q] <= query_done_) {
+            query = q;
+            break;
+        }
+    }
+    if (query == kNoQuery) {
+        LOG_FIRST(1, "vulkan: every occlusion query is in flight, a counted draw goes uncounted");
+        return kNoQuery;
+    }
+    query_use_[query] = recording;
     frame_counted_++;
-    // its last use was frames ago, done by now
     vkResetQueryPool(dev_, query_pool_, query, 1);
     vkCmdBeginQuery(cmd_, query_pool_, query, precise_ ? VK_QUERY_CONTROL_PRECISE_BIT : 0);
     return query;
