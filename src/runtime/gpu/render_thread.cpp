@@ -19,6 +19,7 @@
 #include <algorithm>
 #include <chrono>
 #include <condition_variable>
+#include <cstdlib>
 #include <cstring>
 #include <deque>
 #include <mutex>
@@ -635,6 +636,14 @@ private:
         frame_draws_ = 0;
     }
 
+    static float DecalBias() {
+        static const float k = [] {
+            const char* e = std::getenv("XBE_INTERP_DECAL_BIAS");
+            return e ? std::strtof(e, nullptr) : 2.0f;  // XBE_INTERP_DECAL_BIAS overrides; 1 leaves decals be
+        }();
+        return k;
+    }
+
     // the frame's commands again, up to its Present in last, with the draws' constants at t from the frame before's;
     // only what draws: clears, copies, state, draws
     void Replay(const Batch& last, float t) {
@@ -662,9 +671,30 @@ private:
                         n++;
                         if (perf) gen_blend_ns_ += Ns(blend_start);
                         if (!interp::Hidden(how)) {
+                            // a decal (depth tested, not written, polygon offset on, as Conker's shadow receiver
+                            // 4A0744A9) pulled DecalBias times its offset toward the camera: its matrices and the
+                            // floor's, blended apart, put it behind the floor at points of a lift ride (1.3 needed)
+                            const uint32_t was_offset = SimpleState(rs, kMDepthOffset);
+                            const uint32_t was_slope = SimpleState(rs, kMSlopeScale);
+                            const bool decal = DecalBias() != 1.0f && rs.rs[kRsZEnable] &&
+                                               !SimpleState(rs, kMZWriteEnable) && SimpleState(rs, kMSolidOffsetEnable);
+                            if (decal) {
+                                float o = Bits(was_offset) * DecalBias(), sl = Bits(was_slope) * DecalBias();
+                                uint32_t ob, sb;
+                                std::memcpy(&ob, &o, 4);
+                                std::memcpy(&sb, &sl, 4);
+                                rs.simple.set(kMDepthOffset >> 2, ob);
+                                rs.simple.set(kMSlopeScale >> 2, sb);
+                                changed = true;
+                            }
                             inner_->Changed(changed);
                             changed = false;
                             inner_->Draw(rs, c.a, start, c.c, c.d ? data : nullptr);
+                            if (decal) {
+                                rs.simple.set(kMDepthOffset >> 2, was_offset);
+                                rs.simple.set(kMSlopeScale >> 2, was_slope);
+                                changed = true;
+                            }
                         }
                         undo.Restore(rs);  // the draw's own constants and transforms, for the commands after
                         break;

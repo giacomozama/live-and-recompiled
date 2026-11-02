@@ -112,7 +112,8 @@ Keys MakeKeys(const State& s, uint32_t prim, uint32_t start, uint32_t count, con
         uint32_t va = mem::VirtualFromPhysical(kernel::R32(st.vb + kResData));
         addresses = Mix(addresses, uint64_t(va) << 32 | st.stride);
         if (!Tracing() && !Recording()) continue;
-        uint32_t n = std::min(kDataHashBytes, verts * st.stride);
+        // recording: all of them, as a draw's vertices may be written again past the first few (CheckVertices)
+        uint32_t n = Recording() ? verts * st.stride : std::min(kDataHashBytes, verts * st.stride);
         d = HashBytes(Mix(d, i), kernel::HostPtr(va + first * st.stride), n);
     }
     uint32_t sampled = SampledStages(s);
@@ -175,6 +176,8 @@ struct Snap {
     uint64_t data = 0;
     uint64_t program = 0;
     std::array<uint64_t, kParts> parts{};
+    // recording, for its watch line: z enable, z write, z func, offset enable, offset, slope, stencil enable, func
+    std::array<uint32_t, 8> depth{};
     std::bitset<192> stale;  // palette registers (Reads::relative up) another draw left: none of this one's (Stale)
     int32_t found = -1;  // the draw of the frame before it was found as
     float distance = 0;  // from it, per value read (Distance)
@@ -403,6 +406,7 @@ struct Pass {
     std::unordered_map<uint64_t, uint32_t> jump_lines;                     // per program, draws listed in jumps
     uint32_t rewritten = 0;  // draws whose vertices changed since the frame drew them, by program
     std::unordered_map<uint64_t, uint32_t> rewritten_programs;
+    uint32_t rewritten_draw = UINT32_MAX;  // the last of them, for its watch line
 };
 Pass g_pass;
 std::string g_notes[8];
@@ -873,6 +877,10 @@ void Draw(const State& s, bool same, const Tag& tag, uint32_t prim, uint32_t sta
     sn.tag = tag;
     sn.target = s.rt.data;
     sn.textures = k.textures;
+    if (Recording())
+        sn.depth = {s.rs[kRsZEnable], SimpleState(s, kMZWriteEnable), SimpleState(s, kMZFunc),
+                    SimpleState(s, kMSolidOffsetEnable), SimpleState(s, kMDepthOffset), SimpleState(s, kMSlopeScale),
+                    s.rs[kRsStencilEnable], SimpleState(s, kMStencilFunc)};
     if (tag.key && !tag.group) cur.tags[tag.key] = n;
     else if (tag.key) cur.groups[tag.key].push_back(n);
     KeepVertices(cur, sn, s, start, count, indices);
@@ -1427,8 +1435,13 @@ void Watch(uint32_t n, const Snap& sn, Blended how, const std::string& jumped, c
                                   : "other addresses",
              sn.distance, sn.next, sn.stale.count(), sn.reads ? sn.reads->relative : 192u);
     g_pass.watched += b;
-    snprintf(b, sizeof(b), "\n      target %08X, textures %08X %08X %08X %08X", sn.target, sn.textures[0],
-             sn.textures[1], sn.textures[2], sn.textures[3]);
+    snprintf(b, sizeof(b), "\n      target %08X, textures %08X %08X %08X %08X%s", sn.target, sn.textures[0],
+             sn.textures[1], sn.textures[2], sn.textures[3],
+             g_pass.rewritten_draw == n ? ", vertices changed since drawn" : "");
+    g_pass.watched += b;
+    const auto& d = sn.depth;
+    snprintf(b, sizeof(b), "\n      depth %s, write %u, func %X, offset %s %g slope %g, stencil %s func %X",
+             d[0] ? "on" : "off", d[1], d[2], d[3] ? "on" : "off", Bits(d[4]), Bits(d[5]), d[6] ? "on" : "off", d[7]);
     g_pass.watched += b;
     // its tag: the object and the piece of its model, and the key; untagged draws were matched by distance alone
     if (sn.tag.key) {
@@ -2138,6 +2151,7 @@ void CheckVertices(uint32_t n, const State& s, uint32_t prim, uint32_t start, ui
     if (MakeKeys(s, prim, start, count, indices).data == cur.snaps[n].data) return;
     g_pass.rewritten++;
     g_pass.rewritten_programs[ProgramOf(s)]++;
+    g_pass.rewritten_draw = n;
 }
 
 uint32_t Recording() {
