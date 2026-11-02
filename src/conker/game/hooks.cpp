@@ -505,3 +505,17 @@ X86_FUNC(sub_002ACB20) {
     }
     __imp__sub_002ACB20(ctx, base);
 }
+
+// 0x352320 (esi the profile, [0x862CD0]) works out the multiplayer cheats the player has earned: Potty Mouth from the
+// campaign, Chapter X on every difficulty or the class medals (byte +0x1439), Flame Fire's gold bullets from the
+// MOD#YellowBullets stat, 1,500 kills online (+0x143B), and Purple Streak from MOD#PurpleBullets, 3,000 (+0x143D).
+// Each sits after its on/off byte (+0x1438, +0x143A, +0x143C), which is left to the player. With no Xbox Live stats to
+// earn them from, all three are unlocked here.
+X86_EXTERN_FUNC(__imp__sub_00352320);
+X86_FUNC(sub_00352320) {
+    const uint32_t profile = ctx.esi;
+    __imp__sub_00352320(ctx, base);
+    base[profile + 0x1439] = 1;
+    base[profile + 0x143B] = 1;
+    base[profile + 0x143D] = 1;
+}
