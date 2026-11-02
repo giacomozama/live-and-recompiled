@@ -32,9 +32,11 @@ in its folder instead.
 
 ## Status
 
-Single player is playable start to finish. It's expected to be mostly bug free and optimized almost everywhere. Some minor visual glitches might occur, especially in relation with framerates above 60 and frame interpolation.
+Single player is playable start to finish. It's expected to be mostly bug free and optimized almost everywhere.
 
-Solo Dumbots and split screen multiplayer works, but hasn't been tested thoroughly. Lan/Online play is untested altogether.
+Multiplayer and Dumbots work with some quirks, but haven't been tested thoroughly.
+
+See [KNOWN_ISSUES.md](KNOWN_ISSUES.md) for the known issues.
 
 ## Installation
 
