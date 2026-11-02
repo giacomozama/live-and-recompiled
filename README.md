@@ -58,15 +58,15 @@ Then it is two steps: run Setup, run the game.
        - **NOTE:** You have to run the original app and let it extract the game once first, otherwise the files will not decode correctly.
      - **Linux:** if you bought it on the Microsoft Store, download its package with the
        [Xodus project](https://github.com/xodus-gaming/xodus) or copy it from a Windows install. You can use streaming mode to extract the files automatically.
-   - **Working folder**: `work` beside Setup by default (made if it's missing). The compiler is downloaded into it (once) and the
+   - **Working folder**: `work` beside Setup by default (made if it's missing). The compiler that comes inside Setup is unpacked into it (once) and the
      game is built there. Setup removes the temporary files when done and keeps the compiler for next time, unless
-     you untick "Keep the downloaded compiler".
+     you untick "Keep the unpacked compiler".
    - **Game folder**: `game` beside Setup by default; where the game is made, with the game's files in an `assets` folder inside it.
 
-   Press Recompile. Setup checks your copy is a supported version, downloads the compiler (first time only), recompiles
+   Press Recompile. Setup checks your copy is a supported version, unpacks the compiler (first time only), recompiles
    the game and writes the executable. This takes a few minutes. Nothing of the game is uploaded.
-   - **Windows:** downloads [Zig](https://ziglang.org) (about 100 MB) and writes `Game.exe`.
-   - **Linux:** downloads [Zig](https://ziglang.org) (about 50 MB) and writes the native `Game`. If it says permission
+   - **Windows:** builds with the [Zig](https://ziglang.org) inside Setup and writes `Game.exe`.
+   - **Linux:** builds with the [Zig](https://ziglang.org) inside Setup and writes the native `Game`. If it says permission
      denied, your archive tool dropped the executable bit: `chmod +x setup-linux`.
 
    Without a display, or with any option, Setup runs in the terminal instead: `./setup-linux --cli --source

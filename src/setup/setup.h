@@ -17,7 +17,7 @@ struct Options {
     std::filesystem::path toolchain;  // another copy of the target's compiler (testing)
     unsigned jobs = 1;
     bool keep = false;                // leave the generated code, the objects and the unpacked kit in the work folder
-    bool keep_compiler = true;        // leave the downloaded compiler there too, for the next install
+    bool keep_compiler = true;        // leave the unpacked compiler there too, for the next install
 };
 
 // the kit's own facts: what the window shows before anything is chosen

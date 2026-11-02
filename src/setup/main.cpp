@@ -4,7 +4,7 @@
 // folder on the first run) and an empty assets folder.
 // Setup takes the game from where the player points it (its files, a disc image or the digital release's package, which
 // it unpacks), checks it is the release the kit was made for,
-// downloads the compiler the kit's <os>.toml pins for this host into work/toolchain/<os>-<host> (once), recompiles the game,
+// unpacks the compiler the kit carries for this host into work/toolchain/<os>-<host> (once), recompiles the game,
 // compiles the result with that compiler and links the game beside itself. It runs on Windows and on Linux, and builds
 // for the system it runs on: <exe>.exe on Windows (Zig's mingw-w64), the native <exe> on Linux (Zig, against
 // glibc), both with the Zig the kit pins.
@@ -19,10 +19,10 @@
 // with the extracted default.xbe, or a folder holding one of these. The game's files are put in
 // assets/ below the game folder, where the game looks for them, unless they are already there. --work is where the
 // kit, the compiler and, while building, the generated code and objects go (work, beside Setup); --game-dir is where the game is linked (game, beside Setup). Both are made when missing.
-// --keep leaves the generated code and the unpacked kit in the work folder, --delete-compiler removes the downloaded
+// --keep leaves the generated code and the unpacked kit in the work folder, --delete-compiler removes the unpacked
 // compiler when done (it stays by default, for the next install); --toolchain uses another copy of the target's
 // compiler of the kit's version; --root is the folder Setup
-// would be in; --fetch-toolchain only downloads the compiler.
+// would be in; --fetch-toolchain only unpacks the compiler.
 #include <miniz.h>
 #include <toml++/toml.hpp>
 
@@ -49,7 +49,6 @@
 #endif
 #include <io.h>
 #include <windows.h>
-#include <winhttp.h>
 #else
 #include <fcntl.h>
 #include <spawn.h>
@@ -111,7 +110,7 @@ struct Kit {
     std::vector<std::string> driver;  // the compiler's own first arguments (zig's "c++"), before every command
     std::vector<std::string> cxxflags, ldflags, libs;
     fs::path toolchain;                           // work/toolchain/<os>-<host>, cxx is in it
-    std::string toolchain_url, toolchain_sha256;  // [toolchain.<host>]: the compiler's archive Setup downloads
+    std::string toolchain_archive, toolchain_sha256;  // [toolchain.<host>]: the compiler's archive inside the kit, and its checksum
     std::string Game() const { return target == "windows" ? exe + ".exe" : exe; }
 };
 
@@ -238,6 +237,7 @@ bool UnpackKit(const fs::path& dir, std::string& error) {
         if (!ok || st.m_is_directory) continue;
         fs::path rel = fs::path(st.m_filename).lexically_normal();
         if (rel.is_absolute() || std::find(rel.begin(), rel.end(), "..") != rel.end()) continue;  // not below dir
+        if (*rel.begin() == "toolchain") continue;  // the compiler's archive, unpacked by EnsureToolchain when needed
         fs::path out = dir / rel;
         fs::create_directories(out.parent_path(), ec);
         {
@@ -298,14 +298,14 @@ bool LoadKit(const fs::path& kit_dir, Kit& k, std::string& error) {
     k.cxxflags = Strings(o["cxxflags"]);
     k.ldflags = Strings(o["ldflags"]);
     for (auto& s : Strings(o["libs"])) k.libs.push_back(s.rfind("-", 0) == 0 ? s : (kit_dir / s).generic_string());
-    k.toolchain_url = o["toolchain"][kHost]["url"].value_or(std::string());
+    k.toolchain_archive = o["toolchain"][kHost]["archive"].value_or(std::string());
     k.toolchain_sha256 = o["toolchain"][kHost]["sha256"].value_or(std::string());
     if (k.exe.empty() || k.xbe.empty() || k.sha1.size() != 40) {
         error = "exe, xbe and sha1 must be set";
         return false;
     }
-    if (!k.toolchain_url.empty() && k.toolchain_sha256.size() != 64) {
-        error = target + ".toml: [toolchain." + kHost + "] needs the sha256 of its url";
+    if (!k.toolchain_archive.empty() && k.toolchain_sha256.size() != 64) {
+        error = target + ".toml: [toolchain." + kHost + "] needs the sha256 of its archive";
         return false;
     }
 #ifdef _WIN32
@@ -567,8 +567,8 @@ bool Run(const char* what, const fs::path& exe, const std::vector<std::string>& 
     return true;
 }
 
-// the toolchain: the kit's <os>.toml pins the compiler's archive by URL and SHA-256, Setup downloads it into work/toolchain
-// once
+// the toolchain: the kit carries the compiler's archive (toolchain/<name>, named and checksummed in its <os>.toml), Setup
+// unpacks it into work/toolchain once
 
 std::string Sha256File(const fs::path& p) {
     static const uint32_t K[64] = {
@@ -622,74 +622,6 @@ std::string Sha256File(const fs::path& p) {
         for (int i = 28; i >= 0; i -= 4) hex += "0123456789abcdef"[(v >> i) & 15];
     return hex;
 }
-
-#ifdef _WIN32
-// WinHTTP, which every Windows and Wine have (curl.exe is not in Wine)
-bool Download(const std::string& url, const fs::path& to, const fs::path&) {
-    std::wstring wurl = Wide(url);
-    URL_COMPONENTS u{};
-    u.dwStructSize = sizeof(u);
-    u.dwHostNameLength = u.dwUrlPathLength = u.dwExtraInfoLength = DWORD(-1);
-    if (!WinHttpCrackUrl(wurl.c_str(), 0, 0, &u)) {
-        Say("Cannot read the download address %s\n", url.c_str());
-        return false;
-    }
-    std::wstring host(u.lpszHostName, u.dwHostNameLength), path(u.lpszUrlPath, u.dwUrlPathLength);
-    if (u.lpszExtraInfo) path.append(u.lpszExtraInfo, u.dwExtraInfoLength);
-    HINTERNET session =
-        WinHttpOpen(L"Setup", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
-    HINTERNET conn = session ? WinHttpConnect(session, host.c_str(), u.nPort, 0) : nullptr;
-    HINTERNET req = conn ? WinHttpOpenRequest(conn, L"GET", path.c_str(), nullptr, WINHTTP_NO_REFERER,
-                                              WINHTTP_DEFAULT_ACCEPT_TYPES,
-                                              u.nScheme == INTERNET_SCHEME_HTTPS ? WINHTTP_FLAG_SECURE : 0)
-                         : nullptr;
-    // redirects (GitHub sends one to its file host) are followed by default
-    bool ok = req && WinHttpSendRequest(req, WINHTTP_NO_ADDITIONAL_HEADERS, 0, WINHTTP_NO_REQUEST_DATA, 0, 0, 0) &&
-              WinHttpReceiveResponse(req, nullptr);
-    DWORD error = ok ? 0 : GetLastError(), status = 0, total = 0, size = sizeof(DWORD);
-    if (ok)
-        WinHttpQueryHeaders(req, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_HEADER_NAME_BY_INDEX,
-                            &status, &size, WINHTTP_NO_HEADER_INDEX);
-    if (ok && status == 200) {
-        size = sizeof(DWORD);
-        WinHttpQueryHeaders(req, WINHTTP_QUERY_CONTENT_LENGTH | WINHTTP_QUERY_FLAG_NUMBER,
-                            WINHTTP_HEADER_NAME_BY_INDEX, &total, &size, WINHTTP_NO_HEADER_INDEX);
-        std::ofstream f(to, std::ios::binary | std::ios::trunc);
-        std::vector<char> buf(1 << 20);
-        uint64_t got = 0, shown = ~0ull;
-        DWORD n = 0;
-        while ((ok = f && WinHttpReadData(req, buf.data(), DWORD(buf.size()), &n)) && n) {
-            ok = bool(f.write(buf.data(), n));
-            got += n;
-            if (got >> 20 != shown) {
-                shown = got >> 20;
-                if (total) Progress(0.10 + 0.15 * double(got) / double(total));
-                if (total) Say("\r  %llu / %llu MB", (unsigned long long)shown, (unsigned long long)(total >> 20));
-                else Say("\r  %llu MB", (unsigned long long)shown);
-            }
-        }
-        if (!ok) error = GetLastError();
-        ok = ok && f.flush() && (!total || got == total);
-        Say("\n");
-    }
-    if (req) WinHttpCloseHandle(req);
-    if (conn) WinHttpCloseHandle(conn);
-    if (session) WinHttpCloseHandle(session);
-    if (!ok || status != 200) {
-        if (ok) Say("The download failed (the server answered %lu). Try again later.\n", (unsigned long)status);
-        else Say("The download failed (error %lu). Check the internet connection and run Setup again.\n",
-                 (unsigned long)error);
-        return false;
-    }
-    return true;
-}
-#else
-// curl, which every Linux desktop and SteamOS have; its progress bar goes to the terminal
-bool Download(const std::string& url, const fs::path& to, const fs::path&) {
-    return Run("Downloading", "/usr/bin/env",
-               {"curl", "-fL", "--retry", "3", g_sink ? "-sS" : "-#", "-o", to.string(), url}, {});
-}
-#endif
 
 // the zip's files below its top folder into dest
 bool Unzip(const fs::path& zip, const fs::path& dest) {
@@ -758,40 +690,57 @@ bool Unpack(const fs::path& archive, const std::string& url, const fs::path& des
 #endif
 }
 
-// work/toolchain/<os>-<host> holds the archive the kit's <os>.toml pins for this host once it is downloaded, checked and
-// unpacked; sha256.txt in it says which
+// the compiler's archive out of the kit inside Setup into a file
+bool ExtractToolchain(const std::string& name, const fs::path& to) {
+    mz_zip_archive z{};
+    if (g_kit_zip.empty() || !mz_zip_reader_init_mem(&z, g_kit_zip.data(), g_kit_zip.size(), 0)) {
+        Say("%s\n", kNoKit);
+        return false;
+    }
+    int i = mz_zip_reader_locate_file(&z, ("toolchain/" + name).c_str(), nullptr, 0);
+    bool ok = i >= 0;
+    if (ok) {
+        std::ofstream f(to, std::ios::binary | std::ios::trunc);
+        auto write = [](void* o, mz_uint64, const void* buf, size_t n) -> size_t {
+            return static_cast<std::ofstream*>(o)->write(static_cast<const char*>(buf), std::streamsize(n)) ? n : 0;
+        };
+        ok = f && mz_zip_reader_extract_to_callback(&z, mz_uint(i), write, &f, 0) && f.flush();
+    }
+    mz_zip_reader_end(&z);
+    if (!ok) Say("Cannot read the compiler (%s) inside Setup.\n", name.c_str());
+    return ok;
+}
+
+// work/toolchain/<os>-<host> holds the compiler from the kit once it is unpacked; sha256.txt in it says which
 bool EnsureToolchain(const fs::path& kit_dir, const Kit& k) {
     fs::path tc = k.toolchain, stamp = tc / "sha256.txt";
     std::error_code ec;
     std::vector<uint8_t> have;
-    if (fs::exists(k.cxx, ec) && (k.toolchain_url.empty() || (ReadFile(stamp, have) &&
-                                                              std::string(have.begin(), have.end()) == k.toolchain_sha256)))
+    if (fs::exists(k.cxx, ec) && (k.toolchain_archive.empty() || (ReadFile(stamp, have) &&
+                                                                  std::string(have.begin(), have.end()) == k.toolchain_sha256)))
         return true;
-    if (k.toolchain_url.empty()) {
-        Say("The tools for building the game are missing (%s) and this Setup has no address to download them from.\n",
-            k.cxx.string().c_str());
+    if (k.toolchain_archive.empty()) {
+        Say("The tools for building the game are missing (%s) and this Setup carries none.\n", k.cxx.string().c_str());
         return false;
     }
-    fs::path archive = tc.string() + ".download", fresh = tc.string() + ".new";
+    fs::path archive = tc.string() + ".archive", fresh = tc.string() + ".new";
     fs::create_directories(tc.parent_path(), ec);
     fs::remove(archive, ec);
     fs::remove_all(fresh, ec);
-    Say("Downloading the tools needed to build the game (about 100 MB, only the first time):\n  %s\n",
-        k.toolchain_url.c_str());
-    if (!Download(k.toolchain_url, archive, kit_dir / "download.log")) {
+    Say("Unpacking the tools needed to build the game (only the first time) ...\n");
+    if (!ExtractToolchain(k.toolchain_archive, archive)) {
         fs::remove(archive, ec);
         return false;
     }
     std::string sha = Sha256File(archive);
     if (sha != k.toolchain_sha256) {
-        Say("The downloaded file is not the one this Setup expects (checksum %s, expected %s).\n"
-            "Run Setup again; if this keeps happening, please report it.\n",
+        Say("The compiler inside Setup is not the one it expects (checksum %s, expected %s).\n"
+            "Download the release again; if this keeps happening, please report it.\n",
             sha.c_str(), k.toolchain_sha256.c_str());
         fs::remove(archive, ec);
         return false;
     }
-    Say("Unpacking the downloaded tools ...\n");
-    bool ok = Unpack(archive, k.toolchain_url, fresh, kit_dir / "unpack.log") &&
+    bool ok = Unpack(archive, k.toolchain_archive, fresh, kit_dir / "unpack.log") &&
               WriteFile(fresh / "sha256.txt", sha.data(), sha.size());
     fs::remove(archive, ec);
     if (ok) {
@@ -800,7 +749,7 @@ bool EnsureToolchain(const fs::path& kit_dir, const Kit& k) {
         ok = !ec;
     }
     if (!ok || !fs::exists(k.cxx, ec)) {
-        Say("Could not unpack the downloaded tools into %s\n", tc.string().c_str());
+        Say("Could not unpack the tools into %s\n", tc.string().c_str());
         fs::remove_all(fresh, ec);
         return false;
     }
@@ -973,7 +922,7 @@ bool Build(const Options& opt) {
     if (!opt.toolchain.empty()) k.cxx = opt.toolchain / k.cxx.lexically_relative(k.toolchain);
     fs::path game_dir = opt.game_dir.empty() ? root / "game" : opt.game_dir;
     fs::create_directories(game_dir, ec);
-    // Zig's caches: the C++ library it builds for the target once beside the downloaded compiler (with --toolchain, in
+    // Zig's caches: the C++ library it builds for the target once beside the unpacked compiler (with --toolchain, in
     // the work folder like the rest)
     fs::path zig_cache = opt.toolchain.empty() ? k.toolchain / "cache" : work / "zig-cache";
     SetEnv("ZIG_GLOBAL_CACHE_DIR", zig_cache);
@@ -1024,7 +973,7 @@ bool Build(const Options& opt) {
         if (!opt.keep) {
             clear();
             for (const char* d : {"bin", "config", "xdk", "include", "lib"}) fs::remove_all(work / d, ec);
-            for (const char* f : {"kit.toml", "windows.toml", "linux.toml", ".payload", "download.log", "unpack.log"})
+            for (const char* f : {"kit.toml", "windows.toml", "linux.toml", ".payload", "unpack.log"})
                 fs::remove(work / f, ec);
         }
         if (!opt.keep_compiler) fs::remove_all(work / "toolchain", ec);

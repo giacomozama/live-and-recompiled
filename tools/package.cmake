@@ -1,13 +1,12 @@
 # package.cmake - build the player release, on Linux or Windows: setup-windows.exe and setup-linux, each with the kit
 # (everything but the game's code) inside it.
 #
-# Players build the game on their own machine from their own copy: Setup takes the game from where it is pointed, downloads the
-# pinned Zig for its host, recompiles the game, compiles the result and links it: Game.exe on Windows, the native Game
-# on Linux (against glibc). Nothing in the release is the title's code, or the compiler.
+# Players build the game on their own machine from their own copy: Setup takes the game from where it is pointed, unpacks the
+# pinned Zig it carries for its host, recompiles the game, compiles the result and links it: Game.exe on Windows, the native Game
+# on Linux (against glibc). Nothing in the release is the title's code.
 #
 #   cmake -P tools/package.cmake                    build the kit, test it against the game in assets/, zip it
 #   cmake -DTEST=OFF -P tools/package.cmake         skip the test
-#   cmake -DTEST_DOWNLOAD=ON -P tools/package.cmake test with the compiler Setup downloads, not the one in toolchain/
 #   cmake -DJOBS=N -P tools/package.cmake           parallel jobs (default: every core)
 # tools/package.sh and tools/package.bat run it with the same options as flags.
 #
@@ -64,22 +63,22 @@ if(NOT CMAKE_HOST_WIN32)
     # dynamic against glibc 2.31 like the game: its window needs X11, which a static musl program cannot load
     file(COPY ${XBE_BUILDS}/zig-glibc/setup-linux DESTINATION ${DEST})
 endif()
-# no compiler in the release: Setup downloads the Zig of the same release for its host on the player's machine, for
-# Game.exe on Windows and for the native Game on Linux
-function(kit_toolchain os tool version)
-    set(toml "\n# the compiler (${tool} ${version}) for the host Setup runs on, downloaded into ")
+# the compiler goes inside each Setup with the kit: the pinned Zig's own archive for the host Setup runs on, which Setup
+# unpacks into its working folder on the player's machine (for Game.exe on Windows, the native Game on Linux)
+function(kit_toolchain os host)
+    toolchain_archive(ZIG ${host} archive)
+    file(SHA256 ${archive} sha)
+    set(toml "\n# the compiler (Zig ${ZIG_VERSION}) for the host Setup runs on: the archive inside Setup, unpacked into ")
     string(APPEND toml "work/toolchain/${os}-<host> once\n")
-    foreach(host ${ARGN})
-        string(APPEND toml "[toolchain.${host}]\nurl = \"${${tool}_URL}/${${tool}_${host}_ARCHIVE}\"\n")
-        string(APPEND toml "sha256 = \"${${tool}_${host}_SHA256}\"\n")
-    endforeach()
+    string(APPEND toml "[toolchain.${host}]\narchive = \"${ZIG_${host}_ARCHIVE}\"\nsha256 = \"${sha}\"\n")
     file(APPEND ${DEST}/kit/${os}.toml "${toml}")
+    set(KIT_TOOLCHAIN_${os} ${archive} PARENT_SCOPE)
 endfunction()
-kit_toolchain(windows ZIG ${ZIG_VERSION} windows)
-message(STATUS "      setup-windows.exe downloads Zig ${ZIG_VERSION} for Game.exe")
+kit_toolchain(windows windows)
+message(STATUS "      setup-windows.exe carries Zig ${ZIG_VERSION} for Game.exe")
 if(EXISTS ${DEST}/kit/linux.toml)
-    kit_toolchain(linux ZIG ${ZIG_VERSION} linux)
-    message(STATUS "      setup-linux downloads Zig ${ZIG_VERSION} for the native Game")
+    kit_toolchain(linux linux)
+    message(STATUS "      setup-linux carries Zig ${ZIG_VERSION} for the native Game")
 endif()
 
 # the kit goes inside each Setup: a zip of this host's files, appended to the executable and then a footer of
@@ -96,9 +95,10 @@ function(embed_kit os setup recomp)
     endforeach()
     file(COPY ${DEST}/kit/lib/${os} DESTINATION ${stage}/lib)
     file(COPY ${DEST}/kit/bin/${recomp} DESTINATION ${stage}/bin)
+    file(COPY ${KIT_TOOLCHAIN_${os}} DESTINATION ${stage}/toolchain)
     set(zip ${OUT}/.kit-${os}.zip)
     file(REMOVE ${zip})
-    execute_process(COMMAND ${CMAKE_COMMAND} -E tar cf ${zip} --format=zip kit.toml ${os}.toml config xdk include lib bin
+    execute_process(COMMAND ${CMAKE_COMMAND} -E tar cf ${zip} --format=zip kit.toml ${os}.toml config xdk include lib bin toolchain
         WORKING_DIRECTORY ${stage} COMMAND_ERROR_IS_FATAL ANY)
     file(SIZE ${zip} size)
     string(LENGTH "${size}" digits)
@@ -124,8 +124,7 @@ file(REMOVE_RECURSE ${DEST}/kit)
 
 message(STATUS "[4/5] test")
 if(TEST)
-    # a player's steps on this host: the release's Setup and recompiler, the game's default.xbe, and this host's
-    # compiler from toolchain/ (or, with TEST_DOWNLOAD, the one Setup downloads)
+    # a player's steps on this host: the release's Setup with its recompiler and compiler, and the game's default.xbe
     string(RANDOM LENGTH 6 tag)
     set(scratch ${OUT}/.test-${tag})
     file(MAKE_DIRECTORY ${scratch}/assets)
@@ -134,17 +133,12 @@ if(TEST)
         file(COPY ${DEST}/setup-linux DESTINATION ${scratch})
         set(setup ${scratch}/setup-linux)
         set(game Game)
-        set(toolchain ${ZIG_HOST_DIR})
     else()
         file(COPY ${DEST}/setup-windows.exe DESTINATION ${scratch})
         set(setup ${scratch}/setup-windows.exe)
         set(game Game.exe)
-        set(toolchain ${ZIG_HOST_DIR})
     endif()
     set(args --source ${scratch}/assets --jobs ${JOBS})
-    if(NOT TEST_DOWNLOAD)
-        list(APPEND args --toolchain ${toolchain})
-    endif()
     execute_process(COMMAND ${setup} ${args} RESULT_VARIABLE code)
     if(code OR NOT EXISTS ${scratch}/game/${game})
         message(FATAL_ERROR "the test build made no game/${game} (exit ${code})")

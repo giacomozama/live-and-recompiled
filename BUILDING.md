@@ -24,8 +24,7 @@ How to build the port from a checkout and how to package a release. For playing,
   (`default.xbe` with `dvddata/` and `media/` beside it), or the digital release's package (`DefaultPackage` and its
   `DefaultPackage.data` folder), which Setup's unpacker (`setup-linux --unpack`) unpacks (a Microsoft Store install keeps it in
   `C:\XboxGames\Conker- Live and Reloaded\Content\Game`; see the README's Installation).
-- **Linux:** `cmake` (3.25 or newer), `ninja` and `git` (and `curl` for packaging's
-  `--test-download`). Add `extract-xiso`
+- **Linux:** `cmake` (3.25 or newer), `ninja` and `git`. Add `extract-xiso`
   to build from a disc image, and Wine or Proton to run `Game.exe`. The native port (`--linux`) also needs the X11 and
   Wayland development headers SDL builds against (SDL loads the libraries themselves at run time), and a Vulkan 1.3
   driver to run. `ndisasm` is only for `tools/xbe_disasm.py`.
@@ -95,8 +94,8 @@ Setup's FLTK window (Wayland or X11, picked at run time) and the native SDL need
 and PipeWire headers (SDL loads those libraries at run time). A player's Zig links the game code with the same
 libc++ into a `Game` that needs only glibc, or a `Game.exe` that needs only system DLLs. Then it tests the release as
 a Linux player would: the packaged `setup-linux` builds the native `Game` from the game in
-`assets/`, and the test fails unless it comes out. `--no-test` skips the test, and `--test-download` makes it
-use the compiler Setup downloads.
+`assets/`, and the test fails unless it comes out. `--no-test` skips the test. The Zig archive for each host goes inside its
+Setup (downloaded once into `toolchain/archives/`), so players download nothing.
 
 The kit only accepts the exact XBE it was packaged from, so package from the supported release.
 
@@ -110,14 +109,14 @@ builds with the pinned Zig, which it downloads into `toolchain\`. Put the suppor
 tools\package.bat
 ```
 
-It writes `out\release\LiveAndRecompiled-<version>-windows-x86_64.zip` and takes the same `--no-test`, `--test-download` and
+It writes `out\release\LiveAndRecompiled-<version>-windows-x86_64.zip` and takes the same `--no-test` and
 `-j N` options. Here the test runs the packaged `setup-windows.exe`.
 
 `setup-linux` and the kit's Linux half need Linux's headers: a release packaged on Windows has `setup-windows.exe`
 alone, which builds `Game.exe`.
 
 Both scripts run `tools/package.cmake`, which can also be run directly: `cmake -P tools/package.cmake`, with
-`-DTEST=OFF`, `-DTEST_DOWNLOAD=ON` or `-DJOBS=N` before `-P`.
+`-DTEST=OFF` or `-DJOBS=N` before `-P`.
 
 ## The digital release's package
 

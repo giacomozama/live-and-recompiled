@@ -100,7 +100,7 @@ else()
 endif()
 target_include_directories(setup PRIVATE ${XBE_ROOT_DIR}/src/runtime)
 target_compile_definitions(setup PRIVATE _CRT_SECURE_NO_WARNINGS)
-target_link_libraries(setup PRIVATE tomlplusplus::tomlplusplus miniz fltk $<$<PLATFORM_ID:Windows>:winhttp>)
+target_link_libraries(setup PRIVATE tomlplusplus::tomlplusplus miniz fltk)
 # Zig builds use its own libc headers, so the X11 and Wayland ones FLTK includes are found after them, as for SDL (cmake/zig-glibc.cmake)
 if(XBE_ZIG_TARGET AND NOT WIN32)
     target_compile_options(fltk PRIVATE -idirafter /usr/include)
@@ -289,8 +289,8 @@ endfunction()
 #   kit/config, xdk/   the image's config and the XDK tables
 #   kit/include/       the headers the generated code includes, and image_symbols.h to check the recompile against
 #   kit/lib/<os>/      the prebuilt host (runtime, game hooks, ImGui), glslang and SDL
-# <os>.toml's [toolchain.windows] and [toolchain.linux] (where Setup downloads the compiler of the version the kit was
-# built with, Zig, for the host it runs on, and its SHA-256) are added by the packaging script; Setup
+# <os>.toml's [toolchain.windows] and [toolchain.linux] (the archive of the compiler of the version the kit was
+# built with, Zig, for the host it runs on, kit/toolchain/<archive> inside Setup, and its SHA-256) are added by the packaging script; Setup
 # unpacks it into kit/toolchain/<os>-<host> on the first run, and cxx is relative to that.
 # title is the name Setup shows.
 function(add_xbe_player_kit target title)

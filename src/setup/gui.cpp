@@ -480,14 +480,14 @@ int RunWindow(const Options& defaults) {
     u.status->labelsize(13);
     y += label_h + 18;
 
-    row(u.work, "Working folder: where Setup puts the compiler it downloads (about 100 MB) and its temporary files", defaults.work, false);
+    row(u.work, "Working folder: where Setup unpacks its compiler (about 400 MB) and its temporary files", defaults.work, false);
     u.work.browse->callback([](Fl_Widget*, void*) { Browse(g_ui->work, false); });
     y += 18;
     row(u.game, "Game folder: where Setup puts the finished game and its data files", defaults.game_dir, false);
     u.game.browse->callback([](Fl_Widget*, void*) { Browse(g_ui->game, false); });
     y += 20;
 
-    u.keep_compiler = new CheckBox(M, y, W - 2 * M, row_h, "Keep the downloaded compiler (about 100 MB), so the next run is quicker");
+    u.keep_compiler = new CheckBox(M, y, W - 2 * M, row_h, "Keep the unpacked compiler (about 400 MB), so the next run is quicker");
     u.keep_compiler->value(defaults.keep_compiler);
     u.keep_compiler->labelcolor(kMuted);
     u.keep_compiler->labelsize(13);

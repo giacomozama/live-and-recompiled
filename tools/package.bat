@@ -3,11 +3,10 @@ rem package.bat - build, test and zip the player release on Windows (tools\packa
 rem
 rem   tools\package.bat                  build the kit, test it against the game in assets\, zip it
 rem   tools\package.bat --no-test        skip the test (it needs the game in assets\)
-rem   tools\package.bat --test-download  test with the compiler Setup downloads, not the one in toolchain\
 rem   tools\package.bat -j N             parallel jobs (default: every core)
 rem
 rem Needs CMake 3.25 or newer, Ninja and Git on PATH (winget install --id Kitware.CMake / Ninja-build.Ninja /
-rem Git.Git, or tools\build.bat offers to). The compiler, Zig, is downloaded into toolchain\. No Visual Studio.
+rem Git.Git, or tools\build.bat offers to). The compiler, Zig, is downloaded into toolchain\ and goes inside Setup. No Visual Studio.
 rem A release made here has no Linux half: no setup-linux, and setup-windows.exe builds Game.exe alone.
 setlocal
 rem before any shift: shift moves %0 too, and %~dp0 with it
@@ -17,11 +16,6 @@ set "ARGS="
 if "%~1"=="" goto run
 if "%~1"=="--no-test" (
     set "ARGS=%ARGS% -DTEST=OFF"
-    shift
-    goto args
-)
-if "%~1"=="--test-download" (
-    set "ARGS=%ARGS% -DTEST_DOWNLOAD=ON"
     shift
     goto args
 )

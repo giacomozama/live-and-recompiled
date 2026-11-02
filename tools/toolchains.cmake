@@ -3,8 +3,8 @@
 #   zig         the compiler of every Windows build and of the release's Linux half: `zig c++` for x86_64-windows-gnu
 #               builds Game.exe (tools/build.bat, tools/build.sh), setup-windows.exe and the player kit's Windows half;
 #               against glibc 2.31 the release's native Linux port, setup-linux and the kit's Linux half; `zig ar` and
-#               `zig ranlib` archive their static libraries. Setup downloads the same Zig on the player's machine to
-#               build the game with it, so the prebuilt half and the player's own build of the game code come from one
+#               `zig ranlib` archive their static libraries. Setup carries the same Zig (the archives below) and unpacks it on the player's
+#               machine to build the game with it, so the prebuilt half and the player's own build of the game code come from one
 #               compiler and one libc++. A new Zig needs a new player release too.
 #
 # Included by cmake/zig-windows.cmake, cmake/zig-glibc.cmake, fetch-toolchain.cmake, configure.cmake and
@@ -67,4 +67,35 @@ function(toolchain_fetch tool host)
     file(RENAME ${dl}/unpacked/${top} ${out})
     file(REMOVE_RECURSE ${dl})
     message(STATUS "installed ${out}")
+endfunction()
+
+# toolchain_archive(ZIG <linux|windows> <var>): the pinned archive itself, downloaded and checked into
+# toolchain/archives/ unless it is there already; var gets its path. The release carries it inside each Setup.
+function(toolchain_archive tool host var)
+    set(archive ${${tool}_${host}_ARCHIVE})
+    set(expected ${${tool}_${host}_SHA256})
+    set(file ${TOOLCHAIN_ROOT}/archives/${archive})
+    if(EXISTS ${file})
+        file(SHA256 ${file} sha)
+        if(sha STREQUAL "${expected}")
+            set(${var} ${file} PARENT_SCOPE)
+            return()
+        endif()
+        file(REMOVE ${file})
+    endif()
+    message(STATUS "downloading ${archive}")
+    file(DOWNLOAD ${${tool}_URL}/${archive} ${file}.part SHOW_PROGRESS STATUS status)
+    list(GET status 0 code)
+    if(code)
+        list(GET status 1 why)
+        file(REMOVE ${file}.part)
+        message(FATAL_ERROR "downloading ${archive} failed: ${why}")
+    endif()
+    file(SHA256 ${file}.part sha)
+    if(NOT sha STREQUAL "${expected}")
+        file(REMOVE ${file}.part)
+        message(FATAL_ERROR "${archive} is not the pinned file (sha256 ${sha}, expected ${expected})")
+    endif()
+    file(RENAME ${file}.part ${file})
+    set(${var} ${file} PARENT_SCOPE)
 endfunction()

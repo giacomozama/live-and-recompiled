@@ -1,7 +1,7 @@
 # fetch-toolchain.cmake - download the pinned Zig (tools/toolchains.cmake) into toolchain/, on Linux or Windows.
 #
 #   cmake -P tools/fetch-toolchain.cmake                          Zig for this host
-#   cmake -DHOSTS="linux;windows" -P tools/fetch-toolchain.cmake   for the hosts named (Setup downloads its own; this is
+#   cmake -DHOSTS="linux;windows" -P tools/fetch-toolchain.cmake   for the hosts named (Setup carries its own; this is
 #                                                                  for trying a kit by hand)
 #
 # Installs into $XBE_TOOLCHAIN_ROOT (default: toolchain/ at the repository root) as zig-<version>-<host>/.
