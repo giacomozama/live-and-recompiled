@@ -37,6 +37,7 @@
 #include "common/mouse.h"
 #include "common/reflection.h"
 #include "common/rope.h"
+#include "common/vignette.h"
 #include "common/warp.h"
 #include "common/water.h"
 #include "core/input.h"
@@ -964,6 +965,8 @@ void Draw(double fps) {
                 if (ImGui::Combo("MSAA", &msaa, "Off\0 2x\0 4x\0 8x\0")) s.msaa = kMsaa[msaa];
 
                 ImGui::SeparatorText("Post-processing");
+                ImGui::Checkbox("Vignette", &vignette::g_on);
+                Hint("The game's darkened screen edges. The red flash when you're hurt stays either way.", true);
                 ImGui::Checkbox("SMAA", &s.smaa);
                 Slider("Film grain %", &s.film_grain, 0, 100, app::Settings{}.film_grain);
                 Slider("Chromatic aberration %", &s.chromatic_aberration, 0, 100, app::Settings{}.chromatic_aberration);

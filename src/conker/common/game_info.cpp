@@ -11,6 +11,7 @@
 #include "common/reflection.h"
 #include "common/rope.h"
 #include "common/ui.h"
+#include "common/vignette.h"
 #include "common/water.h"
 
 namespace {
@@ -52,7 +53,8 @@ const app::GameInfo app::kGame = {
                 {"character_max_lod", &characters::g_max_lod, nullptr},  // players keep their full model (hooks.cpp)
                 {"dynamic_water", &water::g_dynamic, nullptr},  // flowing, rippling water (src/conker/common/water.cpp)
                 {"per_pixel_lighting", &lighting::g_per_pixel, nullptr},  // lit per pixel (src/conker/common/lighting.cpp)
-                {"floor_depth", &reflection::g_floor_depth, nullptr}},  // floors over reflections blur by their own depth (reflection.cpp)
+                {"floor_depth", &reflection::g_floor_depth, nullptr},  // floors over reflections blur by their own depth (reflection.cpp)
+                {"vignette", &vignette::g_on, nullptr}},  // the game's darkened screen edges (src/conker/game/vignette.cpp)
     // the [playerN] tables: each player's keyboard bindings, mouse look, invert aim and vibration
     // (src/conker/game/keyboard.cpp, mouse.cpp, hooks.cpp)
     .load = keyboard::Load,
