@@ -392,3 +392,53 @@ bool ConkerScriptTimer(X86Context& ctx, uint8_t* base) {
     left = uint8_t(left > frames ? left - frames : 0);
     return true;
 }
+
+// 0x1A510 (emitter, flag; stdcall): a sound emitter's state machine, run once a frame for each (0x2D440). It counts
+// two timers down by the frame's step ([0x7FA218]): +0xE8 to its next cue, which plays the cue (0x1A4C0) when it
+// runs out, and +0x168 to its stop. XACT starts a 3D cue's stream once the cue is played and positioned, so the cue
+// is heard from the frame its timer runs out. At 30 FPS the timers run out on a 33 ms grid: Harbour's battery, four
+// emitters a few tens of ms apart playing the one cannonade, starts in two pairs of sample aligned copies, one wide
+// volley. At 60 the grid is 16.7 ms and the four start apart, copies of one wave that comb into a hollow, metallic
+// volley. Above 30 the timers move only on a console frame (two ticks), by the steps since the last one, so emitters
+// start on the console's grid. XBE_EMITTER_EVERY_FRAME counts them every frame again.
+X86_EXTERN_FUNC(__imp__sub_0001A510);
+X86_FUNC(sub_0001A510) {
+    static const bool every = std::getenv("XBE_EMITTER_EVERY_FRAME") != nullptr;
+    if (every || display::GameRate() <= 30) {
+        __imp__sub_0001A510(ctx, base);
+        return;
+    }
+    using kernel::R32;
+    auto rf = [&](uint32_t a) {
+        float v;
+        std::memcpy(&v, base + a, 4);
+        return v;
+    };
+    auto wf = [&](uint32_t a, float v) { std::memcpy(base + a, &v, 4); };
+    // the frame's place on the console's grid: the game thread runs every emitter in a frame, so one frame's state
+    // serves them all
+    static uint32_t frame = ~0u, half = ~0u;
+    static float pending = 0, apply = 0;
+    static bool boundary = true;
+    const uint32_t now = display::Ticks();
+    const float step = rf(0x7FA218);
+    if (now != frame) {
+        frame = now;
+        boundary = now / 2 != half;
+        if (boundary) {
+            half = now / 2;
+            apply = pending;  // the steps of the frames between, which this frame's count takes as well
+            pending = 0;
+        } else {
+            pending += step;
+            apply = 0;
+        }
+    }
+    const uint32_t e = R32(ctx.esp + 4);
+    // the function takes the step off each timer it counts: off a frame between console frames, give it back first;
+    // on one, take the frames between off as well
+    const float add = boundary ? -apply : step;
+    if (rf(e + 0xE8) > 0) wf(e + 0xE8, std::max(rf(e + 0xE8) + add, boundary ? 0.0f : step));
+    if (base[e + 5] && rf(e + 0x168) > 0) wf(e + 0x168, std::max(rf(e + 0x168) + add, boundary ? 0.0f : step));
+    __imp__sub_0001A510(ctx, base);
+}
