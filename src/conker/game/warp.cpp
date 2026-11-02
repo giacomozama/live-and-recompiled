@@ -301,6 +301,12 @@ void Poll(X86Context& ctx) {
         for (int i = 0; i < kMaxCutscene; i++)
             if (HasCutscene(ctx, level, i)) found.push_back(i);
         LOGR("warp: in level %s, %zu cutscenes", LevelLabel(level).c_str(), found.size());
+        // A on a picture in the frontend starts its zoom into it: [0x776220] how far, [0x776224] its speed. The level
+        // it opens leaves both as they were, and the frontend it quits back to zooms on into the picture in front on
+        // its own (and opens it); stopped here, in any level but the frontend, which is not running
+        constexpr int kFrontend = 29;
+        constexpr uint32_t kZoom = 0x776220, kZoomSpeed = 0x776224;
+        if (level != kFrontend) kernel::W32(kZoom, 0), kernel::W32(kZoomSpeed, 0);
         std::lock_guard<std::mutex> l(g_lock);
         g_level = level;
         g_cutscenes_level = level;
