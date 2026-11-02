@@ -258,6 +258,7 @@ void SetComplex(uint32_t rs, uint32_t v) {
 
 // NV097_SET_CULL_FACE_ENABLE / _CULL_FACE / _FRONT_FACE, which the library's CullMode and FrontFace push
 constexpr uint32_t kMCullEnable = 0x308, kMCullFace = 0x39C, kMFrontFace = 0x3A0;
+constexpr uint32_t kMDepthTestEnable = 0x30C;  // NV097_SET_DEPTH_TEST_ENABLE
 constexpr uint32_t kGlFront = 0x404, kGlBack = 0x405, kCw = 0x900;
 
 // the renderers cull by the render states (the winding culled, D3DCULL), so a raw write lands there as the chip
@@ -1057,6 +1058,7 @@ COMPLEX_STATE(NormalizeNormals, gpu::kRsNormalizeNormals)
 COMPLEX_STATE(ZEnable, gpu::kRsZEnable)
 namespace {
 void NoteStencil(const char* how, uint32_t v, uint32_t from);
+void NoteDepth(uint32_t v, uint32_t from);
 }  // namespace
 HLE_STDCALL(D3DDevice_SetRenderState_StencilEnable, 1) {
     std::lock_guard<std::recursive_mutex> lock(g_lock);
@@ -1496,6 +1498,12 @@ void NoteStencil(const char* how, uint32_t v, uint32_t from) {
     if (!g_backend) return;
     char text[64];
     std::snprintf(text, sizeof(text), "stencil enable %u %s %08X", v, how, from);
+    g_backend->Note(text);
+}
+void NoteDepth(uint32_t v, uint32_t from) {
+    if (!g_backend) return;
+    char text[64];
+    std::snprintf(text, sizeof(text), "depth test enable %u raw at %08X", v, from);
     g_backend->Note(text);
 }
 
@@ -2271,6 +2279,12 @@ void Walk(uint32_t end) {
                 if (m == gpu::kMStencilTestEnable) {
                     g_state.rs.set(gpu::kRsStencilEnable, v);
                     NoteStencil("raw at", v, p);
+                }
+                // NV097_SET_DEPTH_TEST_ENABLE likewise: the pause screen's counts turn the test off raw, else they
+                // draw tested against the 3D icons under them and vanish behind the money and the tail
+                if (m == kMDepthTestEnable) {
+                    g_state.rs.set(gpu::kRsZEnable, v);
+                    NoteDepth(v, p);
                 }
                 if (m == gpu::kMStencilFail) g_state.rs.set(gpu::kRsStencilFail, v);
                 if (m == kMCullEnable || m == kMCullFace || m == kMFrontFace) ChipCull();
