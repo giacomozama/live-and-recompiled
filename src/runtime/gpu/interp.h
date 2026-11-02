@@ -134,7 +134,10 @@ uint32_t Recording();
 void BeginPass(float t);
 void EndPass(uint32_t slot);
 const std::string& Note(uint32_t slot);
-// recording: whether the frame's draw n, about to be drawn again, still finds the vertices it was drawn with
+// XBE_INTERP_CHECK_VERTICES=1 with recording: draws hash all their vertices (not the first 4 KB) and each picture
+// drawn again checks them, noting draws whose vertices the CPU wrote since; slow in big levels, so off by default
+bool CheckingVertices();
+// whether the frame's draw n, about to be drawn again, still finds the vertices it was drawn with
 void CheckVertices(uint32_t n, const State& s, uint32_t prim, uint32_t start, uint32_t count, const uint8_t* indices);
 
 }  // namespace gpu::interp

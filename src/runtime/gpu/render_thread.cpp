@@ -765,7 +765,8 @@ private:
                 switch (c.op) {
                     case Op::State: Apply(rs, b, c, &changed); break;
                     case Op::Draw: {
-                        if (interp::Recording()) interp::CheckVertices(n, rs, c.a, c.b, c.c, c.d ? data : nullptr);
+                        static const bool check = interp::CheckingVertices();
+                        if (check) interp::CheckVertices(n, rs, c.a, c.b, c.c, c.d ? data : nullptr);
                         static const bool perf = diag::Perf();
                         // a draw a run drawn again took with it (most of the bloodbath's): nothing to blend, the
                         // backend only counts it

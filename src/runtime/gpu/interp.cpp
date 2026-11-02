@@ -112,8 +112,8 @@ Keys MakeKeys(const State& s, uint32_t prim, uint32_t start, uint32_t count, con
         uint32_t va = mem::VirtualFromPhysical(kernel::R32(st.vb + kResData));
         addresses = Mix(addresses, uint64_t(va) << 32 | st.stride);
         if (!Tracing() && !Recording()) continue;
-        // recording: all of them, as a draw's vertices may be written again past the first few (CheckVertices)
-        uint32_t n = Recording() ? verts * st.stride : std::min(kDataHashBytes, verts * st.stride);
+        // checking vertices: all of them, as a draw's vertices may be written again past the first few
+        uint32_t n = CheckingVertices() ? verts * st.stride : std::min(kDataHashBytes, verts * st.stride);
         d = HashBytes(Mix(d, i), kernel::HostPtr(va + first * st.stride), n);
     }
     uint32_t sampled = SampledStages(s);
@@ -2158,6 +2158,14 @@ void CheckVertices(uint32_t n, const State& s, uint32_t prim, uint32_t start, ui
     g_pass.rewritten++;
     g_pass.rewritten_programs[ProgramOf(s)]++;
     g_pass.rewritten_draw = n;
+}
+
+bool CheckingVertices() {
+    static const bool on = [] {
+        const char* e = std::getenv("XBE_INTERP_CHECK_VERTICES");
+        return Recording() && e && std::strtol(e, nullptr, 10) != 0;
+    }();
+    return on;
 }
 
 uint32_t Recording() {
