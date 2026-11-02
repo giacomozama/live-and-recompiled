@@ -234,6 +234,7 @@ struct Frame {
     std::unordered_map<uint64_t, std::vector<uint32_t>> exact;  // of all its parts (Measure)
     // the tagged draws (Tag::key), a follower's as its leader: the draw with its constants
     TagTable tags;
+    TagTable places;  // how many times the frame drew each tag's place (Tag::place), followers too
     std::unordered_map<uint64_t, std::vector<uint32_t>> groups;  // the draws of each group's tag (Tag::group)
     // once matched, the found draws Borrow and BorrowAcross go out to: of each program, their turns in programs; of
     // the frame, those with a program. A run of draws not found (a battle's blood, in new buffers each frame) went
@@ -261,6 +262,7 @@ struct Frame {
         Reuse(mesh);
         Reuse(exact);
         tags.Clear();
+        places.Clear();
         Reuse(groups);
         Reuse(found_turns);
         found_programmed.clear();
@@ -871,7 +873,10 @@ void Draw(const State& s, bool same, const Tag& tag, uint32_t prim, uint32_t sta
         Snap& f = cur.snaps.emplace_back();
         f.leader = leader;
         f.tag = tag;
-        if (tag.key && !tag.group) cur.tags[tag.key] = uint32_t(leader);
+        if (tag.key && !tag.group) {
+            cur.tags[tag.key] = uint32_t(leader);
+            cur.places[tag.place]++;
+        }
         KeepVertices(cur, f, s, start, count, indices);  // a string's letters follow its first
         return;
     }
@@ -887,8 +892,12 @@ void Draw(const State& s, bool same, const Tag& tag, uint32_t prim, uint32_t sta
         sn.depth = {s.rs[kRsZEnable], SimpleState(s, kMZWriteEnable), SimpleState(s, kMZFunc),
                     SimpleState(s, kMSolidOffsetEnable), SimpleState(s, kMDepthOffset), SimpleState(s, kMSlopeScale),
                     s.rs[kRsStencilEnable], SimpleState(s, kMStencilFunc)};
-    if (tag.key && !tag.group) cur.tags[tag.key] = n;
-    else if (tag.key) cur.groups[tag.key].push_back(n);
+    if (tag.key && !tag.group) {
+        cur.tags[tag.key] = n;
+        cur.places[tag.place]++;
+    } else if (tag.key) {
+        cur.groups[tag.key].push_back(n);
+    }
     KeepVertices(cur, sn, s, start, count, indices);
     if (sn.reads) {
         sn.at = uint32_t(cur.values.size());
@@ -1146,12 +1155,32 @@ void Match() {
     // program, whose registers it blends. The passes after find the rest: draws the title tags nothing of, a model at
     // another detail (another piece), an object new to the frame
     constexpr size_t kAhead = 8;  // draws whose tag's slot is fetched before it is looked up
+    // a place drawn a number of times the frame before did not (Tag::place) has its turns paired by distance below:
+    // Conker is drawn twice into the back buffer, mirrored (his reflection in the hall of lasers' floor) and as
+    // himself; a frame without the reflection gave him its turns, blended halfway flat (captures 190957, 191417)
+    struct GroupPair {
+        float d;
+        uint32_t c, p;
+    };
+    static std::vector<GroupPair> group_pairs;
+    static std::vector<bool> group_used;
+    static std::vector<uint32_t> recounted;
+    recounted.clear();
     for (size_t k = 0; k < cur.snaps.size(); k++) {
         if (k + kAhead < cur.snaps.size()) prev.tags.Prefetch(cur.snaps[k + kAhead].tag.key);
         Snap& sn = cur.snaps[k];
         if (sn.leader >= 0 || !sn.tag.key || sn.tag.group) continue;
         const uint32_t* at = prev.tags.Find(sn.tag.key);
-        if (!at) continue;
+        if (!at) {
+            if (prev.places.Find(sn.tag.place)) recounted.push_back(uint32_t(k));  // a turn the frame before lacked
+            continue;
+        }
+        const uint32_t* before = prev.places.Find(sn.tag.place);
+        const uint32_t* now = cur.places.Find(sn.tag.place);
+        if (before && now && *before != *now) {
+            recounted.push_back(uint32_t(k));
+            continue;
+        }
         const Snap& o = prev.snaps[*at];
         // and into the same target (its address too, but for a presented back buffer: MakeKeys). An object drawn into
         // a texture another object's went to the frame before is read through by draws that know nothing of the blend:
@@ -1169,16 +1198,57 @@ void Match() {
         sn.candidates = 1;
         sn.by_tag = true;
     }
+    if (!recounted.empty()) {
+        // each recounted place's draws in both frames, then nearest pairs first among those of a program, its reads
+        // and its target
+        static std::unordered_map<uint64_t, std::pair<std::vector<uint32_t>, std::vector<uint32_t>>> by_place;
+        for (auto& [place, lists] : by_place) {
+            lists.first.clear();
+            lists.second.clear();
+        }
+        for (uint32_t k : recounted) by_place[cur.snaps[k].tag.place].first.push_back(k);
+        for (uint32_t p = 0; p < prev.snaps.size(); p++) {
+            const Snap& o = prev.snaps[p];
+            if (o.leader >= 0 || !o.tag.key || o.tag.group || prev.taken[p]) continue;
+            auto it = by_place.find(o.tag.place);
+            if (it != by_place.end() && !it->second.first.empty()) it->second.second.push_back(p);
+        }
+        for (auto& [place, lists] : by_place) {
+            const std::vector<uint32_t>& list = lists.first;
+            const std::vector<uint32_t>& before = lists.second;
+            if (list.empty() || before.empty()) continue;
+            group_pairs.clear();
+            for (uint32_t c = 0; c < list.size(); c++) {
+                const Snap& sn = cur.snaps[list[c]];
+                for (uint32_t p = 0; p < before.size(); p++) {
+                    const Snap& o = prev.snaps[before[p]];
+                    if (o.program != sn.program || o.reads != sn.reads || o.parts[kTarget] != sn.parts[kTarget])
+                        continue;
+                    group_pairs.push_back({Distance(prev, o, cur, sn, INFINITY), c, p});
+                }
+            }
+            std::sort(group_pairs.begin(), group_pairs.end(), [](const GroupPair& a, const GroupPair& b) {
+                return a.d != b.d ? a.d < b.d : a.c != b.c ? a.c < b.c : a.p < b.p;
+            });
+            group_used.assign(list.size(), false);
+            for (const GroupPair& g : group_pairs) {
+                uint32_t p = before[g.p];
+                if (group_used[g.c] || prev.taken[p]) continue;
+                Snap& sn = cur.snaps[list[g.c]];
+                size_t values = sn.reads ? sn.reads->regs.size() * 4 : kXf * 16;
+                group_used[g.c] = true;
+                prev.taken[p] = true;
+                sn.found = int32_t(p);
+                sn.distance = values ? g.d / float(values) : 0;
+                sn.candidates = uint32_t(before.size());
+                sn.by_tag = true;
+            }
+        }
+    }
     // a group's draws (an effect's particles, in a new order each frame) are found among its draws in the frame before,
     // nearest pairs first, as near as a draw at other addresses may be (loose); those left are new to it (a puff born)
     // and those of the frame before left were gone (one died). Neither is taken for another group's or an untagged
     // draw: the dust a dinosaur kicked up took the other dinosaur's dying puffs, drawn between the two clouds
-    struct GroupPair {
-        float d;
-        uint32_t c, p;
-    };
-    static std::vector<GroupPair> group_pairs;
-    static std::vector<bool> group_used;
     for (const auto& [key, list] : cur.groups) {
         auto it = prev.groups.find(key);
         if (it == prev.groups.end()) continue;

@@ -25,6 +25,9 @@ bool Tracing();
 // key in the frame before, ahead of any guess by distance. key 0: the title said nothing (particles, text)
 struct Tag {
     uint64_t key = 0;
+    // the key but for its turn: the object, piece and place in a static push buffer, the same for each time the frame
+    // draws them (a fur's shells, Conker and his reflection in the floor). 0 for a group's
+    uint64_t place = 0;
     uint32_t object = 0, piece = 0;
     // a group's tag (an effect's particles, drawn in a new order each frame): key the same for all its draws, which
     // are found among the draws of the frame before with that key, nearest first

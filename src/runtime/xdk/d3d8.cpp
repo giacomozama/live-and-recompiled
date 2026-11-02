@@ -604,6 +604,7 @@ gpu::interp::Tag TagOfDraw() {
         key = (key ^ 0x5851F42D4C957F2Dull) * 0xFF51AFD7ED558CCDull;  // the group's, every draw of it the same
     } else {
         key ^= g_draw_at;
+        t.place = key ? key : 1;
         uint32_t turn = g_tag_turns[key]++;
         key = (key ^ (uint64_t(turn) + 1) * 0xC2B2AE3D27D4EB4Full) * 0xFF51AFD7ED558CCDull;
     }
