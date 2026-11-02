@@ -12,6 +12,7 @@
 #endif
 #include "gpu/dxgi_formats.h"
 
+#include <atomic>
 #include <bit>
 #include <chrono>
 #include <cmath>
@@ -123,8 +124,16 @@ void ClassifyShaders(const State& s, const Assembled& a, uint32_t count, ShaderC
     if (!sh.prog) sh.fk = MakeFixedKey(s);
 }
 
+// the title's thread hashes the shaders it makes (HashProgram); one made without, hashed here, may be hashed by frame
+// generation's recorder at the same time, the same value
 void EnsureProgramHash(const State& s) {
-    if (!s.vs->hash) s.vs->hash = Hash(s.vs->program.data(), s.vs->program.size() * 4) | 1;
+    std::atomic_ref<uint64_t> h(s.vs->hash);
+    if (!h.load(std::memory_order_relaxed))
+        h.store(Hash(s.vs->program.data(), s.vs->program.size() * 4) | 1, std::memory_order_relaxed);
+}
+
+void HashProgram(VertexShader& vs) {
+    if (!vs.program.empty()) vs.hash = Hash(vs.program.data(), vs.program.size() * 4) | 1;
 }
 
 namespace {
@@ -745,6 +754,11 @@ bool UnitTexcoords(const State& s, const Assembled& a) {
     constexpr float kHi = 1.0001f;
     constexpr uint32_t kSmallDrawVertices = 4096;  // most vertices a small draw has
     if (!a.vertices.empty() || !a.vertex_count || a.vertex_count > kSmallDrawVertices) return false;
+    // the program first, its answer kept on it: one that changes its coordinates needs no look at the vertices
+    if ((s.vs_handle & 1) && s.vs && !s.vs->program.empty()) {
+        if (s.vs->copies_texcoords < 0) s.vs->copies_texcoords = ProgramCopiesTexcoords(s.vs->program) ? 1 : 0;
+        if (!s.vs->copies_texcoords) return false;
+    }
     bool any = false;
     for (int r = 0; r < 16; r++) {
         const VertexElement& e = a.elements[size_t(r)];
@@ -758,7 +772,6 @@ bool UnitTexcoords(const State& s, const Assembled& a) {
         }
         any = true;
     }
-    if (any && (s.vs_handle & 1) && s.vs && !s.vs->program.empty()) return ProgramCopiesTexcoords(s.vs->program);
     return any;
 }
 

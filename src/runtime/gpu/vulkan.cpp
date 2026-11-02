@@ -866,7 +866,13 @@ public:
         FlushRun();
         replay_ = on;
         pass_serial_ = skip_to_ = 0;
-        kept_run_next_ = 0;
+        kept_run_next_ = kept_draw_next_ = 0;
+        as_drawn_ = false;
+    }
+    bool Skips() const override { return replay_ && pass_serial_ + 1 <= skip_to_; }  // as Draw's first check
+    void AsDrawn(bool same) override { as_drawn_ = same; }
+    void Pass() override {
+        if (replay_) pass_serial_++;
     }
     // XBE_INTERP_RECORD: the pictures shown, kept at the console's size w x h, and F4's saving of them
     void RecordPictures(const std::vector<Image*>& sources, const std::vector<std::string>& notes, uint32_t w, uint32_t h);
@@ -1434,6 +1440,34 @@ private:
     };
     std::vector<KeptRun> kept_runs_;
     size_t kept_run_next_ = 0;
+    // the geometry the last draw bound (UploadVertexBuffers, BindGeometry), in the ring
+    struct Geometry {
+        uint32_t buffers = 0;
+        VkBuffer bufs[16];
+        VkDeviceSize offs[16], sizes[16], strides[16];
+        int topo = 0;
+        VkBuffer ib = VK_NULL_HANDLE;
+        VkDeviceSize ioff = 0;
+        VkIndexType itype = VK_INDEX_TYPE_UINT16;
+        uint32_t index_count = 0, draw_count = 0;
+        int32_t base_vertex = 0;
+    };
+    Geometry geom_;
+    // the frame's draws that went the whole way, for its drawing again (ReuseDraw): the draw kept as it drew, its
+    // shaders and pipeline key for its constants, and its geometry in the ring; good as long as kept_runs_
+    struct KeptOne {
+        uint32_t serial = 0;  // its pass_serial_
+        bool flat = false;    // its ScreenSpaceDraw, for TrackPost
+        KeptDraw kept;
+        DrawShaders sh;
+        PsoKey k;
+        Geometry g;
+    };
+    std::vector<KeptOne> kept_draws_;
+    size_t kept_draw_next_ = 0;
+    bool as_drawn_ = false;  // AsDrawn, for the next Draw
+    bool ReuseDraw(const State& s);
+    void FillViewsAndSamplers(const State& s, const DrawTextures& stages, bool clamp, uint32_t aniso);
     uint32_t pass_serial_ = 0;  // Draw calls in this pass: the frame's, or a drawing again
     uint32_t skip_to_ = 0;      // drawing again: the last draw of a reused run
     struct Recorded {
@@ -2092,6 +2126,7 @@ void VulkanBackend::Submit(bool wait, VkSemaphore wait_sem, VkSemaphore signal_s
         f.garbage.clear();
         f.used = 0;
         kept_runs_.clear();  // their geometry was in the ring
+        kept_draws_.clear();
         BeginCommands(f.cmd);
         Begin();
     }
@@ -3605,21 +3640,7 @@ void VulkanBackend::SetTextureViewsAndSamplers(const State& s, const Assembled& 
     uint32_t aniso = app::Get().aniso;
     const ViewsAndSamplers* f = same_state;
     if (!f || !f->ok || f->clamp != clamp || f->aniso != aniso || f->samplers_made != samplers_made_) {
-        filled_ = {true, clamp, aniso, samplers_made_};
-        for (int i = 0; i < 4; i++) {
-            const TexInfo& info = stages.info[i];
-            VkImageView v = stages.res[i] ? stages.view[i] : VK_NULL_HANDLE;
-            if (!v) {
-                v = info.shadow             ? dummy_depth_->Sampled()
-                    : info.kind == kTexCube ? dummy_cube_->view
-                    : info.kind == kTex3D   ? dummy_3d_->view
-                                            : dummy_2d_->view;
-            }
-            filled_.view[i] = v;
-            filled_.smp[i] = EnsureSampler(StageSampler(s, i, stages, clamp, aniso));
-            // a sampler cache that started over for this one leaves the stages before it from the old one
-            if (filled_.samplers_made != samplers_made_) filled_.ok = false;
-        }
+        FillViewsAndSamplers(s, stages, clamp, aniso);
         f = &filled_;
     }
     for (int i = 0; i < 4; i++) {
@@ -3631,6 +3652,25 @@ void VulkanBackend::SetTextureViewsAndSamplers(const State& s, const Assembled& 
     PushRaw(b);
     drawn_.b = b;
     drawn_.bound = true;
+}
+
+// filled_ for the stages: each one's view (a dummy of its kind without one) and its sampler
+void VulkanBackend::FillViewsAndSamplers(const State& s, const DrawTextures& stages, bool clamp, uint32_t aniso) {
+    filled_ = {true, clamp, aniso, samplers_made_};
+    for (int i = 0; i < 4; i++) {
+        const TexInfo& info = stages.info[i];
+        VkImageView v = stages.res[i] ? stages.view[i] : VK_NULL_HANDLE;
+        if (!v) {
+            v = info.shadow             ? dummy_depth_->Sampled()
+                : info.kind == kTexCube ? dummy_cube_->view
+                : info.kind == kTex3D   ? dummy_3d_->view
+                                        : dummy_2d_->view;
+        }
+        filled_.view[i] = v;
+        filled_.smp[i] = EnsureSampler(StageSampler(s, i, stages, clamp, aniso));
+        // a sampler cache that started over for this one leaves the stages before it from the old one
+        if (filled_.samplers_made != samplers_made_) filled_.ok = false;
+    }
 }
 
 // viewport covers the target, the guest viewport is in the shader; scissor clips to it
@@ -3680,6 +3720,7 @@ void VulkanBackend::SetBlendFactorStencilRef(const State& s) {
 
 // none without vertex inputs: that pipeline takes no strides (CreateDrawPipeline)
 void VulkanBackend::UploadVertexBuffers(const Assembled& a) {
+    geom_.buffers = 0;
     if (!a.buffer_count || !a.regs) return;
     VkBuffer bufs[16];
     VkDeviceSize offs[16];
@@ -3700,6 +3741,11 @@ void VulkanBackend::UploadVertexBuffers(const Assembled& a) {
         strides[i] = b.stride;
     }
     vkCmdBindVertexBuffers2(cmd_, 0, a.buffer_count, bufs, offs, sizes, strides);
+    geom_.buffers = a.buffer_count;
+    std::copy(bufs, bufs + a.buffer_count, geom_.bufs);
+    std::copy(offs, offs + a.buffer_count, geom_.offs);
+    std::copy(sizes, sizes + a.buffer_count, geom_.sizes);
+    std::copy(strides, strides + a.buffer_count, geom_.strides);
 }
 
 void VulkanBackend::DrawGeometry(const Assembled& a) {
@@ -3763,20 +3809,28 @@ void VulkanBackend::JoinRun(const Assembled& a) {
         const VertexBuffer& b = a.buffers[i];
         AppendBytes(run_.data[i], b.src, b.bytes);
     }
-    if (a.index_count) {
-        for (uint32_t k = 0; k < a.index_count; k++) {
-            uint32_t idx;
-            if (a.index16) {
-                uint16_t x;
-                std::memcpy(&x, static_cast<const uint8_t*>(a.index_src) + k * 2, 2);
-                idx = x;
-            } else {
-                std::memcpy(&idx, static_cast<const uint8_t*>(a.index_src) + k * 4, 4);
-            }
-            run_.indices.push_back(uint32_t(int64_t(idx) + a.base_vertex) + base);
+    // written in place, the list grown once: a push_back an index was most of a merged draw's joining
+    const uint32_t n = a.index_count ? a.index_count : a.draw_count;
+    const size_t at = run_.indices.size();
+    run_.indices.resize(at + n);
+    uint32_t* out = run_.indices.data() + at;
+    const uint32_t add = uint32_t(a.base_vertex) + base;  // wraps as int64_t(idx) + base_vertex + base did
+    if (!a.index_count) {
+        for (uint32_t k = 0; k < n; k++) out[k] = base + k;
+    } else if (a.index16) {
+        const uint8_t* src = static_cast<const uint8_t*>(a.index_src);
+        for (uint32_t k = 0; k < n; k++) {
+            uint16_t x;
+            std::memcpy(&x, src + k * 2, 2);
+            out[k] = x + add;
         }
     } else {
-        for (uint32_t k = 0; k < a.draw_count; k++) run_.indices.push_back(base + k);
+        const uint8_t* src = static_cast<const uint8_t*>(a.index_src);
+        for (uint32_t k = 0; k < n; k++) {
+            uint32_t x;
+            std::memcpy(&x, src + k * 4, 4);
+            out[k] = x + add;
+        }
     }
     run_.vertices += v;
     run_.draws++;
@@ -3883,16 +3937,115 @@ bool VulkanBackend::ReuseRun(const State& s) {
 
 void VulkanBackend::BindGeometry(const Assembled& a) {
     UploadVertexBuffers(a);
-    if (int topo = int(PrimitiveTopology(a)); topo != drawn_.topo) {
+    int topo = int(PrimitiveTopology(a));
+    if (topo != drawn_.topo) {
         vkCmdSetPrimitiveTopology(cmd_, VkPrimitiveTopology(topo));
         drawn_.topo = topo;
     }
+    geom_.topo = topo;
+    geom_.ib = VK_NULL_HANDLE;
+    geom_.index_count = a.index_count;
+    geom_.draw_count = a.draw_count;
+    geom_.base_vertex = a.base_vertex;
     if (a.index_count) {
         uint32_t ibytes = a.index_count * (a.index16 ? 2 : 4);
         Alloc ib = Upload(ibytes, 4);
         std::memcpy(ib.cpu, a.index_src, ibytes);
-        vkCmdBindIndexBuffer(cmd_, ib.buf, ib.off, a.index16 ? VK_INDEX_TYPE_UINT16 : VK_INDEX_TYPE_UINT32);
+        geom_.itype = a.index16 ? VK_INDEX_TYPE_UINT16 : VK_INDEX_TYPE_UINT32;
+        vkCmdBindIndexBuffer(cmd_, ib.buf, ib.off, geom_.itype);
+        geom_.ib = ib.buf;
+        geom_.ioff = ib.off;
     }
+}
+
+// A frame drawn again: a draw that went the whole way in the frame, in the same state but for its constants (AsDrawn),
+// draws with the frame's pipeline, shaders and geometry, its constants made again from the blended ones and its
+// stage textures bound again (barriers, a target drawn since). The bloodbath redrew 700 such draws a picture at 5 us
+// each, most of it assembling and uploading vertices it had already. False, nothing drawn, when it can't
+bool VulkanBackend::ReuseDraw(const State& s) {
+    while (kept_draw_next_ < kept_draws_.size() && kept_draws_[kept_draw_next_].serial < pass_serial_)
+        kept_draw_next_++;
+    if (kept_draw_next_ >= kept_draws_.size() || kept_draws_[kept_draw_next_].serial != pass_serial_) {
+        g_perf.redraw_unkept++;
+        return false;
+    }
+    const KeptOne& r = kept_draws_[kept_draw_next_];
+    // the slow path's Submit there starts the ring over, the geometry gone; a sampler cache since, its samplers gone
+    if (CurrentFrame().used > kUploadSize - kUploadReserve || r.kept.filled.samplers_made != samplers_made_) {
+        g_perf.redraw_refused++;
+        return false;
+    }
+    TrackPost(s, r.flat);
+    if (!BindTargets(s) || bound_rt_ != r.kept.rt || bound_ds_ != r.kept.ds || bound_ms_ != r.kept.ms ||
+        (!bound_rt_ && !bound_ds_)) {
+        g_perf.redraw_refused++;
+        return false;
+    }
+    DrawTextures stages{};  // zeroed, compared whole
+    const bool screen = r.sh.shading && g_program_shading[r.sh.shading - 1].screen;
+    if (!BindStageTexturesAndTargets(s, stages, screen)) {
+        g_perf.redraw_refused++;
+        return false;
+    }
+    // the stages as the shaders and pipeline were made for: their kinds; their images may be others (a target read is
+    // a copy made again), their views and samplers then made again too, clamped or not as the frame's draw
+    const DrawTextures& was = r.kept.stages;
+    bool shape = stages.sampled == was.sampled && (stages.screen != VK_NULL_HANDLE) == (was.screen != VK_NULL_HANDLE);
+    for (int i = 0; shape && i < 4; i++)
+        shape = SameBytes(stages.info[i], was.info[i]) && stages.rt[i] == was.rt[i] && stages.exact[i] == was.exact[i];
+    if (!shape) {
+        g_perf.redraw_textures++;
+        return false;
+    }
+    const ViewsAndSamplers* views = &r.kept.filled;
+    if (!SameBytes(stages, was)) {
+        FillViewsAndSamplers(s, stages, r.kept.filled.clamp, r.kept.filled.aniso);
+        views = &filled_;
+    }
+    DrawConstants c{};
+    Bindings b;
+    UploadConstants(s, r.sh, r.k, stages, r.kept.size, c, b);
+    EnsureRendering();
+    if (r.kept.pso != drawn_.pso) {
+        vkCmdBindPipeline(cmd_, VK_PIPELINE_BIND_POINT_GRAPHICS, r.kept.pso);
+        drawn_.pso = r.kept.pso;
+    }
+    for (int i = 0; i < 4; i++) {
+        b.view[i] = views->view[i];
+        b.smp[i] = views->smp[i];
+    }
+    if (!drawn_.bound || !SameBytes(b, drawn_.b)) {
+        PushRaw(b);
+        drawn_.b = b;
+        drawn_.bound = true;
+    }
+    SetViewportScissor(s, r.kept.size.w);
+    SetBlendFactorStencilRef(s);
+    const Geometry& g = r.g;
+    if (g.buffers) vkCmdBindVertexBuffers2(cmd_, 0, g.buffers, g.bufs, g.offs, g.sizes, g.strides);
+    if (g.topo != drawn_.topo) {
+        vkCmdSetPrimitiveTopology(cmd_, VkPrimitiveTopology(g.topo));
+        drawn_.topo = g.topo;
+    }
+    uint32_t query = BeginCountedDraw(s);
+    if (g.index_count) {
+        vkCmdBindIndexBuffer(cmd_, g.ib, g.ioff, g.itype);
+        vkCmdDrawIndexed(cmd_, g.index_count, 1, 0, g.base_vertex, 0);
+    } else {
+        vkCmdDraw(cmd_, g.draw_count, 1, 0, 0);
+    }
+    EndCountedDraw(query);
+    // kept as the frame kept it, with this draw's constants: the draws after it in its state take it up (FastDraw)
+    const ViewsAndSamplers filled = *views;  // views may be filled_ itself
+    kept_ = r.kept;
+    kept_.b = b;
+    kept_.stages = stages;
+    kept_.filled = filled;
+    kept_.ok = true;
+    filled_ = filled;
+    kept_draw_next_++;
+    g_perf.redrawn++;
+    return true;
 }
 
 // the bound geometry drawn again
@@ -4240,6 +4393,7 @@ void VulkanBackend::ApplyPost(Target& t) {
 
 void VulkanBackend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t count, const uint8_t* indices) {
     if (&s != &sprite_) pass_serial_++;
+    const bool as_drawn = std::exchange(as_drawn_, false);
     if (replay_ && pass_serial_ <= skip_to_) return;  // drawn with the run it was in
     if (&s != &sprite_ && FixedSprite(s, prim)) {
         sprite_ = s;
@@ -4267,6 +4421,10 @@ void VulkanBackend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t
     }
     kept_.ok = false;
     FlushRun();
+    if (replay_ && &s != &sprite_ && !cap_) {
+        if (!as_drawn) g_perf.redraw_changed++;
+        else if (ReuseDraw(s)) return;
+    }
     auto lap = PerfClock::now();
     if (DepthCopy(s)) return CountedSkip(s, "depth copy");
     Assembled& a = asm_;
@@ -4416,6 +4574,17 @@ void VulkanBackend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t
         KeepDraw(a, sh, stages, pso, b, size);
         kept_.surface = k.blend && k.zen && !k.zwrite;
         kept_.solid = !flat;
+        // for the frame's drawing again (ReuseDraw): a draw kept (a plain shading's too: per-pixel lighting, the
+        // bloodbath's soldiers), its geometry bound as DrawGeometry left it
+        if (!replay_ && !bound && !cap_ && Pictures() > 1) {
+            KeptOne& one = kept_draws_.emplace_back();
+            one.serial = pass_serial_;
+            one.flat = flat;
+            one.kept = kept_;
+            one.sh = sh;
+            one.k = k;
+            one.g = geom_;
+        }
     }
     g_perf.d_record += PerfLap(lap);
 }
@@ -5137,6 +5306,7 @@ void VulkanBackend::Present(const Surface& front) {
              frame_draws_, frame_opaque_, frame_counted_, reports_.size());
     frame_draws_ = frame_opaque_ = frame_counted_ = 0;
     kept_runs_.clear();
+    kept_draws_.clear();
     pass_serial_ = 0;
     EndShadingFrame();
     ReleaseOldTextures();

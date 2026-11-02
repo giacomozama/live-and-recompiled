@@ -156,6 +156,10 @@ const Reads* ReadsOf(const State& s) {
     // went into the first frame)
     EnsureProgramHash(s);
     static std::unordered_map<uint64_t, Reads> reads;
+    // the draw before's program again, the common case, without the lookup (the map's nodes stay where they are)
+    static uint64_t last_hash = 0;
+    static const Reads* last = nullptr;
+    if (last && last_hash == s.vs->hash) return last;
     auto [it, fresh] = reads.try_emplace(s.vs->hash);
     if (fresh) {
         it->second.bits = ProgramReads(s.vs->program);
@@ -163,7 +167,9 @@ const Reads* ReadsOf(const State& s) {
         for (size_t r = 0; r < 192; r++)
             if (it->second.bits[r]) it->second.regs.push_back(uint8_t(r));
     }
-    return &it->second;
+    last_hash = s.vs->hash;
+    last = &it->second;
+    return last;
 }
 
 // what may move between frames: the constants its program reads, kept in the frame's pool at at, one for each of

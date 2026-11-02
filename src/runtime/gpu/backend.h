@@ -47,6 +47,13 @@ public:
     virtual void Keep(const Surface& /*front*/) {}
     virtual void Between(const Surface& /*front*/, uint32_t /*i*/) {}
     virtual void Replaying(bool /*on*/) {}
+    // drawing again: Skips, the next Draw is one a run drawn again took with it, so blending it is wasted; Pass, a draw
+    // left out of the picture, counted all the same so the draws after it keep the places the frame gave them
+    virtual bool Skips() const { return false; }
+    virtual void Pass() {}
+    // drawing again, before a Draw: true, the draw is the frame's own but for the constants blended for the picture;
+    // false, its vertices or other state were changed for it too
+    virtual void AsDrawn(bool /*same*/) {}
     // the CPU is about to touch this resource's memory: write GPU results back first
     virtual void Sync(uint32_t data_va, uint32_t size) = 0;
     // a lock that does not wait for the GPU (NOOVERWRITE): a result a frame or two old is what the console gives too

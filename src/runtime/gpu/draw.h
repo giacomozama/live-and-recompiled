@@ -78,6 +78,11 @@ struct Perf {
     uint64_t fast = 0;  // draws that took the kept draw's state up again (FastDraw)
     uint64_t runs = 0;  // runs of fast draws drawn as one
     uint64_t reused = 0;  // runs a frame drawn again took from the frame's own
+    uint64_t redrawn = 0;  // draws a frame drawn again took from the frame's own whole-way draws (ReuseDraw)
+    // drawn again the whole way instead: changed for the picture (moved vertices, a decal), the frame's draw not kept
+    // (a FastDraw one, fur, a depth pass), or refused (ring, targets, textures)
+    uint64_t redraw_changed = 0, redraw_unkept = 0, redraw_refused = 0;
+    uint64_t redraw_textures = 0;  // refused: its stages of other kinds than the frame's draw had
 };
 inline Perf g_perf;
 // the milliseconds since t, then t is now

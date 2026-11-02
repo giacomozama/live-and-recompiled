@@ -242,9 +242,11 @@ void InlineInputs(const State& s, VertexShader& out) {
     }
 }
 
-const VertexShader* PickLayout(const State& s, VertexShader& fvf_layout) {
+// fvf_made: the FVF fvf_layout holds already, kept by the caller across draws (an FVF is even, 1 is none)
+const VertexShader* PickLayout(const State& s, VertexShader& fvf_layout, uint32_t* fvf_made = nullptr) {
     if (!(s.vs_handle & 1)) {
-        FvfInputs(s.vs_handle, fvf_layout);
+        if (!fvf_made || *fvf_made != s.vs_handle) FvfInputs(s.vs_handle, fvf_layout);
+        if (fvf_made) *fvf_made = s.vs_handle;
         return &fvf_layout;
     }
     if (!InlineBound(s)) return s.vs.get();
@@ -255,11 +257,12 @@ const VertexShader* PickLayout(const State& s, VertexShader& fvf_layout) {
         key[i * 2] = s.streams[i].fmt;
         key[i * 2 + 1] = s.streams[i].stride;
     }
-    static std::map<std::pair<const void*, std::array<uint32_t, 32>>, std::shared_ptr<VertexShader>> made;
+    // a thread's own (the backend's and frame generation's recorder's)
+    static thread_local std::map<std::pair<const void*, std::array<uint32_t, 32>>, std::shared_ptr<VertexShader>> made;
     // the draw before's layout again, the common case, without the map's compares
-    static const void* last_vs = nullptr;
-    static std::array<uint32_t, 32> last_key{};
-    static VertexShader* last = nullptr;
+    static thread_local const void* last_vs = nullptr;
+    static thread_local std::array<uint32_t, 32> last_key{};
+    static thread_local VertexShader* last = nullptr;
     if (last && last_vs == s.vs.get() && last_key == key) return last;
     auto& vs = made[{s.vs.get(), key}];
     if (!vs) {
@@ -515,8 +518,11 @@ bool Assemble(const State& s, uint32_t prim, uint32_t start, uint32_t count, con
     ResetAssembled(out);
     if (!count || prim < 1 || prim > 10) return false;
 
-    VertexShader fvf_layout;
-    const VertexShader* layout = PickLayout(s, fvf_layout);
+    // an FVF's layout kept from the draw before: a VertexShader made and freed at each of the bloodbath's
+    // thousands of small draws, its layout worked out again
+    static thread_local VertexShader fvf_layout;
+    static thread_local uint32_t fvf_made = 1;
+    const VertexShader* layout = PickLayout(s, fvf_layout, &fvf_made);
     out.pretransformed = Pretransformed(s);
     if (!layout) return false;
 
@@ -620,8 +626,10 @@ bool ReadInputSpread(const State& s, int reg, uint32_t start, const uint8_t* ip,
 }
 
 bool InputPlace(const State& s, int reg, InputAt& at) {
-    VertexShader fvf_layout;
-    const VertexShader* layout = PickLayout(s, fvf_layout);
+    // as Assemble's: frame generation asks it for each small draw
+    static thread_local VertexShader fvf_layout;
+    static thread_local uint32_t fvf_made = 1;
+    const VertexShader* layout = PickLayout(s, fvf_layout, &fvf_made);
     if (!layout) return false;
     const auto& in = layout->inputs[size_t(reg)];
     if (in.stream < 0 || !in.type || in.type == kTypeNone || !s.streams[size_t(in.stream)].vb) return false;

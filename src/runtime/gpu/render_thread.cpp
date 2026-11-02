@@ -17,6 +17,7 @@
 #include <x86intrin.h>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <cstdlib>
@@ -167,6 +168,7 @@ public:
                          mem::AllocSystem(kMoveHeaders, 64), kMoveHeaders);
         cur_ = NewBatch();
         std::thread([this] { Run(); }).detach();
+        if (RecordAside()) std::thread([this] { RecordLoop(); }).detach();
     }
     ~Threaded() override {
         {
@@ -174,6 +176,15 @@ public:
             stop_ = true;
         }
         cv_.notify_all();
+        if (RecordAside()) {
+            {
+                std::lock_guard lock(rec_m_);
+                rec_stop_ = true;
+            }
+            rec_cv_.notify_all();
+            std::unique_lock lock(rec_m_);
+            rec_idle_cv_.wait_for(lock, std::chrono::milliseconds(500), [&] { return rec_exited_; });
+        }
         std::unique_lock lock(m_);
         // at exit the worker may be gone mid-batch: then the inner backend is left, not freed under it
         if (!done_cv_.wait_for(lock, std::chrono::milliseconds(500), [&] { return exited_; })) (void)inner_.release();
@@ -533,15 +544,98 @@ private:
         }
     }
 
-    void Run() {
+    static void NameThread(const wchar_t* wide, const char* name) {
 #ifdef _WIN32
+        (void)name;
         using SetDescription = HRESULT(WINAPI*)(HANDLE, PCWSTR);
         if (auto set = reinterpret_cast<SetDescription>(
                 reinterpret_cast<void*>(GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "SetThreadDescription"))))
-            set(GetCurrentThread(), L"render");
+            set(GetCurrentThread(), wide);
 #else
-        pthread_setname_np(pthread_self(), "render");
+        (void)wide;
+        pthread_setname_np(pthread_self(), name);
 #endif
+    }
+
+    // Frame generation records the frame's draws (interp::Draw) on a thread of its own, beside the backend drawing
+    // them: a batch's commands up to its Present, applied to a State of its own as Execute applies them to state_,
+    // each draw recorded with the same changed flag Execute would give it. The Present waits for it before the draws
+    // are matched; in the bloodbath recording was 2.5 ms a frame on the render thread. Nothing else touches
+    // frame generation's own data until then, and the batches are kept to the Present while it keeps a frame.
+    // XBE_INTERP_INLINE=1 records them on the render thread as before
+    static bool RecordAside() {
+        static const bool on = [] {
+            const char* e = std::getenv("XBE_INTERP_INLINE");
+            return !e || *e == '0';
+        }();
+        return on;
+    }
+
+    void RecordLoop() {
+        NameThread(L"interp", "interp");
+        for (;;) {
+            std::pair<const Batch*, size_t> job;
+            {
+                std::unique_lock lock(rec_m_);
+                rec_cv_.wait(lock, [&] { return rec_stop_ || !rec_jobs_.empty(); });
+                if (rec_jobs_.empty()) break;
+                job = rec_jobs_.front();
+                rec_jobs_.pop_front();
+            }
+            auto start = PerfClock::now();
+            const Batch& b = *job.first;
+            for (size_t i = 0; i < job.second; i++) {
+                const Cmd& c = b.cmds[i];
+                switch (c.op) {
+                    case Op::State: Apply(rec_state_, b, c, &rec_changed_); break;
+                    case Op::Draw: {
+                        const uint8_t* data = b.bytes.data() + c.data;
+                        interp::Draw(rec_state_, !rec_changed_, c.tag, c.a, c.b, c.c, c.d ? data : nullptr);
+                        rec_changed_ = false;
+                        break;
+                    }
+                    default: rec_changed_ = true; break;  // as Execute: the next draw is new
+                }
+            }
+            rec_ns_.fetch_add(Ns(start), std::memory_order_relaxed);
+            {
+                std::lock_guard lock(rec_m_);
+                if (rec_jobs_.empty()) rec_busy_ = false;
+            }
+            rec_idle_cv_.notify_all();
+        }
+        {
+            std::lock_guard lock(rec_m_);
+            rec_exited_ = true;
+        }
+        rec_idle_cv_.notify_all();
+    }
+
+    // the commands of b before its Present (all of them without one) to the recorder; false when it takes none
+    bool PostRecord(const Batch* b) {
+        if (!keeping_ || !RecordAside() || interp::Tracing()) return false;
+        size_t end = 0;
+        while (end < b->cmds.size() && b->cmds[end].op != Op::Present) end++;
+        if (!end) return false;
+        {
+            std::lock_guard lock(rec_m_);
+            rec_jobs_.emplace_back(b, end);
+            rec_busy_ = true;
+        }
+        rec_cv_.notify_one();
+        rec_end_ = end;
+        return true;
+    }
+
+    // the recorder done with everything posted to it
+    void WaitRecord() {
+        if (!RecordAside()) return;
+        std::unique_lock lock(rec_m_);
+        rec_idle_cv_.wait(lock, [&] { return !rec_busy_; });
+    }
+
+    void Run() {
+        NameThread(L"render", "render");
         for (;;) {
             Batch* b;
             {
@@ -558,7 +652,10 @@ private:
                 b = queue_.front();
                 queue_.pop_front();
             }
-            for (const Cmd& c : b->cmds) Execute(*b, c);
+            rec_end_ = 0;
+            const bool posted = PostRecord(b);
+            for (exec_at_ = 0; exec_at_ < b->cmds.size(); exec_at_++) Execute(*b, b->cmds[exec_at_]);
+            rec_end_ = 0;
             ShowDue();
             uint64_t id = b->id;
             // a frame's batches are kept to its Present while frame generation draws it again
@@ -571,6 +668,7 @@ private:
             } else if (keeping_ && !(b->cmds.size() == 1 && b->cmds[0].op == Op::Redisplay)) {
                 frame_.push_back(b);
             } else {
+                if (posted) WaitRecord();  // a held frame's Redisplay, read by the recorder
                 freed.push_back(b);
             }
             for (Batch* f : freed) {
@@ -632,7 +730,13 @@ private:
     // a frame starts: kept for drawing again when frame generation is on, from the state it starts with
     void BeginFrame() {
         keeping_ = app::Get().frame_generation > 1;
-        if (keeping_) frame_start_ = state_;
+        if (keeping_) {
+            frame_start_ = state_;
+            // the recorder starts the frame where the render thread is (idle: the Present waited for it)
+            WaitRecord();
+            rec_state_ = state_;
+            rec_changed_ = changed_;
+        }
         frame_draws_ = 0;
     }
 
@@ -663,11 +767,22 @@ private:
                     case Op::Draw: {
                         if (interp::Recording()) interp::CheckVertices(n, rs, c.a, c.b, c.c, c.d ? data : nullptr);
                         static const bool perf = diag::Perf();
+                        // a draw a run drawn again took with it (most of the bloodbath's): nothing to blend, the
+                        // backend only counts it
+                        if (inner_->Skips()) {
+                            n++;
+                            inner_->Changed(changed);
+                            changed = false;
+                            inner_->Draw(rs, c.a, c.b, c.c, c.d ? data : nullptr);
+                            if (perf) gen_draws_++;
+                            break;
+                        }
                         auto blend_start = perf ? PerfClock::now() : PerfClock::time_point{};
                         interp::Blended how = interp::Blend(n, t, rs, undo);
                         uint32_t start = c.b;
                         // a 2D draw placed on the CPU reads a copy of its vertices moved part way instead
-                        if (interp::MoveVertices(n, t, how, rs, start, undo)) changed = true;
+                        const bool moved = interp::MoveVertices(n, t, how, rs, start, undo);
+                        if (moved) changed = true;
                         n++;
                         if (perf) gen_blend_ns_ += Ns(blend_start);
                         if (!interp::Hidden(how)) {
@@ -689,12 +804,21 @@ private:
                             }
                             inner_->Changed(changed);
                             changed = false;
+                            // the frame's own draw but for its constants: neither moved vertices nor a decal's offset
+                            inner_->AsDrawn(!moved && !decal);
+                            auto draw_start = perf ? PerfClock::now() : PerfClock::time_point{};
                             inner_->Draw(rs, c.a, start, c.c, c.d ? data : nullptr);
+                            if (perf) {
+                                gen_draw_ns_ += Ns(draw_start);
+                                gen_draws_++;
+                            }
                             if (decal) {
                                 rs.simple.set(kMDepthOffset >> 2, was_offset);
                                 rs.simple.set(kMSlopeScale >> 2, was_slope);
                                 changed = true;
                             }
+                        } else {
+                            inner_->Pass();  // the frame drew it: the backend's count of draws stays the frame's
                         }
                         undo.Restore(rs);  // the draw's own constants and transforms, for the commands after
                         break;
@@ -717,14 +841,26 @@ private:
 
     // a frame's Present: with frame generation, the pictures between the frame before and it drawn first
     void Present(const Batch& b, const Cmd& c) {
+        {
+            auto wait_start = PerfClock::now();
+            WaitRecord();  // the frame's draws all recorded
+            gen_match_ns_ += Ns(wait_start);
+            gen_rec_wait_ns_ += Ns(wait_start);
+        }
         interp::Presented(c.s1.data);
         uint32_t pictures = keeping_ ? inner_->Pictures() : 1;
         if (pictures > 1 && frame_draws_) {
             auto match_start = PerfClock::now();
             interp::Match();
             gen_match_ns_ += Ns(match_start);
+            gen_matched_ns_ += Ns(match_start);
         }
         auto replay_start = PerfClock::now();
+        // XBE_PERF: the backend's draws drawn again by the way they took, from its counters before and after
+        const uint64_t was_draws = g_perf.draws, was_fast = g_perf.fast, was_reused = g_perf.reused,
+                       was_redrawn = g_perf.redrawn, was_changed = g_perf.redraw_changed,
+                       was_unkept = g_perf.redraw_unkept, was_refused = g_perf.redraw_refused,
+                       was_textures = g_perf.redraw_textures;
         if (pictures > 1 && frame_draws_) {
             inner_->Keep(c.s1);
             for (uint32_t i = 1; i < pictures; i++) {
@@ -736,19 +872,51 @@ private:
                 interp::EndPass(i - 1);
                 ShadingReplay(false);
                 inner_->Replaying(false);
+                auto between_start = PerfClock::now();
                 inner_->Between(c.s1, i);
+                gen_between_ns_ += Ns(between_start);
             }
             changed_ = true;
         }
         gen_replay_ns_ += Ns(replay_start);
+        if (g_perf.draws >= was_draws && g_perf.fast >= was_fast && g_perf.reused >= was_reused &&
+            g_perf.redrawn >= was_redrawn) {
+            gen_backend_draws_ += g_perf.draws - was_draws;
+            gen_fast_ += g_perf.fast - was_fast;
+            gen_reused_ += g_perf.reused - was_reused;
+            gen_redrawn_ += g_perf.redrawn - was_redrawn;
+            gen_changed_ += g_perf.redraw_changed - was_changed;
+            gen_unkept_ += g_perf.redraw_unkept - was_unkept;
+            gen_refused_ += g_perf.redraw_refused - was_refused;
+            gen_textures_ += g_perf.redraw_textures - was_textures;
+        }
         // XBE_PERF: what frame generation costs the render thread, a frame
         if (diag::Perf() && keeping_ && ++gen_frames_ >= 120) {
             LOGR("perf: frame generation: matching %.2f ms, drawing again %.2f ms a frame (blending %.2f), %u draws, "
                  "%u pictures",
                  gen_match_ns_ / 1e6 / gen_frames_, gen_replay_ns_ / 1e6 / gen_frames_, gen_blend_ns_ / 1e6 / gen_frames_,
                  frame_draws_, pictures);
+            // matching: the frame's draws recorded (interp::Draw) and their match to the frame before's; drawing
+            // again: the backend's draws (slow: the whole way, fast: kept state, reused: a run's draws as one, the
+            // rest skipped with it), the pictures handed out, and what's left: the commands' state, the loop
+            const double f = double(gen_frames_);
+            const double rest = double(gen_replay_ns_ - gen_blend_ns_ - gen_draw_ns_ - gen_between_ns_);
+            // recording: on the render thread, the recorder's draws waited for at the Present included; the
+            // recorder's own time beside it
+            LOGR("perf: frame generation split: recording %.2f (waited %.2f, its thread %.2f) matching %.2f | backend "
+                 "draws %.2f ms for %.0f draws (%.0f slow, %.0f of them the frame's again; not: %.0f changed, %.0f not kept, "
+                 "%.0f refused, %.0f other textures; %.0f fast, %.0f runs reused), pictures out %.2f, state and loop %.2f",
+                 (gen_match_ns_ - gen_matched_ns_) / 1e6 / f, gen_rec_wait_ns_ / 1e6 / f,
+                 rec_ns_.exchange(0, std::memory_order_relaxed) / 1e6 / f, gen_matched_ns_ / 1e6 / f,
+                 gen_draw_ns_ / 1e6 / f,
+                 gen_draws_ / f, (gen_backend_draws_ - gen_fast_) / f, gen_redrawn_ / f, gen_changed_ / f, gen_unkept_ / f, gen_refused_ / f, gen_textures_ / f, (gen_fast_ - gen_reused_) / f,
+                 gen_reused_ / f,
+                 gen_between_ns_ / 1e6 / f, rest / 1e6 / f);
             gen_frames_ = 0;
             gen_match_ns_ = gen_replay_ns_ = gen_blend_ns_ = 0;
+            gen_matched_ns_ = gen_draw_ns_ = gen_between_ns_ = gen_rec_wait_ns_ = 0;
+            gen_draws_ = gen_backend_draws_ = gen_fast_ = gen_reused_ = gen_redrawn_ = 0;
+            gen_changed_ = gen_unkept_ = gen_refused_ = gen_textures_ = 0;
         }
         inner_->Present(c.s1);
         interp::EndFrame();  // a frame not tracked leaves none to find draws in
@@ -763,9 +931,11 @@ private:
             case Op::State: Apply(state_, b, c, &changed_); break;
             case Op::Draw:
                 if (keeping_ || interp::Tracing()) {
-                    auto t = PerfClock::now();
-                    interp::Draw(state_, !changed_, c.tag, c.a, c.b, c.c, c.d ? data : nullptr);
-                    gen_match_ns_ += Ns(t);
+                    if (exec_at_ >= rec_end_) {  // not the recorder's: after the Present, or recorded here
+                        auto t = PerfClock::now();
+                        interp::Draw(state_, !changed_, c.tag, c.a, c.b, c.c, c.d ? data : nullptr);
+                        gen_match_ns_ += Ns(t);
+                    }
                     frame_draws_++;
                 }
                 inner_->Changed(changed_);
@@ -819,7 +989,22 @@ private:
     bool keeping_ = false, frame_over_ = false;
     uint32_t frame_draws_ = 0;
     uint64_t gen_match_ns_ = 0, gen_replay_ns_ = 0, gen_blend_ns_ = 0;  // XBE_PERF, over gen_frames_
+    uint64_t gen_matched_ns_ = 0, gen_draw_ns_ = 0, gen_between_ns_ = 0;  // Match alone, backend draws, Between
+    uint64_t gen_draws_ = 0, gen_backend_draws_ = 0, gen_fast_ = 0, gen_reused_ = 0, gen_redrawn_ = 0;
+    uint64_t gen_changed_ = 0, gen_unkept_ = 0, gen_refused_ = 0, gen_textures_ = 0;
+    uint64_t gen_rec_wait_ns_ = 0;  // the Present's wait for the recorder
     uint32_t gen_frames_ = 0;
+    size_t exec_at_ = 0;  // the command of the batch Execute runs
+    size_t rec_end_ = 0;  // the batch running: its commands before this one are the recorder's (RecordAside)
+
+    // the recorder (RecordAside): its jobs, a batch and how many of its commands; busy from a post to the last done
+    std::mutex rec_m_;
+    std::condition_variable rec_cv_, rec_idle_cv_;
+    std::deque<std::pair<const Batch*, size_t>> rec_jobs_;
+    bool rec_busy_ = false, rec_stop_ = false, rec_exited_ = false;
+    State rec_state_;          // the recorder's, as state_ is the render thread's
+    bool rec_changed_ = true;  // as changed_
+    std::atomic<uint64_t> rec_ns_{0};
 
     std::mutex m_;
     std::condition_variable cv_, done_cv_;

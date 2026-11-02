@@ -54,6 +54,9 @@ struct Assembled {
     std::array<std::vector<uint8_t>, 16> gathered;  // raw vertices copied in draw order when the indices are sparse
 };
 
+// VertexShader::hash of its program as EnsureProgramHash makes it, for the title's thread to set on a shader it makes
+void HashProgram(VertexShader& vs);
+
 // the FVF bits translated to the register layout the XDK's declarations use
 void FvfInputs(uint32_t fvf, VertexShader& out);
 

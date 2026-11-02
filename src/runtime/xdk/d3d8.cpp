@@ -1323,6 +1323,7 @@ HLE_STDCALL(D3DDevice_CreateVertexShader, 4) {
         for (uint32_t i = 0; i < n * 4; i++) vs->program.push_back(R32(func + 4 + i * 4));
     }
     gpu::ParseDeclaration(*vs);
+    gpu::HashProgram(*vs);  // here, not on the render thread at its first draw (EnsureProgramHash)
     uint32_t rec = mem::AllocSystem(16, 16);
     vs->handle = rec | 1;
     g_vs[vs->handle] = vs;
@@ -1872,6 +1873,7 @@ void EndPrimitive() {
         if (from) {
             m.vs->program = from->program;
             m.vs->program_type = from->program_type;
+            gpu::HashProgram(*m.vs);
         }
         for (uint32_t s = 0; s < 16; s++)
             if (g_im_mask >> s & 1) {
@@ -2193,6 +2195,7 @@ void Walk(uint32_t end) {
                             raw->stream_stride[0] = 28;
                         }
                         raw->program = g_state.vs->program;
+                        raw->copies_texcoords = -1;  // another program's, perhaps: UnitTexcoords asks again
                         raw->program_type = g_state.vs->program_type;
                         auto bound = g_state.vs;
                         g_state.vs = raw;

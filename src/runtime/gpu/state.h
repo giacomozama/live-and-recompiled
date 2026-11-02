@@ -135,6 +135,9 @@ struct VertexShader {
     std::vector<uint32_t> program;  // 4 dwords per instruction
     uint32_t program_type = 0;      // 0x2078 vertex, 0x7378 state, 0x7778 read/write
     uint64_t hash = 0;
+    // ProgramCopiesTexcoords of program, -1 until UnitTexcoords first asks: a program's walk at every draw was a
+    // tenth of a microsecond of the bloodbath's thousands of small draws
+    int8_t copies_texcoords = -1;
     // stream layout parsed from the declaration: register -> stream, offset, type
     struct Input {
         int stream = -1;
