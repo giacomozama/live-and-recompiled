@@ -150,6 +150,10 @@ struct Reads {
 
 const Reads* ReadsOf(const State& s) {
     if (!((s.vs_handle & 1) && s.vs && !s.vs->program.empty())) return nullptr;
+    // hashed first: a program's first draw, before anything else hashed it, took the registers cached under 0, another
+    // program's, and Distance went through more of them than its frame held (a crash at boot once a load's draws all
+    // went into the first frame)
+    EnsureProgramHash(s);
     static std::unordered_map<uint64_t, Reads> reads;
     auto [it, fresh] = reads.try_emplace(s.vs->hash);
     if (fresh) {
@@ -287,6 +291,7 @@ void AddRel4(const float* u, const float* v, float w, float& d) {
 // as near to the other squirrel's eye as to its own. all: they count whole
 constexpr float kStaleWeight = 0.25f;
 float Distance(const Frame& fa, const Snap& a, const Frame& fb, const Snap& b, float limit, bool all = false) {
+    if (a.reads != b.reads) return INFINITY;  // other registers: nothing to weigh against each other
     float d = 0;
     if (b.reads) {
         const std::array<float, 4>* x = fa.Values(a);
