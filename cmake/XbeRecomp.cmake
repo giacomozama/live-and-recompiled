@@ -266,7 +266,7 @@ function(add_xbe_image target xbe config partitions game_dir)
     # lld keeps the recompiled weak functions overridable by the host ones
     target_link_options(${target} PRIVATE -fuse-ld=lld -g)
     if(WIN32)
-        target_link_options(${target} PRIVATE -municode)  # the host's entry is wWinMain
+        target_link_options(${target} PRIVATE -municode -Wl,--subsystem,windows)  # the host's entry is wWinMain; Zig ignores -mwindows, which WIN32 adds
         if(XBE_PDB)
             target_compile_options(${target}_host PRIVATE -g -gcodeview)
             target_compile_options(${target} PRIVATE -g -gcodeview)
@@ -331,7 +331,7 @@ function(add_xbe_player_kit target title)
         # Zig makes the import library of xaudio2_8 itself, and the flags carry its -target as on Linux
         list(APPEND sdl_libs ${XBE_XAUDIO2})
         separate_arguments(ldflags NATIVE_COMMAND "${XBE_KIT_CXX_FLAGS}")
-        list(APPEND ldflags -mwindows -municode -fuse-ld=lld)
+        list(APPEND ldflags -Wl,--subsystem,windows -municode -fuse-ld=lld)  # Zig ignores -mwindows
         set(cxx zig)
         set(driver c++)
     else()

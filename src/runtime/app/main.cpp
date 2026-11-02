@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cstdio>
 #include <cstring>
 #include <cwchar>
 #include <cwctype>
@@ -377,7 +378,17 @@ void Pace(uint32_t vblanks) {
 
 }  // namespace app
 
+// a GUI program has no console of its own: started from a shell, print into that shell's (unless output is redirected)
+static void AttachParentConsole() {
+    HANDLE out = GetStdHandle(STD_OUTPUT_HANDLE), err = GetStdHandle(STD_ERROR_HANDLE);
+    bool need_out = !out || out == INVALID_HANDLE_VALUE, need_err = !err || err == INVALID_HANDLE_VALUE;
+    if (!(need_out || need_err) || !AttachConsole(ATTACH_PARENT_PROCESS)) return;
+    if (need_out) std::freopen("CONOUT$", "w", stdout);
+    if (need_err) std::freopen("CONOUT$", "w", stderr);
+}
+
 int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
+    AttachParentConsole();
     app::InstallCrashHandler();
     timeBeginPeriod(1);
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
