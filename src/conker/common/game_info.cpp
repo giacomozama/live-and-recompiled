@@ -41,7 +41,8 @@ const app::GameInfo app::kGame = {
                 {"fps_in_title", &ui::g_fps_title, nullptr},
                 {"frame_rate", nullptr, &display::g_frame_rate},  // 30, 60, 120, 180 or 240 (src/conker/game/display.cpp)
                 {"skippable_cutscenes", &cutscenes::g_skippable, nullptr},  // LT skips any cutscene (hooks.cpp)
-                {"rope_physics", &rope::g_physics, nullptr},  // ropes swing as a weighted chain (rope.cpp)                {"grass_wind", &grass::g_wind, nullptr},  // distant grass sways too (hooks.cpp)
+                {"rope_physics", &rope::g_physics, nullptr},  // ropes swing as a weighted chain (rope.cpp)
+                {"grass_wind", &grass::g_wind, nullptr},  // distant grass sways too (hooks.cpp)
                 {"grass_max_lod", &grass::g_max_lod, nullptr},  // distant grass keeps all its blades (hooks.cpp)
                 {"grass_fade", &grass::g_fade, nullptr},  // distant grass fades out, else solid however far (hooks.cpp)
                 {"fur_shading", &fur::g_shading, nullptr},  // lit, soft edged fur shells (src/conker/common/fur.cpp)
