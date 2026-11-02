@@ -67,7 +67,12 @@ Then it is two steps: run Setup, run the game.
    the game and writes the executable. This takes a few minutes. Nothing of the game is uploaded.
    - **Windows:** builds with the [Zig](https://ziglang.org) inside Setup and writes `Game.exe`.
    - **Linux:** builds with the [Zig](https://ziglang.org) inside Setup and writes the native `Game`. If it says permission
-     denied, your archive tool dropped the executable bit: `chmod +x setup-linux`.
+     denied, your archive tool dropped the executable bit: `chmod +x setup-linux`. If it says "error while loading shared
+     libraries", Setup's window needs packages a minimal system lacks (a desktop has them): X11, Wayland, Pango, Cairo
+     and xkbcommon. On Debian or Ubuntu, `sudo apt install libx11-6 libxinerama1 libxfixes3 libxcursor1 libpango-1.0-0
+     libpangocairo-1.0-0 libcairo2 libglib2.0-0 libwayland-client0 libwayland-cursor0 libxkbcommon0`; on Arch, `sudo
+     pacman -S libx11 libxinerama libxfixes libxcursor pango cairo glib2 wayland libxkbcommon`. Or skip the window with
+     `--cli`, below.
 
    Without a display, or with any option, Setup runs in the terminal instead: `./setup-linux --cli --source
    path/to/DefaultPackage --work /tmp/conker-work --game-dir ~/Games/Conker`, `--source` is required and the other
