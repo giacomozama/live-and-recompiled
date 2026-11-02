@@ -165,11 +165,12 @@ struct Voice {
     uint32_t mode = 0;  // DS3DMODE: 1 head relative, 2 disabled
     float p[3] = {}, min_dist = 1, max_dist = 1e9f;
     bool calc3d = false;  // the title's own 3D calculator drives the voice (dsound::SetVoice3d)
-    float att3d = 1, pan3d = 0;
-    int32_t dist_mb = 0, cone_mb = 0, direct_mb = 0;  // F3: the calculator's terms att3d sums
+    float pan3d = 0;
+    dsound::Voice3dTerms t3d{};  // the calculator's terms, as the voice last took them
     double energy = 0;  // XBE_TRACE_DSOUND: sum of squares mixed since the last report
     double recent = 0;  // F3: mean square mixed, smoothed over about half a second
     int64_t fed = 0, done = 0, born = 0;  // F3: steady ms of the last packet in, the last packet out, creation
+    float lp[2][8] = {};  // the I3DL2 filters' last outputs, direct and room, by channel
     // ADPCM block cache
     int64_t block = -1;
     int16_t decoded[65 * 8];
@@ -204,6 +205,7 @@ std::array<uint8_t, kBins> DefaultBinHeadroom() {
 }
 std::array<uint8_t, kBins> g_bin_headroom = DefaultBinHeadroom();
 uint32_t g_ds = 0;
+dsfx::I3dl2 g_i3dl2{-10000, 0, 0, 1, 0.5f, -10000, 0, -10000, 0, 0, 0, 5000};  // F3: the last listener
 
 const bool g_trace = std::getenv("XBE_TRACE_DSOUND") != nullptr;
 #define DSTRACE(...) \
@@ -303,6 +305,20 @@ struct Route {
     float g[kChannels];  // each voice channel into the bin
 };
 
+// a 3D voice's attenuation in bin b, as the library sets the slot's volume from the calculator's terms (0x4C9F5B):
+// distance and cone in every bin, the I3DL2 direct path and the pairs in the 3D bins and the centre, the room only
+// in the reverb send, each sum held to -100..0 dB. A sound ahead has its 3D backs off.
+float Att3d(const dsound::Voice3dTerms& t, uint32_t b) {
+    auto sum = [](int32_t x) { return std::clamp(x, -10000, 0); };
+    int32_t d = sum(t.dist + t.cone);
+    int32_t mb = b == 2           ? sum(d + t.direct + t.pair_a[0] + t.pair_b[1])
+                 : b == 6 || b == 7 ? sum(d + t.direct + t.pair_a[0] + t.pair_b[0])
+                 : b == 8 || b == 9 ? sum(d + t.direct + t.pair_a[1])
+                 : b == 10          ? sum(d + t.room)
+                                    : d;
+    return Db(mb);
+}
+
 // what the voice puts in each bin, as the VP mixes it: every slot adds its channel at the slot's bin volume, the voice
 // volume and headroom, less the bin's headroom bits. A hardware voice holds two channels and owns a run of slots,
 // which alternate channels; a mono voice sends its one channel to all of them. With no bins given a voice plays its
@@ -315,7 +331,6 @@ int Routes(const Voice& v, Route* r) {
     uint32_t per = std::max<uint32_t>(n / voices, 2);
     float att = 1, pan = 0;
     if (v.calc3d) {
-        att = v.att3d;
         pan = v.pan3d;
     } else if (v.is3d && v.mode != 2) {
         bool rel = v.mode == 1;  // the position is already in listener space
@@ -353,7 +368,7 @@ int Routes(const Voice& v, Route* r) {
         uint32_t pair = c / 2 * 2 + 1 < channels ? 2 : 1, end = std::min(per * (c / 2 + 1), n);
         for (uint32_t s = per * (c / 2) + c % 2; s < end; s += pair) {
             uint32_t b = bin[s];
-            float x = Db(v.bin_mb[b]) * v.volume * v.headroom * att;
+            float x = Db(v.bin_mb[b]) * v.volume * v.headroom * (v.calc3d ? Att3d(v.t3d, b) : att);
             float left = std::min(1.0f, 1.0f - pan), right = std::min(1.0f, 1.0f + pan);
             if (!heard) {
                 add(0, c, x * left);
@@ -467,7 +482,9 @@ void Describe(uint32_t obj, const Voice& v) {
     }
     std::string d3;
     if (v.calc3d) {
-        std::snprintf(b, sizeof b, " (dist %d cone %d direct %d)", v.dist_mb, v.cone_mb, v.direct_mb);
+        const dsound::Voice3dTerms& t = v.t3d;
+        std::snprintf(b, sizeof b, " (dist %d cone %d a %d %d b %d %d direct %d room %d filter %d %d)", t.dist, t.cone,
+                      t.pair_a[0], t.pair_a[1], t.pair_b[0], t.pair_b[1], t.direct, t.room, t.filter[0], t.filter[1]);
         d3 = b;
     } else if (v.is3d) {
         std::snprintf(b, sizeof b, " (at %.1f %.1f %.1f min %.1f max %.1f mode %u curve %zu)", v.p[0], v.p[1], v.p[2],
@@ -476,12 +493,13 @@ void Describe(uint32_t obj, const Voice& v) {
     }
     LOGR("dsound:  %08X %uch %uHz%s out %08X vol %d headroom %d%s bins%s 3d %s att %d%s pan %.2f level %d", obj,
          v.channels, v.freq ? v.freq : v.rate, v.mixin ? " mixin" : "", v.out, mb(v.volume), mb(v.headroom),
-         v.nbins ? "" : " default", bins.c_str(), v.calc3d ? "calc" : v.is3d ? "ds" : "no", mb(v.att3d), d3.c_str(),
+         v.nbins ? "" : " default", bins.c_str(), v.calc3d ? "calc" : v.is3d ? "ds" : "no",
+         v.calc3d ? mb(Att3d(v.t3d, 0)) : 0, d3.c_str(),
          v.pan3d, mb(float(std::sqrt(v.recent))));
 }
 
 void Render(float* out, uint32_t frames) {
-    static std::vector<float> bus, ab;
+    static std::vector<float> bus, ab, filtered[2];
     static std::vector<Voice*> order;
     std::memset(out, 0, frames * 2 * sizeof(float));
     if (Held()) return;  // a host menu is up: nothing plays on, nothing is used up
@@ -506,12 +524,29 @@ void Render(float* out, uint32_t frames) {
         Pull(*v, ab.data(), frames);
         Voice* sub = Submix(*v);
         uint32_t ch = std::min<uint32_t>(std::max<uint32_t>(v->channels, 1), kChannels);
+        // a 3D voice's I3DL2 filters: the direct path's on every bin but the reverb send, the room's on that
+        const float* in[2] = {ab.data(), ab.data()};
+        for (int p = 0; p < 2 && v->calc3d; p++) {
+            if (!v->t3d.filter[p]) continue;
+            float a = float(std::min<int32_t>(v->t3d.filter[p], 0xFFFF)) / 65536.0f;
+            std::vector<float>& f = filtered[p];
+            f.resize(size_t(frames) * ch);
+            for (uint32_t i = 0; i < frames; i++)
+                for (uint32_t c = 0; c < ch; c++) {
+                    float& y = v->lp[p][c];
+                    y = ab[i * ch + c] + a * (y - ab[i * ch + c]);
+                    if (std::abs(y) < 1e-20f) y = 0;
+                    f[i * ch + c] = y;
+                }
+            in[p] = f.data();
+        }
         double block = 0;
         for (int k = 0; k < routes; k++) {
             float* dst = r[k].bin == kMultipass && sub ? sub->submix.data() : &bus[size_t(r[k].bin) * frames];
+            const float* src = in[r[k].bin == 10];
             for (uint32_t i = 0; i < frames; i++) {
                 float x = 0;
-                for (uint32_t c = 0; c < ch; c++) x += ab[i * ch + c] * r[k].g[c];
+                for (uint32_t c = 0; c < ch; c++) x += src[i * ch + c] * r[k].g[c];
                 dst[i] += x;
                 block += x * x;
             }
@@ -767,17 +802,25 @@ float F32(uint32_t v) {
 
 }  // namespace
 
-void dsound::SetVoice3d(uint32_t obj, uint32_t changed, int32_t dist_mb, int32_t cone_mb, int32_t direct_mb,
-                        float azimuth) {
+void dsound::SetVoice3d(uint32_t obj, uint32_t changed, const Voice3dTerms& t) {
     std::lock_guard<std::recursive_mutex> lock(g_lock);
     Voice* v = Find(obj);
     if (!v) return;
     v->calc3d = true;
-    if (changed & k3dDistance) v->dist_mb = dist_mb;
-    if (changed & k3dCone) v->cone_mb = cone_mb;
-    if (changed & k3dDirect) v->direct_mb = direct_mb;
-    v->att3d = Db(std::max(v->dist_mb + v->cone_mb + v->direct_mb, -10000));
-    if (changed & k3dAzimuth) v->pan3d = std::sin(azimuth * 3.14159265f / 180.0f);
+    Voice3dTerms& h = v->t3d;
+    if (changed & k3dDistance) h.dist = t.dist;
+    if (changed & k3dCone) h.cone = t.cone;
+    if (changed & k3dPairA) std::copy(t.pair_a, t.pair_a + 2, h.pair_a);
+    if (changed & k3dPairB) std::copy(t.pair_b, t.pair_b + 2, h.pair_b);
+    if (changed & k3dI3dl2) {
+        h.direct = t.direct;
+        h.room = t.room;
+    }
+    if (changed & k3dAzimuth) {
+        h.azimuth = t.azimuth;
+        v->pan3d = std::sin(t.azimuth * 3.14159265f / 180.0f);
+    }
+    if (changed & k3dFilter) std::copy(t.filter, t.filter + 2, h.filter);
 }
 
 void dsound::LogState() {
@@ -791,6 +834,10 @@ void dsound::LogState() {
     }
     LOGE("dsound: %zu voices (%zu streams), %zu playing; mixed %.2fs ago, DoWork %.2fs ago, callback %.2fs ago, %zu "
          "callbacks queued", g_voices.size(), streams, playing, ago(g_mixed), ago(g_pumped), ago(g_ran), g_done.size());
+    const dsfx::I3dl2& l = g_i3dl2;
+    LOGE("dsound: I3DL2 room %d hf %d decay %.2f ratio %.2f reflections %d at %.3f reverb %d at %.3f diffusion %.0f "
+         "density %.0f", l.room, l.room_hf, l.decay, l.decay_hf_ratio, l.reflections, l.reflections_delay, l.reverb,
+         l.reverb_delay, l.diffusion, l.density);
     // seconds since: made, last packet in, last packet out (-1 never)
     for (auto& [obj, v] : g_voices) {
         if (!v.stream) {
@@ -910,7 +957,8 @@ HLE_STDCALL(IDirectSound_SetI3DL2Listener, 3) {
     std::lock_guard<std::recursive_mutex> lock(g_lock);
     auto i = [&](uint32_t o) { return int32_t(R32(a[1] + o)); };
     auto f = [&](uint32_t o) { return F32(R32(a[1] + o)); };
-    dsfx::SetI3dl2({i(0), i(4), f(8), f(12), f(16), i(20), f(24), i(28), f(32), f(36), f(40), f(44)});
+    g_i3dl2 = {i(0), i(4), f(8), f(12), f(16), i(20), f(24), i(28), f(32), f(36), f(40), f(44)};
+    dsfx::SetI3dl2(g_i3dl2);
     DSTRACE("dsound: I3DL2 room %d hf %d decay %.2f ratio %.2f reflections %d at %.3f reverb %d at %.3f", i(0), i(4),
             f(12), f(16), i(20), f(24), i(28), f(32));
     return 0;
