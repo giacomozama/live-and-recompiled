@@ -264,8 +264,10 @@ public:
         last_present_ = id;
     }
 
-    void Redisplay() override {
-        cur_->cmds.push_back(Cmd{Op::Redisplay});
+    void Redisplay(bool blur) override {
+        Cmd c{Op::Redisplay};
+        c.a = blur;
+        cur_->cmds.push_back(c);
         Wait(Submit(), WaitFor::Frame, nullptr);
     }
 
@@ -743,7 +745,7 @@ private:
             case Op::Clear: inner_->Clear(state_, c.a, c.size ? data : nullptr, c.b, c.c, c.f, c.d); break;
             case Op::Copy: inner_->Copy(c.s1, c.s2, c.a, c.b, c.c); break;
             case Op::Present: Present(b, c); break;
-            case Op::Redisplay: inner_->Redisplay(); break;
+            case Op::Redisplay: inner_->Redisplay(c.a != 0); break;
             case Op::Sync: inner_->Sync(c.a, 0); break;
             case Op::RecordLate: inner_->RecordLate(c.a); break;
             case Op::Flush: inner_->Flush(); break;

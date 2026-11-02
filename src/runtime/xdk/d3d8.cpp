@@ -12,6 +12,8 @@
 
 #include "app/app.h"
 #include "core/diag.h"
+#include "core/loadtrace.h"
+#include "kernel/memory.h"
 #include "gpu/backend.h"
 #include "gpu/interp.h"
 #include "gpu/texture.h"
@@ -815,6 +817,7 @@ HLE_STDCALL(D3D_MakeRequestedSpace, 2) {
 }
 
 HLE_STDCALL(D3DDevice_BlockUntilVerticalBlank, 0) {
+    loadtrace::Scope trace(loadtrace::kVblank, loadtrace::kKinds, true);
     std::this_thread::sleep_for(std::chrono::milliseconds(16));
     return 0;
 }
@@ -848,14 +851,74 @@ namespace {
 // What a title draws into the front buffer is on screen at once on the console, with no Swap: Conker's loading
 // screen (0x2ACA70) sets the front buffer as its target, draws the picture, text and progress bar, puts the old
 // target back and returns to loading on the same thread. The window here only changes at a Present, so leaving the
-// front buffer presents it. At most one per blank, in case a loader updates its bar after every file.
+// front buffer presents it. At most one per blank, in case a loader updates its bar after every file; none for a
+// loading screen LoadingScreenWanted turned down.
+bool g_loading = false;     // a loading screen asked for since the last Swap
+bool g_front_skip = false;  // the last one asked for was turned down: nothing new in the front buffer
+std::chrono::steady_clock::time_point g_load_start, g_screen_last;
+
 void ShowFront() {
     using clock = std::chrono::steady_clock;
     static clock::time_point last;
+    if (std::exchange(g_front_skip, false)) return;
     auto now = clock::now();
     if (!g_backend || now - last < std::chrono::microseconds(16667)) return;
     last = now;
+    loadtrace::Scope trace(loadtrace::kShowFront);
     g_backend->Present(SurfaceOf(g_buffers[0]));
+}
+}  // namespace
+
+// A load fades the last picture to black (kFadeOut), shows black while it runs, redisplayed now and then so the window
+// keeps answering, and the frames after it fade in (kFadeIn, FadeIn at each Swap)
+constexpr std::chrono::milliseconds kFadeOut{150}, kFadeIn{250}, kBlackEvery{250};
+std::chrono::steady_clock::time_point g_fade_in_from;
+bool g_fading_in = false;
+
+bool d3d::LoadingScreenWanted() {
+    using clock = std::chrono::steady_clock;
+    static const bool always = std::getenv("XBE_LOADING_SCREEN") != nullptr;
+    if (always) return true;
+    std::lock_guard<std::recursive_mutex> lock(g_lock);
+    g_front_skip = true;
+    if (!g_backend) return false;
+    auto now = clock::now();
+    if (!g_loading) {
+        g_loading = true;
+        g_load_start = now;
+        g_fading_in = false;
+        const float from = gpu::g_fade.load();
+        for (auto t = now; t - now < kFadeOut; t = clock::now()) {
+            gpu::g_fade = from * (1.0f - std::chrono::duration<float>(t - now) / kFadeOut);
+            g_backend->Redisplay(false);
+            app::Pace(1);
+        }
+        gpu::g_fade = 0.0f;
+        g_backend->Redisplay(false);
+        g_screen_last = clock::now();
+    } else if (now - g_screen_last >= kBlackEvery) {
+        g_backend->Redisplay(false);
+        g_screen_last = now;
+    }
+    return false;
+}
+
+namespace {
+// at each Swap: a load just over starts the fade in, which brings the picture back over kFadeIn
+void FadeIn() {
+    using clock = std::chrono::steady_clock;
+    auto now = clock::now();
+    if (g_loading) {
+        g_fading_in = true;
+        g_fade_in_from = now;
+    }
+    if (!g_fading_in) return;
+    float k = std::chrono::duration<float>(now - g_fade_in_from) / kFadeIn;
+    if (k >= 1.0f) {
+        k = 1.0f;
+        g_fading_in = false;
+    }
+    gpu::g_fade = k * k * (3.0f - 2.0f * k);
 }
 }  // namespace
 
@@ -922,6 +985,9 @@ HLE_STDCALL(D3DDevice_Swap, 1) {
     }
     std::lock_guard<std::recursive_mutex> lock(g_lock);
     g_presents++;
+    FadeIn();
+    g_loading = false;  // a load, if one ran, is over
+    g_front_skip = false;
     {
         // a frame far over its period: say so, the compile/pipeline lines before it say whether the renderer was why
         using clock = std::chrono::steady_clock;
@@ -930,6 +996,7 @@ HLE_STDCALL(D3DDevice_Swap, 1) {
         double ms = std::chrono::duration<double, std::milli>(now - last).count();
         last = now;
         if (ms > 250 && g_presents > 2) LOGR("d3d: frame %u took %.0f ms", g_presents.load(), ms);
+        if (loadtrace::On()) loadtrace::Frame(g_presents, ms);
     }
     // the kept display is shown until the title presents its own
     kernel::SetSavedDataAddress(0);

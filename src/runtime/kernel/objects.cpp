@@ -3,6 +3,7 @@
 #include <map>
 #include <queue>
 
+#include "core/loadtrace.h"
 #include "kernel/kernel.h"
 
 namespace kernel {
@@ -232,6 +233,7 @@ static uint32_t WaitFor(const std::vector<ObjectRef>& objs, bool wait_all, int64
 }
 
 uint32_t Wait(const std::vector<ObjectRef>& objs, bool wait_all, int64_t timeout, bool alertable) {
+    loadtrace::Scope trace(loadtrace::kWait, loadtrace::kKinds, true);
     FlushPendingIo();  // the waiter's own reads complete now rather than a moment later
     SuspendPoint();
     uint32_t r = WaitFor(objs, wait_all, timeout, alertable);

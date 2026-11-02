@@ -1,4 +1,5 @@
 #pragma once
+#include <cstddef>
 #include <cstdint>
 
 namespace mem {
@@ -56,5 +57,11 @@ struct Stats {
     uint32_t total_pages, available_pages, virtual_committed, contiguous_used, system_used;
 };
 Stats Query();
+
+// free pieces of each allocator and the virtual reservations, for XBE_TRACE_LOAD
+struct Counts {
+    size_t contiguous_free, system_free, user_free, reserved;
+};
+Counts CountRanges();
 
 }  // namespace mem

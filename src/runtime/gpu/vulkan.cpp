@@ -851,7 +851,8 @@ public:
     void Changed(bool any) override { same_state_ = !any; }
     void Copy(const Surface& src, const Surface& dst, uint32_t count, uint32_t src_rects, uint32_t dst_points) override;
     void Present(const Surface& front) override;
-    void Redisplay() override;
+    void Redisplay(bool blur) override;
+    void ApplyFade();
     bool Due(std::chrono::steady_clock::time_point& at) override {
         if (held_.empty()) return false;
         at = held_.front().at;
@@ -1313,8 +1314,15 @@ private:
     };
     std::vector<CapTex> cap_tex_;
     ImageRef lut_;
-    uint8_t ramp_[768] = {};
+    // the title's gamma ramp, identity until it sets one: a fade (g_fade) uploads it before any title did, and the
+    // zeros it started as made every picture black
+    std::array<uint8_t, 768> ramp_ = [] {
+        std::array<uint8_t, 768> r{};
+        for (int i = 0; i < 768; i++) r[size_t(i)] = uint8_t(i % 256);
+        return r;
+    }();
     bool ramp_dirty_ = false;
+    float fade_ = 1.0f;  // g_fade as the gamma ramp has it
     bool gamma_ = false;
     Target* bound_rt_ = nullptr;
     Target* bound_ds_ = nullptr;
@@ -4762,12 +4770,13 @@ void VulkanBackend::UploadGammaRamp() {
     bool identity = true;
     for (int i = 0; i < 256; i++) {
         uint8_t* p = a.cpu + i * 4;
-        p[0] = ramp_[kRampBlue + i];
-        p[1] = ramp_[kRampGreen + i];
-        p[2] = ramp_[kRampRed + i];
+        p[0] = uint8_t(float(ramp_[kRampBlue + i]) * fade_ + 0.5f);
+        p[1] = uint8_t(float(ramp_[kRampGreen + i]) * fade_ + 0.5f);
+        p[2] = uint8_t(float(ramp_[kRampRed + i]) * fade_ + 0.5f);
         p[3] = 255;
         identity &= ramp_[kRampRed + i] == i && ramp_[kRampGreen + i] == i && ramp_[kRampBlue + i] == i;
     }
+    identity &= fade_ >= 1.0f;
     gamma_ = !identity;
     Transition(*lut_, kDst);
     VkBufferImageCopy r{};
@@ -5097,6 +5106,7 @@ void VulkanBackend::Present(const Surface& front) {
     double since = gen_last_ == decltype(gen_last_){} ? 1.0 : std::chrono::duration<double>(now - gen_last_).count();
     gen_last_ = now;
     if (since < 0.25) gen_period_ += (since - gen_period_) * 0.1;
+    ApplyFade();
     if (ramp_dirty_) UploadGammaRamp();
     Submit(false);
 
@@ -5138,14 +5148,24 @@ void VulkanBackend::Present(const Surface& front) {
 
 // the title held: its last picture again under the overlay, a frame with no draws of its own, blurred a little more as
 // the hold goes on
-void VulkanBackend::Redisplay() {
+// g_fade into the gamma ramp, the picture's last step on its way to the window
+void VulkanBackend::ApplyFade() {
+    float fade = std::clamp(g_fade.load(std::memory_order_relaxed), 0.0f, 1.0f);
+    if (fade == fade_) return;
+    fade_ = fade;
+    ramp_dirty_ = true;
+}
+
+void VulkanBackend::Redisplay(bool blur) {
     constexpr float kBlurSeconds = 0.11f, kBlurSpread = 1.5f;  // to full, and a tap's reach in half size pixels
     using Clock = std::chrono::steady_clock;
-    if (held_since_ == Clock::time_point{}) held_since_ = Clock::now();
-    float k = std::min(std::chrono::duration<float>(Clock::now() - held_since_).count() / kBlurSeconds, 1.0f);
+    if (blur && held_since_ == Clock::time_point{}) held_since_ = Clock::now();
+    float k = blur ? std::min(std::chrono::duration<float>(Clock::now() - held_since_).count() / kBlurSeconds, 1.0f) : 0.0f;
     k = k * k * (3.0f - 2.0f * k);
     ShowHeld();
     ResizeSwap();
+    ApplyFade();
+    if (ramp_dirty_) UploadGammaRamp();
     Submit(false);
     BuildUi();
     Frame& f = CurrentFrame();
@@ -5480,7 +5500,7 @@ void VulkanBackend::CapStep(const Surface& rt) {
 
 void VulkanBackend::SetGamma(const uint8_t* ramp) {
     FlushRun();
-    std::memcpy(ramp_, ramp, sizeof(ramp_));
+    std::memcpy(ramp_.data(), ramp, ramp_.size());
     ramp_dirty_ = true;
 }
 

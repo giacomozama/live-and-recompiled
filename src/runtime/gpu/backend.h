@@ -31,8 +31,9 @@ public:
                       uint32_t dst_points_va) = 0;
     virtual void Present(const Surface& front) = 0;
     // the last picture Present showed, shown again with the overlay over it: the title is held (kernel::Hold) and
-    // draws nothing, the menu still has to. A backend without a window does nothing
-    virtual void Redisplay() {}
+    // draws nothing, the menu still has to; blurred the longer it is held, unless blur is false (a load's fade). A
+    // backend without a window does nothing
+    virtual void Redisplay(bool /*blur*/ = true) {}
     // frame generation: Present shows the first of a frame's pictures and holds the rest for later; Due says when the
     // next held one is to be shown (false when none is held), Show shows those due by now. Present itself shows any
     // still held from the frame before first
@@ -87,6 +88,9 @@ std::unique_ptr<Backend> CreateVulkanBackend();
 std::unique_ptr<Backend> CreateThreadedBackend(std::unique_ptr<Backend> inner);
 
 // perf diagnostic: the title's thread recording for the render thread, and waiting on it
+// how much of the picture reaches the window, 0 black to 1 whole: a load fades through black (d3d8.cpp
+// LoadingScreenWanted); read by the backend as it shows each picture, the overlay drawn over it unfaded
+inline std::atomic<float> g_fade{1.0f};
 inline std::atomic<uint64_t> g_perf_capture_ns{0}, g_perf_wait_ns{0}, g_perf_waits{0};
 inline std::atomic<uint64_t> g_perf_wait_kind_ns[6];  // read-back, resource, fence, flush, copy, next frame
 inline std::atomic<uint64_t> g_perf_sync_late{0}, g_perf_sync_block{0};  // read-backs the title waited for, by cause

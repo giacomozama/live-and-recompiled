@@ -14,6 +14,7 @@
 #include "xdk/hle.h"
 #include "cpu/x86_ops.h"
 #include "core/diag.h"
+#include "core/loadtrace.h"
 #include "xdk/d3d8.h"
 #include "xdk/dsound.h"
 
@@ -22,6 +23,7 @@
 #include "common/display.h"
 #include "common/fur.h"
 #include "common/grass.h"
+#include "common/loading.h"
 
 namespace {
 
@@ -455,4 +457,22 @@ X86_FUNC(sub_0001A510) {
     if (rf(e + 0xE8) > 0) wf(e + 0xE8, std::max(rf(e + 0xE8) + add, boundary ? 0.0f : step));
     if (base[e + 5] && rf(e + 0x168) > 0) wf(e + 0x168, std::max(rf(e + 0x168) + add, boundary ? 0.0f : step));
     __imp__sub_0001A510(ctx, base);
+}
+
+// 0x2AD3B0, the loader's progress step between the files it loads, puts the front buffer up as the target
+// (0x2ACA70), draws the loading screen into it (0x2ACB20, stdcall, the screen), puts the old target back, which shows
+// it (d3d8.cpp ShowFront), and waits for the GPU. Each shown was a Present the loader waited on, ~45 ms, and most of a
+// load; drawn but unshown, the thousands of a load cost the GPU seconds in the first frame after. The loading is quick
+// here, so with loading::g_fade no screen is drawn: d3d::LoadingScreenWanted fades to black instead, the frames after
+// fading back in. Off: every screen drawn and shown, as on the console.
+bool loading::g_fade = true;
+
+X86_EXTERN_FUNC(__imp__sub_002ACB20);
+X86_FUNC(sub_002ACB20) {
+    loadtrace::Scope trace(loadtrace::kScreen);
+    if (loading::g_fade && !d3d::LoadingScreenWanted()) {
+        kernel::Return(ctx, ctx.eax, 1);
+        return;
+    }
+    __imp__sub_002ACB20(ctx, base);
 }

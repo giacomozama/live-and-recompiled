@@ -33,6 +33,7 @@
 #include "common/grass.h"
 #include "common/keyboard.h"
 #include "common/lighting.h"
+#include "common/loading.h"
 #include "common/mouse.h"
 #include "common/reflection.h"
 #include "common/rope.h"
@@ -989,6 +990,9 @@ void Draw(double fps) {
                 ImGui::SeparatorText("Gameplay");
                 ImGui::Checkbox("Skippable cutscenes", &cutscenes::g_skippable);
                 Hint("Press LT to skip any cutscene, even ones you haven't seen.", true);
+                ImGui::Checkbox("Fade instead of loading screens", &loading::g_fade);
+                Hint("Loads fade to black and back instead of showing the loading screen, which also makes them much "
+                     "faster.", true);
                 ImGui::Checkbox("Rope physics", &rope::g_physics);
                 Hint("Ropes swing realistically when Conker hangs on them.", true);
                 end_tab();

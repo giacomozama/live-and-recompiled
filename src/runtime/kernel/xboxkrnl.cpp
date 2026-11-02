@@ -5,6 +5,7 @@
 #include <ctime>
 
 #include "app/app.h"
+#include "core/loadtrace.h"
 #include "kernel/crypto.h"
 #include "kernel/exports.h"
 #include "xbe/xbe.h"
@@ -284,6 +285,7 @@ KERNEL_EXPORT(151, KeStallExecutionProcessor, 1) {
 }
 
 KERNEL_EXPORT(99, KeDelayExecutionThread, 3) {
+    loadtrace::Scope trace(loadtrace::kDelay, loadtrace::kKinds, true);
     int64_t interval = int64_t(R64(a[2]));
     bool alertable = a[1] & 0xFF;
     Thread* t = Current();
@@ -869,6 +871,7 @@ KERNEL_EXPORT(140, KeResumeThread, 1) {
 KERNEL_EXPORT(92, KeAlertResumeThread, 1) { return kimpl_KeResumeThread(ctx, a); }
 
 KERNEL_EXPORT(238, NtYieldExecution, 0) {
+    loadtrace::Scope trace(loadtrace::kYield, loadtrace::kKinds, true);
     FlushPendingIo();
     SuspendPoint();
     std::this_thread::yield();

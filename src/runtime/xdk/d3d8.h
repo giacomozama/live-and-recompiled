@@ -36,4 +36,11 @@ struct DrawTag {
 };
 DrawTag SetDrawTag(DrawTag tag);
 
+// Whether a title's loading screen, about to be drawn into the front buffer, should be drawn. Each one shown is a
+// Present the loader waits on, and those drawn unshown still cost the GPU their whole picture in the first frame
+// after, so none is: the first ask since the last Swap fades the picture to black, later ones keep the window black,
+// and the next Swap fades back in. A false leaves the front buffer unpresented when the title moves its target off
+// it. XBE_LOADING_SCREEN set: always true, every screen drawn and shown as on the console.
+bool LoadingScreenWanted();
+
 }  // namespace d3d

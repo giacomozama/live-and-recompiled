@@ -6,6 +6,7 @@
 #include <mutex>
 #include <vector>
 
+#include "core/loadtrace.h"
 #include "core/log.h"
 
 #ifdef _WIN32
@@ -129,16 +130,16 @@ public:
     void Init(uint32_t start, uint32_t size) { free_[start] = size; }
 
     void Remove(uint32_t start, uint32_t size) {
-        // carve a fixed range out of the free list
-        for (auto it = free_.begin(); it != free_.end(); ++it) {
-            uint32_t fs = it->first, fz = it->second;
-            if (start >= fs && uint64_t(start) + size <= uint64_t(fs) + fz) {
-                free_.erase(it);
-                if (start > fs) free_[fs] = start - fs;
-                if (uint64_t(start) + size < uint64_t(fs) + fz) free_[start + size] = uint32_t(uint64_t(fs) + fz - start - size);
-                return;
-            }
-        }
+        // carve a fixed range out of the free list: the one free piece that can hold it starts at or below it (the
+        // pieces don't overlap), found by search rather than a walk that grew with every piece the heap was cut into
+        auto it = free_.upper_bound(start);
+        if (it == free_.begin()) return;
+        --it;
+        uint32_t fs = it->first, fz = it->second;
+        if (uint64_t(start) + size > uint64_t(fs) + fz) return;
+        free_.erase(it);
+        if (start > fs) free_[fs] = start - fs;
+        if (uint64_t(start) + size < uint64_t(fs) + fz) free_[start + size] = uint32_t(uint64_t(fs) + fz - start - size);
     }
 
     uint32_t Alloc(uint32_t size, uint32_t align, uint32_t lo, uint32_t hi, bool top_down) {
@@ -206,6 +207,8 @@ public:
         return it == used_.end() ? 0 : it->second;
     }
 
+    size_t Pieces() const { return free_.size(); }
+
     uint64_t Used() const {
         uint64_t n = 0;
         for (auto& u : used_) n += u.second;
@@ -264,6 +267,7 @@ static Reservation* FindReservation(uint32_t addr, uint32_t* start) {
 }
 
 uint32_t AllocateVirtual(uint32_t& base, uint32_t& size, uint32_t type, uint32_t protect) {
+    loadtrace::Scope trace(loadtrace::kAlloc, loadtrace::kAllocMain);
     std::lock_guard<std::recursive_mutex> lock(g_lock);
     EnsureRanges();
     if (!size) return 0xC000000D;  // STATUS_INVALID_PARAMETER
@@ -303,6 +307,7 @@ uint32_t AllocateVirtual(uint32_t& base, uint32_t& size, uint32_t type, uint32_t
 }
 
 uint32_t FreeVirtual(uint32_t& base, uint32_t& size, uint32_t type) {
+    loadtrace::Scope trace(loadtrace::kAlloc, loadtrace::kAllocMain);
     std::lock_guard<std::recursive_mutex> lock(g_lock);
     uint32_t start;
     Reservation* r = FindReservation(base, &start);
@@ -354,6 +359,7 @@ bool QueryVirtual(uint32_t addr, RegionInfo& out) {
 }
 
 uint32_t AllocContiguous(uint32_t size, uint32_t lowest, uint32_t highest, uint32_t align) {
+    loadtrace::Scope trace(loadtrace::kAlloc, loadtrace::kAllocMain);
     std::lock_guard<std::recursive_mutex> lock(g_lock);
     EnsureRanges();
     size = (size + kPage - 1) & ~(kPage - 1);
@@ -374,12 +380,14 @@ uint32_t AllocContiguous(uint32_t size, uint32_t lowest, uint32_t highest, uint3
 }
 
 void FreeContiguous(uint32_t va) {
+    loadtrace::Scope trace(loadtrace::kAlloc, loadtrace::kAllocMain);
     std::lock_guard<std::recursive_mutex> lock(g_lock);
     uint32_t size;
     if (g_contig.Free(va, &size)) Decommit(va, size);
 }
 
 uint32_t AllocSystem(uint32_t size, uint32_t align) {
+    loadtrace::Scope trace(loadtrace::kAlloc, loadtrace::kAllocMain);
     std::lock_guard<std::recursive_mutex> lock(g_lock);
     EnsureRanges();
     size = (size + 15) & ~15u;
@@ -392,6 +400,7 @@ uint32_t AllocSystem(uint32_t size, uint32_t align) {
 }
 
 void FreeSystem(uint32_t va) {
+    loadtrace::Scope trace(loadtrace::kAlloc, loadtrace::kAllocMain);
     std::lock_guard<std::recursive_mutex> lock(g_lock);
     g_system.Free(va);
 }
@@ -434,6 +443,11 @@ uint32_t PhysicalFromVirtual(uint32_t va) {
 uint32_t VirtualFromPhysical(uint32_t pa) {
     if (pa < kPhysicalSize) return kContiguousBase | pa;
     return pa;
+}
+
+Counts CountRanges() {
+    std::lock_guard<std::recursive_mutex> lock(g_lock);
+    return {g_contig.Pieces(), g_system.Pieces(), g_user.Pieces(), g_reserved.size()};
 }
 
 Stats Query() {

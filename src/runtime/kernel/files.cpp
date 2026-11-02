@@ -9,6 +9,7 @@
 #include <map>
 #include <thread>
 
+#include "core/loadtrace.h"
 #include "kernel/disc.h"
 #include "kernel/kernel.h"
 #include "kernel/exports.h"
@@ -327,6 +328,7 @@ bool ReadGameFile(const std::string& xbox_path, std::vector<uint8_t>& out) {
 // exports
 
 KERNEL_EXPORT(190, NtCreateFile, 9) {
+    loadtrace::Scope trace(loadtrace::kOpen, loadtrace::kOpenMain);
     uint32_t handle_out = a[0], access = a[1], attrs = a[2], iosb = a[3], disposition = a[7], options = a[8];
     (void)access;
     uint32_t root;
@@ -431,6 +433,7 @@ KERNEL_EXPORT(190, NtCreateFile, 9) {
 }
 
 KERNEL_EXPORT(202, NtOpenFile, 6) {
+    loadtrace::Scope trace(loadtrace::kOpen, loadtrace::kOpenMain);
     // same as create with FILE_OPEN
     uint32_t handle_out = a[0], attrs = a[2], iosb = a[3], options = a[5];
     uint32_t root;
@@ -558,6 +561,7 @@ void LogPendingIo() {
 // pages is the FILE_SEGMENT_ELEMENT array for scatter and gather, 0 for one buffer
 static uint32_t Transfer(const Args& a, bool write, uint32_t pages) {
     uint32_t h = a[0], event = a[1], apc = a[2], apc_ctx = a[3], iosb = a[4], buf = a[5], len = a[6], off = a[7];
+    loadtrace::Scope trace(write ? loadtrace::kKinds : loadtrace::kRead, loadtrace::kReadMain);
     auto f = FileFromHandle(h);
     if (!f || (!f->fp && !f->entry)) return kInvalidHandle;
     if (write && f->entry) return kAccessDenied;
@@ -576,8 +580,9 @@ static uint32_t Transfer(const Args& a, bool write, uint32_t pages) {
         if (done < chunk) break;
     }
     f->pos = pos + n;
-    static const bool trace = std::getenv("XBE_TRACE_DSOUND") != nullptr;
-    if (trace && !write && !pages && f->xbox.size() > 4 && f->xbox.compare(f->xbox.size() - 4, 4, ".xwb") == 0)
+    trace.bytes = n;
+    static const bool trace_xwb = std::getenv("XBE_TRACE_DSOUND") != nullptr;
+    if (trace_xwb && !write && !pages && f->xbox.size() > 4 && f->xbox.compare(f->xbox.size() - 4, 4, ".xwb") == 0)
         LOGR("xwb read %s %llX %X -> %08X", f->xbox.c_str(), (unsigned long long)pos, n, buf);
     if (write && n < len) return Finish(*f, 0xC000007F, n, event, apc, apc_ctx, iosb);  // disk full
     if (!write && len && !n) return Finish(*f, kEndOfFile, 0, event, apc, apc_ctx, iosb);
