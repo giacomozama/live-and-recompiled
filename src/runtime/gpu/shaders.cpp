@@ -1070,15 +1070,25 @@ std::string PixelHlsl(const PixelKey& k) {
             else if (t.kind == kTex2D) body += F("float4 t%d = tex%d.Sample(smp%d, %s);\n", i, i, i, uv.c_str());
             else if (t.kind == kTexCube && !(cube = Hooks().Cube(t, i, F("tc%d.xyz", i))).empty()) body += F("float4 t%d = %s;\n", i, cube.c_str());
             else if (t.kind) body += F("float4 t%d = tex%d.Sample(smp%d, tc%d.xyz);\n", i, i, i, i);
-            // a stage without a texture reads black, as on the console (Conker's peephole bars select it over black
-            // vertices), and as a combiner stage that samples nothing does
             else body += F("float4 t%d = float4(0,0,0,1);\n", i);
             body += Unoffset(t, i);
             body += Hooks().Fetched(t, i);
             if ((k.alphakill >> i) & 1) body += F("if (t%d.a == 0) discard;\n", i);
             const char* dst = f[8] == 5 ? "tmp" : "cur";
-            std::string rgb = FfOp(f[0], FfArg(f[1], i, false), FfArg(f[2], i, false), FfArg(f[3], i, false), i, false);
-            std::string a = f[4] <= 1 ? std::string("cur.a") : FfOp(f[4], FfArg(f[5], i, true), FfArg(f[6], i, true), FfArg(f[7], i, true), i, true);
+            // an op that reads the texture of a stage without one leaves the current colour as it was, as on the
+            // console: Conker's peephole bars select it over black vertices and draw black, the Hello terminal's
+            // cursor modulates it with its green ones and draws green
+            auto reads_tex = [&](int op) {
+                auto tex = [&](int arg) { return (f[op + arg] & 0xF) == 2; };  // D3DTA_TEXTURE
+                uint32_t o = f[op];  // SELECTARG1 reads arg 1, SELECTARG2 arg 2, MULTIPLYADD and LERP arg 0 as well
+                return o == 14 || o == 16 || (o != 3 && tex(1)) || (o != 2 && tex(2)) || (o >= 23 && tex(3));
+            };
+            bool empty = !t.kind && !t.shadow;
+            std::string rgb = empty && reads_tex(0) ? std::string("cur.rgb")
+                              : FfOp(f[0], FfArg(f[1], i, false), FfArg(f[2], i, false), FfArg(f[3], i, false), i, false);
+            std::string a = f[4] <= 1 || (empty && reads_tex(4))
+                                ? std::string("cur.a")
+                                : FfOp(f[4], FfArg(f[5], i, true), FfArg(f[6], i, true), FfArg(f[7], i, true), i, true);
             body += F("{ float3 c3 = saturate(%s); float c1 = saturate(%s); %s = float4(c3, c1); }\n", rgb.c_str(), a.c_str(), dst);
         }
         body += "cur.rgb = saturate(cur.rgb + v1.rgb);\n";
