@@ -311,7 +311,7 @@ uint64_t RecordLayout() {
     };
     auto text = [&mix](const char* s) { mix(s ? s : "", s ? std::strlen(s) + 1 : 1); };
     for (const ProgramShading& e : g_program_shading) {
-        for (const char* s : {e.match, e.vs, e.ps, e.tess, e.functions, e.pre, e.also[0], e.also[1], e.also[2]}) text(s);
+        for (const char* s : {e.match, e.vs, e.ps, e.tess, e.functions, e.pre, e.also[0], e.also[1], e.also[2], e.without}) text(s);
         const int ints[] = {e.top, e.between, e.soft, e.fill != nullptr, e.field != nullptr, e.plain};
         mix(ints, sizeof(ints));
         mix(&e.depth_alpha, sizeof(e.depth_alpha));

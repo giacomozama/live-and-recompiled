@@ -768,6 +768,7 @@ uint64_t MatchProgramShading(const std::vector<uint32_t>& prog) {
         bool all = s.find(e.match) != std::string::npos;
         for (const char* a : e.also)
             if (a && s.find(a) == std::string::npos) all = false;
+        if (e.without && s.find(e.without) != std::string::npos) all = false;
         if (all) m |= 1ull << i;
     }
     return m;

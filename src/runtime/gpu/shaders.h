@@ -67,7 +67,7 @@ struct PixelKey {
 // depth write, then a depth pass (no colour, no stencil) where the output's alpha reaches depth_alpha, so what blends
 // in fainter leaves the depth behind it; with top set, only the draws whose x there is above 0 (the shells, not the
 // skin under them). also lists more text the translation must contain as well as match, for an entry that takes only
-// one shape of a program. pre runs in the pixel shader before the combiner stages, after the textures are fetched (before
+// one shape of a program; without, text it must not contain, for an entry that leaves one shape out. pre runs in the pixel shader before the combiner stages, after the textures are fetched (before
 // the fixed function's stages, which fetch as they go), and may change v0 and v1; PS_TWO_SIDED is 1 there when the back faces take the back colours. plain: the shading reads
 // no constants of its own (no clock, fill or top), so a draw in the state of the one before may reuse its pipeline.
 // screen, when set, copies the draw's render target just before each of its draws, what the draw blends over, for its
@@ -95,6 +95,7 @@ struct ProgramShading {
     const char* functions = "";
     float depth_alpha = 0;
     const char* also[3] = {};
+    const char* without = nullptr;
     const char* pre = "";
     bool plain = false;
     bool screen = false;

@@ -15,6 +15,11 @@ namespace {
 // the view space position. Registers in the HLSL are hardware order, D3D's + 96.
 constexpr const char* kMatch = "mac_mul(((c[181]).xxxx), ((i.v5).xxxx))";
 
+// Of them the little girl squirrel's two scale the colour by the vertex colour, R9 * v0, as no other furry
+// character's do: the shading left patches on her face, so her shells keep the game's own look and only the depth split.
+// XBE_FUR_SHADE_ALL=1 shades hers too, to compare on a character that may share her programs
+constexpr const char* kGirlSkip = "mac_mul(((R9).xyzw), ((i.v0).xxxx))";
+
 // They light the key light (oD1) as max(N.L, 0) (R1.y) times c84 less the blob shadows the program sums from 12 blobs
 // (R10, c50..c61 placed by c63..c65), each strength / d^2 at the vertex and clipped at full shadow: over the tail's
 // long triangles that steep falloff, interpolated, crawls through the creases as the body casts on it. The shading
@@ -106,8 +111,10 @@ float DepthAlpha() {
 
 void fur::Init() {
     const float depth_alpha = DepthAlpha();
+    const char* all = std::getenv("XBE_FUR_SHADE_ALL");
+    const char* skip = all && *all && *all != '0' ? nullptr : kGirlSkip;
     gpu::g_program_shading.push_back({.match = kMatch, .on = &g_shading, .vs = kVs, .ps = kPs, .top = 85 + 96,
-                                      .between = 1, .soft = true, .depth_alpha = depth_alpha});
+                                      .between = 1, .soft = true, .depth_alpha = depth_alpha, .without = skip});
     gpu::g_program_shading.push_back({.match = kMatch, .on = &kAlways, .vs = "    o.x0 = 0;\n    o.x1 = 0;",
                                       .top = 85 + 96, .depth_alpha = depth_alpha});
     gpu::g_program_shading.push_back({.match = kHeadMatch, .on = &kAlways, .vs = "    o.x0 = 0;\n    o.x1 = 0;",
