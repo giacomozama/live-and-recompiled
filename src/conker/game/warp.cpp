@@ -23,6 +23,7 @@
 // checkpoint instead and the cutscene waits until it runs.
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cctype>
 #include <cstdio>
 #include <cstdlib>
@@ -151,7 +152,33 @@ void ReadEnv() {
     }
 }
 
+// The reveal after a load (0x2A9EC4 starts it, 0xFE580 a player): a hole that opens around the player's neck
+// (0x2CE520) projected on screen, black bars around it (0xFD9E0 on), its state byte [0x771BEC + player] 0 when none
+// runs. A warp to a checkpoint that opens with a cutscene starts it under the cutscene's camera, which may not show
+// the player: the hole then sits off screen, ~1000 pixels above it at Windmill's "Shoot The Beetles?", and the
+// cutscene plays black to its first camera cut. Walked into, the cutscene never follows a load. So a cutscene that
+// starts soon after a warp ends the reveal (the hook on 0x4EC10 below).
+constexpr uint32_t kRevealState = 0x771BEC;  // a byte per player
+constexpr int kRevealPlayers = 4;
+std::chrono::steady_clock::time_point g_warped{};  // the last checkpoint or level warp, cleared by its cutscene
+// a reveal asked for until then is not started: the load may play its cutscene before it starts the reveal
+std::chrono::steady_clock::time_point g_no_reveal_until{};
+
+void EndRevealAfterWarp() {
+    using clock = std::chrono::steady_clock;
+    if (g_warped == clock::time_point{} || clock::now() - g_warped > std::chrono::seconds(10)) return;
+    g_warped = {};
+    g_no_reveal_until = clock::now() + std::chrono::seconds(1);
+    bool any = false;
+    for (int i = 0; i < kRevealPlayers; i++) {
+        any |= kernel::G<uint8_t>(kRevealState + uint32_t(i)) != 0;
+        kernel::G<uint8_t>(kRevealState + uint32_t(i)) = 0;
+    }
+    if (any) LOGR("warp: a cutscene right after the warp ends the reveal, which would have played it black");
+}
+
 void Run(X86Context& ctx, const Request& r) {
+    if (r.kind != Kind::Cutscene) g_warped = std::chrono::steady_clock::now();
     switch (r.kind) {
         case Kind::Checkpoint: {
             const Checkpoint& c = Checkpoints()[size_t(r.a)];
@@ -306,6 +333,7 @@ void Poll(X86Context& ctx) {
 X86_EXTERN_FUNC(__imp__sub_0004EC10);
 X86_FUNC(sub_0004EC10) {
     const int level = int(kernel::R32(ctx.esp + 4)), index = int(kernel::R32(ctx.esp + 8));
+    warp::EndRevealAfterWarp();
     if (level == warp::g_want_level && index == warp::g_want_index && level == int(kernel::R32(warp::kLevel))) {
         warp::g_want_level = warp::g_want_index = -1;
         if (!warp::HasCutscene(ctx, level, index)) {
@@ -315,4 +343,15 @@ X86_FUNC(sub_0004EC10) {
         }
     }
     __imp__sub_0004EC10(ctx, base);
+}
+
+// 0xFE580 (eax the player): starts a player's reveal; not right after a cutscene that followed a warp
+X86_EXTERN_FUNC(__imp__sub_000FE580);
+X86_FUNC(sub_000FE580) {
+    if (std::chrono::steady_clock::now() < warp::g_no_reveal_until) {
+        LOGR("warp: no reveal for player %u, a cutscene follows the warp", ctx.eax);
+        kernel::Return(ctx, ctx.eax, 0);
+        return;
+    }
+    __imp__sub_000FE580(ctx, base);
 }
