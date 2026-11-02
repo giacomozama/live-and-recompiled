@@ -3601,7 +3601,7 @@ void VulkanBackend::CaptureShaders(const State& s, const Assembled& a, const Dra
 // for a draw in this one's state and stages, the same again but for clamp, the anisotropy or a sampler cache since
 void VulkanBackend::SetTextureViewsAndSamplers(const State& s, const Assembled& a, const DrawTextures& stages,
                                                Bindings& b, const ViewsAndSamplers* same_state) {
-    bool clamp = UnitTexcoords(a);
+    bool clamp = UnitTexcoords(s, a);
     uint32_t aniso = app::Get().aniso;
     const ViewsAndSamplers* f = same_state;
     if (!f || !f->ok || f->clamp != clamp || f->aniso != aniso || f->samplers_made != samplers_made_) {
@@ -4373,7 +4373,7 @@ void VulkanBackend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t
         // the border colour as the title set it (ARGB), with the D3DTADDRESS codes it came with
         for (int i = 0; i < 4; i++) {
             if (!stages.res[i] && i >= 2) continue;
-            SamplerDesc sd = StageSampler(s, i, stages, UnitTexcoords(a), app::Get().aniso);
+            SamplerDesc sd = StageSampler(s, i, stages, UnitTexcoords(s, a), app::Get().aniso);
             const auto& t = s.tss[size_t(i)];
             fprintf(cap_,
                     "\n     s%d filter %u %u %u addr %u %u lod %g..%g bias %g aniso %u mips %u | d3d addr %u %u border %08X",

@@ -738,7 +738,9 @@ void WriteBmp(const std::filesystem::path& p, const std::vector<uint8_t>& px, ui
 // edge's last half texel is drawn too, and wrapped it blends in the opposite edge (thin dark lines on HUD sprites).
 // Clamped, it takes the edge texel instead, which a wrapped texture used once over 0..1 has there anyway. Border
 // is read as clamp too: the dung boulders' floor splats drew their quads' outlines in the border colour.
-bool UnitTexcoords(const Assembled& a) {
+// A vertex program has to pass its coordinates through as they are: the throne room candles' flames read 0..1 as
+// 2 - v, wrapped onto the flame; clamped, every pixel took the transparent edge row and the flames were gone.
+bool UnitTexcoords(const State& s, const Assembled& a) {
     constexpr float kLo = -1e-4f;
     constexpr float kHi = 1.0001f;
     constexpr uint32_t kSmallDrawVertices = 4096;  // most vertices a small draw has
@@ -756,6 +758,7 @@ bool UnitTexcoords(const Assembled& a) {
         }
         any = true;
     }
+    if (any && (s.vs_handle & 1) && s.vs && !s.vs->program.empty()) return ProgramCopiesTexcoords(s.vs->program);
     return any;
 }
 

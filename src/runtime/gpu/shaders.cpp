@@ -802,6 +802,24 @@ std::bitset<192> ProgramReads(const std::vector<uint32_t>& prog) {
     return r;
 }
 
+bool ProgramCopiesTexcoords(const std::vector<uint32_t>& prog) {
+    for (size_t n = 0; n + 4 <= prog.size(); n += 4) {
+        Tok k{&prog[n]};
+        uint32_t mac = k.f(1, 21, 4), ilu = k.f(1, 25, 3);
+        bool use_ilu = k.f(3, 2, 1) == 1;
+        uint32_t o = k.f(3, 3, 8) & 0xF;
+        bool writes = k.f(3, 12, 4) && k.f(3, 11, 1) && ((use_ilu && ilu) || (!use_ilu && mac && mac != 13));
+        if (writes && o >= 9 && o <= 12) {
+            // a mov of an input, unnegated, its x and y in place
+            bool copy = !use_ilu && mac == 1 && k.f(2, 26, 2) == 2 && !k.f(1, 8, 1) && k.f(1, 6, 2) == 0 &&
+                        k.f(1, 4, 2) == 1;
+            if (!copy) return false;
+        }
+        if (k.f(3, 0, 1)) break;  // last instruction
+    }
+    return true;
+}
+
 uint32_t ProgramRelativeBase(const std::vector<uint32_t>& prog) {
     uint32_t base = 192;
     for (size_t i = 0; i + 4 <= prog.size(); i += 4) {
