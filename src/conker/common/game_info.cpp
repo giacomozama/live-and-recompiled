@@ -42,6 +42,7 @@ const app::GameInfo app::kGame = {
     .options = {{"fps_overlay", &ui::g_fps_overlay, nullptr},  // ImGui settings menu options (src/conker/game/ui.cpp)
                 {"fps_in_title", &ui::g_fps_title, nullptr},
                 {"frame_rate", nullptr, &display::g_frame_rate},  // 30, 60, 120, 180 or 240 (src/conker/game/display.cpp)
+                {"fov", nullptr, &display::g_fov},  // the view's height in degrees in play, 50 the console's (display.cpp)
                 {"skippable_cutscenes", &cutscenes::g_skippable, nullptr},  // LT skips any cutscene (hooks.cpp)
                 {"fade_loads", &loading::g_fade, nullptr},  // a fade to black instead of loading screens (hooks.cpp)
                 {"rope_physics", &rope::g_physics, nullptr},  // ropes swing as a weighted chain (rope.cpp)

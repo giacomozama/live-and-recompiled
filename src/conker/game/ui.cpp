@@ -937,7 +937,6 @@ void Draw(double fps) {
                                 if (ImGui::Selectable(a.c_str(), a == s.gpu)) s.gpu = a;
                             ImGui::EndCombo();
                         }
-                        Hint("Starts from the next launch. Automatic picks a discrete GPU first.");
                     }
                 }
 
@@ -980,6 +979,11 @@ void Draw(double fps) {
             }
 
             if (tab("Enhancements")) {
+                ImGui::SeparatorText("Camera");
+                Slider("Field of view", &display::g_fov, display::kFovMin, display::kFovMax, display::kFov);
+                Hint("How tall the view is in degrees while you play; 50 is the original. Menus and cutscenes keep "
+                     "the original view.");
+
                 ImGui::SeparatorText("Lighting");
                 ImGui::Checkbox("Per-pixel lighting", &lighting::g_per_pixel);
                 Hint("Smoother light and shadows on characters and objects.", true);

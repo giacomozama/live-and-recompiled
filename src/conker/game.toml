@@ -346,6 +346,10 @@ at = 0x64468   # camera projection: its aspect widened to the display's (Hor+)
 call = "ConkerCameraAspect"
 
 [[hook]]
+at = 0x64471   # its tail jump to 0x645C0: the vertical field of view scaled by the fov setting, in play only
+call = "ConkerCameraFov"
+
+[[hook]]
 at = 0xD9AAF   # a character effect's draw: what it pushes tagged as the effect's, for frame generation (tags.cpp)
 call = "ConkerEffectDraw"
 

@@ -261,6 +261,11 @@ int CurrentLevel() { return g_level.load(std::memory_order_relaxed); }
 
 bool Multiplayer() { return CurrentLevel() >= kLevels; }
 
+bool Frontend() {
+    const int level = CurrentLevel();
+    return level < 0 || InFrontend(level);
+}
+
 bool GoCheckpoint(int index) {
     if (index < 0 || index >= kCheckpointCount) return SetStatus("no checkpoint " + std::to_string(index)), false;
     Post({Kind::Checkpoint, index, 0});

@@ -20,6 +20,16 @@
 // ([camera+0x264]). The widescreen patch multiplied the aspect by 4/3 there for a 16:9 TV; scaling it by the display
 // over 4:3 widens the view to any shape with the same vertical view (Hor+). The frame stays the console's 640x480 and
 // the window shows it at the display's shape, so 2D (the HUD, menus) stretches across it as with the XBE patch.
+//
+// Field of view. The same function then tail calls 0x645C0 with the vertical field of view in xmm0 (0x64468 loads
+// it) and the horizontal one in xmm1 ([camera+0x260], widened above), which keeps the first and xmm1 / xmm0, the
+// aspect, in the camera's view object ([camera+0x144] +0x104, +0x108) for the projection, as a scope's zoom does
+// through [camera+0x264]. Scaling both there by display::g_fov over 50 widens every camera alike and leaves
+// [camera+0x264] the game's, so a zoom keeps easing from where it was. [camera+0x210], which 0x64330 works out from
+// the unscaled value before, stays as it was: the detail the game picks by distance does not drop for a wider view.
+// The game rebuilds a camera's projection as it moves (0x3FA56 and its like, each frame in play) and again when a
+// cutscene ends (0x50953, 0x509B2), so the setting and the end of a cutscene take effect at the next rebuild. Not in
+// the frontend's levels, nor while a cutscene plays: [0x76F0E0 + slot], its state per slot (1 playing, 2 ending).
 #include "common/display.h"
 
 #include <algorithm>
@@ -81,6 +91,8 @@ uint32_t GameRate() { return Rate(); }
 
 std::atomic<uint32_t> g_ticks{0};
 uint32_t Ticks() { return g_ticks.load(std::memory_order_relaxed); }
+
+uint32_t g_fov = kFov;
 
 std::atomic<float> g_camera_fov{50.0f};
 float CameraFov() { return g_camera_fov.load(std::memory_order_relaxed); }
@@ -175,4 +187,19 @@ void ConkerCameraAspect(X86Context& ctx, uint8_t* base) {
         shown = frame;
     }
     ctx.xmm[1].f[0] *= frame * 0.75f;
+}
+
+// [[hook]] before 0x64471 in the camera projection, its tail jump to 0x645C0: xmm0 holds the vertical field of view
+void ConkerCameraFov(X86Context& ctx, uint8_t* base) {
+    constexpr uint32_t kCutsceneState = 0x76F0E0, kCutsceneSlots = 4;
+    const uint32_t fov = std::clamp(display::g_fov, display::kFovMin, display::kFovMax);
+    if (fov == display::kFov || warp::Frontend()) return;
+    for (uint32_t i = 0; i < kCutsceneSlots; i++)
+        if (base[kCutsceneState + i]) return;
+    // 0x645C0 keeps xmm1 / xmm0 as the view's aspect: both scale alike, or a taller view would come out squeezed
+    const float h = ctx.xmm[0].f[0], w = ctx.xmm[1].f[0];
+    if (!std::isfinite(h) || !std::isfinite(w) || h <= 0.0f || w <= 0.0f) return;
+    const float k = std::min(float(fov) / float(display::kFov), 170.0f / h);
+    ctx.xmm[0].f[0] = h * k;
+    ctx.xmm[1].f[0] = w * k;
 }

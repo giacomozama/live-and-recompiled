@@ -25,6 +25,10 @@ const char* LevelName(int level);
 // the running level, -1 before the first; any thread
 int CurrentLevel();
 
+// the running level is one of the frontend's (the menus, the multiplayer menu, the boot cutscene), or none has run
+// yet; any thread
+bool Frontend();
+
 // a multiplayer match, which loads past the story's levels (the multiplayer frontend, Mp_Frontend, is not one); any
 // thread
 bool Multiplayer();

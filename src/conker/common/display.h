@@ -24,7 +24,13 @@ void Init();
 // and the headless harness keeps the console's 4:3 unless asked
 float Aspect(float display);
 
-// the height in degrees the last camera projected sees ([camera+0x264], 50 unzoomed): a sniper's scope narrows it
+// the height in degrees the last camera projected sees ([camera+0x264], 50 unzoomed): a sniper's scope narrows it.
+// The game's own, before g_fov scales it
 float CameraFov();
+
+// settings.toml fov: the view's height in degrees in play, the console's 50 (kFov) scaling every camera's (a scope's
+// zoom keeps its share of it); menus and cutscenes keep the console's
+constexpr uint32_t kFov = 50, kFovMin = 40, kFovMax = 100;
+extern uint32_t g_fov;
 
 }  // namespace display
