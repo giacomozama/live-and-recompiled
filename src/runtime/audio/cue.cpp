@@ -70,11 +70,12 @@ void Play(Cue cue) {
 }
 
 void MixCues(float* out, uint32_t frames) {
+    const uint32_t ch = Channels();
     std::lock_guard<std::mutex> lock(g_lock);
     for (Voice& v : g_voices) {
         if (!v.sound) continue;
         const size_t n = std::min<size_t>(frames, v.sound->size() - v.at);
-        for (size_t i = 0; i < n; i++) out[i * 2] += (*v.sound)[v.at + i], out[i * 2 + 1] += (*v.sound)[v.at + i];
+        for (size_t i = 0; i < n; i++) out[i * ch] += (*v.sound)[v.at + i], out[i * ch + 1] += (*v.sound)[v.at + i];
         v.at += n;
         if (v.at >= v.sound->size()) v.sound = nullptr;
     }

@@ -98,13 +98,20 @@ void StartOutput(std::function<void(float*, uint32_t)> render) {
         IXAudio2* xa = nullptr;
         IXAudio2MasteringVoice* master = nullptr;
         IXAudio2SourceVoice* voice = nullptr;
-        WAVEFORMATEX wf{};
-        wf.wFormatTag = WAVE_FORMAT_IEEE_FLOAT;
-        wf.nChannels = 2;
+        // float frames of Channels() speakers; XAudio2 maps them onto the device's, folding 5.1 down for fewer
+        const uint32_t ch = Channels();
+        WAVEFORMATEXTENSIBLE wfx{};
+        WAVEFORMATEX& wf = wfx.Format;
+        wf.wFormatTag = WAVE_FORMAT_EXTENSIBLE;
+        wf.nChannels = WORD(ch);
         wf.nSamplesPerSec = kRate;
         wf.wBitsPerSample = 32;
-        wf.nBlockAlign = 8;
-        wf.nAvgBytesPerSec = kRate * 8;
+        wf.nBlockAlign = WORD(ch * 4);
+        wf.nAvgBytesPerSec = kRate * ch * 4;
+        wf.cbSize = sizeof(WAVEFORMATEXTENSIBLE) - sizeof(WAVEFORMATEX);
+        wfx.Samples.wValidBitsPerSample = 32;
+        wfx.dwChannelMask = ch == 6 ? 0x3F : 0x3;  // KSAUDIO_SPEAKER_5POINT1 (the backs, not the sides), STEREO
+        wfx.SubFormat = {0x00000003, 0x0000, 0x0010, {0x80, 0x00, 0x00, 0xAA, 0x00, 0x38, 0x9B, 0x71}};  // IEEE float
         if (FAILED(XAudio2Create(&xa, 0, XAUDIO2_DEFAULT_PROCESSOR))) {
             LOGE("audio: XAudio2 unavailable, no sound");
             return;
@@ -132,7 +139,7 @@ void StartOutput(std::function<void(float*, uint32_t)> render) {
             return;
         }
         constexpr uint32_t kFrames = kRate / 100, kSlots = 4;
-        std::vector<float> bufs(kSlots * kFrames * 2);
+        std::vector<float> bufs(kSlots * kFrames * ch);
         for (uint32_t n = 0;;) {
             if (seen != g_change.load()) {
                 seen = g_change.load();
@@ -147,10 +154,10 @@ void StartOutput(std::function<void(float*, uint32_t)> render) {
                 Sleep(2);
                 continue;
             }
-            float* b = &bufs[(n % kSlots) * kFrames * 2];
+            float* b = &bufs[(n % kSlots) * kFrames * ch];
             render(b, kFrames);
             XAUDIO2_BUFFER xb{};
-            xb.AudioBytes = kFrames * 8;
+            xb.AudioBytes = kFrames * ch * 4;
             xb.pAudioData = reinterpret_cast<const BYTE*>(b);
             voice->SubmitSourceBuffer(&xb);
             n++;  // only a submitted buffer takes a slot, XAudio2 still reads the queued ones

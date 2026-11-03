@@ -44,6 +44,8 @@ struct Settings {
     std::string audio_device;         // an audio::Device id, "" the system default
     bool menu_sounds = true;          // the settings menu's sounds (audio::Play)
     bool mute_in_background = false;  // silent while the game window lacks the focus (Background)
+    // the speakers the console reports and the mixer plays on: stereo, or 5.1 surround; read at launch (audio::Channels)
+    bool surround = false;
     bool shader_warmup = true;       // make the shaders shaders.rec lists while the title boots
     std::string gpu;                  // the name of the graphics adapter to draw with, "" the best there is (read at launch)
     std::string renderer = "vulkan";  // which gpu::Backend draws, read at launch (gpu/backend.cpp)

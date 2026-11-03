@@ -16,10 +16,11 @@ namespace {
 void Pull(void* user, SDL_AudioStream* stream, int additional, int) {
     auto& render = *static_cast<std::function<void(float*, uint32_t)>*>(user);
     constexpr uint32_t kFrames = kRate / 100;
-    static std::vector<float> buf(kFrames * 2);
-    for (int left = additional; left > 0; left -= int(kFrames * 8)) {
+    const int bytes = int(kFrames * Channels() * sizeof(float));
+    static std::vector<float> buf(kFrames * Channels());
+    for (int left = additional; left > 0; left -= bytes) {
         render(buf.data(), kFrames);
-        SDL_PutAudioStreamData(stream, buf.data(), int(kFrames * 8));
+        SDL_PutAudioStreamData(stream, buf.data(), bytes);
     }
 }
 
@@ -42,7 +43,8 @@ SDL_AudioDeviceID Find(const std::string& name) {
 // (re)opens the output on the named device; g_lock held
 void Open(const std::string& name) {
     if (g_stream) SDL_DestroyAudioStream(g_stream);
-    SDL_AudioSpec spec{SDL_AUDIO_F32, 2, int(kRate)};
+    // 5.1 in SDL's order, which is WAVE's; SDL folds it down for a device with fewer speakers
+    SDL_AudioSpec spec{SDL_AUDIO_F32, int(Channels()), int(kRate)};
     g_stream = SDL_OpenAudioDeviceStream(name.empty() ? SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK : Find(name), &spec, Pull,
                                          &g_render);
     if (!g_stream) {

@@ -5,6 +5,7 @@
 #include <ctime>
 
 #include "app/app.h"
+#include "audio/audio.h"
 #include "core/loadtrace.h"
 #include "kernel/crypto.h"
 #include "kernel/exports.h"
@@ -1293,7 +1294,7 @@ KERNEL_EXPORT(24, ExQueryNonVolatileSetting, 5) {
     switch (index) {
         case 7: v = Language(); break;             // XC_LANGUAGE
         case 8: v = VideoFlags(); break;          // XC_VIDEO_FLAGS
-        case 9: v = 0x00010001; break;             // XC_AUDIO_FLAGS stereo
+        case 9: v = audio::ConsoleFlags(); break;  // XC_AUDIO_FLAGS
         case 0x103: v = 0x00400100; break;         // XC_FACTORY_AV_REGION NTSC-M
         case 0x104: v = 1; break;                  // XC_FACTORY_GAME_REGION north america
         case 0x12: v = 1; break;                   // XC_DVD_REGION
@@ -1306,7 +1307,7 @@ KERNEL_EXPORT(24, ExQueryNonVolatileSetting, 5) {
         if (value && len >= 0x100) {
             W32(value + 0xE8, Language());            // language
             W32(value + 0xEC, VideoFlags());          // video flags
-            W32(value + 0xF0, 0x00010001);            // audio flags
+            W32(value + 0xF0, audio::ConsoleFlags()); // audio flags
             W32(value + 0x58, 0x00400100);            // factory video standard
             W32(value + 0x2C, 1);                     // factory game region
         }

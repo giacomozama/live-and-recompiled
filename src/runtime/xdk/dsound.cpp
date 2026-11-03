@@ -501,7 +501,8 @@ void Describe(uint32_t obj, const Voice& v) {
 void Render(float* out, uint32_t frames) {
     static std::vector<float> bus, ab, filtered[2];
     static std::vector<Voice*> order;
-    std::memset(out, 0, frames * 2 * sizeof(float));
+    const uint32_t speakers = audio::Channels();
+    std::memset(out, 0, size_t(frames) * speakers * sizeof(float));
     if (Held()) return;  // a host menu is up: nothing plays on, nothing is used up
     bus.assign(size_t(kBins) * frames, 0.0f);
     ab.resize(frames * kChannels);
@@ -567,13 +568,23 @@ void Render(float* out, uint32_t frames) {
                 std::memcpy(&bus[size_t(b) * frames + at], &frame[b * dsfx::kFrame], n * 4);
         }
     }
-    // the GP's output: the speaker bins with their headroom back, the centre at -3 dB to both sides. With an effects
-    // image the GP outputs bins 0-5 and the crosstalk inputs reach them through its canceller; without one they are
-    // heard as the sides they stand for. The sub, the effect sends and a multipass bin nothing reads are not heard.
+    // the GP's output: the speaker bins with their headroom back. With an effects image the GP outputs bins 0-5 and
+    // the crosstalk inputs reach them through its canceller; without one they are heard as the speakers they stand for
+    // (front left and right, back left and right). On 5.1 each bin is its speaker and the sub is heard; on two
+    // speakers the backs go to their sides and the centre at -3 dB to both, and the sub isn't. The effect sends and a
+    // multipass bin nothing reads are not heard.
+    static const uint8_t kSpeakerOf[10] = {0, 1, 2, 3, 4, 5, 0, 1, 4, 5};
     for (uint32_t b = 0; b < kBins; b++) {
-        if (!Speaker(b) || (b > 5 && dsfx::Loaded())) continue;
-        float g = float(1 << g_bin_headroom[b]) * (b == 2 ? 0.707f : 1.0f);
+        bool sub_heard = b == 3 && speakers == 6;
+        if (!(Speaker(b) || sub_heard) || (b > 5 && dsfx::Loaded())) continue;
         const float* src = &bus[size_t(b) * frames];
+        if (speakers == 6) {
+            float g = float(1 << g_bin_headroom[b]);
+            const uint32_t o = kSpeakerOf[b];
+            for (uint32_t i = 0; i < frames; i++) out[i * 6 + o] += src[i] * g;
+            continue;
+        }
+        float g = float(1 << g_bin_headroom[b]) * (b == 2 ? 0.707f : 1.0f);
         for (uint32_t i = 0; i < frames; i++) {
             if (b == 2 || !(b & 1)) out[i * 2] += src[i] * g;
             if (b == 2 || (b & 1)) out[i * 2 + 1] += src[i] * g;
@@ -586,8 +597,8 @@ void Render(float* out, uint32_t frames) {
     const float v = set.volume / 100.0f, want = set.mute_in_background && app::Background() ? 0.0f : v * v;
     for (uint32_t i = 0; i < frames; i++) {
         float g = gain + (want - gain) * float(i + 1) / float(frames);
-        out[i * 2] = std::clamp(out[i * 2] * g, -1.0f, 1.0f);
-        out[i * 2 + 1] = std::clamp(out[i * 2 + 1] * g, -1.0f, 1.0f);
+        for (uint32_t c = 0; c < speakers; c++)
+            out[i * speakers + c] = std::clamp(out[i * speakers + c] * g, -1.0f, 1.0f);
     }
     gain = want;
     static uint64_t rendered = 0;
@@ -926,7 +937,7 @@ HLE_STDCALL(IDirectSound_Release, 1) { return 0; }
 HLE_STDCALL(DirectSoundUseFullHRTF, 0) { return 0; }
 HLE_STDCALL(DirectSoundUseLightHRTF, 0) { return 0; }
 HLE_STDCALL(IDirectSound_GetSpeakerConfig, 2) {
-    W32(a[1], 0);  // DSSPEAKER_STEREO
+    W32(a[1], audio::ConsoleFlags());
     return 0;
 }
 // (this, effect, byte offset, data, bytes, apply): into the effect's state, as the GP reads it

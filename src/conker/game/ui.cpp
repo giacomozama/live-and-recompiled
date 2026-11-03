@@ -1039,6 +1039,13 @@ void Draw(double fps) {
                         ImGui::EndCombo();
                     }
                 }
+                {
+                    int speakers = s.surround ? 1 : 0;
+                    if (ImGui::Combo("Speakers", &speakers, "Stereo\0005.1 surround\0")) s.surround = speakers == 1;
+                    Hint("Stereo mixes for two speakers or headphones. 5.1 surround mixes for six speakers, as the "
+                         "console does with Dolby Digital, and plays on as many as the output device has. Starts from "
+                         "the next launch.");
+                }
                 ImGui::Checkbox("Mute in background", &s.mute_in_background);
                 Hint("No sound while you are in another window.", true);
                 ImGui::Checkbox("Menu sounds", &s.menu_sounds);
