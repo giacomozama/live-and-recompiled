@@ -720,6 +720,9 @@ EShLanguage StageOf(const char* profile) {
 
 // the HLSL to SPIR-V, any thread: registers bN, tN, sN at bindings kBindCb + N, kBindTex + N, kBindSampler + N; a
 // vertex input at its register's location (VK_LOC), what the stages hand on in declaration order
+// SPIR-V 1.6 for a Vulkan 1.3 device, 1.3 for one on 1.1 or 1.2 (PickDevice sets it before any shader compiles)
+bool g_spirv_1_6 = true;
+
 bool CompileSpirv(const std::string& src, const char* entry, const char* profile, Spirv& out, std::string& err) {
     EShLanguage stage = StageOf(profile);
     glslang::TShader sh(stage);
@@ -730,8 +733,8 @@ bool CompileSpirv(const std::string& src, const char* entry, const char* profile
     sh.setSourceEntryPoint(entry);
     sh.setPreamble("#define VK_LOC(n) [[vk::location(n)]]\n");
     sh.setEnvInput(glslang::EShSourceHlsl, stage, glslang::EShClientVulkan, 100);
-    sh.setEnvClient(glslang::EShClientVulkan, glslang::EShTargetVulkan_1_3);
-    sh.setEnvTarget(glslang::EShTargetSpv, glslang::EShTargetSpv_1_6);
+    sh.setEnvClient(glslang::EShClientVulkan, g_spirv_1_6 ? glslang::EShTargetVulkan_1_3 : glslang::EShTargetVulkan_1_1);
+    sh.setEnvTarget(glslang::EShTargetSpv, g_spirv_1_6 ? glslang::EShTargetSpv_1_6 : glslang::EShTargetSpv_1_3);
     sh.setHlslIoMapping(true);
     sh.setAutoMapLocations(true);
     sh.setShiftBinding(glslang::EResUbo, kBindCb);
@@ -1182,6 +1185,10 @@ private:
     bool demote_ = false;  // shaderDemoteToHelperInvocation: HLSL's discard and clip compile to it
     bool custom_border_ = false;
     bool dynamic_rendering_ext_ = false;
+    // Vulkan 1.3 core, or 1.1 with what the renderer takes from 1.2 and 1.3 as extensions
+    uint32_t inst_api_ = VK_API_VERSION_1_3;
+    bool core13_ = true;
+    uint32_t dev_api_ = VK_API_VERSION_1_3;  // the device's, at most the instance's
     uint32_t custom_border_max_ = 0;
     uint32_t custom_borders_ = 0;
     VkFormat depth_fmt_ = VK_FORMAT_D24_UNORM_S8_UINT;  // targets'
@@ -1567,10 +1574,14 @@ bool VulkanBackend::CreateInstance() {
         LOGE("vulkan: no Vulkan loader");
         return false;
     }
-    if (volkGetInstanceVersion() < VK_API_VERSION_1_3) {
-        LOGE("vulkan: the loader is older than Vulkan 1.3");
+    if (volkGetInstanceVersion() < VK_API_VERSION_1_1) {
+        LOGE("vulkan: the loader is older than Vulkan 1.1");
         return false;
     }
+    const uint32_t loader = volkGetInstanceVersion();
+    inst_api_ = loader >= VK_API_VERSION_1_3   ? VK_API_VERSION_1_3
+                : loader >= VK_API_VERSION_1_2 ? VK_API_VERSION_1_2
+                                               : VK_API_VERSION_1_1;
 #ifdef _WIN32
     std::vector<const char*> exts = {VK_KHR_SURFACE_EXTENSION_NAME, VK_KHR_WIN32_SURFACE_EXTENSION_NAME};
 #else
@@ -1582,7 +1593,7 @@ bool VulkanBackend::CreateInstance() {
     VkApplicationInfo ai{VK_STRUCTURE_TYPE_APPLICATION_INFO};
     ai.pApplicationName = app::kGame.log;
     ai.pEngineName = "xbe_recomp";
-    ai.apiVersion = VK_API_VERSION_1_3;
+    ai.apiVersion = inst_api_;
     VkInstanceCreateInfo ci{VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO};
     ci.pApplicationInfo = &ai;
     ci.enabledExtensionCount = uint32_t(exts.size());
@@ -1641,7 +1652,7 @@ bool HasExtension(const std::vector<VkExtensionProperties>& list, const char* na
     return false;
 }
 
-// a Vulkan 1.3 GPU that presents to the window and has what the renderer needs, a discrete one first
+// a Vulkan 1.3 GPU, or a 1.1 one with the extensions for what came later, that presents to the window and has what the renderer needs, a discrete one first
 bool VulkanBackend::PickDevice() {
     uint32_t n = 0;
     vkEnumeratePhysicalDevices(inst_, &n, nullptr);
@@ -1656,18 +1667,43 @@ bool VulkanBackend::PickDevice() {
         vkEnumerateDeviceExtensionProperties(d, nullptr, &en, nullptr);
         std::vector<VkExtensionProperties> exts(en);
         vkEnumerateDeviceExtensionProperties(d, nullptr, &en, exts.data());
+        const uint32_t api = std::min(p.apiVersion, inst_api_);
+        const bool core13 = api >= VK_API_VERSION_1_3;
+        const bool core12 = api >= VK_API_VERSION_1_2;
+        auto has = [&](const char* name) { return HasExtension(exts, name); };
         VkPhysicalDeviceVulkan13Features f13{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
         VkPhysicalDeviceVulkan12Features f12{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES, &f13};
         VkPhysicalDeviceFeatures2 f{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, &f12};
-        if (p.apiVersion >= VK_API_VERSION_1_3) vkGetPhysicalDeviceFeatures2(d, &f);
+        // before 1.3: what 1.2 and 1.3 made core, from extensions (dynamic rendering needs the two below before 1.2)
+        const bool ext_ok = core13 || (has(VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME) &&
+                                       has(VK_EXT_EXTENDED_DYNAMIC_STATE_EXTENSION_NAME) &&
+                                       (core12 || (has(VK_KHR_CREATE_RENDERPASS_2_EXTENSION_NAME) &&
+                                                   has(VK_KHR_DEPTH_STENCIL_RESOLVE_EXTENSION_NAME) &&
+                                                   has(VK_KHR_TIMELINE_SEMAPHORE_EXTENSION_NAME) &&
+                                                   has(VK_EXT_HOST_QUERY_RESET_EXTENSION_NAME))));
+        VkPhysicalDeviceDynamicRenderingFeaturesKHR dr{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES_KHR};
+        VkPhysicalDeviceExtendedDynamicStateFeaturesEXT eds{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_FEATURES_EXT, &dr};
+        VkPhysicalDeviceTimelineSemaphoreFeatures tl{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES, &eds};
+        VkPhysicalDeviceHostQueryResetFeatures hq{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_HOST_QUERY_RESET_FEATURES, &tl};
+        if (core13) {
+            vkGetPhysicalDeviceFeatures2(d, &f);
+        } else if (api >= VK_API_VERSION_1_1 && ext_ok) {
+            f.pNext = &hq;
+            vkGetPhysicalDeviceFeatures2(d, &f);
+            f12.timelineSemaphore = tl.timelineSemaphore;
+            f12.hostQueryReset = hq.hostQueryReset;
+            f13.dynamicRendering = dr.dynamicRendering && eds.extendedDynamicState;
+            f13.shaderDemoteToHelperInvocation = VK_FALSE;  // SPIR-V 1.3's discard is OpKill
+        }
         const char* lacks = nullptr;
-        if (p.apiVersion < VK_API_VERSION_1_3) lacks = "Vulkan 1.3";
-        else if (!HasExtension(exts, VK_KHR_SWAPCHAIN_EXTENSION_NAME)) lacks = "a swap chain";
-        else if (!HasExtension(exts, VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME)) lacks = "push descriptors";
+        if (api < VK_API_VERSION_1_1) lacks = "Vulkan 1.1";
+        else if (!ext_ok) lacks = "Vulkan 1.3, or the extensions for dynamic rendering, extended dynamic state, timeline semaphores and host query resets";
+        else if (!has(VK_KHR_SWAPCHAIN_EXTENSION_NAME)) lacks = "a swap chain";
+        else if (!has(VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME)) lacks = "push descriptors";
         else if (!f.features.geometryShader) lacks = "geometry shaders";
         else if (!f.features.textureCompressionBC) lacks = "BC textures";
         else if (!f12.timelineSemaphore || !f12.hostQueryReset) lacks = "timeline semaphores or host query resets";
-        else if (!f13.dynamicRendering) lacks = "dynamic rendering";
+        else if (!f13.dynamicRendering) lacks = "dynamic rendering or extended dynamic state";
         uint32_t qn = 0;
         vkGetPhysicalDeviceQueueFamilyProperties(d, &qn, nullptr);
         std::vector<VkQueueFamilyProperties> qs(qn);
@@ -1699,17 +1735,29 @@ bool VulkanBackend::PickDevice() {
         demote_ = f13.shaderDemoteToHelperInvocation;
         custom_border_ = HasExtension(exts, VK_EXT_CUSTOM_BORDER_COLOR_EXTENSION_NAME);
         dynamic_rendering_ext_ = HasExtension(exts, VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME);
+        core13_ = core13;
+        dev_api_ = api;
     }
     if (!phys_) {
         LOGE("vulkan: no GPU the renderer can use");
         return false;
     }
-    VkPhysicalDeviceVulkan12Properties p12{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_PROPERTIES};
-    VkPhysicalDeviceProperties2 p2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, &p12};
+    g_spirv_1_6 = core13_;
+    // the driver's name: core in 1.2, an extension before
+    VkPhysicalDeviceDriverProperties dp{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES};
+    bool driver_known = dev_api_ >= VK_API_VERSION_1_2;
+    if (!driver_known) {
+        uint32_t en = 0;
+        vkEnumerateDeviceExtensionProperties(phys_, nullptr, &en, nullptr);
+        std::vector<VkExtensionProperties> exts(en);
+        vkEnumerateDeviceExtensionProperties(phys_, nullptr, &en, exts.data());
+        driver_known = HasExtension(exts, VK_KHR_DRIVER_PROPERTIES_EXTENSION_NAME);
+    }
+    VkPhysicalDeviceProperties2 p2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, driver_known ? &dp : nullptr};
     vkGetPhysicalDeviceProperties2(phys_, &p2);
-    LOGR("Vulkan device: %s (%s %s, Vulkan %u.%u.%u)", props_.deviceName, p12.driverName, p12.driverInfo,
+    LOGR("Vulkan device: %s (%s %s, Vulkan %u.%u.%u%s)", props_.deviceName, dp.driverName, dp.driverInfo,
          VK_API_VERSION_MAJOR(props_.apiVersion), VK_API_VERSION_MINOR(props_.apiVersion),
-         VK_API_VERSION_PATCH(props_.apiVersion));
+         VK_API_VERSION_PATCH(props_.apiVersion), core13_ ? "" : ", 1.3's features from extensions");
     // targets' depth: D24S8 like the console where the GPU has it (AMD's don't)
     auto supports = [&](VkFormat f, VkFormatFeatureFlags want) {
         VkFormatProperties fp;
@@ -1742,14 +1790,24 @@ bool VulkanBackend::CreateDevice() {
     VkPhysicalDeviceCustomBorderColorFeaturesEXT border{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CUSTOM_BORDER_COLOR_FEATURES_EXT};
     border.customBorderColors = VK_TRUE;
     border.customBorderColorWithoutFormat = VK_TRUE;
-    VkPhysicalDeviceVulkan13Features f13{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES, custom_border_ ? &border : nullptr};
+    void* border_next = custom_border_ ? &border : nullptr;
+    VkPhysicalDeviceVulkan13Features f13{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES, border_next};
     f13.dynamicRendering = VK_TRUE;
     // glslang writes discard as OpDemoteToHelperInvocation, which a shader may only use with the feature on
     f13.shaderDemoteToHelperInvocation = demote_;
     VkPhysicalDeviceVulkan12Features f12{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES, &f13};
     f12.timelineSemaphore = VK_TRUE;
     f12.hostQueryReset = VK_TRUE;
-    VkPhysicalDeviceFeatures2 f{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, &f12};
+    // before 1.3, the same from the extensions' own structures
+    VkPhysicalDeviceDynamicRenderingFeaturesKHR dr{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES_KHR, border_next};
+    dr.dynamicRendering = VK_TRUE;
+    VkPhysicalDeviceExtendedDynamicStateFeaturesEXT eds{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_FEATURES_EXT, &dr};
+    eds.extendedDynamicState = VK_TRUE;
+    VkPhysicalDeviceTimelineSemaphoreFeatures tl{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES, &eds};
+    tl.timelineSemaphore = VK_TRUE;
+    VkPhysicalDeviceHostQueryResetFeatures hq{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_HOST_QUERY_RESET_FEATURES, &tl};
+    hq.hostQueryReset = VK_TRUE;
+    VkPhysicalDeviceFeatures2 f{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, core13_ ? static_cast<void*>(&f12) : &hq};
     f.features.geometryShader = VK_TRUE;
     f.features.textureCompressionBC = VK_TRUE;
     f.features.samplerAnisotropy = aniso_;
@@ -1760,6 +1818,14 @@ bool VulkanBackend::CreateDevice() {
     if (custom_border_) exts.push_back(VK_EXT_CUSTOM_BORDER_COLOR_EXTENSION_NAME);
     // ImGui looks its functions up by the extension's names
     if (dynamic_rendering_ext_) exts.push_back(VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME);
+    if (!core13_) {
+        exts.push_back(VK_EXT_EXTENDED_DYNAMIC_STATE_EXTENSION_NAME);
+        if (dev_api_ < VK_API_VERSION_1_2) {
+            for (const char* e : {VK_KHR_CREATE_RENDERPASS_2_EXTENSION_NAME, VK_KHR_DEPTH_STENCIL_RESOLVE_EXTENSION_NAME,
+                                  VK_KHR_TIMELINE_SEMAPHORE_EXTENSION_NAME, VK_EXT_HOST_QUERY_RESET_EXTENSION_NAME})
+                exts.push_back(e);
+        }
+    }
     VkDeviceCreateInfo ci{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, &f};
     ci.queueCreateInfoCount = 1;
     ci.pQueueCreateInfos = &qi;
@@ -1770,6 +1836,23 @@ bool VulkanBackend::CreateDevice() {
         return false;
     }
     volkLoadDevice(dev_);
+    if (!core13_) {
+        // the core names the renderer calls, from the extensions' (a device before 1.3 or 1.2 has no core ones)
+        vkCmdBeginRendering = vkCmdBeginRenderingKHR;
+        vkCmdEndRendering = vkCmdEndRenderingKHR;
+        vkCmdSetPrimitiveTopology = vkCmdSetPrimitiveTopologyEXT;
+        vkCmdBindVertexBuffers2 = vkCmdBindVertexBuffers2EXT;
+        if (dev_api_ < VK_API_VERSION_1_2) {
+            vkWaitSemaphores = vkWaitSemaphoresKHR;
+            vkSignalSemaphore = vkSignalSemaphoreKHR;
+            vkGetSemaphoreCounterValue = vkGetSemaphoreCounterValueKHR;
+            vkResetQueryPool = vkResetQueryPoolEXT;
+        }
+        if (!vkCmdBeginRendering || !vkCmdSetPrimitiveTopology || !vkWaitSemaphores || !vkResetQueryPool) {
+            LOGE("vulkan: the device's extension functions are missing");
+            return false;
+        }
+    }
     vkGetDeviceQueue(dev_, qfam_, 0, &queue_);
     if (custom_border_) {
         VkPhysicalDeviceCustomBorderColorPropertiesEXT bp{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CUSTOM_BORDER_COLOR_PROPERTIES_EXT};
@@ -1781,7 +1864,7 @@ bool VulkanBackend::CreateDevice() {
     fn.vkGetInstanceProcAddr = vkGetInstanceProcAddr;
     fn.vkGetDeviceProcAddr = vkGetDeviceProcAddr;
     VmaAllocatorCreateInfo ai{};
-    ai.vulkanApiVersion = VK_API_VERSION_1_3;
+    ai.vulkanApiVersion = core13_ ? VK_API_VERSION_1_3 : dev_api_ >= VK_API_VERSION_1_2 ? VK_API_VERSION_1_2 : VK_API_VERSION_1_1;
     ai.physicalDevice = phys_;
     ai.device = dev_;
     ai.instance = inst_;
@@ -1995,7 +2078,7 @@ bool VulkanBackend::InitUi() {
     pi.pPoolSizes = ps;
     if (vkCreateDescriptorPool(dev_, &pi, nullptr, &ui_pool_) != VK_SUCCESS) return false;
     ImGui_ImplVulkan_InitInfo ii{};
-    ii.ApiVersion = VK_API_VERSION_1_3;
+    ii.ApiVersion = core13_ ? VK_API_VERSION_1_3 : VK_API_VERSION_1_1;  // before 1.3 it takes the KHR dynamic rendering
     ii.Instance = inst_;
     ii.PhysicalDevice = phys_;
     ii.Device = dev_;
