@@ -1747,6 +1747,41 @@ bool VulkanBackend::PickDevice() {
         LOGE("vulkan: no GPU the renderer can use");
         return false;
     }
+#ifdef _WIN32
+    // Intel's 7th to 10th generation graphics (Kaby Lake to Comet Lake) crash on boot with a driver older than 31.0.101.2145:
+    // igvk64.dll's vkCmdBeginRendering sets a "depth/stencil attachment present" flag for a pass that has one and never
+    // clears it, so a later pass with a colour attachment alone has the driver read a depth view from an attachment slot
+    // nothing filled in, a null pointer (access violation at igvk64.dll+5CFAB2 in 2135). 2145 clears the flag at the start
+    // of each call.
+    // (Intel packs the version's last two parts into driverVersion: 101 << 14 | 2145)
+    {
+        const uint32_t id = props_.deviceID, id_hi = id >> 8;
+        const bool gen9_5 = id_hi == 0x59 || id_hi == 0x3E || id_hi == 0x9B || (id & 0xFFF0) == 0x87C0;
+        const uint32_t kMinDriver = (101u << 14) | 2145u;
+        if (props_.vendorID == 0x8086 && gen9_5 && props_.driverVersion < kMinDriver) {
+            // the whole version as Windows has it; Vulkan's holds the last two parts, so without it only those are said
+            const uint64_t full = app::GpuDriverVersion(props_.vendorID, props_.deviceID);
+            std::wstring version;
+            if (full) {
+                for (int shift = 48; shift >= 0; shift -= 16) {
+                    version += std::to_wstring(unsigned((full >> shift) & 0xFFFF));
+                    if (shift) version += L'.';
+                }
+            } else {
+                version = L"..." + std::to_wstring(props_.driverVersion >> 14) + L"." + std::to_wstring(props_.driverVersion & 0x3FFF);
+            }
+            LOGR("vulkan: %s has Intel driver %ls, older than 31.0.101.2145", props_.deviceName, version.c_str());
+            wchar_t name[VK_MAX_PHYSICAL_DEVICE_NAME_SIZE];
+            for (int i = 0; i < VK_MAX_PHYSICAL_DEVICE_NAME_SIZE; i++) name[i] = wchar_t((unsigned char)props_.deviceName[i]);
+            app::Alert(std::wstring(L"Your Intel graphics driver is too old.\n\nGPU: ") + name +
+                       L"\nInstalled driver: " + version +
+                       L"\nRequired: 31.0.101.2145 or newer"
+                       L"\n\nDrivers for Intel HD and UHD Graphics before this version are known to crash the game on start."
+                       L"\n\nPlease update your Intel graphics driver.");
+            return false;
+        }
+    }
+#endif
     g_spirv_1_6 = core13_;
     // the driver's name: core in 1.2, an extension before
     VkPhysicalDeviceDriverProperties dp{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES};

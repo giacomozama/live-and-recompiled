@@ -6,6 +6,7 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#include <dxgi.h>
 #include <intrin.h>
 
 #include <algorithm>
@@ -69,6 +70,30 @@ std::string CpuName() {
 }
 
 }  // namespace
+
+uint64_t GpuDriverVersion(uint32_t vendor, uint32_t device) {
+    uint64_t version = 0;
+    HMODULE dxgi = LoadLibraryW(L"dxgi.dll");
+    if (!dxgi) return 0;
+    using CreateFactory = HRESULT(WINAPI*)(REFIID, void**);
+    auto create = reinterpret_cast<CreateFactory>(GetProcAddress(dxgi, "CreateDXGIFactory1"));
+    IDXGIFactory1* factory = nullptr;
+    if (create && SUCCEEDED(create(__uuidof(IDXGIFactory1), reinterpret_cast<void**>(&factory)))) {
+        IDXGIAdapter1* adapter = nullptr;
+        for (UINT i = 0; !version && factory->EnumAdapters1(i, &adapter) == S_OK; i++) {
+            DXGI_ADAPTER_DESC1 desc{};
+            LARGE_INTEGER v{};
+            // the user mode driver's version, which is what Windows shows for the driver
+            if (SUCCEEDED(adapter->GetDesc1(&desc)) && desc.VendorId == vendor && desc.DeviceId == device &&
+                SUCCEEDED(adapter->CheckInterfaceSupport(__uuidof(IDXGIDevice), &v)))
+                version = uint64_t(v.QuadPart);
+            adapter->Release();
+        }
+        factory->Release();
+    }
+    FreeLibrary(dxgi);
+    return version;
+}
 
 void LogSystem() {
     std::time_t now = std::time(nullptr);

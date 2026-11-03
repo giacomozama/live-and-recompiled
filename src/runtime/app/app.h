@@ -163,6 +163,11 @@ void HoldMouse(bool hold);                  // window thread, SDL only: the curs
 bool Alert(const std::wstring& text, bool ask = false);
 // the display's modes, de-duplicated by size, largest first
 std::vector<Mode> DisplayModes();
+#ifdef _WIN32
+// the graphics driver's version for the adapter with this PCI vendor and device ID, its four parts packed 16 bits each
+// (31.0.101.2135 is 0x001F000000650857), 0 when Windows does not say
+uint64_t GpuDriverVersion(uint32_t vendor, uint32_t device);
+#endif
 
 #ifndef _WIN32
 // the SDL window for the Vulkan renderer: the instance extensions it needs, its surface (VkInstance, VkSurfaceKHR*),
