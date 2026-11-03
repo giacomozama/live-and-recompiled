@@ -1,4 +1,6 @@
 #include "gpu/shaders.h"
+
+#include "app/app.h"
 #include "gpu/draw.h"
 #include "gpu/vertex.h"
 
@@ -659,6 +661,23 @@ uint64_t Hash(const void* p, size_t n, uint64_t h) {
     return mix(seed ^ k0, uint64_t(n) ^ k1);
 }
 
+namespace {
+
+// The fog setting off: a final combiner D + lerp(C, B, A) that blends to the fog colour by the fog factor, A the fog
+// register, gets the constant A that keeps the other side. The library's own reads the factor as D3D does (A fog.a,
+// B R0, C fog: 1 unfogged), Conker's raw one the other way round (A fog.a, B fog, C R0: 0 unfogged), so the zeroed
+// fog constants alone would turn the latter's draws flat fog colour.
+uint32_t Unfogged(uint32_t abcd) {
+    constexpr uint32_t kFogReg = 3, kZero = 0x00, kOne = 0x20;  // the zero register, unsigned inverted for 1
+    auto reg = [&](int shift) { return (abcd >> shift) & 0xF; };
+    if (reg(24) != kFogReg) return abcd;
+    if (reg(16) == kFogReg) return (abcd & 0x00FFFFFF) | kZero << 24;
+    if (reg(8) == kFogReg) return (abcd & 0x00FFFFFF) | kOne << 24;
+    return abcd;
+}
+
+}  // namespace
+
 PixelKey MakePixelKey(const State& s, const TexInfo tex[4]) {
     PixelKey k;
     std::memset(&k, 0, sizeof(k));
@@ -683,6 +702,7 @@ PixelKey MakePixelKey(const State& s, const TexInfo tex[4]) {
         }
         k.final_abcd = m(kMPsFinalAbcd);
         k.final_efg = m(kMPsFinalEfgh);
+        if (!app::Get().fog) k.final_abcd = Unfogged(k.final_abcd);
         // the stage modes follow the bound textures, as D3D's lazy shader stage setup does
         uint32_t modes = s.rs[kRsPsTextureModes];
         for (int i = 0; i < 4; i++) {

@@ -40,6 +40,7 @@ struct Settings {
     // ambient occlusion from the depth buffer, first: its strength in % (0 off) and its reach in the title's units
     uint32_t ambient_occlusion = 0;
     uint32_t ambient_occlusion_radius = 30;
+    bool fog = true;                 // the title's distance fog; off draws every surface unfogged
     uint32_t volume = 100;           // the game's sound in %, the mixer's output scaled by its square
     std::string audio_device;         // an audio::Device id, "" the system default
     bool menu_sounds = true;          // the settings menu's sounds (audio::Play)

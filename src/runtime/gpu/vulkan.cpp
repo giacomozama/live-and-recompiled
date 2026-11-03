@@ -3656,7 +3656,8 @@ void VulkanBackend::UploadConstants(const State& s, const DrawShaders& sh, const
         c.surf[3] = PointScale();
         FillPointConstants(s, sh.prog, &s == &sprite_, c);
     }
-    FillFogConstants(s, sh.prog, c);
+    // the fog setting off: no fog constants, so every draw evaluates to unfogged, as with the title's fog off
+    if (app::Get().fog) FillFogConstants(s, sh.prog, c);
     FillCombinerConstants(s, c);
     FillTextureConstants(s, stages.rt, stages.exact, stages.k, stages.wide, c);
     if (sh.fixed_transform) {

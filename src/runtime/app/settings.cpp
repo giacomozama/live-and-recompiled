@@ -67,6 +67,7 @@ void Load() {
     s.chromatic_aberration = t["chromatic_aberration"].value_or(s.chromatic_aberration);
     s.ambient_occlusion = t["ambient_occlusion"].value_or(s.ambient_occlusion);
     s.ambient_occlusion_radius = t["ambient_occlusion_radius"].value_or(s.ambient_occlusion_radius);
+    s.fog = t["fog"].value_or(s.fog);
     s.volume = std::min<uint32_t>(t["volume"].value_or(s.volume), 100);
     s.audio_device = t["audio_device"].value_or(s.audio_device);
     s.menu_sounds = t["menu_sounds"].value_or(s.menu_sounds);
@@ -119,6 +120,7 @@ toml::table Table() {
                   {"chromatic_aberration", int64_t(s.chromatic_aberration)},
                   {"ambient_occlusion", int64_t(s.ambient_occlusion)},
                   {"ambient_occlusion_radius", int64_t(s.ambient_occlusion_radius)},
+                  {"fog", s.fog},
                   {"volume", int64_t(s.volume)},
                   {"audio_device", s.audio_device},
                   {"menu_sounds", s.menu_sounds},

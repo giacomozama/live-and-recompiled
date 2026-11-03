@@ -983,6 +983,10 @@ void Draw(double fps) {
                 ImGui::SeparatorText("Lighting");
                 ImGui::Checkbox("Per-pixel lighting", &lighting::g_per_pixel);
                 Hint("Smoother light and shadows on characters and objects.", true);
+                bool no_fog = !s.fog;
+                if (ImGui::Checkbox("Disable fog", &no_fog)) s.fog = !no_fog;
+                Hint("Clears the haze over faraway scenery. Many places get their intended colour from fog, so "
+                     "this is best left unticked.", true);
 
                 ImGui::SeparatorText("Fur");
                 ImGui::Checkbox("Fur shading", &fur::g_shading);
