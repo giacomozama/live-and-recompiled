@@ -844,9 +844,10 @@ void Draw(double fps) {
                     ImGui::BeginTabItem(name, nullptr, target == mine ? ImGuiTabItemFlags_SetSelected : 0);
                 ImGui::PopStyleColor(2);
                 // ImGui picks the first item to hold the cursor from the first press of a direction, which then moves
-                // nothing: the open tab holds it from the start
-                if (selected && ImGui::GetCurrentContext()->NavId == 0) {
-                    ImGuiContext& g = *ImGui::GetCurrentContext();
+                // nothing: the open tab holds it from the start. Only while this window has the focus: with none (a
+                // click on no window leaves ImGui focusing nothing) SetNavID writes through a null NavWindow
+                ImGuiContext& g = *ImGui::GetCurrentContext();
+                if (selected && g.NavId == 0 && g.NavWindow && g.NavWindow->RootWindow == g.CurrentWindow->RootWindow) {
                     const ImVec2 origin = g.CurrentWindow->Pos;
                     ImGui::SetNavID(ImGui::GetItemID(), g.NavLayer, g.CurrentFocusScopeId,
                                     ImRect(ImGui::GetItemRectMin().x - origin.x, ImGui::GetItemRectMin().y - origin.y,
