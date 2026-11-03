@@ -16,6 +16,7 @@ struct Options {
     std::filesystem::path game_dir;   // where the game is made: its executable, and the game's files in its assets folder
     std::filesystem::path toolchain;  // another copy of the target's compiler (testing)
     unsigned jobs = 1;
+    bool portable = false;            // put portable.txt in the game folder: settings and saves stay beside the game
     bool keep = false;                // leave the generated code, the objects and the unpacked kit in the work folder
 };
 

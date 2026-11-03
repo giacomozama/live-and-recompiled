@@ -64,7 +64,7 @@ Then it is two steps: run Setup, run the game.
      game is built there. Setup removes the temporary files and the unpacked compiler when done.
    - **Game folder**: `game` beside Setup by default; where the game is made, with the game's files in an `assets` folder inside it.
 
-   Press Recompile. Setup checks your copy is a supported version, unpacks the compiler (first time only), recompiles
+   Press Start. Setup checks your copy is a supported version, unpacks the compiler (first time only), recompiles
    the game and writes the executable. This takes a few minutes. Nothing of the game is uploaded.
    - **Windows:** builds with the [Zig](https://ziglang.org) inside Setup and writes `Game.exe`.
    - **Linux:** builds with the [Zig](https://ziglang.org) inside Setup and writes the native `Game`. If it says permission

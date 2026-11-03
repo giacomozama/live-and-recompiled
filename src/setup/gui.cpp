@@ -64,6 +64,7 @@ struct Window {
     Fl_Double_Window* win = nullptr;
     Row source, work, game;
     Fl_Box* status = nullptr;
+    Fl_Check_Button* portable = nullptr;
     Fl_Check_Button* keep = nullptr;
     Fl_Button* install = nullptr;
     Fl_Button* close = nullptr;
@@ -298,6 +299,7 @@ Options Read(Window& u) {
     o.source = ToPath(u.source.input->value());
     o.work = ToPath(u.work.input->value());
     o.game_dir = ToPath(u.game.input->value());
+    o.portable = u.portable->value();
     o.keep = u.keep->value();
     return o;
 }
@@ -316,7 +318,7 @@ void Lock(Window& u, bool busy) {
                          static_cast<Fl_Widget*>(u.source.browse_file), static_cast<Fl_Widget*>(u.work.input),
                          static_cast<Fl_Widget*>(u.work.browse), static_cast<Fl_Widget*>(u.game.input),
                          static_cast<Fl_Widget*>(u.game.browse),
-                         static_cast<Fl_Widget*>(u.keep)}) {
+                         static_cast<Fl_Widget*>(u.portable), static_cast<Fl_Widget*>(u.keep)}) {
         if (busy) w->deactivate();
         else w->activate();
     }
@@ -427,7 +429,7 @@ int RunWindow(const Options& defaults) {
     Fl::set_color(FL_SELECTION_COLOR, 0x4c, 0x8d, 0xff);
     Fl::set_boxtype(kInsetBox, DrawInset, 8, 4, 16, 8);
 
-    const int W = 780, H = 710, M = 22, label_h = 22, row_h = 32, browse_w = 100;
+    const int W = 780, H = 742, M = 22, label_h = 22, row_h = 32, browse_w = 100;
     static const char* const kTitle = "Live & Recompiled Setup";
     u.win = new Fl_Double_Window(W, H, kTitle);
     u.win->color(kBackground);
@@ -483,6 +485,12 @@ int RunWindow(const Options& defaults) {
     row(u.game, "Game folder: where Setup puts the finished game and its data files", defaults.game_dir, false);
     u.game.browse->callback([](Fl_Widget*, void*) { Browse(g_ui->game, false); });
     y += 20;
+
+    u.portable = new CheckBox(M, y, W - 2 * M, row_h, "Keep settings and data in the game folder");
+    u.portable->value(defaults.portable);
+    u.portable->labelcolor(kMuted);
+    u.portable->labelsize(13);
+    y += row_h;
 
     u.keep = new CheckBox(M, y, W - 2 * M, row_h, "Keep temporary files (for troubleshooting)");
     u.keep->value(defaults.keep);

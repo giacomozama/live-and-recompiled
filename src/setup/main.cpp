@@ -12,14 +12,14 @@
 //   setup-windows.exe, setup-linux                      a window: pick the game, the working folder and the folder
 //                                                       the game is made in (the last two start as the defaults)
 //   setup-windows.exe, setup-linux --cli --source PATH [--work DIR] [--game-dir DIR]
-//                                  [--jobs N] [--keep] [--toolchain DIR] [--root DIR] [--fetch-toolchain]
+//                                  [--jobs N] [--keep] [--portable] [--toolchain DIR] [--root DIR] [--fetch-toolchain]
 //
 // Run with no arguments, Setup opens the window (when there is a display), with any it runs on the console. --source
 // is the game: its DefaultPackage (the digital release's package, unpacked for you), a disc image (.iso), a folder
 // with the extracted default.xbe, or a folder holding one of these. The game's files are put in
 // assets/ below the game folder, where the game looks for them, unless they are already there. --work is where the
 // kit, the compiler and, while building, the generated code and objects go (work, beside Setup); --game-dir is where the game is linked (game, beside Setup). Both are made when missing.
-// --keep leaves the generated code and the unpacked kit in the work folder (the unpacked compiler is always removed
+// --portable puts portable.txt in the game folder, so the game keeps its settings and saves there. --keep leaves the generated code and the unpacked kit in the work folder (the unpacked compiler is always removed
 // when done); --toolchain uses another copy of the target's
 // compiler of the kit's version; --root is the folder Setup
 // would be in; --fetch-toolchain only unpacks the compiler.
@@ -1103,6 +1103,10 @@ bool Build(const Options& opt) {
         return fail();
     }
 
+    if (opt.portable) {
+        std::ofstream(game_dir / "portable.txt").put('\n');
+    }
+
     // the generated code and objects are the title's code: only kept when asked for
     finish();
     double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
@@ -1131,6 +1135,7 @@ int main(int argc, char** argv) {
         bool more = i + 1 < argc;
         if (a == "--jobs" && more) opt.jobs = unsigned(std::max(1, std::atoi(argv[++i])));
         else if (a == "--keep") opt.keep = true;
+        else if (a == "--portable") opt.portable = true;
         else if (a == "--fetch-toolchain") fetch_only = true;
         else if (a == "--cli") cli = true;
         else if (a == "--gui") gui = true;
@@ -1148,12 +1153,12 @@ int main(int argc, char** argv) {
         else if (a == "--root" && more) i++;
         else if (a == "--help" || a == "-h") {
             std::printf("usage: setup [--cli] [--source GAME] [--work DIR] [--game-dir DIR] "
-                        "[--jobs N] [--keep] [--toolchain DIR] [--root DIR] [--fetch-toolchain]\n"
+                        "[--jobs N] [--keep] [--portable] [--toolchain DIR] [--root DIR] [--fetch-toolchain]\n"
                         "  no options: a window with the same choices\n");
             return 0;
         } else {
             std::fprintf(stderr, "usage: setup [--cli] [--source GAME] [--work DIR] [--game-dir DIR] "
-                                 "[--jobs N] [--keep] [--toolchain DIR] [--root DIR] [--fetch-toolchain] "
+                                 "[--jobs N] [--keep] [--portable] [--toolchain DIR] [--root DIR] [--fetch-toolchain] "
                                  "[--unpack PACKAGE OUTDIR]\n");
             return 2;
         }
