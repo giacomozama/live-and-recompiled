@@ -56,7 +56,7 @@ void Load() {
         if (mode == kModes[i]) s.display_mode = DisplayMode(i);
     s.width = t["width"].value_or(s.width);
     s.height = t["height"].value_or(s.height);
-    s.render_percent = t["render_percent"].value_or(s.render_percent);
+    s.render_percent = std::min<uint32_t>(t["render_percent"].value_or(s.render_percent), 200);
     s.fps_cap = t["fps_cap"].value_or(s.fps_cap);
     s.vsync = t["vsync"].value_or(s.vsync);
     s.aniso = t["anisotropic_filtering"].value_or(s.aniso);

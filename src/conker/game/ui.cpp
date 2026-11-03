@@ -941,7 +941,7 @@ void Draw(double fps) {
                 }
 
                 ImGui::SeparatorText("Quality");
-                Slider("Render %", &s.render_percent, 25, 400, app::Settings{}.render_percent);
+                Slider("Render %", &s.render_percent, 25, 200, app::Settings{}.render_percent);
                 ImGui::Checkbox("V-Sync", &s.vsync);
 
                 constexpr uint32_t kRates[] = {30, 60, 120, 180, 240};
