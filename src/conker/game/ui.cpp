@@ -75,7 +75,7 @@ std::atomic<bool> g_esc_swallow{false};
 
 // the main tab to show next frame (Show asks for one, the bumpers turn), -1 none; the tab drawn now; the player
 // the Controls tab shows
-constexpr int kMainTabs = 8, kControlsTab = 4, kMultiplayerTab = 5, kQuitTab = 7;
+constexpr int kMainTabs = 9, kControlsTab = 4, kMultiplayerTab = 5, kQuitTab = 8;
 // the Quit tab's colour
 constexpr ImVec4 kDanger(0.93f, 0.33f, 0.33f, 1.0f);
 std::atomic<int> g_tab_target{-1};
@@ -1108,6 +1108,48 @@ void Draw(double fps) {
                 else if (!error) ImGui::Text("Port: UDP %u", in_use);
                 else ImGui::TextColored(ImVec4(1.0f, 0.45f, 0.35f, 1.0f), "Port: UDP %u couldn't be opened (%s)", in_use,
                                         error == 10048 ? "another program or copy has it" : "blocked");
+                end_tab();
+            }
+
+            if (tab("Mods")) {
+                // the folders are looked at again each time the tab opens, and on Rescan
+                if (ImGui::IsWindowAppearing()) app::ScanMods();
+                ImGui::SeparatorText("Mods");
+                std::vector<app::ModEntry>& mods = s.mods;
+                if (mods.empty()) ImGui::TextDisabled("No mods installed.");
+                int move = -1, to = -1;
+                const float arrow = ImGui::GetFrameHeight();
+                for (int i = 0; i < int(mods.size()); i++) {
+                    ImGui::PushID(mods[i].name.c_str());  // by name: the cursor goes with a mod as it moves
+                    ImGui::BeginDisabled(i == 0);
+                    if (ImGui::ArrowButton("##up", ImGuiDir_Up)) move = i, to = i - 1;
+                    ImGui::EndDisabled();
+                    ImGui::SameLine();
+                    ImGui::BeginDisabled(i + 1 == int(mods.size()));
+                    if (ImGui::ArrowButton("##down", ImGuiDir_Down)) move = i, to = i + 1;
+                    ImGui::EndDisabled();
+                    ImGui::SameLine(0.0f, arrow * 0.5f);
+                    ImGui::Checkbox(mods[i].name.c_str(), &mods[i].enabled);
+                    ImGui::PopID();
+                }
+                if (move >= 0) std::swap(mods[move], mods[to]);
+                // the lists sit apart from the rows around them, not tucked under one setting
+                const ImVec2 gap(0.0f, ImGui::GetStyle().ItemSpacing.y);
+                ImGui::Dummy(gap);
+                Hints({"Ticked mods are in use. One higher in the list wins where two replace the same file.",
+                       "A change starts from the next launch."});
+                ImGui::Dummy(gap);
+                if (app::ModsChanged())
+                    ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.35f, 1.0f), "Restart the game to use these mods.");
+                ImGui::SeparatorText("Installing");
+                static std::string dir;
+                if (dir.empty()) dir = app::ModsDir().string();
+                ImGui::TextWrapped("%s", dir.c_str());
+                ImGui::Dummy(gap);
+                Hints({"Put each mod in its own folder here, laid out like the game's disc (dvddata\\...).",
+                       "The game's own files are left as they are."});
+                ImGui::Dummy(gap);
+                if (ImGui::Button("Rescan")) app::ScanMods();
                 end_tab();
             }
 

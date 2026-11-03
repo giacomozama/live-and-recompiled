@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <cstring>
 #include <deque>
+#include <filesystem>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -203,6 +204,9 @@ bool Held();
 
 // files
 void MountDefaults(const std::string& game_dir, const std::string& data_dir);
+// mods: folders laid out like D:, whose files stand in for the game's at the same paths (or add to them), read only and
+// never written to disk; the first folder wins where two have the same file. Set before Boot
+void MountMods(const std::vector<std::filesystem::path>& dirs);
 bool CreateSymbolicLink(const std::string& link, const std::string& target);
 bool DeleteSymbolicLink(const std::string& link);
 std::string QuerySymbolicLink(const std::string& link);

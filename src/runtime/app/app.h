@@ -15,6 +15,13 @@ namespace app {
 
 enum class DisplayMode : uint32_t { Fullscreen, Borderless, Windowed };
 
+// a folder in ModsDir and whether it is in use
+struct ModEntry {
+    std::string name;
+    bool enabled = true;
+    bool operator==(const ModEntry&) const = default;
+};
+
 struct Settings {
     DisplayMode display_mode = DisplayMode::Borderless;
     uint32_t width = 0, height = 0;  // 0 is the desktop mode
@@ -45,6 +52,8 @@ struct Settings {
     uint32_t system_link_port = 3074;  // the UDP port system link binds, read as the network starts
     // the console's language (XC_LANGUAGE), by its name in kLanguages; the title reads it once at boot
     std::string language = "english";
+    // the mods in ModsDir, the first winning where two replace the same file; read at launch (MountMods)
+    std::vector<ModEntry> mods;
 };
 
 // the console's languages: the language setting's name for each and its XC_LANGUAGE number
@@ -97,6 +106,14 @@ std::filesystem::path ConfigDir();  // the settings file
 std::filesystem::path DataDir();    // the hard disk: saves
 std::filesystem::path StateDir();   // logs, crash dumps, captures
 std::filesystem::path CacheDir();   // shaders.rec and shader_programs.bin
+// mods (mods.cpp): each a folder in ModsDir laid out like the game's disc, its files used in place of the game's
+std::filesystem::path ModsDir();  // ConfigDir/mods, made
+// the mods setting brought in line with ModsDir's folders: ones gone are dropped, new ones added at the end, in use
+void ScanMods();
+// at launch, before Boot: scans, then D: shows the mods in use through it (kernel::MountMods)
+void MountMods();
+// the mods in use, in order, differ from the ones this launch mounted
+bool ModsChanged();
 // at launch, after the log is open: a settings file, hard disks and shader records left beside the exe by an older
 // build go to their folders above, when those have none yet
 void MoveOldData();

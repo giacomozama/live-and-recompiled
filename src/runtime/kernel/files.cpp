@@ -70,15 +70,24 @@ fs::path MatchCase(const fs::path& dir, const std::vector<std::string>& parts) {
     return cur;
 }
 
+// a folder's entry as NtQueryDirectoryFile returns it
+struct Listed {
+    std::string name;
+    uint64_t time = 0, size = 0;
+    bool dir = false;
+};
+
 struct File : Object {
     fs::path host;
     std::string xbox;
     FILE* fp = nullptr;
     const Disc::Entry* entry = nullptr;  // on the disc image instead of a host path
     bool dir = false;
+    bool readonly = false;  // a mod's file, or a folder only mods have: nothing is written, renamed or deleted
+    bool on_cd = false;     // on D:, where the mods' files show through
+    std::string cd;         // there: the path from D:'s root, upper case, "" the root itself
     uint64_t pos = 0;
-    std::vector<fs::directory_entry> entries;
-    std::vector<const Disc::Entry*> disc_entries;
+    std::vector<Listed> listing;
     size_t next = 0;
     bool listed = false;
     bool delete_on_close = false;
@@ -120,6 +129,110 @@ void FillNetworkInfo(uint32_t out, const fs::path& p) {
 
 void FillNetworkInfo(uint32_t out, const Disc::Entry& e) {
     FillNetworkInfo(out, MountedDisc()->Time(), e.dir ? 0 : e.size, e.dir);
+}
+
+Listed ListHost(const fs::path& p) {
+    std::error_code ec;
+    Listed l{p.filename().string(), ToFileTime(fs::last_write_time(p, ec)), 0, fs::is_directory(p, ec)};
+    if (!l.dir) l.size = fs::file_size(p, ec);
+    return l;
+}
+
+// Mods: folders laid out like D:, set before Boot and only read after. A file in one stands in for the game's at
+// the same path, or adds one; the first mod listed wins where two have the same file
+std::map<std::string, fs::path> g_mod_files;  // D: path, upper case -> the winning mod's file
+struct ModChild {
+    std::string name;  // as the first mod that has it spells it
+    fs::path host;     // the winning file, or the first mod's folder
+};
+// D: folder, upper case ("" the root) -> what the mods have in it, by upper case name
+std::map<std::string, std::map<std::string, ModChild>> g_mod_dirs;
+
+// a folder only mods have: the time of the first mod's
+uint64_t ModDirTime(const std::string& cd) {
+    const size_t cut = cd.rfind('\\');
+    const std::string parent = cut == std::string::npos ? "" : cd.substr(0, cut);
+    auto dir = g_mod_dirs.find(parent);
+    if (dir != g_mod_dirs.end())
+        if (auto it = dir->second.find(cd.substr(cut == std::string::npos ? 0 : cut + 1)); it != dir->second.end())
+            return ListHost(it->second.host).time;
+    return 0;
+}
+
+// the parts from D:'s root as a key: upper case, '\' between, "." and ".." taken out
+std::string CdKey(const std::vector<std::string>& parts) {
+    std::vector<std::string> path;
+    for (const std::string& part : parts) {
+        if (part.empty() || part == ".") continue;
+        if (part == "..") {
+            if (!path.empty()) path.pop_back();
+            continue;
+        }
+        path.push_back(Upper(part));
+    }
+    std::string key;
+    for (const std::string& part : path) key += (key.empty() ? "" : "\\") + part;
+    return key;
+}
+
+// The title copies files from D: to its cache on Z: (Conker: Audio\X.xwb from D:\dvddata\Audio\X.xwb) and reads
+// them there from then on, copying again only what is missing. So a cached file whose D: file a mod now replaces, or
+// replaced last launch and no longer does, is deleted, and the title copies it again through the mods. Z.mods beside
+// the partitions keeps the mods' files as of the last launch. A cached file is taken to come from the D: file whose
+// path ends in the cached file's own
+void DropStaleCache(const fs::path& data) {
+    std::error_code ec;
+    std::map<std::string, std::string> now, was;  // D: path -> host, size and time
+    for (auto& [key, host] : g_mod_files)
+        now[key] = host.string() + "\t" + std::to_string(uint64_t(fs::file_size(host, ec))) + "\t" +
+                   std::to_string(int64_t(fs::last_write_time(host, ec).time_since_epoch().count()));
+    const fs::path file = data / "Z.mods";
+    {
+        std::ifstream in(file, std::ios::binary);
+        std::string line;
+        while (std::getline(in, line))
+            if (size_t tab = line.find('\t'); tab != std::string::npos) was[line.substr(0, tab)] = line.substr(tab + 1);
+    }
+    if (now == was) return;
+    std::vector<std::string> changed;
+    for (auto& [key, v] : now)
+        if (auto it = was.find(key); it == was.end() || it->second != v) changed.push_back(key);
+    for (auto& [key, v] : was)
+        if (!now.count(key)) changed.push_back(key);
+
+    // listed first, deleted after: the listing isn't changed under the iterator
+    const fs::path z = data / "Z";
+    std::vector<std::pair<fs::path, std::string>> stale;
+    ec.clear();
+    for (auto it = fs::recursive_directory_iterator(z, ec); !ec && it != fs::recursive_directory_iterator(); it.increment(ec)) {
+        if (!it->is_regular_file(ec)) continue;
+        std::vector<std::string> parts;
+        for (const fs::path& part : it->path().lexically_relative(z)) parts.push_back(part.string());
+        const std::string cached = CdKey(parts);
+        for (const std::string& key : changed)
+            if (key == cached || (key.size() > cached.size() && key[key.size() - cached.size() - 1] == '\\' &&
+                                  key.compare(key.size() - cached.size(), cached.size(), cached) == 0)) {
+                stale.emplace_back(it->path(), cached);
+                break;
+            }
+    }
+    bool ok = true;
+    for (auto& [path, cached] : stale) {
+        std::error_code rm;
+        if (fs::remove(path, rm)) {
+            LOGR("Mods: dropped Z:\\%s from the title's cache, to be copied again", cached.c_str());
+        } else {
+            LOGW("files: deleting %s: %s", path.string().c_str(), rm.message().c_str());
+            ok = false;  // tried again next launch
+        }
+    }
+    if (!ok) return;
+    if (now.empty()) {
+        fs::remove(file, ec);
+        return;
+    }
+    std::ofstream out(file, std::ios::binary);
+    for (auto& [key, v] : now) out << key << '\t' << v << '\n';
 }
 
 bool WildMatch(const std::string& pat, const std::string& s) {
@@ -204,6 +317,7 @@ void MountDefaults(const std::string& game_dir, const std::string& data_dir) {
     g_devices["\\DEVICE\\HARDDISK0\\PARTITION3"] = d / "X";
     g_devices["\\DEVICE\\HARDDISK0\\PARTITION4"] = d / "Y";
     g_devices["\\DEVICE\\HARDDISK0\\PARTITION5"] = d / "Z";
+    DropStaleCache(d);
     for (auto& [k, v] : g_devices) {
         std::error_code ec;
         fs::create_directories(v, ec);
@@ -231,12 +345,45 @@ std::string QuerySymbolicLink(const std::string& link) {
     return it == g_links.end() ? std::string() : it->second;
 }
 
+void MountMods(const std::vector<fs::path>& dirs) {
+    g_mod_files.clear();
+    g_mod_dirs.clear();
+    for (const fs::path& root : dirs) {
+        size_t files = 0;  // the ones no mod above has
+        std::error_code ec;
+        for (auto it = fs::recursive_directory_iterator(root, fs::directory_options::skip_permission_denied, ec);
+             !ec && it != fs::recursive_directory_iterator(); it.increment(ec)) {
+            const fs::path rel = it->path().lexically_relative(root);
+            std::vector<std::string> parts;
+            for (const fs::path& part : rel) parts.push_back(part.string());
+            if (parts.empty()) continue;
+            const std::string name = parts.back();
+            parts.pop_back();
+            const std::string parent = CdKey(parts);
+            const std::string up = Upper(name);
+            const bool dir = it->is_directory(ec);
+            if (!dir && !it->is_regular_file(ec)) continue;
+            if (!dir) {
+                const std::string key = parent.empty() ? up : parent + "\\" + up;
+                if (!g_mod_files.emplace(key, it->path()).second) continue;  // a mod above has it
+                files++;
+            }
+            g_mod_dirs[parent].emplace(up, ModChild{name, it->path()});
+        }
+        LOGR("Mod %s: %zu files in use", root.filename().string().c_str(), files);
+    }
+}
+
 namespace {
 
 struct Target {
     std::string host;                    // empty on the disc image or unmapped
     bool disc = false;                   // on the mounted disc image
     const Disc::Entry* entry = nullptr;  // there: the file or folder, null when missing
+    bool on_cd = false;                  // on D:
+    std::string cd;                      // there: the path from the root, upper case (CdKey)
+    bool mod = false;                    // host is a mod's file, read only
+    bool mod_dir = false;                // a folder only the mods have
 };
 
 Target Resolve(const std::string& xbox_path, uint32_t root_handle) {
@@ -276,14 +423,69 @@ Target Resolve(const std::string& xbox_path, uint32_t root_handle) {
     // no Xbox name holds ':', and fs::path would take "D:" as a host drive
     for (auto& part : parts)
         if (part.find(':') != std::string::npos) return {};
-    if (best->first == kCdRom)
-        if (const Disc* disc = MountedDisc()) return {{}, true, disc->Find(parts)};
-    return {MatchCase(best->second, parts).string()};
+    if (best->first != kCdRom) return {MatchCase(best->second, parts).string()};
+    Target t;
+    t.on_cd = true;
+    t.cd = CdKey(parts);
+    if (auto it = g_mod_files.find(t.cd); it != g_mod_files.end()) {
+        t.host = it->second.string();
+        t.mod = true;
+        return t;
+    }
+    std::error_code ec;
+    bool found;
+    if (const Disc* disc = MountedDisc()) {
+        t.disc = true;
+        t.entry = disc->Find(parts);
+        found = t.entry;
+    } else {
+        t.host = MatchCase(best->second, parts).string();
+        found = fs::exists(t.host, ec);
+    }
+    if (!found && g_mod_dirs.count(t.cd)) t.mod_dir = true;
+    return t;
+}
+
+// a mod's file, or a folder only mods have: opened as on the disc, read only
+uint32_t OpenMod(const Target& t, const std::string& name, uint32_t handle_out, uint32_t iosb, uint32_t disposition,
+                 uint32_t options) {
+    if (disposition != 1 && disposition != 3) {  // FILE_OPEN, FILE_OPEN_IF
+        IoStatus(iosb, kAccessDenied, 0);
+        return kAccessDenied;
+    }
+    auto f = std::make_shared<File>();
+    f->xbox = Normalize(name);
+    f->readonly = true;
+    f->on_cd = true;
+    f->cd = t.cd;
+    f->dir = t.mod_dir;
+    if (f->dir && (options & 0x40)) {  // FILE_NON_DIRECTORY_FILE
+        IoStatus(iosb, kFileIsADirectory, 0);
+        return kFileIsADirectory;
+    }
+    if (!f->dir) {
+        if (options & 1) {  // FILE_DIRECTORY_FILE
+            IoStatus(iosb, kObjectNameNotFound, 5);
+            return kObjectNameNotFound;
+        }
+        f->host = t.host;
+        f->fp = std::fopen(t.host.c_str(), "rb");
+        if (!f->fp) {
+            LOGW("files: cannot open %s", t.host.c_str());
+            IoStatus(iosb, kAccessDenied, 0);
+            return kAccessDenied;
+        }
+    }
+    f->async = !(options & 0x30);  // FILE_SYNCHRONOUS_IO_ALERT / _NONALERT
+    W32(handle_out, NewHandle(f));
+    IoStatus(iosb, kSuccess, 1);
+    LOG_FIRST(400, "open %s from %s", name.c_str(), f->dir ? "the mods" : t.host.c_str());
+    return kSuccess;
 }
 
 // the disc image is read only: nothing on it is created, replaced or written
-uint32_t OpenOnDisc(const Disc::Entry* e, const std::string& name, uint32_t handle_out, uint32_t iosb, uint32_t disposition,
-                    uint32_t options) {
+uint32_t OpenOnDisc(const Disc::Entry* e, const std::string& cd, const std::string& name, uint32_t handle_out, uint32_t iosb,
+                    uint32_t disposition, uint32_t options) {
     if (!e && (disposition == 1 || disposition == 4)) {  // FILE_OPEN or FILE_OVERWRITE need an existing file
         LOG_FIRST(200, "missing %s", name.c_str());
         IoStatus(iosb, kObjectNameNotFound, 5);
@@ -301,6 +503,8 @@ uint32_t OpenOnDisc(const Disc::Entry* e, const std::string& name, uint32_t hand
     f->xbox = Normalize(name);
     f->entry = e;
     f->dir = e->dir;
+    f->on_cd = true;
+    f->cd = cd;
     f->async = !(options & 0x30);  // FILE_SYNCHRONOUS_IO_ALERT / _NONALERT
     W32(handle_out, NewHandle(f));
     IoStatus(iosb, kSuccess, 1);
@@ -334,7 +538,8 @@ KERNEL_EXPORT(190, NtCreateFile, 9) {
     uint32_t root;
     std::string name = ObjectName(attrs, &root);
     Target t = Resolve(name, root);
-    if (t.disc) return OpenOnDisc(t.entry, name, handle_out, iosb, disposition, options);
+    if (t.mod || t.mod_dir) return OpenMod(t, name, handle_out, iosb, disposition, options);
+    if (t.disc) return OpenOnDisc(t.entry, t.cd, name, handle_out, iosb, disposition, options);
     const std::string& host = t.host;
     if (host.empty()) {
         LOGW("NtCreateFile: no mapping for %s", name.c_str());
@@ -366,6 +571,8 @@ KERNEL_EXPORT(190, NtCreateFile, 9) {
         f->host = host;
         f->xbox = Normalize(name);
         f->dir = true;
+        f->on_cd = t.on_cd;
+        f->cd = t.cd;
         W32(handle_out, NewHandle(f));
         IoStatus(iosb, kSuccess, info);
         return kSuccess;
@@ -439,7 +646,8 @@ KERNEL_EXPORT(202, NtOpenFile, 6) {
     uint32_t root;
     std::string name = ObjectName(attrs, &root);
     Target t = Resolve(name, root);
-    if (t.disc) return OpenOnDisc(t.entry, name, handle_out, iosb, 1, options);
+    if (t.mod || t.mod_dir) return OpenMod(t, name, handle_out, iosb, 1, options);
+    if (t.disc) return OpenOnDisc(t.entry, t.cd, name, handle_out, iosb, 1, options);
     const std::string& host = t.host;
     std::error_code ec;
     if (host.empty() || !fs::exists(host, ec)) {
@@ -451,6 +659,8 @@ KERNEL_EXPORT(202, NtOpenFile, 6) {
     f->host = host;
     f->xbox = Normalize(name);
     f->dir = fs::is_directory(host, ec);
+    f->on_cd = t.on_cd;
+    f->cd = t.cd;
     if (!f->dir) {
         f->fp = std::fopen(host.c_str(), "r+b");
         if (!f->fp) f->fp = std::fopen(host.c_str(), "rb");
@@ -564,7 +774,7 @@ static uint32_t Transfer(const Args& a, bool write, uint32_t pages) {
     loadtrace::Scope trace(write ? loadtrace::kKinds : loadtrace::kRead, loadtrace::kReadMain);
     auto f = FileFromHandle(h);
     if (!f || (!f->fp && !f->entry)) return kInvalidHandle;
-    if (write && f->entry) return kAccessDenied;
+    if (write && (f->entry || f->readonly)) return kAccessDenied;
     ResetEvent(*f);
     std::lock_guard<std::mutex> lock(f->io);
     uint64_t pos = Offset(*f, off);
@@ -609,7 +819,9 @@ KERNEL_EXPORT(211, NtQueryInformationFile, 5) {
     std::memset(HostPtr(out), 0, len);
     switch (cls) {
         case 4: {  // FileBasicInformation
-            uint64_t t = f->entry ? MountedDisc()->Time() : ToFileTime(fs::last_write_time(f->host, ec));
+            uint64_t t = f->entry               ? MountedDisc()->Time()
+                         : f->host.empty() ? ModDirTime(f->cd)
+                                           : ToFileTime(fs::last_write_time(f->host, ec));
             for (int i = 0; i < 4; i++) W64(out + i * 8, t);
             W32(out + 0x20, f->dir ? 0x10 : 0x80);
             IoStatus(iosb, kSuccess, 0x28);
@@ -628,6 +840,7 @@ KERNEL_EXPORT(211, NtQueryInformationFile, 5) {
             return kSuccess;
         case 34:  // FileNetworkOpenInformation
             if (f->entry) FillNetworkInfo(out, *f->entry);
+            else if (f->host.empty()) FillNetworkInfo(out, ModDirTime(f->cd), 0, true);
             else FillNetworkInfo(out, f->host);
             IoStatus(iosb, kSuccess, 0x38);
             return kSuccess;
@@ -645,7 +858,7 @@ KERNEL_EXPORT(226, NtSetInformationFile, 5) {
     uint32_t h = a[0], iosb = a[1], in = a[2], cls = a[4];
     auto f = FileFromHandle(h);
     if (!f) return kInvalidHandle;
-    if (f->entry && cls != 14 && cls != 4) return kAccessDenied;
+    if ((f->entry || f->readonly) && cls != 14 && cls != 4) return kAccessDenied;
     std::error_code ec;
     switch (cls) {
         case 14:  // position
@@ -666,7 +879,9 @@ KERNEL_EXPORT(226, NtSetInformationFile, 5) {
         case 10: {  // rename: ReplaceIfExists, RootDirectory, FileName (ANSI_STRING inline)
             uint32_t root = R32(in + 4);
             std::string target = ReadAnsiString(in + 8);
-            std::string host = ResolvePath(target, root);
+            Target to = Resolve(target, root);
+            if (to.mod || to.mod_dir || to.disc) return kAccessDenied;  // a mod's file is never replaced
+            const std::string& host = to.host;
             if (host.empty()) return kObjectPathNotFound;
             if (f->fp) std::fflush(f->fp);
             fs::rename(f->host, host, ec);
@@ -731,32 +946,50 @@ KERNEL_EXPORT(207, NtQueryDirectoryFile, 10) {
     }
     std::string pat = mask ? ReadAnsiString(mask) : "*";
     if (!f->listed || (restart & 0xFF)) {
-        f->entries.clear();
-        f->disc_entries.clear();
+        f->listing.clear();
         if (f->entry) {
             for (const Disc::Entry& e : f->entry->children)
-                if (WildMatch(pat, e.name)) f->disc_entries.push_back(&e);
-        } else {
+                if (WildMatch(pat, e.name)) f->listing.push_back({e.name, MountedDisc()->Time(), e.dir ? 0 : e.size, e.dir});
+        } else if (!f->host.empty()) {
+            std::vector<fs::path> paths;
             std::error_code ec;
             for (auto& e : fs::directory_iterator(f->host, ec))
-                if (WildMatch(pat, e.path().filename().string())) f->entries.push_back(e);
-            std::sort(f->entries.begin(), f->entries.end());
+                if (WildMatch(pat, e.path().filename().string())) paths.push_back(e.path());
+            std::sort(paths.begin(), paths.end());
+            for (const fs::path& p : paths) f->listing.push_back(ListHost(p));
         }
+        // on D: the mods' files show through: one that stands in for the game's has its size, the ones the game lacks
+        // follow
+        if (f->on_cd)
+            if (auto mods = g_mod_dirs.find(f->cd); mods != g_mod_dirs.end()) {
+                std::map<std::string, ModChild> extra = mods->second;
+                for (Listed& l : f->listing) {
+                    auto it = extra.find(Upper(l.name));
+                    if (it == extra.end()) continue;
+                    if (!l.dir) l = ListHost(it->second.host), l.name = it->second.name;
+                    extra.erase(it);
+                }
+                for (auto& [up, child] : extra)
+                    if (WildMatch(pat, child.name)) {
+                        Listed l = ListHost(child.host);
+                        l.name = child.name;
+                        f->listing.push_back(l);
+                    }
+            }
         f->next = 0;
         f->listed = true;
     }
-    if (f->next >= (f->entry ? f->disc_entries.size() : f->entries.size())) {
+    if (f->next >= f->listing.size()) {
         IoStatus(iosb, kNoMoreFiles, 0);
         return f->next == 0 ? kNoSuchFile : kNoMoreFiles;
     }
-    size_t i = f->next++;
-    std::string fname = f->entry ? f->disc_entries[i]->name : f->entries[i].path().filename().string();
+    const Listed& l = f->listing[f->next++];
+    const std::string& fname = l.name;
     uint32_t need = 0x40 + uint32_t(fname.size());
     if (len < need) return kBufferTooSmall;
     std::memset(HostPtr(out), 0, need);
     // times, sizes and attributes sit at the same place
-    if (f->entry) FillNetworkInfo(out + 8, *f->disc_entries[i]);
-    else FillNetworkInfo(out + 8, f->entries[i].path());
+    FillNetworkInfo(out + 8, l.time, l.size, l.dir);
     // FILE_DIRECTORY_INFORMATION has EndOfFile before AllocationSize, the reverse of the network info
     W32(out + 0x38, R32(out + 8 + 0x30));
     uint64_t alloc = R64(out + 8 + 0x20), eof = R64(out + 8 + 0x28);
@@ -773,6 +1006,10 @@ KERNEL_EXPORT(210, NtQueryFullAttributesFile, 2) {
     std::string name = ReadAnsiString(R32(a[0] + 4));
     Target t = Resolve(name, R32(a[0]));
     std::error_code ec;
+    if (t.mod_dir) {
+        FillNetworkInfo(a[1], ModDirTime(t.cd), 0, true);
+        return kSuccess;
+    }
     if (t.disc ? !t.entry : t.host.empty() || !fs::exists(t.host, ec)) {
         LOG_FIRST(200, "missing %s", name.c_str());
         return kObjectNameNotFound;
@@ -783,7 +1020,9 @@ KERNEL_EXPORT(210, NtQueryFullAttributesFile, 2) {
 }
 
 KERNEL_EXPORT(195, NtDeleteFile, 1) {
-    std::string host = ResolvePath(ReadAnsiString(R32(a[0] + 4)), R32(a[0]));
+    Target t = Resolve(ReadAnsiString(R32(a[0] + 4)), R32(a[0]));
+    if (t.mod || t.mod_dir || t.disc) return kAccessDenied;  // D:'s mods and image are read only
+    const std::string& host = t.host;
     std::error_code ec;
     if (host.empty() || !fs::remove(host, ec)) return kObjectNameNotFound;
     return kSuccess;

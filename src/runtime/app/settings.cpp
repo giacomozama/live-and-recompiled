@@ -77,6 +77,13 @@ void Load() {
     s.join_ip = t["join_ip"].value_or(s.join_ip);
     s.system_link_port = t["system_link_port"].value_or(s.system_link_port);
     s.language = t["language"].value_or(s.language);
+    if (const toml::array* mods = t["mods"].as_array()) {
+        s.mods.clear();
+        for (const toml::node& n : *mods)
+            if (const toml::table* m = n.as_table())
+                if (std::optional<std::string> name = (*m)["name"].value<std::string>())
+                    s.mods.push_back({*name, (*m)["enabled"].value_or(true)});
+    }
     input::SetAutoAssign(t["auto_controllers"].value_or(input::AutoAssign()));
     for (int p = 0; p < input::kPorts; p++) {
         const toml::table* player = t["player" + std::to_string(p + 1)].as_table();
@@ -122,6 +129,9 @@ toml::table Table() {
                   {"system_link_port", int64_t(s.system_link_port)},
                   {"language", s.language},
                   {"auto_controllers", input::AutoAssign()}};
+    toml::array mods;
+    for (const ModEntry& m : s.mods) mods.push_back(toml::table{{"name", m.name}, {"enabled", m.enabled}});
+    t.insert("mods", std::move(mods));
     for (int p = 0; p < input::kPorts; p++) {
         toml::table player;
         for (int k = 0; k < input::kKinds; k++) player.insert(kSlotKeys[k], input::Assigned(p, input::Kind(k)));

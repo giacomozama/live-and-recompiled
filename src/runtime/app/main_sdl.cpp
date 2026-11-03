@@ -503,6 +503,7 @@ int main(int argc, char** argv) {
 
     app::GameFiles game;
     if (!app::FindGame(game)) return 1;
+    app::MountMods();
 
     app::g_user = SDL_RegisterEvents(1);
     std::wstring title = app::kGame.title;
