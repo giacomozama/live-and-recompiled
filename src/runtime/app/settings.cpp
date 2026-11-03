@@ -62,6 +62,7 @@ void Load() {
     s.aniso = t["anisotropic_filtering"].value_or(s.aniso);
     s.msaa = t["msaa"].value_or(s.msaa);
     s.smaa = t["smaa"].value_or(s.smaa);
+    if (s.smaa) s.msaa = 1;  // SMAA or MSAA, never both
     s.film_grain = t["film_grain"].value_or(s.film_grain);
     s.chromatic_aberration = t["chromatic_aberration"].value_or(s.chromatic_aberration);
     s.ambient_occlusion = t["ambient_occlusion"].value_or(s.ambient_occlusion);

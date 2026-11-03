@@ -958,16 +958,17 @@ void Draw(double fps) {
                 if (ImGui::Combo("Anisotropic", &aniso, "Game default\0 2x\0 4x\0 8x\0 16x\0"))
                     s.aniso = kAniso[aniso];
 
-                constexpr uint32_t kMsaa[] = {1, 2, 4, 8};
-                int msaa = 0;
-                for (int i = 0; i < 4; i++)
-                    if (kMsaa[i] == s.msaa) msaa = i;
-                if (ImGui::Combo("MSAA", &msaa, "Off\0 2x\0 4x\0 8x\0")) s.msaa = kMsaa[msaa];
+                // one choice: no anti-aliasing, SMAA, or MSAA at a sample count (the two never run together)
+                constexpr uint32_t kAa[] = {0, 1, 2, 4, 8};  // 0 off, 1 SMAA, else MSAA samples
+                int aa = s.smaa ? 1 : s.msaa >= 8 ? 4 : s.msaa >= 4 ? 3 : s.msaa >= 2 ? 2 : 0;
+                if (ImGui::Combo("Anti-aliasing", &aa, "Off\0SMAA\0MSAA 2x\0MSAA 4x\0MSAA 8x\0")) {
+                    s.smaa = aa == 1;
+                    s.msaa = aa >= 2 ? kAa[aa] : 1;
+                }
 
                 ImGui::SeparatorText("Post-processing");
                 ImGui::Checkbox("Vignette", &vignette::g_on);
                 Hint("The game's darkened screen edges. The red flash when you're hurt stays either way.", true);
-                ImGui::Checkbox("SMAA", &s.smaa);
                 Slider("Film grain %", &s.film_grain, 0, 100, app::Settings{}.film_grain);
                 Slider("Chromatic aberration %", &s.chromatic_aberration, 0, 100, app::Settings{}.chromatic_aberration);
                 Slider("Ambient occlusion %", &s.ambient_occlusion, 0, 100, app::Settings{}.ambient_occlusion);
