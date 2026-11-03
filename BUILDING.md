@@ -90,8 +90,9 @@ tools/package.sh                         # writes out/release/LiveAndRecompiled-
 It downloads the pinned Zig if it's missing (the pin is in `tools/toolchains.cmake`). Zig builds both halves of the kit: the Windows one (`out/build/zig-windows`: Setup,
 `xbe_recomp` and the runtime for `x86_64-windows-gnu`, with Zig's own mingw-w64 and static libc++), and the Linux one
 (`out/build/zig-glibc`): `setup-linux` and the native port's runtime against glibc 2.31 and Zig's static libc++.
-Setup's FLTK window (Wayland or X11, picked at run time) and the native SDL need Linux's X11, Wayland, ALSA, PulseAudio
-and PipeWire headers (SDL loads those libraries at run time). A player's Zig links the game code with the same
+Setup's window is FLTK built twice, for Wayland alone (Cairo and Pango) and for X11 alone (Xft), into two modules
+`setup-linux` carries and loads at run time, so Setup itself links only glibc. Those and the native SDL need Linux's
+X11, Xft, Wayland, xkbcommon, Cairo, Pango, ALSA, PulseAudio and PipeWire headers (SDL loads its libraries at run time). A player's Zig links the game code with the same
 libc++ into a `Game` that needs only glibc, or a `Game.exe` that needs only system DLLs. Then it tests the release as
 a Linux player would: the packaged `setup-linux` builds the native `Game` from the game in
 `assets/`, and the test fails unless it comes out. `--no-test` skips the test. The Zig archive for each host goes inside its

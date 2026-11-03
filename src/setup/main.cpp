@@ -1169,7 +1169,8 @@ int main(int argc, char** argv) {
         if (GetConsoleProcessList(ids, 2) <= 1) FreeConsole();  // double-clicked: no console behind the window
 #endif
         if (opt.source.empty()) opt.source = setup::FindStoreInstall();
-        return setup::RunWindow(opt);
+        int code = setup::RunWindow(opt);
+        if (code != setup::kNoWindow) return code;
     }
 
     if (fetch_only) {

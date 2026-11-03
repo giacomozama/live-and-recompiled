@@ -23,24 +23,27 @@ set(SDL_RENDER OFF CACHE BOOL "" FORCE)
 set(SDL_GPU OFF CACHE BOOL "" FORCE)
 set(SDL_CAMERA OFF CACHE BOOL "" FORCE)
 FetchContent_Declare(SDL3 GIT_REPOSITORY https://github.com/libsdl-org/SDL.git GIT_TAG release-3.4.18 GIT_SHALLOW TRUE)
-# FLTK for Setup's window: static, Wayland and X11 both (it picks at run time; Pango and Cairo draw on Wayland), and the
-# Win32 API on Windows. Its bundled image libraries and libdecor (cairo title bars), no GL, D-Bus, tools or tests, and of
-# X11's extensions only the ones Xft needs, so the window asks a desktop for as few libraries as possible
-foreach(option FLTK_BUILD_TEST FLTK_BUILD_EXAMPLES FLTK_BUILD_FLUID FLTK_BUILD_FLTK_OPTIONS FLTK_BUILD_FORMS FLTK_BUILD_GL
-        FLTK_BUILD_HTML_DOCS FLTK_BUILD_PDF_DOCS FLTK_OPTION_SVG FLTK_OPTION_PRINT_SUPPORT FLTK_BUILD_SHARED_LIBS
-        FLTK_USE_SYSTEM_LIBJPEG FLTK_USE_SYSTEM_LIBPNG FLTK_USE_SYSTEM_ZLIB FLTK_USE_XINERAMA FLTK_USE_XFIXES
-        FLTK_USE_XCURSOR FLTK_USE_DBUS FLTK_USE_SYSTEM_LIBDECOR FLTK_USE_LIBDECOR_GTK)
-    set(${option} OFF CACHE BOOL "" FORCE)
-endforeach()
-# (Windows has neither: Pango would be looked for in the mingw sysroot and fail the configure)
+# FLTK for Setup's window. Windows: static, on the Win32 API. Linux: built twice below (setup_gui_module), for X11 alone
+# and for Wayland alone, each into a window module Setup carries and loads at run time (src/setup/gui_linux.cpp), so
+# Setup links no desktop library. Its bundled image libraries and libdecor (cairo title bars), no GL, D-Bus, tools or
+# tests, and none of X11's optional extensions, so the window asks a desktop for as few libraries as possible
+set(XBE_FLTK_OFF FLTK_BUILD_TEST FLTK_BUILD_EXAMPLES FLTK_BUILD_FLUID FLTK_BUILD_FLTK_OPTIONS FLTK_BUILD_FORMS FLTK_BUILD_GL
+    FLTK_BUILD_HTML_DOCS FLTK_BUILD_PDF_DOCS FLTK_OPTION_SVG FLTK_OPTION_PRINT_SUPPORT FLTK_BUILD_SHARED_LIBS
+    FLTK_USE_SYSTEM_LIBJPEG FLTK_USE_SYSTEM_LIBPNG FLTK_USE_SYSTEM_ZLIB FLTK_USE_XINERAMA FLTK_USE_XFIXES
+    FLTK_USE_XCURSOR FLTK_USE_DBUS FLTK_USE_SYSTEM_LIBDECOR FLTK_USE_LIBDECOR_GTK)
 if(WIN32)
+    foreach(option ${XBE_FLTK_OFF})
+        set(${option} OFF CACHE BOOL "" FORCE)
+    endforeach()
+    # (Pango would be looked for in the mingw sysroot and fail the configure)
     set(FLTK_BACKEND_WAYLAND OFF CACHE BOOL "" FORCE)
     set(FLTK_USE_PANGO OFF CACHE BOOL "" FORCE)
+    FetchContent_Declare(fltk GIT_REPOSITORY https://github.com/fltk/fltk.git GIT_TAG release-1.4.5 GIT_SHALLOW TRUE)
 else()
-    set(FLTK_BACKEND_WAYLAND ON CACHE BOOL "" FORCE)
-    set(FLTK_USE_PANGO ON CACHE BOOL "" FORCE)
+    # fetched only: the two builds are their own projects (a SOURCE_SUBDIR that isn't there)
+    FetchContent_Declare(fltk GIT_REPOSITORY https://github.com/fltk/fltk.git GIT_TAG release-1.4.5 GIT_SHALLOW TRUE
+        SOURCE_SUBDIR none)
 endif()
-FetchContent_Declare(fltk GIT_REPOSITORY https://github.com/fltk/fltk.git GIT_TAG release-1.4.5 GIT_SHALLOW TRUE)
 # miniz for Setup, which unpacks the compiler it downloads
 FetchContent_Declare(miniz GIT_REPOSITORY https://github.com/richgel999/miniz.git GIT_TAG 3.1.2 GIT_SHALLOW TRUE)
 # The Vulkan renderer: the API's headers, volk (loads the Vulkan loader at run time, nothing to link), VMA for memory,
@@ -88,7 +91,7 @@ target_link_libraries(xbe_symbols PRIVATE Zydis tomlplusplus::tomlplusplus)
 
 # Setup, the player-side build: finds the game, recompiles it and links it with a prebuilt host (add_xbe_player_kit),
 # from a window or the command line
-add_executable(setup ${XBE_ROOT_DIR}/src/setup/main.cpp ${XBE_ROOT_DIR}/src/setup/gui.cpp
+add_executable(setup ${XBE_ROOT_DIR}/src/setup/main.cpp
     ${XBE_ROOT_DIR}/src/setup/store.cpp
     ${XBE_ROOT_DIR}/src/runtime/kernel/disc.cpp
     ${XBE_ROOT_DIR}/src/runtime/kernel/crypto.cpp)
@@ -100,13 +103,73 @@ else()
 endif()
 target_include_directories(setup PRIVATE ${XBE_ROOT_DIR}/src/runtime)
 target_compile_definitions(setup PRIVATE _CRT_SECURE_NO_WARNINGS)
-target_link_libraries(setup PRIVATE tomlplusplus::tomlplusplus miniz fltk)
-# Zig builds use its own libc headers, so the X11 and Wayland ones FLTK includes are found after them, as for SDL (cmake/zig-glibc.cmake)
-if(XBE_ZIG_TARGET AND NOT WIN32)
-    target_compile_options(fltk PRIVATE -idirafter /usr/include)
-    target_compile_options(setup PRIVATE -idirafter /usr/include)
-    # the system's X11, Wayland and Cairo libraries were built against a newer glibc than the one Zig links against, the player's has theirs
-    target_link_options(setup PRIVATE -Wl,--allow-shlib-undefined)
+target_link_libraries(setup PRIVATE tomlplusplus::tomlplusplus miniz)
+if(WIN32)
+    target_sources(setup PRIVATE ${XBE_ROOT_DIR}/src/setup/gui.cpp)
+    target_link_libraries(setup PRIVATE fltk)
+else()
+    # setup_gui_module(<x11|wayland> <FLTK options>...): FLTK built for that backend alone (PIC, static), and gui.cpp
+    # linked with it into setup-gui-<backend>.so, which exports setup_gui_run alone (gui.map) and must resolve against
+    # the desktop libraries it names (-z defs). They were built against a newer glibc than Zig's target, which
+    # --allow-shlib-undefined lets go; the player's system has theirs. Zig's own libc headers come first, the desktop's
+    # after them (-idirafter, as for SDL: cmake/zig-glibc.cmake)
+    include(ExternalProject)
+    find_package(PkgConfig REQUIRED)
+    set(gui_flags "${XBE_ZIG_EXTRA_FLAGS} -idirafter /usr/include")
+    function(setup_gui_module backend)
+        set(dir ${CMAKE_BINARY_DIR}/fltk-${backend})
+        set(args)
+        foreach(option ${XBE_FLTK_OFF})
+            list(APPEND args -D${option}=OFF)
+        endforeach()
+        foreach(option ${ARGN})
+            list(APPEND args -D${option})
+        endforeach()
+        if(CMAKE_TOOLCHAIN_FILE)
+            list(APPEND args -DCMAKE_TOOLCHAIN_FILE=${CMAKE_TOOLCHAIN_FILE} "-DXBE_ZIG_EXTRA_FLAGS=${gui_flags}")
+        else()
+            list(APPEND args -DCMAKE_C_COMPILER=${CMAKE_C_COMPILER} -DCMAKE_CXX_COMPILER=${CMAKE_CXX_COMPILER})
+        endif()
+        ExternalProject_Add(fltk_${backend}
+            SOURCE_DIR ${fltk_SOURCE_DIR}
+            BINARY_DIR ${dir}
+            DOWNLOAD_COMMAND ""
+            CMAKE_GENERATOR ${CMAKE_GENERATOR}
+            CMAKE_ARGS -DCMAKE_BUILD_TYPE=Release -DCMAKE_POSITION_INDEPENDENT_CODE=ON ${args}
+            BUILD_COMMAND ${CMAKE_COMMAND} --build ${dir} --target fltk
+            INSTALL_COMMAND ""
+            BUILD_BYPRODUCTS ${dir}/lib/libfltk.a)
+        add_library(setup_gui_${backend} MODULE ${XBE_ROOT_DIR}/src/setup/gui.cpp ${XBE_ROOT_DIR}/src/setup/gui_module.cpp)
+        add_dependencies(setup_gui_${backend} fltk_${backend})
+        set_target_properties(setup_gui_${backend} PROPERTIES PREFIX "" OUTPUT_NAME setup-gui-${backend}
+            LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/setup-gui CXX_VISIBILITY_PRESET hidden)
+        target_include_directories(setup_gui_${backend} PRIVATE ${fltk_SOURCE_DIR} ${dir} ${XBE_ROOT_DIR}/src/runtime)
+        target_compile_options(setup_gui_${backend} PRIVATE -idirafter /usr/include)
+        target_link_libraries(setup_gui_${backend} PRIVATE ${dir}/lib/libfltk.a ${gui_libs_${backend}} ${CMAKE_DL_LIBS} m pthread)
+        target_link_options(setup_gui_${backend} PRIVATE -Wl,--version-script=${XBE_ROOT_DIR}/src/setup/gui.map
+            -Wl,-z,defs -Wl,--allow-shlib-undefined -s)  # stripped: Setup carries it, a third of the size
+        set_property(TARGET setup_gui_${backend} APPEND PROPERTY LINK_DEPENDS ${XBE_ROOT_DIR}/src/setup/gui.map)
+    endfunction()
+    # X11: Xlib with Xft for the text, no Cairo or Pango. Wayland: Cairo and Pango draw, libdecor (bundled) the title bar
+    # (linked by full path alone: gui.cpp includes FLTK's headers, none of theirs)
+    pkg_check_modules(SETUP_X11 REQUIRED x11 xext xft xrender fontconfig)
+    pkg_check_modules(SETUP_WAYLAND REQUIRED wayland-client wayland-cursor xkbcommon cairo pangocairo pango gobject-2.0
+        glib-2.0)
+    set(gui_libs_x11 ${SETUP_X11_LINK_LIBRARIES})
+    set(gui_libs_wayland ${SETUP_WAYLAND_LINK_LIBRARIES})
+    setup_gui_module(x11 FLTK_BACKEND_WAYLAND=OFF FLTK_BACKEND_X11=ON FLTK_USE_XFT=ON FLTK_USE_PANGO=OFF
+        FLTK_GRAPHICS_CAIRO=OFF)
+    setup_gui_module(wayland FLTK_BACKEND_WAYLAND=ON FLTK_BACKEND_X11=OFF)
+
+    # both carried inside Setup (gui_linux.cpp .incbin's them), which links nothing of a desktop's
+    set(gui_x11 ${CMAKE_BINARY_DIR}/setup-gui/setup-gui-x11.so)
+    set(gui_wayland ${CMAKE_BINARY_DIR}/setup-gui/setup-gui-wayland.so)
+    target_sources(setup PRIVATE ${XBE_ROOT_DIR}/src/setup/gui_linux.cpp)
+    set_source_files_properties(${XBE_ROOT_DIR}/src/setup/gui_linux.cpp PROPERTIES
+        COMPILE_DEFINITIONS "SETUP_GUI_X11=\"${gui_x11}\";SETUP_GUI_WAYLAND=\"${gui_wayland}\""
+        OBJECT_DEPENDS "${gui_x11};${gui_wayland}")
+    add_dependencies(setup setup_gui_x11 setup_gui_wayland)
+    target_link_libraries(setup PRIVATE ${CMAKE_DL_LIBS})
 endif()
 
 set(XBE_IMGUI_SOURCES

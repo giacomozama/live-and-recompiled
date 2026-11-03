@@ -1,0 +1,5 @@
+/* the window modules (gui_module.cpp) export setup_gui_run alone: their FLTK and libc++ stay their own */
+{
+    global: setup_gui_run;
+    local: *;
+};

@@ -68,12 +68,12 @@ Then it is two steps: run Setup, run the game.
    the game and writes the executable. This takes a few minutes. Nothing of the game is uploaded.
    - **Windows:** builds with the [Zig](https://ziglang.org) inside Setup and writes `Game.exe`.
    - **Linux:** builds with the [Zig](https://ziglang.org) inside Setup and writes the native `Game`. If it says permission
-     denied, your archive tool dropped the executable bit: `chmod +x setup-linux`. If it says "error while loading shared
-     libraries", Setup's window needs packages a minimal system lacks (a desktop has them): X11, Wayland, Pango, Cairo
-     and xkbcommon. On Debian or Ubuntu, `sudo apt install libx11-6 libxinerama1 libxfixes3 libxcursor1 libpango-1.0-0
-     libpangocairo-1.0-0 libcairo2 libglib2.0-0 libwayland-client0 libwayland-cursor0 libxkbcommon0`; on Arch, `sudo
-     pacman -S libx11 libxinerama libxfixes libxcursor pango cairo glib2 wayland libxkbcommon`. Or skip the window with
-     `--cli`, below.
+     denied, your archive tool dropped the executable bit: `chmod +x setup-linux`. Setup itself needs only glibc; its
+     window needs your desktop's own libraries, which a desktop already has: on Wayland, Wayland, xkbcommon, Cairo and
+     Pango; on X11, X11 and Xft. If they're missing, Setup says "no wayland window" or "no x11 window" in the terminal
+     and builds there instead (`--cli`, below). To get the window on a minimal system: on Debian or Ubuntu, `sudo apt
+     install libwayland-client0 libwayland-cursor0 libxkbcommon0 libcairo2 libpango-1.0-0 libpangocairo-1.0-0` (Wayland)
+     or `libx11-6 libxft2` (X11); on Arch, `sudo pacman -S wayland libxkbcommon cairo pango` or `libx11 libxft`.
 
    Without a display, or with any option, Setup runs in the terminal instead: `./setup-linux --cli --source
    path/to/DefaultPackage --work /tmp/conker-work --game-dir ~/Games/Conker`, `--source` is required and the other

@@ -1,4 +1,4 @@
-// Setup's window (FLTK, linked statically): the game, the working folder and the game folder, each starting at its
+// Setup's window (FLTK, linked statically; on Linux into the X11 and the Wayland window modules, gui_linux.cpp): the game, the working folder and the game folder, each starting at its
 // default, and the build's progress below them. The build is main.cpp's, run on its own thread.
 #include <FL/Fl.H>
 #include <FL/Fl_Box.H>
@@ -33,15 +33,9 @@ namespace fs = std::filesystem;
 
 namespace setup {
 
-bool WindowAvailable() {
 #ifdef _WIN32
-    return true;
-#else
-    const char* x11 = std::getenv("DISPLAY");
-    const char* wayland = std::getenv("WAYLAND_DISPLAY");
-    return (x11 && *x11) || (wayland && *wayland);
+bool WindowAvailable() { return true; }  // Linux: gui_linux.cpp, which loads this file's window as a module
 #endif
-}
 
 namespace {
 

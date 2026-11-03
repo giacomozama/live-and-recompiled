@@ -51,8 +51,23 @@ void SetProgress(void (*progress)(double fraction));
 void Cancel();
 bool Cancelled();
 
-// a window with the three choices and the build's progress; the exit code
+// a window with the three choices and the build's progress; the exit code, or kNoWindow when none could open (Linux:
+// neither window module loads, for a library the desktop lacks), and the console build goes on instead
 int RunWindow(const Options& defaults);
 bool WindowAvailable();
+constexpr int kNoWindow = -1;
+
+// Linux: the window is a module Setup carries inside itself and loads as it opens one (gui_linux.cpp), built twice from
+// gui.cpp, against FLTK for X11 alone and for Wayland alone, so Setup needs neither and a desktop needs only its own.
+// The module calls the build through this (gui_module.cpp); its one export is
+//   extern "C" int setup_gui_run(const GuiApi* api, const Options* defaults)   RunWindow's exit code
+struct GuiApi {
+    KitInfo (*read_kit)();
+    Probe (*check_source)(const Options&);
+    bool (*build)(const Options&);
+    void (*set_sink)(void (*sink)(const char* text));
+    void (*set_progress)(void (*progress)(double fraction));
+    void (*cancel)();
+};
 
 }  // namespace setup
