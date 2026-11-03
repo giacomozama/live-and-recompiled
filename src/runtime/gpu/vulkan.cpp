@@ -772,8 +772,13 @@ VKAPI_ATTR VkBool32 VKAPI_CALL DebugMessage(VkDebugUtilsMessageSeverityFlagBitsE
 // the window's client area
 VkExtent2D WindowExtent() {
 #ifdef _WIN32
+    // in real pixels whatever this thread's DPI awareness: Windows answers in the caller's, and an unaware render
+    // thread got a 4K window at 200% as 1920x1080, which the swap chain then took
+    DPI_AWARENESS_CONTEXT was = SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     RECT rc;
-    if (!GetClientRect(static_cast<HWND>(app::Window()), &rc)) return {0, 0};
+    const BOOL ok = GetClientRect(static_cast<HWND>(app::Window()), &rc);
+    if (was) SetThreadDpiAwarenessContext(was);
+    if (!ok) return {0, 0};
     return {uint32_t(std::max<LONG>(rc.right - rc.left, 0)), uint32_t(std::max<LONG>(rc.bottom - rc.top, 0))};
 #else
     VkExtent2D e{};

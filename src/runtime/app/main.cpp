@@ -391,7 +391,11 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
     AttachParentConsole();
     app::InstallCrashHandler();
     timeBeginPeriod(1);
+    // in real pixels: a DPI-unaware window on a 4K desktop at 200% is a 1920x1080 one Windows stretches.
+    // The process's setting fails if something set it first (an overlay hooked in at start), so this thread, the
+    // window's, is made aware too, and the renderer asks for the window's size the same way (vulkan.cpp)
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+    SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     // one log a session: a relaunch into another image carries on its predecessor's
     bool relaunched = std::wcsstr(GetCommandLineW(), L"--relaunched") != nullptr;
     std::string log = app::kGame.log;
