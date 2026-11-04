@@ -276,7 +276,7 @@ void Hint(const char* text, bool checkbox = false) {
 void Hints(std::initializer_list<const char*> lines) {
     const ImGuiStyle& style = ImGui::GetStyle();
     ImGui::PushFont(nullptr, std::max(std::round(style.FontSizeBase * 0.8f), 11.0f));
-    ImGui::SetCursorPosY(ImGui::GetCursorPosY() - style.ItemSpacing.y * 0.5f);
+    ImGui::Dummy(ImVec2(0.0f, style.ItemSpacing.y * 0.25f));  // set apart from the setting above and what follows
     ImGui::PushStyleColor(ImGuiCol_Text, style.Colors[ImGuiCol_TextDisabled]);
     for (const char* line : lines) {
         ImGui::Bullet();
@@ -285,6 +285,7 @@ void Hints(std::initializer_list<const char*> lines) {
     }
     ImGui::PopStyleColor();
     ImGui::PopFont();
+    ImGui::Dummy(ImVec2(0.0f, style.ItemSpacing.y * 0.75f));
 }
 
 // a percent slider with a Reset beside it, greyed out while the value is its default
@@ -1107,13 +1108,13 @@ void Draw(double fps) {
                 // each time it changes (xnet.cpp JoinAddress), and a half typed name is a DNS lookup
                 static char host[256];
                 if (ImGui::IsWindowAppearing()) std::snprintf(host, sizeof host, "%s", s.join_ip.c_str());
-                ImGui::InputTextWithHint("Host address", "empty to host, or for the LAN", host, sizeof host);
+                ImGui::InputTextWithHint("Host address", "leave empty to host or find local games", host, sizeof host);
                 if (ImGui::IsItemDeactivatedAfterEdit()) s.join_ip = host;
                 if (!app::JoinArg().empty()) ImGui::Text("This copy joins %s (--join)", app::JoinArg().c_str());
-                Hints({"Empty to host, or to find games on this network (hosts on port 3074).",
-                       "Past the LAN: the host's public IP or name.",
-                       "Another copy on this PC: 127.0.0.1.",
-                       "Add :port if the host's port isn't 3074."});
+                Hints({"Leave empty to host, or to find games on your home network.",
+                       "For LAN hosts outside your subnet, enter their local IP.",
+                       "For hosts over the internet, enter their public IP.",
+                       "For hosts on a port other than 3074, append the port after the IP (1.2.3.4:3075)."});
                 int port = int(s.system_link_port);
                 ImGui::BeginDisabled(app::PortArg() != 0);
                 if (ImGui::InputInt("Online play port", &port, 0, 0)) s.system_link_port = uint32_t(std::clamp(port, 1, 65535));

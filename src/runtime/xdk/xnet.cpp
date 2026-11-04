@@ -12,6 +12,7 @@
 // it is a copy like any other (run-linux.sh --instances: the first hosts, the others join it on 127.0.0.1).
 // Join address (host[:port], a host past the LAN or another copy on this PC): the system link search's broadcasts
 // also go to it, and every broadcast goes to the peers a broadcast can't reach (past the LAN, or on another port).
+// A broadcast also goes to this PC's other copies on system link ports 3074-3081, so they find each other unjoined.
 // A LAN address in an XNADDR only means something on its owner's LAN: from past it, it stands for the join address
 // on the client, and on the host for the peer whose packets come from past the LAN.
 #ifdef _WIN32
@@ -61,6 +62,7 @@ constexpr uint32_t kXnAddrEthernet = 0x02 | 0x04;         // ethernet, static ad
 constexpr DWORD kUdpConnReset = 0x9800000C;  // SIO_UDP_CONNRESET: off, or a send to a closed port fails the next recv
 constexpr int kLoopbackInstances = 8;
 constexpr uint16_t kSystemLinkPort = 3074;
+constexpr uint16_t kLocalPorts = 8;  // a broadcast also reaches the copies on this PC on 3074..3081
 constexpr uint32_t kPeerNet = 0x0AFE0000;  // 10.254.0.0/16, host order: the title's addresses for peers
 constexpr size_t kMaxPeers = 0xFFFE;
 
@@ -441,6 +443,13 @@ int SendOnce(uint32_t sock, const Socket& k, const uint8_t* data, int len, const
     std::vector<Endpoint> also;
     if (Endpoint join = JoinAddress(); join.ip && !(join.ip == g_local && join.port == htons(g_port)))
         also.push_back(join);
+    // the other copies on this PC, on the first system link ports: the LAN broadcast only finds one on 3074, and
+    // offline (g_local the loopback) none
+    if (!g_instance)
+        for (uint16_t p = kSystemLinkPort; p < kSystemLinkPort + kLocalPorts; p++)
+            if (p != g_port && (p != kSystemLinkPort || (ntohl(g_local) >> 24) == 127) &&
+                std::find(also.begin(), also.end(), Endpoint{g_local, htons(p)}) == also.end())
+                also.push_back({g_local, htons(p)});
     {
         std::lock_guard<std::mutex> lock(g_peer_lock);
         for (const Peer& p : g_peers)
