@@ -34,6 +34,7 @@
 #include "common/keyboard.h"
 #include "common/lighting.h"
 #include "common/loading.h"
+#include "common/menus.h"
 #include "common/mouse.h"
 #include "common/reflection.h"
 #include "common/rope.h"
@@ -1015,6 +1016,11 @@ void Draw(double fps) {
                 Hint("Water ripples and makes waves as things move through it.", true);
                 ImGui::Checkbox("Floor depth of field", &reflection::g_floor_depth);
                 Hint("Fixes the blur on shiny, reflective floors.", true);
+
+                ImGui::SeparatorText("Menus");
+                ImGui::Checkbox("Readable menu hints", &menus::g_bright_hints);
+                Hint("The hints above and below the multiplayer menus (R Configure) show as clearly as the menu's "
+                     "title. Off: faint and flickering, as on the console.", true);
 
                 ImGui::SeparatorText("Gameplay");
                 ImGui::Checkbox("Skippable cutscenes", &cutscenes::g_skippable);

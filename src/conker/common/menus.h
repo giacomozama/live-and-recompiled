@@ -7,6 +7,10 @@
 // The game's menus (src/conker/game/menus.cpp).
 namespace menus {
 
+// settings.toml bright_menu_hints: a multiplayer menu's page hints ("R Configure" over its list, the page under it)
+// drawn as solid as the menu's title, rather than the console's faint flickering strips. Read each frame
+extern bool g_bright_hints;
+
 // from keyboard::Pad, before gamepad::Pad: while one of the game's menu lists shows, the cursor over an item moves the
 // list's cursor onto it (up or down on the pad), a left click picks it (A) and the wheel steps it; in the pub the wheel
 // turns from picture to picture (left and right) and a click picks the one in front

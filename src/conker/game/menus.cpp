@@ -475,6 +475,19 @@ void ConkerPanelQuad(X86Context& ctx, uint8_t* base) {
         }
 }
 
+// A multiplayer menu's page hints ("R Configure" over its list, the page under it below) are bent panels 0x217970
+// draws in 32 strips, each by its own vertex alpha: the byte of its 17th argument plus rand() % 11 (0x217C3C), a
+// flicker that waves across the strips. Its call at 0x216D4D passes 0x10 (pushed at 0x216CDA), which leaves the text
+// at about a fifth over the menu behind; the menu's title, the other call (0x20E526), passes 0x40 and reads.
+// [[hook]] before 0x216D4D: the hints' alpha the title's, with menus::g_bright_hints
+bool menus::g_bright_hints = true;
+void ConkerPageHintAlpha(X86Context& ctx, uint8_t* base) {
+    (void)base;
+    if (!menus::g_bright_hints) return;
+    constexpr uint32_t kArgAlpha = 16 * 4, kTitleAlpha = 0x40;
+    W32(ctx.esp + kArgAlpha, kTitleAlpha);
+}
+
 // The prompts of single player's pause screen ("A Quit?", "B Resume", "Y Options") are the pause UI's: each button's
 // icon an image the sprite routines (0x356000..0x35A000) draw as a quad already in the back buffer's pixels, by
 // DrawVerticesUP from one of kSpriteDraws (the vertices on the stack: count, then data and stride). The icons are the
