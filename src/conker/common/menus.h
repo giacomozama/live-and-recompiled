@@ -30,8 +30,9 @@ void Paused();
 
 // The screens whose prompts show fixed keys whatever the bindings (PauseKeys), so the prompts have sprites: single
 // player's pause screen on its first page (A Quit?, B Resume, Y Options), the quit prompt over it, which keeps those
-// prompts on show, and the menu lists outside a match (the frontend's multiplayer menus, A Select and B Back) and every
-// frontend screen (the multiplayer character choice among them). Game thread
+// prompts on show, the menu lists (the frontend's multiplayer menus, A Select and B Back), every frontend screen (the
+// multiplayer character choice among them) and a match's pause menu and its quit prompt while player 1 paused it.
+// Game thread
 constexpr int kMenuList = 3;
 int KeyPage();  // 0 the pause screen, 2 the quit prompt, kMenuList a menu list, -1 none of them
 bool PauseScreen();  // the pause screen or its quit prompt

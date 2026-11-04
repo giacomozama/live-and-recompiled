@@ -963,9 +963,11 @@ int menus::KeyPage() {
         const uint32_t page = R32(kPage);
         return page == 0 || page == 2 ? int(page) : -1;
     }
-    // a menu list (the frontend's multiplayer menus, A Select and B Back), a match's pause menu aside; anywhere in the
-    // frontend too, whose screens without such a list (the multiplayer character choice) prompt A and B as well
-    if (mem::Base()[kMatchPaused]) return -1;
+    // a menu list (the frontend's multiplayer menus, A Select and B Back); anywhere in the frontend too, whose screens
+    // without such a list (the multiplayer character choice) prompt A and B as well; and a match's pause menu and its
+    // quit prompt (A Yes, B No) while player 1 ([0x776558], the port) paused it, the keys being port 0's
+    constexpr uint32_t kPausing = 0x776558;
+    if (mem::Base()[kMatchPaused]) return mem::Base()[kPausing] == 0 ? kMenuList : -1;
     if (warp::Frontend()) return kMenuList;
     std::lock_guard lock(g_list_lock);
     return now - g_shown.shown_us <= kShownUs ? kMenuList : -1;
