@@ -1,5 +1,6 @@
 #pragma once
 #include <array>
+#include <atomic>
 #include <bitset>
 #include <cstdint>
 #include <string>
@@ -146,6 +147,15 @@ struct ViewConstants {
     int projection = -1;
 };
 inline ViewConstants g_view_constants;  // set before the title boots, unchanged after
+
+// A game's HUD unstretched at a display wider than the frame: while on, the draws the game puts in a HUD scope
+// (d3d::HudScope, an element of its HUD) are drawn at the frame's shape as the scope's HudMode says. The game sets it
+// each frame, game thread
+inline std::atomic<bool> g_hud_split{false};
+// how the draws of a HUD scope (d3d::HudScope) are placed: by the edge the element's box keeps nearest to (held),
+// unstretched where it is (about the element's box, or each draw's own), or as the frame has them. kHudInPlaceBars is
+// kHudInPlace with black down the sides of a draw that covers the frame (a sniper's scope, no longer to the edges)
+enum HudMode : uint8_t { kHudNone, kHudEdge, kHudInPlace, kHudInPlaceEach, kHudStretched, kHudInPlaceBars };
 
 uint64_t Hash(const void* p, size_t n, uint64_t h = 1469598103934665603ull);
 

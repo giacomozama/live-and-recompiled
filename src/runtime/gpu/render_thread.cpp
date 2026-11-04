@@ -770,6 +770,7 @@ private:
                         static const bool perf = diag::Perf();
                         // a draw a run drawn again took with it (most of the bloodbath's): nothing to blend, the
                         // backend only counts it
+                        interp::g_run_tag = c.tag;  // the HUD's placement reads it (gpu::g_hud_split)
                         if (inner_->Skips()) {
                             n++;
                             inner_->Changed(changed);

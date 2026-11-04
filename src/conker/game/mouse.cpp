@@ -214,6 +214,8 @@ void Release() { app::HoldMouse(false); }
 
 void InMenu() { g_menu_us.store(Now(), std::memory_order_relaxed); }
 
+bool GameMenu() { return g_game_menu.load(std::memory_order_relaxed); }
+
 void Refresh(void* window) {
 #ifdef _WIN32
     HWND hwnd = static_cast<HWND>(window);
@@ -764,6 +766,8 @@ bool g_invert_y[keyboard::kModes][input::kPorts] = {};
 void Message(void*, uint32_t, uintptr_t, intptr_t) {}
 
 void InMenu() {}
+
+bool GameMenu() { return false; }
 
 void Refresh(void*) {}
 

@@ -35,6 +35,13 @@ struct Tag {
     // where any draw came from, for the watch lines (tagged or not): an HLE'd draw's return address, the static push
     // buffer the walk had jumped to, the return address of the call that had the push buffer read (d3d8.cpp)
     uint32_t caller = 0, source = 0, walked = 0;
+    // while g_hud_split is on: the title's call chain as the draw was handed over (return addresses on its stack,
+    // innermost first), for the frame capture's lines
+    std::array<uint32_t, 10> stack{};
+    // the HUD scopes it was pushed in (d3d::HudScope), innermost first, and how deep they went; the innermost's mode
+    std::array<uint32_t, 4> hud{};
+    uint32_t hud_depth = 0;
+    uint8_t hud_mode = 0;
 };
 // the tag of the draw the title's thread hands the backend next (d3d::SetDrawTag), taken with it as it is recorded
 inline Tag g_draw_tag;

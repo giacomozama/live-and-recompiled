@@ -1,5 +1,6 @@
 #pragma once
 #include <mutex>
+#include <utility>
 
 #include "gpu/state.h"
 
@@ -44,6 +45,16 @@ struct DrawTag {
 DrawTag SetDrawTag(DrawTag tag);
 // XBE_PERF: one more of what label names (an effect drawn), beside the draws counted under it
 void CountLabel(uint32_t label);
+
+// The HUD element whose draws the title pushes next (gpu::g_hud_split): scopes nest, and every draw read off the
+// commands pushed inside one carries the innermost's id and gpu::HudMode, and the scopes around it for the trace
+// (gpu::interp::Tag); the commands pushed before are read first. Game thread
+void HudScope(uint32_t id, uint8_t mode);
+void HudScopeEnd();
+// the innermost scope's id and mode, {0, 0} outside any
+std::pair<uint32_t, uint8_t> HudScopeNow();
+// a line in the frame capture, in order with the draws (the HUD trace)
+void HudNote(const char* text);
 
 // Whether a title's loading screen, about to be drawn into the front buffer, should be drawn. Each one shown is a
 // Present the loader waits on, and those drawn unshown still cost the GPU their whole picture in the first frame

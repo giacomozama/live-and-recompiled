@@ -4,6 +4,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <map>
 #include <string>
@@ -19,6 +20,7 @@
 #include "kernel/memory.h"
 #include "gpu/backend.h"
 #include "gpu/interp.h"
+#include "gpu/shaders.h"
 #include "gpu/texture.h"
 #include "gpu/vertex.h"
 #include "xdk/d3d8.h"
@@ -643,11 +645,43 @@ gpu::interp::TagTable g_tag_turns;
 
 uint32_t g_walked = 0;  // the return address of the call whose walk reads the commands now (Walk)
 
+// the title's call chain now: the words on its stack, from esp up, that are return addresses (a call ends just before
+// them: E8 rel32, or FF /2 through a register or memory), innermost first
+void GuestStack(std::array<uint32_t, 10>& out) {
+    if (!kernel::Current()) return;
+    const uint32_t esp = kernel::CurrentContext().esp;
+    constexpr uint32_t kLow = 0x10000, kHigh = 0x1000000, kWords = 512;
+    auto byte = [](uint32_t va) { return kernel::G<uint8_t>(va); };
+    // only committed pages: the stack ends at its top, where another's guard may follow, and the image has gaps
+    auto readable = [](uint32_t va) { return mem::IsCommitted(va & ~(mem::kPage - 1)); };
+    size_t n = 0;
+    for (uint32_t i = 0; i < kWords && n < out.size(); i++) {
+        const uint32_t at = esp + i * 4;
+        if ((i == 0 || (at & (mem::kPage - 1)) == 0) && !readable(at)) break;
+        const uint32_t ra = R32(at);
+        if (ra < kLow + 8 || ra >= kHigh || !readable(ra - 8) || !readable(ra - 1)) continue;
+        bool call = byte(ra - 5) == 0xE8;
+        if (!call)
+            for (uint32_t back : {2u, 3u, 6u, 7u})
+                if (byte(ra - back) == 0xFF && ((byte(ra - back + 1) >> 3) & 7) == 2) call = true;
+        if (call) out[n++] = ra;
+    }
+}
+
+std::vector<std::pair<uint32_t, uint8_t>> g_hud_scopes;  // d3d::HudScope's, outermost first
+
 gpu::interp::Tag TagOfDraw() {
     gpu::interp::Tag t;
     t.caller = g_lod_caller;
     t.source = g_lod_source;
     t.walked = g_walked;
+    // XBE_TRACE_STACKS: everywhere, not only in what g_hud_split places
+    static const bool stacks = std::getenv("XBE_TRACE_STACKS") != nullptr;
+    if (stacks || gpu::g_hud_split.load(std::memory_order_relaxed)) GuestStack(t.stack);
+    t.hud_depth = uint32_t(g_hud_scopes.size());
+    for (size_t i = 0; i < t.hud.size() && i < g_hud_scopes.size(); i++)
+        t.hud[i] = g_hud_scopes[g_hud_scopes.size() - 1 - i].first;
+    if (!g_hud_scopes.empty()) t.hud_mode = g_hud_scopes.back().second;
     if (!g_tag.piece) return t;
     uint64_t key = (uint64_t(g_tag.object) << 32 | g_tag.piece) * 0x9E3779B97F4A7C15ull;
     if (g_tag.group) {
@@ -678,6 +712,29 @@ void CountLabel(uint32_t label) {
     if (!diag::Perf() || !label) return;
     std::lock_guard<std::recursive_mutex> lock(g_lock);
     g_label_counts[label].calls++;
+}
+
+void HudScope(uint32_t id, uint8_t mode) {
+    std::lock_guard<std::recursive_mutex> lock(g_lock);
+    Walk(Dev(kDevPush));  // the commands pushed so far are the scope's before
+    g_hud_scopes.push_back({id, mode});
+}
+
+std::pair<uint32_t, uint8_t> HudScopeNow() {
+    std::lock_guard<std::recursive_mutex> lock(g_lock);
+    return g_hud_scopes.empty() ? std::pair<uint32_t, uint8_t>{0, 0} : g_hud_scopes.back();
+}
+
+void HudScopeEnd() {
+    std::lock_guard<std::recursive_mutex> lock(g_lock);
+    Walk(Dev(kDevPush));
+    if (!g_hud_scopes.empty()) g_hud_scopes.pop_back();
+}
+
+void HudNote(const char* text) {
+    std::lock_guard<std::recursive_mutex> lock(g_lock);
+    Walk(Dev(kDevPush));
+    if (g_backend) g_backend->Note(text);
 }
 
 DrawTag SetDrawTag(DrawTag tag) {

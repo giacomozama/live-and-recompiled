@@ -522,3 +522,24 @@ call = "ConkerSpriteDraw"
 [[hook]]
 at = 0x359DDA
 call = "ConkerSpriteDraw"
+
+# the HUD's elements as scopes (display.cpp), for the HUD unstretched in a match
+[[hook]]
+at = 0x0D9AAF  # an effect layer's object drawn: ebx the layer, esi the object, ebp the routine
+call = "ConkerHudLayerObject"
+
+[[hook]]
+at = 0x0D9AB1  # after it
+call = "ConkerHudLayerObjectEnd"
+
+[[hook]]
+at = 0x1F2835  # a text entry made and linked: edx the entry
+call = "ConkerHudTextMade"
+
+[[hook]]
+at = 0x1F2F7B  # a text entry about to be drawn: esi the entry
+call = "ConkerHudTextEntry"
+
+[[hook]]
+at = 0x1F2FC3  # the entry done, drawn or skipped
+call = "ConkerHudTextEntryEnd"

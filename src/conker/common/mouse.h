@@ -32,6 +32,10 @@ void Refresh(void* hwnd);
 // they run; game thread
 void InMenu();
 
+// one of the game's menus is up, so the cursor goes free: the frontend, a match's pause menu, or a menu that ran
+// within the last fifth of a second (InMenu); as the last poll found it
+bool GameMenu();
+
 // from keyboard::Pad: the last frame's motion of the port's mice as right stick, while the cursor is held
 void Pad(int port, input::Pad& pad);
 
