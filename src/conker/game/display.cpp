@@ -488,3 +488,24 @@ void ConkerHudTextEntryEnd(X86Context& ctx, uint8_t* base) {
     menus::HudTextDrawn();
     if (std::exchange(g_text_scope, false)) d3d::HudScopeEnd();
 }
+
+// 0x231050 (the popup at esi): draws one of the menus' popups at its slot's place in the table at 0x6BD708 ([esi+0x34],
+// 16 bytes each: x, y, then the width and height in hundredths), a model of the menus' UI with its words drawn at its
+// nodes. The UI's camera looks along z at x 0 (0x21F9C0) and a popup's frame is even about its origin, so x is how far
+// its middle is from the screen's. A match's quit prompt is slot 10 (227, 3054, 84 by 66.6), about 28 of 640 pixels
+// right of the middle; it and the two of the same box (21, 22, at 227 lower down) are drawn at x 0 in a match. The rest
+// keep their places (the four players' corners, the frontend's).
+X86_EXTERN_FUNC(__imp__sub_00231050);
+X86_FUNC(sub_00231050) {
+    constexpr uint32_t kPlaces = 0x6BD708, kPlaceSize = 16;
+    const uint32_t slot = kernel::R32(ctx.esi + 0x34);
+    const bool centre = (slot == 10 || slot == 21 || slot == 22) && warp::Multiplayer() && !warp::Frontend();
+    if (!centre) return __imp__sub_00231050(ctx, base);
+    const uint32_t at = kPlaces + slot * kPlaceSize;
+    float x;
+    std::memcpy(&x, base + at, 4);
+    const float middle = 0.0f;
+    std::memcpy(base + at, &middle, 4);
+    __imp__sub_00231050(ctx, base);
+    std::memcpy(base + at, &x, 4);
+}
