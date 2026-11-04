@@ -200,15 +200,15 @@ X86_FUNC(sub_0020C200) {
     __imp__sub_0020C200(ctx, base);
 }
 
-// A list shows up to [0x6BD4C8] rows (5, from 0x2079EA), an item with a second line (+0x100) taking two, and past
-// them it scrolls. A match's pause menu has up to six items, so while a match is paused its lists show every row,
-// up to kAllRows: the cap is lifted while the list is set up (0x20C3B0, the count its second argument, its items
-// one line each), which runs on into placing its cursor (0x216DF0, reached only by jumps), and while it draws
-// (0x20C870).
+// A list shows up to [0x6BD4C8] rows (5 from 0x2079EA, 1 from 0x207B56: a match's menus outside the pause, the spawn
+// choice among them), an item with a second line (+0x100) taking two, and past them it scrolls. A match's pause menu
+// has up to six items, so in a match the lists show every row, up to kAllRows (longer ones, the class choice's seven,
+// scroll): the cap is lifted while the list is set up (0x20C3B0, the count its second argument, its items one line
+// each), which runs on into placing its cursor (0x216DF0, reached only by jumps), and while it draws (0x20C870).
 namespace {
 
 constexpr uint32_t kRowCap = 0x6BD4C8;
-constexpr int kAllRows = 8;
+constexpr int kAllRows = 6;  // the most rows the list's texture holds (seven run past its edge: the class choice)
 
 // the rows of the list set up: [0x7768D4] items at [0x849924], 0x398 bytes each
 int ListRows() {
@@ -220,12 +220,11 @@ int ListRows() {
     return rows;
 }
 
-// the cap lifted to the rows for its life, while a match is paused and they fit
+// the cap lifted to the rows for its life, in a match while they fit
 struct AllRows {
     uint32_t was = 0, set = 0;
     explicit AllRows(int rows) {
-        constexpr uint32_t kMatchPaused = 0x862D90;
-        if (!warp::Multiplayer() || !mem::Base()[kMatchPaused] || rows > kAllRows) return;
+        if (!warp::Multiplayer() || rows > kAllRows) return;
         was = R32(kRowCap);
         if (int32_t(was) >= rows) return;
         set = uint32_t(rows);
@@ -790,6 +789,7 @@ namespace {
 
 constexpr uint16_t kPadUp = 1 << 0, kPadDown = 1 << 1, kPadLeft = 1 << 2, kPadRight = 1 << 3;
 constexpr int64_t kPressUs = 70000, kGapUs = 70000;  // a press held, then let go, long enough for a frame to see each
+constexpr int64_t kRetryHoldUs = 35000, kRetryUs = 400000;  // a step to the mouse's item unanswered: let go, again
 
 struct Pointer {
     float x = -1, y = -1;  // the cursor in the window when last seen
@@ -800,6 +800,10 @@ struct Pointer {
     int face = -1;  // the face button held (its analog: A B X Y), or -1
     int64_t press_us = 0;  // the press's start
     int from = -1;  // the list's cursor when it was pressed
+    bool paced = false;  // a step to the mouse's item, held and let go by the list's draws (kPressUs a cap)
+    bool released = false;  // and let go, since release_us
+    int64_t release_us = 0;
+    int64_t step_us = 0;  // the step's first press
     int word = 0;  // the quit prompt's word (1 Yes, 2 No) the highlight goes to, 0 none
     int steps = 0;  // presses toward it so far
     int jump = -1;  // the item a frontend list was sent to (g_jump), -1 none
@@ -1029,6 +1033,37 @@ void menus::Pad(int port, input::Pad& pad) {
         return;
     }
 
+    // a step to the mouse's item: held until the list is drawn with its cursor moved, then let go until it is drawn
+    // again, which the game's poll saw, so a step takes two frames rather than kPressUs and kGapUs. A list that takes
+    // no step for a while after one (the class choice, 130 to 200 ms, and only a fresh press then) is pressed again a
+    // couple of frames at a time until it does, for up to kRetryUs
+    if (p.press && p.paced) {
+        if (!p.released) {
+            const bool answered = l.shown_us > p.press_us && l.cursor != p.from;
+            if (!answered && now - p.press_us < kRetryHoldUs) {
+                pad.buttons |= p.press;
+                return;
+            }
+            if (TraceMouse())
+                LOGR("menu mouse: step %s from %d, %s after %lld ms (cursor %d, target %d)",
+                     p.press == kPadDown ? "down" : "up", p.from, answered ? "answered" : "no answer",
+                     (long long)((now - p.press_us) / 1000), l.cursor, p.target);
+            p.released = true, p.release_us = now;
+            return;
+        }
+        if (l.shown_us <= p.release_us && now - p.release_us < kGapUs) return;
+        if (TraceMouse())
+            LOGR("menu mouse: step let go for %lld ms, cursor %d", (long long)((now - p.release_us) / 1000), l.cursor);
+        if (l.cursor == p.from && p.target >= 0 && p.target < l.count && p.target != l.cursor &&
+            now - p.step_us < kRetryUs) {  // pressed again
+            p.press_us = now, p.released = false;
+            pad.buttons |= p.press;
+            return;
+        }
+        if (l.cursor == p.from) p.target = -1, p.pick = false;  // the list did not answer the step
+        p.press = 0, p.paced = false, p.released = false;
+    }
+
     // a press runs its course: held, then let go
     if (p.press || p.face >= 0) {
         if (now - p.press_us < kPressUs) {
@@ -1124,11 +1159,21 @@ void menus::Pad(int port, input::Pad& pad) {
     const bool over = CursorInFrame(x, y, wx, wy, bw, bh) && InTexture(l, x, y, bw, bh, tx, ty, quad);
     const int hit = over ? Hit(l, tx, ty) : -1;
     const bool moved = wx != p.x || wy != p.y;
+    const float dy = wy - p.y;  // the window's y, down
     const bool button = app::KeyDown(1), clicked = button && !p.button;
     p.x = wx, p.y = wy, p.button = button;
     if (hit >= 0 && !l.items[hit].greyed) {
         if (clicked) p.target = hit, p.pick = true;
         else if (moved && !p.pick) p.target = hit;
+    } else if (hit >= 0 && dy != 0 && !p.pick) {
+        // a greyed item: the first one past it that is not, the way the mouse moves (down the list for down), where
+        // the d-pad goes over it, so a scrolling list goes on scrolling under a greyed row at its edge
+        const int dir = dy > 0 ? 1 : -1;
+        for (int i = hit + dir; i >= 0 && i < l.count; i += dir)
+            if (!l.items[i].greyed) {
+                p.target = i;
+                break;
+            }
     }
     if (clicked && TraceMouse())
         LOGR("menu mouse: click at %.0f,%.0f in the window, %.1f,%.1f of %.0fx%.0f, quad %d, %.1f,%.1f in the texture, "
@@ -1155,6 +1200,7 @@ void menus::Pad(int port, input::Pad& pad) {
     if (p.target != l.cursor) {
         p.press = p.target > l.cursor ? kPadDown : kPadUp;
         p.from = l.cursor;
+        p.paced = true, p.released = false, p.step_us = now;
     } else if (p.pick) {
         p.face = 0;
         p.target = -1, p.pick = false;
