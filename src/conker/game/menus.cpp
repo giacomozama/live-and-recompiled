@@ -915,8 +915,8 @@ std::array<int, 2> menus::PauseKeys(int page, int face) {
         constexpr std::array<int, 2> kQuit[4] = {{0x20, 0x0D}, {}, {}, {}};
         return kQuit[face];
     }
-    if (page == kMenuList) {  // Space selects, Escape goes back
-        constexpr std::array<int, 2> kList[4] = {{0x20, 0}, {0x1B, 0}, {}, {}};
+    if (page == kMenuList) {  // Space selects, Escape or the right mouse button goes back
+        constexpr std::array<int, 2> kList[4] = {{0x20, 0}, {0x1B, 0x02}, {}, {}};  // 0x02 the right mouse button
         return kList[face];
     }
     return {PauseKey(face), 0};

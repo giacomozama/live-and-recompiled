@@ -39,7 +39,7 @@ bool PauseScreen();  // the pause screen or its quit prompt
 // X, which has none
 int PauseKey(int face);
 // the keys that press a face button on the page: PauseKey's on the pause screen; on the quit prompt Space and Enter
-// answer with the word lit (A); on a menu list Space selects (A) and Escape goes back (B). 0 for none
+// answer with the word lit (A); on a menu list Space selects (A) and Escape or the right mouse button goes back (B). 0 for none
 std::array<int, 2> PauseKeys(int page, int face);
 // the page's keys take Start's (Enter, A on the quit prompt), so the Start binding is left out there
 bool PauseKeysTakeStart(int page);
