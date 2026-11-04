@@ -23,4 +23,8 @@ void Rumble(int port, uint16_t& left, uint16_t& right);
 // opens the settings menu instead
 void Pad(int port, input::Pad& pad);
 
+// the pub's pictures (the frontend's own screen, not its multiplayer menus): Start, Escape among the keyboard's,
+// opens the settings menu there. Game thread
+bool Pub();
+
 }  // namespace gamepad

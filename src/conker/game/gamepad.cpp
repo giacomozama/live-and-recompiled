@@ -67,15 +67,20 @@ X86_FUNC(sub_00203B50) {
 // Start there opens the settings menu instead and Back asks to quit (as Esc does) instead of the game's Xbox Live
 // prompt, and Start with Back opens the settings menu anywhere (ui.cpp watches the pads for it), so the game never sees
 // the two together.
-void gamepad::Pad(int port, input::Pad& pad) {
+bool gamepad::Pub() {
     constexpr int kFrontend = 29;
-    constexpr uint32_t kPicture = 0x77625E, kFrontendUi = 0x85E550;
+    constexpr uint32_t kFrontendUi = 0x85E550;
+    return warp::CurrentLevel() == kFrontend && kernel::R32(kFrontendUi);
+}
+
+void gamepad::Pad(int port, input::Pad& pad) {
+    constexpr uint32_t kPicture = 0x77625E;
     constexpr int kOptions = 1;
     constexpr uint16_t kStart = 1 << 4, kBack = 1 << 5;
     static bool was_down[input::kPorts] = {}, start_was[input::kPorts] = {}, back_was[input::kPorts] = {};
     if (port < 0 || port >= input::kPorts) return;
     if ((pad.buttons & (kStart | kBack)) == (kStart | kBack)) pad.buttons &= uint16_t(~(kStart | kBack));
-    const bool frontend = warp::CurrentLevel() == kFrontend && kernel::R32(kFrontendUi);
+    const bool frontend = Pub();
     const bool start = pad.buttons & kStart;
     const bool start_pressed = start && !start_was[port];
     start_was[port] = start;
