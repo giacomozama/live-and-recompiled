@@ -292,8 +292,20 @@ bool g_text_scope = false;       // the text list's drawing has a scope open for
 struct TextMade {
     uint32_t id = 0;
     uint8_t mode = 0;
+    uint32_t site = 0;  // the call that made it
 };
 std::unordered_map<uint32_t, TextMade> g_text_made;
+
+// An entry placed in place about its own box is an element of its own, placed about its box of the frame before. The
+// list is made again each frame, so its addresses go to other strings from frame to frame (or to none the frame
+// before), and an element by address took another string's box, or in its first frame a box growing draw by draw,
+// each glyph and its shadow placed about a different middle: the wheel's names shook. So such an entry is the n-th
+// one its maker made, in the list's order (TextPlace), counted again each time the list is drawn (0x1F2BC0).
+std::unordered_map<uint32_t, uint32_t> g_text_drawn;  // maker -> its entries in place drawn so far
+uint32_t TextPlace(uint32_t site) {
+    const uint32_t n = g_text_drawn[site]++;
+    return 0xF0000000u | ((site & 0x00FFFFFFu) << 4) | (n & 0xFu);
+}
 
 void HudNoteF(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
 void HudNoteF(const char* fmt, ...) {
@@ -393,6 +405,13 @@ CONKER_HUD_CALL(001CB1A0, kHudEdge, kHudWeapon)  // the panel's button icon
 CONKER_HUD_CALL(00330AB0, kHudEdge, kHudWeapon)  // another, through a pointer
 #undef CONKER_HUD_CALL
 
+// 0x1F2BC0, the text list drawn: its entries in place are counted from the start (TextPlace)
+X86_EXTERN_FUNC(__imp__sub_001F2BC0);
+X86_FUNC(sub_001F2BC0) {
+    g_text_drawn.clear();
+    __imp__sub_001F2BC0(ctx, base);
+}
+
 X86_EXTERN_FUNC(__imp__sub_001F25F0);
 X86_FUNC(sub_001F25F0) {
     const uint32_t was = std::exchange(g_text_site, kernel::R32(ctx.esp));
@@ -416,7 +435,7 @@ void ConkerHudTextMade(X86Context& ctx, uint8_t* base) {
     TextMade made;
     if (g_text_site == kHudAmmoText || mode == gpu::kHudInPlace || mode == gpu::kHudInPlaceEach ||
         mode == gpu::kHudInPlaceBars) {
-        made = {e, gpu::kHudInPlace};  // about its own box
+        made = {e, gpu::kHudInPlace, g_text_site};  // about its own box (TextPlace)
     } else if (mode == gpu::kHudEdge && !(g_hud_object && scope == g_hud_object)) {
         made = {scope, gpu::kHudEdge};  // with the widget that made it
     } else if (mode == gpu::kHudStretched) {
@@ -439,6 +458,8 @@ void ConkerHudTextEntry(X86Context& ctx, uint8_t* base) {
         made = {e, gpu::kHudStretched};  // over an object in the world
     } else if ((base[e + 0xC] & kTextCentred) && made.mode == gpu::kHudEdge) {
         made = {e, gpu::kHudEdge};  // centred on its x, a line of its own (the clock's spree message, at 320)
+    } else if (made.mode == gpu::kHudInPlace && made.id == e) {
+        made.id = TextPlace(made.site);  // the same element from frame to frame
     }
     if (HudTrace()) {
         char str[40] = {};
