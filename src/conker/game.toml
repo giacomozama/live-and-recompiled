@@ -532,6 +532,15 @@ call = "ConkerHudQuad"
 at = 0x1CB052  # drawn, its corners still pushed
 call = "ConkerHudQuadDrawn"
 
+# a match's prompt of A ("exit" on a vehicle, 0x1C9DF0): its icon as the key (menus.cpp), around 0x1CAAA0's quad
+[[hook]]
+at = 0x1CAD60  # about to draw it, its texture set
+call = "ConkerHudPromptQuad"
+
+[[hook]]
+at = 0x1CAD81  # drawn
+call = "ConkerHudPromptQuadDrawn"
+
 # the HUD's elements as scopes (display.cpp), for the HUD unstretched in a match
 [[hook]]
 at = 0x0D9AAF  # an effect layer's object drawn: ebx the layer, esi the object, ebp the routine

@@ -758,6 +758,103 @@ void ConkerHudQuadDrawn(X86Context& ctx, uint8_t* base) {
     }
 }
 
+// A match's HUD prompts A where a player can act ("exit" on a vehicle): 0x1C7C60 draws up to five through 0x1C9DF0,
+// each fading by its own value. 0x1C9DF0 draws A's icon (texture 0x226, through 0x1CAAA0, which sets it by 0x761F0
+// and draws by 0x1CA7F0) pulsing about (320, 100), its half side 26.5 + 4 cos(5t), and its label (0x1F25F0 from
+// 0x1C9FBD) 1.4 times 24 right of the icon's middle. With its byte at [esp+0x10] set, for a split screen's view, the
+// floats at ecx scale and offset its x, the ones at eax its y, and [esp+0x14] scales the icon. ActionPrompt hands it
+// that always, so the icon and label go centred as a pair: the middle moved left by half of what the label adds past
+// the icon, the label's width as the text list last drew it (HudTextDrawn; one frame late for a new label, which
+// fades in from nothing). While the player last used the keyboard, the icon is drawn as A's key.
+namespace {
+constexpr float kPromptHalf = 26.5f, kPromptLabel = 24 * 1.4f;  // the icon's mean half side; the label's offset
+bool g_action_prompt = false;  // 0x1C9DF0 draws. Game thread
+uint32_t g_prompt_key = 0;     // A's key's sprite, drawn for the icon; 0 none
+uint32_t g_prompt_pairs = 0;   // 0x1C9DF0's x scale and offset, then its y's (16 bytes of guest memory)
+std::unordered_map<std::u16string, float> g_label_width;  // a label's width in the back buffer's pixels
+std::set<uint32_t> g_labels;   // text entries the prompts made, not drawn yet
+uint32_t g_label_drawing = 0;  // the HUD prompt's label the text list draws, 0 none (HudTextDrawing)
+float g_label_x0 = 1e9f, g_label_x1 = -1e9f;  // its glyphs' sides so far
+
+std::u16string Label(uint32_t va) {
+    std::u16string s;
+    for (uint32_t i = 0; va && i < 128; i++) {
+        const uint16_t c = kernel::G<uint16_t>(va + i * 2);
+        if (!c) break;
+        s.push_back(char16_t(c));
+    }
+    return s;
+}
+
+void WF32(uint32_t va, float f) {
+    uint32_t v;
+    std::memcpy(&v, &f, 4);
+    W32(va, v);
+}
+}  // namespace
+
+void menus::ActionPrompt(X86Context& ctx, uint8_t* base, void (*draw)(X86Context&, uint8_t*)) {
+    const uint32_t esp = ctx.esp;
+    float sx = 1, ox = 0, sy = 1, oy = 0, scale = 1;
+    if (base[esp + 0x10]) {  // a split screen's view
+        sx = F32(ctx.ecx), ox = F32(ctx.ecx + 4), sy = F32(ctx.eax), oy = F32(ctx.eax + 4), scale = F32(esp + 0x14);
+    }
+    float width = 0;
+    if (const auto it = g_label_width.find(Label(R32(esp + 0xC))); it != g_label_width.end()) width = it->second;
+    // from the icon's left side to the label's right, about the icon's middle
+    const float shift = (kPromptLabel + width - kPromptHalf * scale) / 2;
+    if (!g_prompt_pairs) g_prompt_pairs = mem::AllocSystem(16);
+    WF32(g_prompt_pairs, sx), WF32(g_prompt_pairs + 4, ox - shift);
+    WF32(g_prompt_pairs + 8, sy), WF32(g_prompt_pairs + 12, oy);
+    ctx.ecx = g_prompt_pairs, ctx.eax = g_prompt_pairs + 8;
+    W32(esp + 0x10, 1);
+    WF32(esp + 0x14, scale);
+    g_prompt_key = g_hud_port >= 0 ? prompts::ActionIcon(g_hud_port, keyboard::kA) : 0;
+    g_action_prompt = true;
+    draw(ctx, base);
+    g_action_prompt = false;
+    g_prompt_key = 0;
+}
+
+void menus::HudTextMade(uint32_t entry) {
+    if (!g_action_prompt) return;
+    if (g_labels.size() > 64) g_labels.clear();  // made and never drawn
+    g_labels.insert(entry);
+}
+
+void menus::HudTextDrawing(uint32_t entry) {
+    if (!g_labels.erase(entry)) return;
+    g_label_drawing = entry;
+    g_label_x0 = 1e9f, g_label_x1 = -1e9f;
+}
+
+void menus::HudTextDrawn() {
+    const uint32_t entry = std::exchange(g_label_drawing, 0);
+    if (!entry || g_label_x1 < g_label_x0) return;
+    if (g_label_width.size() > 256) g_label_width.clear();
+    g_label_width[Label(entry + 0x28)] = g_label_x1 - g_label_x0;
+}
+
+// [[hook]] at 0x1CAD60 in 0x1CAAA0, its texture set (esi) and its quad next: a HUD prompt's A icon as its key
+void ConkerHudPromptQuad(X86Context& ctx, uint8_t* base) {
+    (void)base;
+    if (!g_action_prompt || !g_prompt_key) return;
+    const uint32_t eax = ctx.eax, ecx = ctx.ecx, edx = ctx.edx;
+    SetTexture(ctx, g_prompt_key);
+    ctx.eax = eax, ctx.ecx = ecx, ctx.edx = edx;
+    static bool told = false;
+    if (!std::exchange(told, true)) LOGR("prompts: the HUD's A prompt shows its key");
+}
+
+// [[hook]] at 0x1CAD81, the quad drawn: the icon's texture back, which 0x1CAAA0 keeps as set ([0x771764])
+void ConkerHudPromptQuadDrawn(X86Context& ctx, uint8_t* base) {
+    (void)base;
+    if (!g_action_prompt || !g_prompt_key) return;
+    const uint32_t eax = ctx.eax, ecx = ctx.ecx, edx = ctx.edx;
+    SetTexture(ctx, ctx.esi);
+    ctx.eax = eax, ctx.ecx = ecx, ctx.edx = edx;
+}
+
 // The quit prompt (page 2 of the pause screen) asks with the words Yes and No, which the pause UI highlights by the
 // pad's down and up; on A, 0x203C87 takes the larger value of its layers 7 and 3, 0 for No (back to the page
 // before) and else Yes (0x1F9AB0, quit). Every string is drawn by 0x3D3D00 (the text at [esp+4], from character ecx),
@@ -843,36 +940,49 @@ X86_FUNC(sub_003D3D00) {
     g_word = 0;
 }
 
-// [[hook]] before 0x3D3981, a glyph's quad sent: into Yes's or No's box
-void ConkerTextQuad(X86Context& ctx, uint8_t* base) {
-    (void)ctx, (void)base;
-    if (!g_word) return;
+namespace {
+// the glyph's quad being sent (0x3D3981) in the back buffer's pixels; false if it can't be placed
+bool GlyphBox(float& x0, float& y0, float& x1, float& y1) {
     constexpr uint32_t kQuad = 0x807230, kVertex = 0x1C;
     constexpr size_t kC0 = 96, kScale = 96 - 38, kOffset = 96 - 37;  // c0, c-38, c-37 in hardware order
-    float x0 = 1e9f, y0 = 1e9f, x1 = -1e9f, y1 = -1e9f;
-    const uint32_t colour = R32(kQuad + 0x10);  // the first vertex's diffuse
-    {
-        d3d::FlushPending();
-        std::lock_guard lock(d3d::Lock());
-        const gpu::State& st = d3d::State();
-        const bool programmable = st.vs_handle & 1;
-        for (uint32_t i = 0; i < 4; i++) {
-            const uint32_t v = kQuad + i * kVertex;
-            float x = F32(v), y = F32(v + 4);
-            if (programmable) {
-                const float z = F32(v + 8);
-                float c[4];
-                for (int r = 0; r < 4; r++) {
-                    const auto& m = st.vsc[kC0 + size_t(r)];
-                    c[r] = x * m[0] + y * m[1] + z * m[2] + m[3];
-                }
-                if (!(std::fabs(c[3]) > 1e-6f)) return;
-                x = c[0] / c[3] * st.vsc[kScale][0] + st.vsc[kOffset][0];
-                y = c[1] / c[3] * st.vsc[kScale][1] + st.vsc[kOffset][1];
+    x0 = 1e9f, y0 = 1e9f, x1 = -1e9f, y1 = -1e9f;
+    d3d::FlushPending();
+    std::lock_guard lock(d3d::Lock());
+    const gpu::State& st = d3d::State();
+    const bool programmable = st.vs_handle & 1;
+    for (uint32_t i = 0; i < 4; i++) {
+        const uint32_t v = kQuad + i * kVertex;
+        float x = F32(v), y = F32(v + 4);
+        if (programmable) {
+            const float z = F32(v + 8);
+            float c[4];
+            for (int r = 0; r < 4; r++) {
+                const auto& m = st.vsc[kC0 + size_t(r)];
+                c[r] = x * m[0] + y * m[1] + z * m[2] + m[3];
             }
-            x0 = std::min(x0, x), x1 = std::max(x1, x), y0 = std::min(y0, y), y1 = std::max(y1, y);
+            if (!(std::fabs(c[3]) > 1e-6f)) return false;
+            x = c[0] / c[3] * st.vsc[kScale][0] + st.vsc[kOffset][0];
+            y = c[1] / c[3] * st.vsc[kScale][1] + st.vsc[kOffset][1];
         }
+        x0 = std::min(x0, x), x1 = std::max(x1, x), y0 = std::min(y0, y), y1 = std::max(y1, y);
     }
+    return true;
+}
+
+}  // namespace
+
+// [[hook]] before 0x3D3981, a glyph's quad sent: into Yes's or No's box, or the HUD prompt's label's
+void ConkerTextQuad(X86Context& ctx, uint8_t* base) {
+    (void)ctx, (void)base;
+    if (!g_word && !g_label_drawing) return;
+    constexpr uint32_t kQuad = 0x807230;
+    float x0, y0, x1, y1;
+    if (!GlyphBox(x0, y0, x1, y1)) return;
+    if (g_label_drawing) {
+        g_label_x0 = std::min(g_label_x0, x0), g_label_x1 = std::max(g_label_x1, x1);
+        if (!g_word) return;
+    }
+    const uint32_t colour = R32(kQuad + 0x10);  // the first vertex's diffuse
     const int64_t now = NowUs();
     std::lock_guard lock(g_prompt_lock);
     Prompt& pr = g_words[g_word - 1];

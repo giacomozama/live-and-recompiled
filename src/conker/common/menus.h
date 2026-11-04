@@ -5,6 +5,8 @@
 
 #include "core/input.h"
 
+struct X86Context;
+
 // The game's menus (src/conker/game/menus.cpp).
 namespace menus {
 
@@ -56,5 +58,14 @@ void AnswerQuit(bool yes);
 // from the HUD 0x1C7C60, before it draws a match's HUD (the object at hud) and with 0 after: the player whose HUD it
 // is, whose keys the weapon panel's button icons show (ConkerHudQuad). Game thread
 void HudPlayer(uint32_t hud);
+
+// 0x1C9DF0, from the HUD 0x1C7C60: one of its prompts of A ("exit" on a vehicle), the button's icon with its label to
+// the right, drawn by draw (display.cpp's HUD scope round 0x1C9DF0) with the icon and label centred as a pair, and the
+// icon as A's key while the HUD's player last used the keyboard (ConkerHudPromptQuad). Game thread
+void ActionPrompt(X86Context& ctx, uint8_t* base, void (*draw)(X86Context&, uint8_t*));
+// from the text list (display.cpp): an entry made, about to be drawn, and done; the prompts' labels are measured so
+void HudTextMade(uint32_t entry);
+void HudTextDrawing(uint32_t entry);
+void HudTextDrawn();
 
 }  // namespace menus

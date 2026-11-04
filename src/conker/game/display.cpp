@@ -60,6 +60,7 @@
 #include "xdk/d3d8.h"
 #include "xdk/hle.h"
 
+#include "common/menus.h"
 #include "common/mouse.h"
 #include "common/warp.h"
 #include "gpu/shaders.h"
@@ -373,7 +374,7 @@ void ConkerHudLayerObjectEnd(X86Context& ctx, uint8_t* base) {
 // 0x1C7C60's widgets: a call of its, made while it draws, is a scope by its return address
 namespace {
 // an element's id, for one drawn by several calls (0 for each call its own, by its return address)
-constexpr uint32_t kHudScores = 0xFE000001u, kHudWeapon = 0xFE000002u;
+constexpr uint32_t kHudScores = 0xFE000001u, kHudWeapon = 0xFE000002u, kHudPrompt = 0xFE000003u;
 
 template <void (*Imp)(X86Context&, uint8_t*), uint8_t Mode, uint32_t Element>
 void HudCall(X86Context& ctx, uint8_t* base) {
@@ -405,6 +406,10 @@ CONKER_HUD_CALL(001CB1A0, kHudEdge, kHudWeapon)  // the panel's button icon
 CONKER_HUD_CALL(00330AB0, kHudEdge, kHudWeapon)  // another, through a pointer
 #undef CONKER_HUD_CALL
 
+// a prompt of A ("exit" on a vehicle): its icon (0x1CAAA0) and label one element, centred (menus::ActionPrompt)
+X86_EXTERN_FUNC(__imp__sub_001C9DF0);
+X86_FUNC(sub_001C9DF0) { menus::ActionPrompt(ctx, base, HudCall<__imp__sub_001C9DF0, gpu::kHudEdge, kHudPrompt>); }
+
 // 0x1F2BC0, the text list drawn: its entries in place are counted from the start (TextPlace)
 X86_EXTERN_FUNC(__imp__sub_001F2BC0);
 X86_FUNC(sub_001F2BC0) {
@@ -429,6 +434,7 @@ X86_FUNC(sub_001F26E0) {
 // [[hook]] before 0x1F2835 in 0x1F27B0, a text entry made and linked: edx the entry
 void ConkerHudTextMade(X86Context& ctx, uint8_t* base) {
     (void)base;
+    menus::HudTextMade(ctx.edx);
     if (!HudScopes()) return;
     const uint32_t e = ctx.edx;
     const auto [scope, mode] = d3d::HudScopeNow();
@@ -450,6 +456,7 @@ void ConkerHudTextMade(X86Context& ctx, uint8_t* base) {
 
 // [[hook]] before 0x1F2F7B in 0x1F2BC0, a text entry about to be drawn: esi the entry
 void ConkerHudTextEntry(X86Context& ctx, uint8_t* base) {
+    menus::HudTextDrawing(ctx.esi);
     if (!HudScopes()) return;
     const uint32_t e = ctx.esi;
     TextMade made{e, gpu::kHudEdge};
@@ -478,5 +485,6 @@ void ConkerHudTextEntry(X86Context& ctx, uint8_t* base) {
 // [[hook]] before 0x1F2FC3 in 0x1F2BC0, an entry done (drawn or skipped)
 void ConkerHudTextEntryEnd(X86Context& ctx, uint8_t* base) {
     (void)ctx, (void)base;
+    menus::HudTextDrawn();
     if (std::exchange(g_text_scope, false)) d3d::HudScopeEnd();
 }
