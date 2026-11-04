@@ -37,7 +37,7 @@
 // and bars right), or where it is (the crosshair and what follows it, the weapon wheel over its 3D models). Not in the frontend, nor under a menu (a match's
 // pause menu, the class and spawn choice: the mouse picks their items where the game drew them), nor in a three or
 // four player split screen, whose quarters each have a HUD of their own (the present interval byte 0x6C0268, 3 there).
-// XBE_HUD_SPLIT=0 keeps it stretched.
+// The setting hud_split (display::g_hud_split) turns it off, as does XBE_HUD_SPLIT=0.
 #include "common/display.h"
 
 #include <algorithm>
@@ -102,7 +102,7 @@ bool HudSplit() {
         const char* e = std::getenv("XBE_HUD_SPLIT");
         return e && *e == '0';
     }();
-    return !off && warp::Multiplayer() && !warp::Frontend() && !mouse::GameMenu() &&
+    return !off && display::g_hud_split && warp::Multiplayer() && !warp::Frontend() && !mouse::GameMenu() &&
            (kernel::R32(kSplitInterval) & 0xFF) != 3;
 }
 
@@ -120,6 +120,7 @@ std::atomic<uint32_t> g_ticks{0};
 uint32_t Ticks() { return g_ticks.load(std::memory_order_relaxed); }
 
 uint32_t g_fov = kFov;
+bool g_hud_split = true;
 
 std::atomic<float> g_camera_fov{50.0f};
 float CameraFov() { return g_camera_fov.load(std::memory_order_relaxed); }

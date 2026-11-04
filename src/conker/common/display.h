@@ -33,4 +33,9 @@ float CameraFov();
 constexpr uint32_t kFov = 50, kFovMin = 40, kFovMax = 100;
 extern uint32_t g_fov;
 
+// settings.toml hud_split: a multiplayer match's HUD drawn unstretched at a display wider than 4:3, each element kept
+// to its edge of the display (display.cpp, HUD); off, it stretches with the frame as on a widescreen console. Read
+// each frame
+extern bool g_hud_split;
+
 }  // namespace display

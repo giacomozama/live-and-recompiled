@@ -1027,6 +1027,11 @@ void Draw(double fps) {
                 ImGui::Checkbox("Floor depth of field", &reflection::g_floor_depth);
                 Hint("Fixes the blur on shiny, reflective floors.", true);
 
+                ImGui::SeparatorText("HUD");
+                ImGui::Checkbox("Unstretched multiplayer HUD", &display::g_hud_split);
+                Hint("On a widescreen display, the HUD in a multiplayer match keeps its shape, each part at the left, "
+                     "the middle or the right of the screen. Off: it stretches across the screen.", true);
+
                 ImGui::SeparatorText("Menus");
                 ImGui::Checkbox("Readable menu hints", &menus::g_bright_hints);
                 Hint("The hints above and below the multiplayer menus (R Configure) show as clearly as the menu's "
