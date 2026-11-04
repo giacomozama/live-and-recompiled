@@ -395,6 +395,10 @@ call = "ConkerScriptTimer"
 on_true = 0x2D5674
 
 [[hook]]
+at = 0x2D511E  # a swimmer above the surface's height: cut as the console's two-tick frames would leave him, not 0.35 a frame
+call = "ConkerSwimSurface"
+
+[[hook]]
 at = 0x158E38  # the rope's step: a weighted chain in substeps of the frame instead of the console's pass (rope::g_physics)
 call = "ConkerRopeStep"
 on_true = 0x15919D

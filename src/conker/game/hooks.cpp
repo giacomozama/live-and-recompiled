@@ -4,6 +4,7 @@
 // are the ones that drive the hardware directly (the per-frame buffer clear, which reads the miniport).
 //
 // A strong X86_FUNC replaces the recompiled function at that address.
+#include <cmath>
 #include <cstdio>
 #include <bit>
 #include <cstdlib>
@@ -407,6 +408,52 @@ bool ConkerScriptTimer(X86Context& ctx, uint8_t* base) {
     const uint32_t frames = now / 2 - (now - ticks) / 2;  // console frames this frame's ticks end
     left = uint8_t(left > frames ? left - frames : 0);
     return true;
+}
+
+// 0x2D45D0 (the character, its argument; ebp inside) keeps a swimmer at the surface: after his rise (0x2D46E3 toward
+// the surface by [0x7FDB8C] x 8, 0x2D50E4 the velocity [[+0x568]+0x28] times [0x7FDB8C]) the part of him above the
+// swimming height, the water's surface [+0x228] less [0x648E38] plus 14, is cut to 0.35 (0x2D5116 takes 0.65) once a
+// frame, and the velocity zeroed. Swimming up a shore, the collision (0x2A3110 from 0x2E0640) then lifts him onto the
+// bank by what he moved, and once he is above the ground under him he climbs out. The console cut it every two ticks;
+// at 60 FPS every tick, so he rode some 4 units lower, the bank met him as a wall and he crept along it at y -106
+// (deathwatch captures 104817..104850; an F9's hitch let him out), and he floated 2 units lower in open water.
+//
+// With R the rise and L the lift a tick, the console's height above the swimming height after the collision, x,
+// goes x' = 0.35 (x + 2R) + 2L, settling at 1.08 R + 3.08 L. A frame of one tick here leaves 0.35 E + 0.325 x of the
+// height E above it before the cut, x as the frame began: x' = 0.35 (x + R) + 0.325 x + L settles at the same
+// 1.08 R + 3.08 L, in open water (L = 0) and up a bank. A plain share of two ticks' cut, 1 - 0.35^(1/2) a tick,
+// matched only R: 1.45 L up a bank, still too low where it rises gently (capture 113055, pinned at y -108 while 30
+// FPS crept up past it, 112849). Frames of two ticks or more cut it to 0.35^(t/2), the console's at two.
+namespace {
+uint32_t g_swimmer = 0;   // the character 0x2D45D0 runs for
+float g_swimmer_y = 0;    // his y as it began
+}  // namespace
+
+X86_EXTERN_FUNC(__imp__sub_002D45D0);
+X86_FUNC(sub_002D45D0) {
+    const uint32_t who = kernel::R32(ctx.esp + 4);
+    g_swimmer = who;
+    if (who) std::memcpy(&g_swimmer_y, base + who + 0x7C, 4);
+    __imp__sub_002D45D0(ctx, base);
+    g_swimmer = 0;
+}
+
+// [[hook]] before 0x2D511E: ebp the character, xmm0 his y, xmm1 his height above the swimming height times 0.65
+void ConkerSwimSurface(X86Context& ctx, uint8_t* base) {
+    (void)base;
+    if (display::GameRate() <= 30) return;
+    // the frame's ticks, [0x7FA20C]; not the byte [0x7FA250], which goes 0, 1, 0, 1, 1 at 60 (the pull flickered)
+    const uint32_t ticks = std::min(kernel::R32(0x7FA20C), 60u);
+    const float above = ctx.xmm[1].f[0] / 0.65f;  // E
+    float left;
+    if (ticks >= 2 || g_swimmer != ctx.ebp) {
+        left = above * std::pow(0.35f, float(ticks) * 0.5f);
+    } else {
+        const float floor_y = ctx.xmm[0].f[0] - above;  // the swimming height
+        const float began = std::max(g_swimmer_y - floor_y, 0.0f);
+        left = std::min(0.35f * above + 0.325f * began, above);
+    }
+    ctx.xmm[1].f[0] = above - left;
 }
 
 // 0x2D9FD0 (edi the player): eases the signed word [player+0x1D4] toward [player+0x1D6] once a frame, by a twelfth
