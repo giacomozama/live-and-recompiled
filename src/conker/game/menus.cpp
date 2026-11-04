@@ -878,7 +878,9 @@ int Hit(const List& l, float x, float y) {
 
 }  // namespace
 
-void menus::Wheel(int turn) { g_wheel.fetch_add(turn); }
+void menus::Wheel(int turn) {
+    if (!ui::Open()) g_wheel.fetch_add(turn);  // the settings menu keeps its own wheel turns
+}
 
 void menus::Paused() { g_pause_us.store(NowUs(), std::memory_order_relaxed); }
 
