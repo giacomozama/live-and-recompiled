@@ -248,6 +248,8 @@ X86_FUNC(sub_0020C3B0) {
 namespace {
 void PanelBegin();
 void PanelEnd();
+uint32_t JumpBegin(X86Context& ctx);
+void JumpEnd(uint32_t added);
 }  // namespace
 
 X86_EXTERN_FUNC(__imp__sub_0020C870);
@@ -262,13 +264,17 @@ X86_FUNC(sub_0020C870) {
 X86_EXTERN_FUNC(__imp__sub_002401F0);
 X86_FUNC(sub_002401F0) {
     mouse::InMenu();
+    const uint32_t added = JumpBegin(ctx);  // the mouse's item, a step away
     __imp__sub_002401F0(ctx, base);
+    JumpEnd(added);
 }
 
 X86_EXTERN_FUNC(__imp__sub_00240570);
 X86_FUNC(sub_00240570) {
     mouse::InMenu();
+    const uint32_t added = JumpBegin(ctx);
     __imp__sub_00240570(ctx, base);
+    JumpEnd(added);
 }
 
 // The mouse on the menu lists. 0x20C200 and 0x20C3B0 set the list up: its items at [0x849924], 0x398 bytes each
@@ -288,8 +294,8 @@ X86_FUNC(sub_00240570) {
 //
 // menus::Pad, on the menu's player's polls: the cursor (the window letterboxes the back buffer to app::FrameAspect)
 // goes through the quad under it back to the texture, where it hits an item or not. The cursor moved over an item
-// turns the list's cursor to it by presses of up or down, one at a time while the list's cursor answers, a left
-// click on one does the same and then presses A, and each notch of the wheel presses up or down (menus::Wheel). With
+// turns the list's cursor to it by presses of up or down, one at a time while the list's cursor answers (a frontend
+// list's goes there in one frame, JumpBegin), a left click on one does the same and then presses A, and each notch of the wheel presses up or down (menus::Wheel). With
 // no list, in the pub, each notch presses left (away from the player) or right, from picture to picture, and a click
 // presses A on the one in front. XBE_TRACE_MENU_MOUSE logs the list and its panel as they change, and
 // each click.
@@ -796,10 +802,74 @@ struct Pointer {
     int from = -1;  // the list's cursor when it was pressed
     int word = 0;  // the quit prompt's word (1 Yes, 2 No) the highlight goes to, 0 none
     int steps = 0;  // presses toward it so far
+    int jump = -1;  // the item a frontend list was sent to (g_jump), -1 none
+    int64_t jump_us = 0;  // when
 };
 Pointer g_pointer;  // game thread
 std::atomic<int> g_wheel{0};  // the wheel's turn not stepped yet, 120 a notch
 constexpr int kNotch = 120;
+
+// The frontend's item lists (0x2401F0, 0x240570; the multiplayer menus) take the cursor to the mouse's item in the
+// frame it points at it, not a press at a time: the list's cursor (a byte, its second argument) is put a step short of
+// the item and the step's bit (1 up, 2 down) added to the menu's presses ([0x776238]) for the list's call, so the list
+// takes that one step as its own, the move's sound with it. The prongs beside the list ease to the item on a spring
+// (0x2B0760 on [0x7768F0] and its speed [0x7768EC], toward [0x7768F4], from 0x2080B0), vel += (gap * 6 - vel) * 14 * dt,
+// about half a second to settle; after a move of the mouse's, until the pad steps a list again, they spring at
+// kProngGap and kProngSpeed, settled in about a sixth of one.
+constexpr uint32_t kMenuPresses = 0x776238, kStepUp = 1, kStepDown = 2;
+constexpr int64_t kJumpUs = 150000;  // a jump not taken by then is dropped
+std::atomic<int> g_jump{-1};  // the item the next frontend list goes to, from menus::Pad
+std::atomic<int64_t> g_jump_us{0};  // when it was asked for
+std::atomic<int64_t> g_frontend_us{0};  // a frontend list last ran
+bool g_fast_prongs = false;  // game thread
+constexpr uint32_t kProngs = 0x7768F0;
+constexpr float kProngGap = 18.0f, kProngSpeed = 30.0f;
+
+uint32_t JumpBegin(X86Context& ctx) {
+    const int64_t now = NowUs();
+    g_frontend_us.store(now);
+    const int target = g_jump.exchange(-1);
+    const uint32_t presses = R32(kMenuPresses);
+    if (presses & (kStepUp | kStepDown)) {  // the pad steps it
+        g_fast_prongs = false;
+        return 0;
+    }
+    if (target < 0 || now - g_jump_us.load() > kJumpUs) return 0;
+    const uint32_t items = R32(ctx.esp + 4), cursor = R32(ctx.esp + 8);
+    if (!items || !cursor) return 0;
+    int count = 0;  // 12 bytes an item, up to one of slot 0
+    while (count < 64 && R32(items + uint32_t(count) * 12)) count++;
+    const int at = int8_t(mem::Base()[cursor]);
+    if (target >= count || at == target) return 0;
+    const uint32_t step = target > at ? kStepDown : kStepUp;
+    mem::Base()[cursor] = uint8_t(int8_t(step == kStepDown ? target - 1 : target + 1));
+    W32(kMenuPresses, presses | step);
+    g_fast_prongs = true;
+    if (TraceMouse()) LOGR("menu mouse: frontend list from %d to %d of %d", at, target, count);
+    return step;
+}
+
+void JumpEnd(uint32_t added) {
+    if (added) W32(kMenuPresses, R32(kMenuPresses) & ~added);
+}
+
+}  // namespace
+
+// the spring: xmm0 the frame's seconds, edx the value, ecx its speed, then on the stack the target, the gap's weight
+// and the speed's rate (the caller's pushes, popped by it)
+X86_EXTERN_FUNC(__imp__sub_002B0760);
+X86_FUNC(sub_002B0760) {
+    if (ctx.edx == kProngs && g_fast_prongs) {
+        uint32_t gap, speed;
+        std::memcpy(&gap, &kProngGap, 4);
+        std::memcpy(&speed, &kProngSpeed, 4);
+        W32(ctx.esp + 8, gap);
+        W32(ctx.esp + 12, speed);
+    }
+    __imp__sub_002B0760(ctx, base);
+}
+
+namespace {
 
 // the port whose pad works the menu: a paused match's player ([0x776558]), else a player's with a mouse, else 1's
 int MenuPort() {
@@ -1065,6 +1135,19 @@ void menus::Pad(int port, input::Pad& pad) {
         p.target = -1, p.pick = false;
         return;
     }
+    // a frontend list: it goes to the item itself (JumpBegin), and the pick waits for it to show there
+    if (now - g_frontend_us.load() <= kShownUs && p.target != l.cursor) {
+        if (p.target == p.jump && now - p.jump_us < kJumpUs) return;  // on its way
+        if (p.target == p.jump) {  // the list did not take it
+            p.target = -1, p.pick = false, p.jump = -1;
+            return;
+        }
+        p.jump = p.target, p.jump_us = now;
+        g_jump_us.store(now);
+        g_jump.store(p.target);
+        return;
+    }
+    p.jump = -1;
     if (p.target != l.cursor) {
         p.press = p.target > l.cursor ? kPadDown : kPadUp;
         p.from = l.cursor;
