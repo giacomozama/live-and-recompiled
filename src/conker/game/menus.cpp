@@ -963,8 +963,10 @@ int menus::KeyPage() {
         const uint32_t page = R32(kPage);
         return page == 0 || page == 2 ? int(page) : -1;
     }
-    // a menu list (the frontend's multiplayer menus, A Select and B Back), a match's pause menu aside
+    // a menu list (the frontend's multiplayer menus, A Select and B Back), a match's pause menu aside; anywhere in the
+    // frontend too, whose screens without such a list (the multiplayer character choice) prompt A and B as well
     if (mem::Base()[kMatchPaused]) return -1;
+    if (warp::Frontend()) return kMenuList;
     std::lock_guard lock(g_list_lock);
     return now - g_shown.shown_us <= kShownUs ? kMenuList : -1;
 }
