@@ -9,6 +9,9 @@
 // A tank's aim mode goes by the driver's camera instead, which TankAim turns (hooked on 0x3F4E0 at the end of the
 // file).
 //
+// A match's weapon wheel, held open, picks with the left stick: there the mouse points the left stick round its rim
+// instead of turning the camera (Wheel, hooked on the HUD 0x1C7C60, and Pad).
+//
 // A camera that does not go through 0x2F99A0 gets the mouse as right stick instead, once Turn has not run for
 // kTurnedUs. A stick sets a turn rate and a mouse a distance, so there the motion is kept as a debt that keyboard::Pad
 // pays off a game frame at a time, pushing the stick as far as turns this frame's share. The game reads the stick in
@@ -549,12 +552,54 @@ std::atomic<int64_t> g_nudge_us[kPorts] = {};
 std::atomic<int> g_nudge_x[kPorts] = {};
 constexpr int64_t kNudgeUs = 60000;
 
+// A match's weapon wheel, held open: it picks the slot the left stick points at, so the mouse points the left stick
+// instead of turning the camera. The HUD (0x1C7C60, its object hud) keeps two wheels, each a state at [hud+0x48] (the
+// weapons, the slot at [[hud+0x38]+0x34]) and [hud+0x4C] (the chosen slot's own choices, the one at actions+0xE4),
+// whose first dword is 1 while it is held open (it fades for a while after, still drawn). The player is
+// [[hud+0x38]+0x0C], whose actions struct (their port) is the word at +0x60. Wheel notes when it last saw a player's
+// open; the HUD is drawn every frame, so a wheel not seen for kWheelUs has shut.
+std::atomic<int64_t> g_wheel_us[kPorts] = {};
+constexpr int64_t kWheelUs = 100000;
+bool WheelOpen(int port, int64_t now) { return now - g_wheel_us[port].load(std::memory_order_relaxed) < kWheelUs; }
+
+// the stick the mouse points while the wheel is open, under g_pad_lock: the motion since it opened, a point that
+// stays inside the stick's rim (motion past it slides round it, so circling the mouse turns the stick round), the
+// stick pushed full in its direction once it is kWheelPush out
+struct WheelStick {
+    float x = 0, y = 0;  // up positive
+    bool moved = false;  // the mouse moved since the wheel opened; until then the keys and pads drive it
+};
+WheelStick g_wheel[kPorts];
+constexpr float kWheelCounts = 150.0f;  // counts from the middle to the rim at 100% sensitivity
+constexpr float kWheelPush = 0.35f;
+
 bool InTank(int port, int64_t now) { return now - g_tank_us[port].load(std::memory_order_relaxed) < kTurnedUs; }
 bool Aiming(int port, int64_t now) {
     return InTank(port, now) && now - g_aim_us[port].load(std::memory_order_relaxed) < kAimUs;
 }
 
 }  // namespace
+
+// 0x1C7C60, before it draws a match's HUD (the object at hud): notes the player whose weapon wheel is held open
+void Wheel(uint32_t hud) {
+    constexpr uint32_t kInventory = 0x38, kWheels[] = {0x48, 0x4C}, kOwner = 0x0C, kActionsIndex = 0x60;
+    if (!warp::Multiplayer() || !Readable(hud + kInventory, 0x18)) return;
+    bool open = false;
+    for (uint32_t w : kWheels) {
+        const uint32_t state = R32(hud + w);
+        open |= Readable(state, 4) && R32(state) == 1;
+    }
+    if (!open) return;
+    const uint32_t inventory = R32(hud + kInventory);
+    if (!Readable(inventory + kOwner, 4)) return;
+    const uint32_t player = R32(inventory + kOwner);
+    if (!Readable(player + kActionsIndex, 2)) return;
+    uint16_t port;
+    std::memcpy(&port, mem::Base() + player + kActionsIndex, 2);
+    if (port >= kPorts) return;
+    if (!WheelOpen(port, Now())) LOGR("mouse: player %u's weapon wheel is open, the mouse points it", port + 1u);
+    g_wheel_us[port].store(Now(), std::memory_order_relaxed);
+}
 
 // 0x2F99A0, the camera's turn by the stick (see the hook at the end of the file), after it has run: this frame's
 // motion of the player whose actions they are (the first four of the actions structs, one a port), added to the turn
@@ -582,6 +627,7 @@ void Turn(uint32_t actions, uint32_t turn, uint32_t ret, uint32_t player) {
     const uint32_t port = (actions - kPlayer1Actions) / kActionsSize;
     const int mode = keyboard::ActiveMode();
     if (port >= uint32_t(kPorts) || !g_look[mode][port] || !g_held.load() || !Readable(turn, kPitchEased + 4)) return;
+    if (WheelOpen(int(port), Now())) return;  // the mouse points the weapon wheel (Pad)
     if (ret == kWeaponTurnReturn && warp::Multiplayer()) {
         // a match's scope (the view zoomed in), or an aircraft (the player's state at +0xA4 is kFlying while they
         // fly one, and the plane steers by the stick): Pad turns them by the stick
@@ -675,7 +721,9 @@ void TankAim(uint32_t player) {
     const uint32_t port = (actions - kPlayer1Actions) / kActionsSize;
     const int64_t now = Now();
     const int mode = keyboard::ActiveMode();
-    if (port >= uint32_t(kPorts) || !g_look[mode][port] || !g_held.load() || !InTank(int(port), now)) return;
+    if (port >= uint32_t(kPorts) || !g_look[mode][port] || !g_held.load() || !InTank(int(port), now) ||
+        WheelOpen(int(port), now))
+        return;
     if (!Readable(player + kView, 4)) return;
     const uint32_t view = R32(player + kView);
     if (!Readable(view + kAimMode, 1) || !mem::Base()[view + kAimMode]) return;
@@ -710,8 +758,36 @@ void Pad(int port, input::Pad& pad) {
     if (calibrating || !g_look[mode][port] || !g_held.load()) {
         l.x.Reset(), l.y.Reset();
         if (!calibrating) Clear(port);
+        g_wheel[port] = {};
         return;
     }
+    // a match's weapon wheel held open: the motion moves a point round the left stick (see WheelStick)
+    if (WheelOpen(port, now)) {
+        l.x.Reset(), l.y.Reset();
+        WheelStick& w = g_wheel[port];
+        int64_t dx, dy;
+        {
+            std::lock_guard motion(g_lock);
+            dx = g_motion[port].dx, dy = g_motion[port].dy;
+            g_motion[port].dx = g_motion[port].dy = 0;
+        }
+        if (dx || dy) {
+            const float scale = float(g_sensitivity[mode][port]) / 100.0f / kWheelCounts;
+            w.x += float(dx) * scale;
+            w.y -= float(dy) * scale;  // raw y grows downward
+            const float len = std::hypot(w.x, w.y);
+            if (len > 1.0f) w.x /= len, w.y /= len;
+            w.moved = true;
+        }
+        const float len = std::hypot(w.x, w.y);
+        if (w.moved && len >= kWheelPush) {
+            pad.lx = int16_t(std::clamp(w.x / len, -1.0f, 1.0f) * 32767.0f);
+            pad.ly = int16_t(std::clamp(w.y / len, -1.0f, 1.0f) * 32767.0f);
+            LOG_FIRST(1, "mouse: the mouse points the weapon wheel");
+        }
+        return;
+    }
+    g_wheel[port] = {};
     // a camera Turn reaches takes the motion itself, the tank's aim TankAim; the stick is for the rest
     if (Aiming(port, now) || now - g_turned_us[port].load(std::memory_order_relaxed) < kTurnedUs) {
         l.x.Reset(), l.y.Reset();
@@ -777,9 +853,21 @@ void Turn(uint32_t, uint32_t, uint32_t, uint32_t) {}
 
 void TankAim(uint32_t) {}
 
+void Wheel(uint32_t) {}
+
 }  // namespace mouse
 
 #endif
+
+// 0x1C7C60 (the HUD object at [esp+4]): draws a match's HUD for a player, the weapon wheel among it; notes whose
+// wheel is open (mouse::Wheel)
+X86_EXTERN_FUNC(__imp__sub_001C7C60);
+X86_FUNC(sub_001C7C60) {
+    uint32_t hud;
+    std::memcpy(&hud, base + ctx.esp + 4, 4);
+    mouse::Wheel(hud);
+    __imp__sub_001C7C60(ctx, base);
+}
 
 // 0x2F99A0 (actions in eax, the camera's turn in ecx, the frame's time on the stack): turns a camera by the right
 // stick, for the third person, first person and weapon cameras. The stick, through the curve at 0x747798, sets a rate
