@@ -28,6 +28,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <iterator>
 #include <string>
 #include <utility>
 #include <vector>
@@ -433,18 +434,54 @@ void Pad(int port, input::Pad& pad) {
     if (down(kDpadDown)) pad.buttons |= kPadDown;
     if (down(kDpadLeft)) pad.buttons |= kPadLeft;
     if (down(kDpadRight)) pad.buttons |= kPadRight;
-    // Escape is the console's Start, for the keyboards (the menu's own Esc is not: ui::EscStart)
-    if (down(kStart) || ((port == 0 || input::Has(port, input::Kind::Keyboard)) && ui::EscStart()))
+    // single player's pause screen and its quit prompt: their face buttons are fixed keys (menus::PauseKeys), the
+    // bindings left out, so the prompts can show them. A key held as the page came up (the Escape that paused, the Q
+    // that asked to quit, the Enter that answered No) counts once let go, and so does Start's on those pages
+    static bool armed[0x100] = {};
+    static int armed_page = -1;
+    const int page = port == 0 && !input::t_presence ? menus::KeyPage() : -1;
+    const bool pause_keys = page >= 0;
+    if (port == 0 && !input::t_presence && page != armed_page) {
+        std::fill(std::begin(armed), std::end(armed), false);
+        armed_page = page;
+    }
+    auto fresh = [&](int vk) {  // held, and let go since the page came up
+        if (!input::KeyDown(port, vk)) return armed[vk] = true, false;
+        return armed[vk];
+    };
+    if (pause_keys) {
+        for (int face = 0; face < 4; face++)
+            for (int vk : menus::PauseKeys(page, face)) {
+                if (!vk || !fresh(vk)) continue;
+                pad.analog[face] = 0xFF;
+                if (vk == kEscape) ui::SwallowEsc();  // not Start (pausing again) until let go
+            }
+        if (page == 2)
+            for (int vk : menus::QuitBackKeys()) {
+                if (!fresh(vk)) continue;
+                menus::AnswerQuit(false);
+                pad.analog[0] = 0xFF;
+                if (vk == kEscape) ui::SwallowEsc();
+            }
+    }
+    bool start = false;
+    if (!pause_keys) {
+        start = down(kStart);
+    } else if (!menus::PauseKeysTakeStart(page)) {
+        for (int vk : g_keys[mode][port][kStart]) start |= vk && fresh(vk);
+    }
+
+    // Escape is the console's Start, for the keyboards (the menu's own Esc is not: ui::EscStart); on the pause
+    // screen it is B instead
+    if (start || (!pause_keys && (port == 0 || input::Has(port, input::Kind::Keyboard)) && ui::EscStart()))
         pad.buttons |= kPadStart;
     if (down(kBack)) pad.buttons |= kPadBack;
     if (down(kLS)) pad.buttons |= kPadLS;
     if (down(kRS)) pad.buttons |= kPadRS;
 
-    // analog face buttons: A B X Y black(RB) white(LB) LT RT
-    if (down(kA)) pad.analog[0] = 0xFF;
-    if (down(kB)) pad.analog[1] = 0xFF;
-    if (down(kX)) pad.analog[2] = 0xFF;
-    if (down(kY)) pad.analog[3] = 0xFF;
+    // analog face buttons: A B X Y black(RB) white(LB) LT RT; on those screens the fixed keys' instead
+    for (int face = 0; face < 4; face++)
+        if (!menus::FaceFixed(page, face) && down(Action(kA + face))) pad.analog[face] = 0xFF;
     if (down(kRB)) pad.analog[4] = 0xFF;  // black / right bumper
     if (down(kLB)) pad.analog[5] = 0xFF;  // white / left bumper
     if (down(kLT)) pad.analog[6] = 0xFF;  // left trigger

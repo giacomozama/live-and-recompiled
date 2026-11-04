@@ -234,10 +234,12 @@ void Refresh(void* window) {
 void Message(void* hwnd, uint32_t msg, uintptr_t wp, intptr_t lp) {
     switch (msg) {
         case app::kMsgMouseMotion: {
-            if (!g_held.load()) break;
             const int port = input::Owner(input::Kind::Mouse, uint64_t(lp));
-            if (port >= 0 && g_look[keyboard::ActiveMode()][port])
-                Record(port, int32_t(uint32_t(wp)), int32_t(uint32_t(uint64_t(wp) >> 32)));
+            const int32_t dx = int32_t(uint32_t(wp)), dy = int32_t(uint32_t(uint64_t(wp) >> 32));
+            // more than a nudge of the desk: the player took the mouse up (the prompts show keys)
+            if (std::abs(dx) + std::abs(dy) >= 4) input::Used(port, input::Source::Keyboard);
+            if (!g_held.load()) break;
+            if (port >= 0 && g_look[keyboard::ActiveMode()][port]) Record(port, dx, dy);
             break;
         }
         case app::kMsgActivate:

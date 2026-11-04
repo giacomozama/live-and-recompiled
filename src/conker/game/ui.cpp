@@ -1348,6 +1348,8 @@ bool EscStart() {
     return !g_esc_swallow.load() && !Open();
 }
 
+void SwallowEsc() { g_esc_swallow.store(true); }
+
 }  // namespace ui
 
 #else  // no ImGui here (the headless harness): the menu and the hook do nothing
@@ -1370,6 +1372,7 @@ int Owner() { return -1; }
 void ShowQuit() {}
 
 bool EscStart() { return false; }
+void SwallowEsc() {}
 
 void Muzzle(int) {}
 

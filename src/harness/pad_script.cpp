@@ -97,5 +97,7 @@ void Rumble(int port, uint16_t left, uint16_t right) {
 // no keyboards or mice: the script is port 0's controller
 bool Has(int, Kind) { return false; }
 bool KeyDown(int, int) { return false; }
+Source LastUsed(int) { return Source::Controller; }
+void Used(int, Source) {}
 
 }  // namespace input

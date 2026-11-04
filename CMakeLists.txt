@@ -16,6 +16,8 @@ include(cmake/XbeRecomp.cmake)
 set(XBE_GAME_SRC ${CMAKE_CURRENT_SOURCE_DIR}/src/conker)
 file(GLOB XBE_HOST_SOURCES CONFIGURE_DEPENDS ${XBE_GAME_SRC}/*/*.cpp)
 list(FILTER XBE_HOST_SOURCES EXCLUDE REGEX "/src/conker/game/")
+# the prompts' key sprites decode with SDL's PNG loader
+set_source_files_properties(${XBE_GAME_SRC}/common/prompts.cpp PROPERTIES INCLUDE_DIRECTORIES "${sdl3_SOURCE_DIR}/include")
 
 # partitions as xbe_symbols wrote them into src/conker/game.toml
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${XBE_GAME_SRC}/game.toml)

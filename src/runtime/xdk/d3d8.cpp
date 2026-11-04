@@ -439,6 +439,30 @@ void FlushPending() {
     Walk(Dev(kDevPush));
 }
 
+namespace {
+uint32_t g_next_texture[4] = {};  // TextureForNextDraw's, under g_lock
+
+// for the length of a DrawVerticesUP or DrawIndexedVerticesUP: TextureForNextDraw's textures in place of the bound
+struct NextTextures {
+    uint32_t bound[4] = {};
+    bool any = false;
+    NextTextures() {
+        for (int s = 0; s < 4; s++)
+            if (g_next_texture[s]) bound[s] = g_state.textures[s], g_state.textures[s] = g_next_texture[s], any = true;
+    }
+    ~NextTextures() {
+        if (!any) return;
+        for (int s = 0; s < 4; s++)
+            if (g_next_texture[s]) g_state.textures[s] = bound[s], g_next_texture[s] = 0;
+    }
+};
+}  // namespace
+
+void TextureForNextDraw(uint32_t stage, uint32_t tex) {
+    std::lock_guard<std::recursive_mutex> lock(g_lock);
+    g_next_texture[stage & 3] = tex;
+}
+
 
 // XBE_LOD_TRACE: where a title switches a mesh's detail. A draw read off a static push buffer is told by the buffer
 // the walk jumped to from the scratch buffer, an HLE'd draw by its return address. Each frame, a mesh (program,
@@ -2456,6 +2480,7 @@ HLE_STDCALL(D3DDevice_DrawVerticesUP, 4) {
     Walk(Dev(kDevPush));
     FlushForDraw();
     LogDrawCaller("vertsup", a[0], a[1], R32(ctx.esp));
+    NextTextures next;
     // args 2/3 are a real pointer and byte stride (checked: they look like D005xxxx scratch and 0x18-0x30), so
     // HostPtr(a[2]) is right even though the library body also adds a base from CDevice+0xbcc (zero for these)
     DrawUp(a[0], a[1], HostPtr(a[2]), a[3]);
@@ -2472,6 +2497,7 @@ HLE_STDCALL(D3DDevice_DrawIndexedVerticesUP, 5) {
     FlushForDraw();
     LogDrawCaller("idxup", a[0], a[1], R32(ctx.esp));
     uint32_t count = a[1], stride = a[4];
+    NextTextures next;
     if (!count || !stride) return 0;
     static std::vector<uint8_t> vertices;
     vertices.resize(size_t(count) * stride);

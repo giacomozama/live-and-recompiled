@@ -18,6 +18,10 @@ void DeferredFlush(uint32_t dirty);
 // library's RunPushBuffer fixups) calls this first: the chip ran the earlier runs before the patch landed.
 void FlushPending();
 
+// The next DrawVerticesUP or DrawIndexedVerticesUP draws with tex on the stage in place of the texture bound, which is
+// bound again after it (a title's icon drawn as another image); tex 0 takes an earlier call back. Game thread
+void TextureForNextDraw(uint32_t stage, uint32_t tex);
+
 // XBE_LOD_TRACE set: draws that switch detail between frames are logged with the push buffer or caller they came
 // from. A title calls LodTraceRun as it runs a push buffer (its data address, as the command stream jumps to it, and
 // whatever it knows of the object drawing it), to log the call chain that first ran it and the push buffers that

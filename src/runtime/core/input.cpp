@@ -30,6 +30,7 @@ bool g_sdl = false;
 std::vector<Dev> g_devices;
 std::string g_slots[kPorts][kKinds] = {{kAll, kAll, ""}};  // player 1 has the keyboards and the mice
 std::atomic<bool> g_auto{true};
+std::atomic<uint8_t> g_last[kPorts] = {};  // LastUsed: 0 not used yet, else 1 + Source
 
 const char* KindName(Kind k) { return k == Kind::Keyboard ? "keyboard" : k == Kind::Mouse ? "mouse" : "controller"; }
 
@@ -195,6 +196,14 @@ Pad Raw(int port) {
             p.ry = int16_t(-1 - axis(SDL_GAMEPAD_AXIS_RIGHTY));
         }
     }
+    if (p.connected) {
+        // past a worn stick's drift and a resting trigger
+        constexpr int kStick = 12000, kTrigger = 64;
+        bool used = p.buttons || p.analog[6] > kTrigger || p.analog[7] > kTrigger;
+        for (int i = 0; i < 6; i++) used |= p.analog[i] != 0;
+        for (int v : {int(p.lx), int(p.ly), int(p.rx), int(p.ry)}) used |= v > kStick || v < -kStick;
+        if (used) Used(port, Source::Controller);
+    }
     return p;
 }
 
@@ -298,19 +307,44 @@ void RemoveDevice(Kind kind, uint64_t id) {
 
 void Key(uint64_t keyboard, int vk, bool down) {
     if (vk <= 0 || vk > 0xFF) return;
-    std::lock_guard lock(g_lock);
-    Add(Kind::Keyboard, keyboard, "").down[size_t(vk)] = down;
+    int port;
+    {
+        std::lock_guard lock(g_lock);
+        Dev& d = Add(Kind::Keyboard, keyboard, "");
+        d.down[size_t(vk)] = down;
+        port = OwnerOf(d);
+    }
+    if (down) Used(port, Source::Keyboard);
 }
 
 void Button(uint64_t mouse, int vk, bool down) {
     if (vk <= 0 || vk >= 7) return;
-    std::lock_guard lock(g_lock);
-    Add(Kind::Mouse, mouse, "").down[size_t(vk)] = down;
+    int port;
+    {
+        std::lock_guard lock(g_lock);
+        Dev& d = Add(Kind::Mouse, mouse, "");
+        d.down[size_t(vk)] = down;
+        port = OwnerOf(d);
+    }
+    if (down) Used(port, Source::Keyboard);
 }
 
 void ReleaseAll() {
     std::lock_guard lock(g_lock);
     for (Dev& d : g_devices) d.down.reset();
+}
+
+Source LastUsed(int port) {
+    if (port < 0 || port >= kPorts) return Source::Controller;
+    if (const uint8_t last = g_last[port].load(std::memory_order_relaxed)) return Source(last - 1);
+    return Has(port, Kind::Controller) ? Source::Controller : Source::Keyboard;
+}
+
+void Used(int port, Source source) {
+    if (port < 0 || port >= kPorts) return;
+    const uint8_t v = uint8_t(1 + uint8_t(source));
+    if (g_last[port].exchange(v, std::memory_order_relaxed) != v)
+        LOGI("input: player %d uses the %s", port + 1, source == Source::Keyboard ? "keyboard" : "controller");
 }
 
 }  // namespace input

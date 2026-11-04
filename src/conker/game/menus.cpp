@@ -2,6 +2,7 @@
 // Link Online, and the pause menu of a match drops Xbox Live and its Controller item becomes Options, which opens
 // the settings menu. The mouse works the game's menu lists.
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cctype>
@@ -25,6 +26,7 @@
 
 #include "common/menus.h"
 #include "common/mouse.h"
+#include "common/prompts.h"
 #include "common/ui.h"
 #include "common/warp.h"
 
@@ -567,7 +569,8 @@ int Button(uint32_t tex) {
 void ConkerSpriteDraw(X86Context& ctx, uint8_t* base) {
     (void)base;
     const int64_t now = NowUs();
-    if (now - g_pause_us.load(std::memory_order_relaxed) > kShownUs) return;
+    const int page = menus::KeyPage();
+    if (page < 0) return;
     uint32_t tex;
     {
         std::lock_guard lock(d3d::Lock());
@@ -575,6 +578,16 @@ void ConkerSpriteDraw(X86Context& ctx, uint8_t* base) {
     }
     if (!tex) return;
     const int b = Button(tex);
+    // the icon as a key, while player 1 plays with the keyboard (its shadow too, drawn first): the fixed key
+    // keyboard::Pad takes for the button there (the pause screen's on its quit prompt too, whose prompts stay on
+    // show), else the bound one
+    if (b >= 0) {
+        const int fixed = page == menus::kMenuList ? menus::PauseKeys(page, b)[0] : menus::PauseKey(b);
+        const uint32_t key =
+            menus::FaceFixed(page, b) && fixed ? prompts::KeySprite(0, fixed) : prompts::KeyIcon(0, b);
+        if (key) d3d::TextureForNextDraw(0, key);
+    }
+    if (now - g_pause_us.load(std::memory_order_relaxed) > kShownUs) return;  // the mouse's part: the pause screen
     const uint32_t count = R32(ctx.esp + 4), data = R32(ctx.esp + 8), stride = R32(ctx.esp + 12);
     if (!count || count > 64 || stride < 8 || !data) return;
     float x0 = 1e9f, y0 = 1e9f, x1 = -1e9f, y1 = -1e9f;
@@ -839,6 +852,55 @@ int Hit(const List& l, float x, float y) {
 void menus::Wheel(int turn) { g_wheel.fetch_add(turn); }
 
 void menus::Paused() { g_pause_us.store(NowUs(), std::memory_order_relaxed); }
+
+int menus::KeyPage() {
+    using menus::kMenuList;
+    // 0 the pause screen, 2 the quit prompt over it, which keeps its prompts on show (sub_00203B50 in gamepad.cpp)
+    constexpr uint32_t kPage = 0x849AF8, kMatchPaused = 0x862D90;
+    const int64_t now = NowUs();
+    if (now - g_pause_us.load(std::memory_order_relaxed) <= kShownUs) {
+        const uint32_t page = R32(kPage);
+        return page == 0 || page == 2 ? int(page) : -1;
+    }
+    // a menu list (the frontend's multiplayer menus, A Select and B Back), a match's pause menu aside
+    if (mem::Base()[kMatchPaused]) return -1;
+    std::lock_guard lock(g_list_lock);
+    return now - g_shown.shown_us <= kShownUs ? kMenuList : -1;
+}
+
+bool menus::PauseScreen() {
+    const int page = KeyPage();
+    return page == 0 || page == 2;
+}
+
+int menus::PauseKey(int face) {
+    constexpr int kKeys[4] = {'Q', 0x1B, 0, 'E'};  // A, B (Escape), X, Y
+    return face >= 0 && face < 4 ? kKeys[face] : 0;
+}
+
+std::array<int, 2> menus::PauseKeys(int page, int face) {
+    if (face < 0 || face >= 4) return {};
+    if (page == 2) {  // the quit prompt: Space and Enter answer with the word lit (Q and Escape: QuitBackKeys)
+        constexpr std::array<int, 2> kQuit[4] = {{0x20, 0x0D}, {}, {}, {}};
+        return kQuit[face];
+    }
+    if (page == kMenuList) {  // Space selects, Escape goes back
+        constexpr std::array<int, 2> kList[4] = {{0x20, 0}, {0x1B, 0}, {}, {}};
+        return kList[face];
+    }
+    return {PauseKey(face), 0};
+}
+
+bool menus::PauseKeysTakeStart(int page) { return page == 2; }
+
+bool menus::FaceFixed(int page, int face) { return page == kMenuList ? face == 0 || face == 1 : page >= 0; }
+
+std::array<int, 2> menus::QuitBackKeys() { return {'Q', 0x1B}; }
+
+void menus::AnswerQuit(bool yes) {
+    g_quit_choice_us.store(NowUs());
+    g_quit_choice.store(yes ? 1 : 0);
+}
 
 void menus::Pad(int port, input::Pad& pad) {
     if (input::t_presence || port != MenuPort()) return;

@@ -34,6 +34,8 @@ void ShowQuit();
 
 // Escape as the console's Start: down, and not the press that shut the menu or the prompt. Any thread
 bool EscStart();
+// the Escape held now is not Start until it is let go: it did something else (resumed from the pause screen). Any thread
+void SwallowEsc();
 
 // the game's pad on that port, polled: while the menu holds it neutral it Muzzle()s the port, and after the menu
 // shuts Unmuzzle() keeps each button held then (the B or A that shut it) off the pad until it is let go. Game thread

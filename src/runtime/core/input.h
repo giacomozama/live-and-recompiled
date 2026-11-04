@@ -61,4 +61,11 @@ void Key(uint64_t keyboard, int vk, bool down);
 void Button(uint64_t mouse, int vk, bool down);
 void ReleaseAll();  // the window lost the focus: every key and button is up
 
+// Which of a port's devices its player used last, for the prompts a game shows: a key or mouse button pressed or the
+// mouse moved make it the keyboard, a controller's button, trigger or stick past its dead zone the controller. A port
+// not used yet goes by what drives it: its controller if it has one. Any thread
+enum class Source : uint8_t { Controller, Keyboard };  // Keyboard: the keyboard and the mouse
+Source LastUsed(int port);
+void Used(int port, Source source);  // the mouse's motion (counted by whoever reads it)
+
 }  // namespace input
