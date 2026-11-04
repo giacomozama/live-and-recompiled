@@ -210,6 +210,16 @@ uint32_t NewSurface(uint32_t w, uint32_t h, uint32_t fmt, uint32_t bpp) {
 bool g_spec_raw = false;
 uint32_t g_spec_value = 0;
 
+// The stage combiner states (ColorOp through ResultArg) as they stood when the library last flushed for a draw: the
+// library compiles them into combiner methods and pushes those ahead of the primitive, so a pushed draw keeps them
+// whatever the title writes to the table afterwards. Walk reads the commands later, after the title may already
+// have set up its next draw - Conker's HUD writes SELECTARG(diffuse) for a white bar before the walk reaches the icon
+// pushed ahead of it, which drew the icon as a white silhouette. Walked draws take these, the HLE'd draws (which run
+// at the call) the table, and either refreshes them. Pinned once the library's flush is hooked (DeferredFlush).
+std::array<std::array<uint32_t, gpu::kTssResultArg - gpu::kTssColorOp + 1>, 4> g_combiner_tss{};
+bool g_combiner_pinned = false;
+int g_walking = 0;  // inside Walk
+
 void SyncDeferred() {
     // deferred states live in the title's memory, the inline SetRenderState and SetTextureStageState write them
     // a D3D fog state only marks the fog dirty: the fog unit changes when the library's flush pushes it (ApplyFlush)
@@ -218,13 +228,28 @@ void SyncDeferred() {
     // the whole [4][32] table is authoritative for a title that inlines the D3D8 library (its state never
     // reaches an API HLE), so read all of it. A title that does call the API has its dedicated SetTextureState_*
     // HLEs write g_state directly, and those do not write the table, so leave their fields alone.
+    const bool pushed = g_walking && g_combiner_pinned;
     for (int s = 0; s < 4; s++)
         for (uint32_t i = 0; i < gpu::kTssCount; i++) {
             if (HAS_D3DDevice_SetTextureState_BumpEnv && i >= gpu::kTssBumpEnvMat00 && i <= gpu::kTssBumpEnvLOffset) continue;
             if (HAS_D3DDevice_SetTextureState_BorderColor && i == gpu::kTssBorderColor) continue;
             if (HAS_D3DDevice_SetTextureState_ColorKeyColor && i == gpu::kTssColorKeyColor) continue;
-            g_state.tss.set(s, i, R32(kTextureState + (s * kStageStates + i) * 4));
+            uint32_t v = R32(kTextureState + (s * kStageStates + i) * 4);
+            if (i >= gpu::kTssColorOp && i <= gpu::kTssResultArg) {
+                uint32_t& kept = g_combiner_tss[size_t(s)][i - gpu::kTssColorOp];
+                if (pushed) v = kept;
+                else kept = v;
+            }
+            g_state.tss.set(s, i, v);
         }
+}
+
+// the combiner states the next pushed draw compiles, as the library's flush reads them
+void PinCombiners() {
+    for (int s = 0; s < 4; s++)
+        for (uint32_t i = gpu::kTssColorOp; i <= gpu::kTssResultArg; i++)
+            g_combiner_tss[size_t(s)][i - gpu::kTssColorOp] = R32(kTextureState + (s * kStageStates + i) * 4);
+    g_combiner_pinned = true;
 }
 
 float ZScale(const gpu::Surface& zs) {
@@ -431,6 +456,7 @@ void FlushForDraw() {
 void DeferredFlush(uint32_t dirty) {
     std::lock_guard<std::recursive_mutex> lock(g_lock);
     Walk(Dev(kDevPush));  // raw commands pushed before the flush came first
+    PinCombiners();
     ApplyFlush(dirty);
 }
 
@@ -2069,6 +2095,10 @@ void Walk(uint32_t end) {
         }
         return;
     }
+    struct Walking {
+        Walking() { g_walking++; }
+        ~Walking() { g_walking--; }
+    } walking;  // its draws take the combiner states pushed with them (SyncDeferred)
     // Command streams chain: the title's inline push buffers link blocks with jumps, and xemu follows them
     // (pfifo.c: bit 1 of the header is a jump, bits 1:0 == 2 a call, the word 0x00020000 a return, and
     // (word & 0xe0000003) == 0x20000000 an old jump). Jump targets are physical addresses in the console's RAM,
