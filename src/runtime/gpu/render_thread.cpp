@@ -941,6 +941,7 @@ private:
                 }
                 inner_->Changed(changed_);
                 changed_ = false;
+                interp::g_run_tag = c.tag;
                 inner_->Draw(state_, c.a, c.b, c.c, c.d ? data : nullptr);
                 break;
             case Op::Clear: inner_->Clear(state_, c.a, c.size ? data : nullptr, c.b, c.c, c.f, c.d); break;

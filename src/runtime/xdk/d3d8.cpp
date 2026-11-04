@@ -1652,6 +1652,7 @@ void BackendDraw(uint32_t prim, uint32_t start, uint32_t count, const uint8_t* i
     if (!g_backend) return;
     LodNote(prim, count);
     gpu::interp::g_draw_tag = TagOfDraw();
+    if (!kRenderThread) gpu::interp::g_run_tag = gpu::interp::g_draw_tag;
     if (g_tag.label && diag::Perf()) {
         LabelCount& c = g_label_counts[g_tag.label];
         c.draws++;
@@ -2076,9 +2077,8 @@ void Walk(uint32_t end) {
     uint32_t p = g_walk, limit = end, ret[16], sp = 0, guard = 0, jumps = 0, home = 0, resyncs = 0;
     g_lod_source = g_lod_caller = 0;
     // who had the commands read: what the title pushed inline came before this call, often in the same function. For
-    // the watch lines only
-    static const bool recording = gpu::interp::Recording() != 0;
-    if (recording) g_walked = kernel::Current() ? R32(kernel::CurrentContext().esp) : 0;
+    // the watch lines and the frame capture's draw lines only
+    g_walked = kernel::Current() ? R32(kernel::CurrentContext().esp) : 0;
     // jump targets land on real blocks (vertex-program words, prebuilt stream bindings), so following them is the
     // xemu behaviour; XBE_NO_WALK_JUMPS restores the old "stop at the first jump" for comparison
     static const bool follow = std::getenv("XBE_NO_WALK_JUMPS") == nullptr;

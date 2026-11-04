@@ -3744,6 +3744,9 @@ void VulkanBackend::CaptureTextures(const State& s, const DrawTextures& stages) 
 void VulkanBackend::CaptureDraw(const State& s, uint32_t prim, uint32_t count, const PsoKey& k,
                                 const DrawConstants& c, const DrawTextures& stages) {
     CaptureDrawLine(cap_, cap_i_++, bound_ds_ ? s.zs.data : 0, s, prim, count, k, c);
+    // where the title drew it from: an HLE'd draw's return address, the static push buffer walked, the walk's caller
+    const interp::Tag& tag = interp::g_run_tag;
+    fprintf(cap_, " from %08X src %08X walked %08X", tag.caller, tag.source, tag.walked);
     CaptureTextures(s, stages);
 }
 

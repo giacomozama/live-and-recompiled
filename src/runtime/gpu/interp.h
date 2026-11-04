@@ -38,6 +38,8 @@ struct Tag {
 };
 // the tag of the draw the title's thread hands the backend next (d3d::SetDrawTag), taken with it as it is recorded
 inline Tag g_draw_tag;
+// the tag of the draw the backend runs now (the render thread's copy of g_draw_tag), for the frame capture's lines
+inline Tag g_run_tag;
 
 // a value for each of a frame's tag keys (never 0), kept from frame to frame: a battle tags 16000 draws a frame, and a
 // map that made and freed an entry for each cost both threads time each frame. Open addressing, cleared in place
