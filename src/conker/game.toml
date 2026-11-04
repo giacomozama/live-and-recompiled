@@ -523,6 +523,15 @@ call = "ConkerSpriteDraw"
 at = 0x359DDA
 call = "ConkerSpriteDraw"
 
+# a match's weapon panel: its button icons as keys (menus.cpp), around 0x1CAD90's quad
+[[hook]]
+at = 0x1CB031  # about to draw it, its texture set
+call = "ConkerHudQuad"
+
+[[hook]]
+at = 0x1CB052  # drawn, its corners still pushed
+call = "ConkerHudQuadDrawn"
+
 # the HUD's elements as scopes (display.cpp), for the HUD unstretched in a match
 [[hook]]
 at = 0x0D9AAF  # an effect layer's object drawn: ebx the layer, esi the object, ebp the routine

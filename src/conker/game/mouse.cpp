@@ -945,13 +945,15 @@ void Wheel(uint32_t) {}
 #endif
 
 // 0x1C7C60 (the HUD object at [esp+4]): draws a match's HUD for a player, the weapon wheel among it; notes whose
-// wheel is open (mouse::Wheel)
+// wheel is open (mouse::Wheel) and whose keys its button icons show (menus::HudPlayer)
 X86_EXTERN_FUNC(__imp__sub_001C7C60);
 X86_FUNC(sub_001C7C60) {
     uint32_t hud;
     std::memcpy(&hud, base + ctx.esp + 4, 4);
     mouse::Wheel(hud);
+    menus::HudPlayer(hud);
     __imp__sub_001C7C60(ctx, base);
+    menus::HudPlayer(0);
 }
 
 // 0x2F99A0 (actions in eax, the camera's turn in ecx, the frame's time on the stack): turns a camera by the right

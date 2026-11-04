@@ -15,6 +15,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <utility>
 
 #include "app/app.h"
 #include "core/input.h"
@@ -24,6 +25,7 @@
 #include "xdk/d3d8.h"
 #include "xdk/hle.h"
 
+#include "common/keyboard.h"
 #include "common/menus.h"
 #include "common/mouse.h"
 #include "common/prompts.h"
@@ -645,6 +647,115 @@ void ConkerSpriteDraw(X86Context& ctx, uint8_t* base) {
         pr = {x0, y0, x1, y1, now};
     }
     pr.seen_us = now;
+}
+
+// A match's weapon panel (0x1CC030, drawn by the HUD 0x1C7C60) shows the buttons as pictures. Its left piece
+// (userInterface\invSelectL, drawn from 0x1CC116) has X's icon by the item inside the texture, the right one
+// (invSelectR, from 0x1CC1CC) Y's by the weapon, and the box between them is the left trigger's icon on its own
+// (userInterface\triggerL, G, I or S by the console's language, 0x1CC620 drawing it from 0x1CC744). Each is a quad of
+// 0x1CAD90: four corners at [esp+4]..[esp+0x10] (each an x and a y: top left, top right, bottom left, bottom right),
+// the texture at +0x14 and the colour at +0x18. It sets the texture (D3DDevice_SetTexture 0x539960, the stage in eax,
+// unless [0x771764] says it is set already) and draws by 0x1CA7F0 (the corners pushed, al a shadow first, ebx the
+// colour), which writes the vertices into the push buffer. While the player whose HUD it is last used the keyboard or
+// mouse, the trigger's box is drawn as its key (the texture swapped for the draw, on a smaller square in the box's
+// middle), and each piece of the panel has its key drawn over its icon after it, by the same two calls. The keys go at twice the panel's alpha (the panel is
+// drawn at about half), so the icon does not show through them.
+namespace {
+constexpr uint32_t kSetTexture = 0x539960, kHudQuad = 0x1CA7F0;
+constexpr uint32_t kTriggerQuad = 0x1CC749;  // 0x1CAD90's return in 0x1CC620, drawing the trigger's box
+struct PanelIcon {
+    uint32_t ret;  // 0x1CAD90's return, drawing the piece
+    int action;
+    float u, v, size;  // the icon's centre in the piece's texture (0..1) and the square its key covers
+};
+// on the pieces' 128 by 128 texels: X's icon spans 95..111 by 48..63, Y's 61..75 by 24..39
+constexpr PanelIcon kPanelIcons[] = {
+    {0x1CC11B, keyboard::kX, 103.5f / 128, 56.0f / 128, 20.5f / 128},
+    {0x1CC1D1, keyboard::kY, 68.5f / 128, 32.0f / 128, 20.5f / 128},
+};
+constexpr float kTriggerKey = 0.6f;  // the trigger's key, of its box's side
+int g_hud_port = -1;             // whose HUD 0x1C7C60 draws, -1 outside it. Game thread
+uint32_t g_trigger_texture = 0;  // the trigger's box's own texture, while its key's sprite stands in
+uint32_t g_corners = 0;          // a panel key's four corners in guest memory
+uint32_t g_trigger_corners = 0;  // the trigger key's
+
+void SetTexture(X86Context& ctx, uint32_t tex) {
+    ctx.eax = 0;
+    kernel::CallGuest(ctx, kSetTexture, {tex});
+}
+
+uint32_t KeyAlpha(uint32_t colour) { return std::min(0xFFu, (colour >> 24) * 2) << 24 | (colour & 0xFFFFFF); }
+
+// a key's square of side size (of the quad's) centred at u, v on the quad with these corners (top left, top right,
+// bottom left), written as four corners to out (allocated the first time)
+void KeySquare(uint8_t* base, uint32_t& out, uint32_t tl, uint32_t tr, uint32_t bl, float u, float v, float size) {
+    if (!out) out = mem::AllocSystem(32);
+    const float x = F32(tl), y = F32(tl + 4);
+    const float ux = F32(tr) - x, uy = F32(tr + 4) - y, vx = F32(bl) - x, vy = F32(bl + 4) - y;
+    const float h = size / 2;
+    const float corners[4][2] = {{u - h, v - h}, {u + h, v - h}, {u - h, v + h}, {u + h, v + h}};
+    for (int c = 0; c < 4; c++) {
+        const float at[2] = {x + ux * corners[c][0] + vx * corners[c][1], y + uy * corners[c][0] + vy * corners[c][1]};
+        std::memcpy(base + out + c * 8, at, 8);
+    }
+}
+}  // namespace
+
+void menus::HudPlayer(uint32_t hud) {
+    g_hud_port = -1;
+    constexpr uint32_t kInventory = 0x38, kOwner = 0x0C, kActionsIndex = 0x60;
+    if (!hud || !mem::IsCommitted(hud + kInventory)) return;
+    const uint32_t inventory = R32(hud + kInventory);
+    if (!inventory || !mem::IsCommitted(inventory + kOwner)) return;
+    const uint32_t player = R32(inventory + kOwner);
+    if (!player || !mem::IsCommitted(player + kActionsIndex)) return;
+    const uint16_t port = kernel::G<uint16_t>(player + kActionsIndex);
+    if (port < input::kPorts) g_hud_port = port;
+}
+
+// [[hook]] at 0x1CB031, 0x1CAD90 about to draw its quad (its texture set): the trigger's box as its key
+void ConkerHudQuad(X86Context& ctx, uint8_t* base) {
+    if (g_hud_port < 0 || R32(ctx.esp + 8) != kTriggerQuad) return;
+    const uint32_t key = prompts::ActionIcon(g_hud_port, keyboard::kLT);
+    if (!key) return;
+    g_trigger_texture = R32(ctx.esp + 0x1C);
+    SetTexture(ctx, key);
+    W32(ctx.esp + 0x20, KeyAlpha(R32(ctx.esp + 0x20)));  // the colour, read into ebx next
+    // the corners, read next: the key's smaller square in their place
+    KeySquare(base, g_trigger_corners, R32(ctx.esp + 0xC), R32(ctx.esp + 0x10), R32(ctx.esp + 0x14), 0.5f, 0.5f,
+              kTriggerKey);
+    for (uint32_t c = 0; c < 4; c++) W32(ctx.esp + 0xC + c * 4, g_trigger_corners + c * 8);
+    static bool told = false;
+    if (!std::exchange(told, true)) LOGR("prompts: the weapon panel's trigger shows its key");
+}
+
+// [[hook]] at 0x1CB052, 0x1CAD90's quad drawn (its corners still pushed, ebx the colour, esi the texture): the trigger's
+// texture back, or a panel piece's key over its icon
+void ConkerHudQuadDrawn(X86Context& ctx, uint8_t* base) {
+    const uint32_t eax = ctx.eax, ebx = ctx.ebx;
+    if (g_trigger_texture) {
+        SetTexture(ctx, g_trigger_texture);
+        g_trigger_texture = 0;
+        ctx.eax = eax;
+        return;
+    }
+    if (g_hud_port < 0) return;
+    const uint32_t ret = R32(ctx.esp + 0x18);
+    for (const PanelIcon& icon : kPanelIcons) {
+        if (icon.ret != ret) continue;
+        const uint32_t key = prompts::ActionIcon(g_hud_port, icon.action);
+        if (!key) return;
+        KeySquare(base, g_corners, R32(ctx.esp), R32(ctx.esp + 4), R32(ctx.esp + 8), icon.u, icon.v, icon.size);
+        SetTexture(ctx, key);
+        ctx.eax = 0;  // no shadow
+        ctx.ebx = KeyAlpha(ebx);
+        kernel::CallGuest(ctx, kHudQuad, {g_corners, g_corners + 8, g_corners + 16, g_corners + 24});
+        SetTexture(ctx, ctx.esi);
+        ctx.eax = eax, ctx.ebx = ebx;
+        static bool told = false;
+        if (!std::exchange(told, true)) LOGR("prompts: the weapon panel's icons show their keys");
+        return;
+    }
 }
 
 // The quit prompt (page 2 of the pause screen) asks with the words Yes and No, which the pause UI highlights by the

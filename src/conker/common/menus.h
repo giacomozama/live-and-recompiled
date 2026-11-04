@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <cstdint>
 
 #include "core/input.h"
 
@@ -51,5 +52,9 @@ bool FaceFixed(int page, int face);
 std::array<int, 2> QuitBackKeys();
 // the quit prompt's next A answers with this, whichever word is lit (within half a second). Game thread
 void AnswerQuit(bool yes);
+
+// from the HUD 0x1C7C60, before it draws a match's HUD (the object at hud) and with 0 after: the player whose HUD it
+// is, whose keys the weapon panel's button icons show (ConkerHudQuad). Game thread
+void HudPlayer(uint32_t hud);
 
 }  // namespace menus

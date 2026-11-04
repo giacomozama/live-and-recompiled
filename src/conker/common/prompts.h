@@ -11,6 +11,9 @@ namespace prompts {
 // keeps the icon (a controller in use, or no sprite for the keys bound). Game thread
 uint32_t KeyIcon(int port, int face);
 
+// the same for any of the keyboard's actions (keyboard::Action, kLT the left trigger's)
+uint32_t ActionIcon(int port, int action);
+
 // the same for one key (a virtual-key code), whatever it is bound to: a prompt that takes a fixed key; 0 keeps the
 // icon
 uint32_t KeySprite(int port, int vk);

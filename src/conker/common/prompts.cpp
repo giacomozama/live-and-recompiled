@@ -1,13 +1,11 @@
-// Key sprites for the game's button prompts: PNGs embedded from src/conker/common/prompts/, one a key, named after the
-// key as keyboard::KeyName names it in lower case with spaces as underscores ("space.png", "e.png", "mouse_2.png",
-// "left_ctrl.png"). Each is made a guest texture the first time a prompt asks for it: A8R8G8B8, swizzled, on a square
+// Key sprites for the game's button prompts: PNGs embedded from src/conker/common/prompts/, one for every key a binding
+// can name, by tools/prompt_sprites.py, which writes sprites.inc there: the PNGs embedded and the table of them by
+// keyboard::KeyName. Each is made a guest texture the first time a prompt asks for it: A8R8G8B8, swizzled, on a square
 // of a power of two with the sprite centred in it, as the icons it stands in for are square.
 #include "common/prompts.h"
 
 #include <algorithm>
-#include <cctype>
 #include <cstring>
-#include <string>
 #include <string_view>
 #include <unordered_map>
 
@@ -27,48 +25,16 @@ namespace prompts {
 
 namespace {
 
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wc23-extensions"
-const unsigned char kSpace[] = {
-#embed "prompts/space.png"
-};
-const unsigned char kE[] = {
-#embed "prompts/e.png"
-};
-const unsigned char kR[] = {
-#embed "prompts/r.png"
-};
-const unsigned char kTab[] = {
-#embed "prompts/tab.png"
-};
-const unsigned char kMouse2[] = {
-#embed "prompts/mouse_2.png"
-};
-const unsigned char kQ[] = {
-#embed "prompts/q.png"
-};
-const unsigned char kEscape[] = {
-#embed "prompts/escape.png"
-};
-#pragma clang diagnostic pop
-
 struct Sprite {
-    std::string_view name;  // the file's name without .png
+    std::string_view key;  // its keyboard::KeyName
     const unsigned char* png;
     size_t size;
 };
-constexpr Sprite kSprites[] = {
-    {"space", kSpace, sizeof kSpace}, {"e", kE, sizeof kE},       {"r", kR, sizeof kR},
-    {"tab", kTab, sizeof kTab},       {"mouse_2", kMouse2, sizeof kMouse2},
-    {"q", kQ, sizeof kQ},             {"escape", kEscape, sizeof kEscape},  // the pause screen's (menus::PauseKey)
-};
 
-// "Left Ctrl" as its sprite is named, "left_ctrl"
-std::string SpriteName(const char* key) {
-    std::string n;
-    for (const char* p = key; *p; p++) n += *p == ' ' ? '_' : char(std::tolower(uint8_t(*p)));
-    return n;
-}
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wc23-extensions"
+#include "prompts/sprites.inc"
+#pragma clang diagnostic pop
 
 // the bits of v on the even bits: a coordinate's part of a square's Morton order
 uint32_t Spread(uint32_t v) {
@@ -81,7 +47,7 @@ uint32_t Spread(uint32_t v) {
 uint32_t Texture(const Sprite& s) {
     SDL_Surface* loaded = SDL_LoadPNG_IO(SDL_IOFromConstMem(s.png, s.size), true);
     if (!loaded) {
-        LOGR("prompts: %.*s.png does not decode: %s", int(s.name.size()), s.name.data(), SDL_GetError());
+        LOGR("prompts: the sprite of %.*s does not decode: %s", int(s.key.size()), s.key.data(), SDL_GetError());
         return 0;
     }
     SDL_Surface* argb = SDL_ConvertSurface(loaded, SDL_PIXELFORMAT_ARGB8888);
@@ -115,7 +81,7 @@ uint32_t Texture(const Sprite& s) {
     // DMA channel A, two dimensions, the colour format, one level, log2 sizes
     hdr[3] = 0x01 | 2u << 4 | kA8R8G8B8 << 8 | 1u << 16 | log2 << 20 | log2 << 24;
     hdr[4] = 0;
-    LOGI("prompts: %.*s, %ux%u on %u", int(s.name.size()), s.name.data(), w, h, side);
+    LOGI("prompts: %.*s, %ux%u on %u", int(s.key.size()), s.key.data(), w, h, side);
     return header;
 }
 
@@ -126,9 +92,8 @@ uint32_t KeyTexture(int vk) {
     uint32_t& tex = made[vk];
     const char* key = keyboard::KeyName(vk);
     if (!vk || !key) return tex = 0;
-    const std::string name = SpriteName(key);
     for (const Sprite& s : kSprites)
-        if (s.name == name) return tex = Texture(s);
+        if (s.key == key) return tex = Texture(s);
     return tex = 0;
 }
 
@@ -139,16 +104,19 @@ uint32_t KeySprite(int port, int vk) {
     return KeyTexture(vk);
 }
 
-uint32_t KeyIcon(int port, int face) {
-    if (face < 0 || face > 3 || port < 0 || port >= input::kPorts) return 0;
+uint32_t ActionIcon(int port, int action) {
+    if (action < 0 || action >= keyboard::kActions || port < 0 || port >= input::kPorts) return 0;
     if (input::LastUsed(port) != input::Source::Keyboard) return 0;
-    for (int vk : keyboard::g_keys[keyboard::ActiveMode()][port][keyboard::kA + face])
+    for (int vk : keyboard::g_keys[keyboard::ActiveMode()][port][action])
         if (const uint32_t tex = KeyTexture(vk)) return tex;
     return 0;
 }
 
+uint32_t KeyIcon(int port, int face) { return face < 0 || face > 3 ? 0 : ActionIcon(port, keyboard::kA + face); }
+
 #else
 
+uint32_t ActionIcon(int, int) { return 0; }
 uint32_t KeyIcon(int, int) { return 0; }
 uint32_t KeySprite(int, int) { return 0; }
 
