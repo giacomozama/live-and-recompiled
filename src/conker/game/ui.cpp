@@ -288,9 +288,20 @@ void Hints(std::initializer_list<const char*> lines) {
     ImGui::Dummy(ImVec2(0.0f, style.ItemSpacing.y * 0.75f));
 }
 
+// a setting's label above its widget: draws it and returns the widget's hidden label
+const char* Above(const char* label) {
+    static std::string id;
+    ImGui::Dummy(ImVec2(0.0f, ImGui::GetStyle().ItemSpacing.y * 0.25f));  // room above the label
+    ImGui::TextUnformatted(label);  // close to its widget
+    id = std::string("##") + label;
+    return id.c_str();
+}
+
 // a percent slider with a Reset beside it, greyed out while the value is its default
 void Slider(const char* label, uint32_t* v, uint32_t min, uint32_t max, uint32_t def) {
     ImGui::PushID(label);
+    ImGui::Dummy(ImVec2(0.0f, ImGui::GetStyle().ItemSpacing.y * 0.25f));  // room above the label
+    ImGui::TextUnformatted(label);
     const float reset = ImGui::CalcTextSize("Reset").x + ImGui::GetStyle().FramePadding.x * 2.0f;
     ImGui::SetNextItemWidth(ImGui::CalcItemWidth() - reset - ImGui::GetStyle().ItemInnerSpacing.x);
     ImGui::SliderScalar("##slider", ImGuiDataType_U32, v, &min, &max, "%u");
@@ -298,8 +309,6 @@ void Slider(const char* label, uint32_t* v, uint32_t min, uint32_t max, uint32_t
     ImGui::BeginDisabled(*v == def);
     if (ImGui::Button("Reset")) *v = def;
     ImGui::EndDisabled();
-    ImGui::SameLine(0, ImGui::GetStyle().ItemInnerSpacing.x);
-    ImGui::TextUnformatted(label);
     ImGui::PopID();
 }
 
@@ -889,7 +898,7 @@ void Draw(double fps) {
                     int lang = 0;
                     for (int i = 0; i < kCount; i++)
                         if (s.language == kKeys[i]) lang = i;
-                    if (ImGui::Combo("Text", &lang, "English\0Japanese\0German\0French\0Spanish\0Italian\0"))
+                    if (ImGui::Combo(Above("Text"), &lang, "English\0Japanese\0German\0French\0Spanish\0Italian\0"))
                         s.language = kKeys[lang];
                     Hint("The game's menus and on-screen text. Starts from the next launch. The voices stay in English.");
                 }
@@ -899,7 +908,7 @@ void Draw(double fps) {
             if (tab("Graphics")) {
                 ImGui::SeparatorText("Display");
                 int mode = int(s.display_mode);
-                if (ImGui::Combo("Mode", &mode, "Fullscreen\0Borderless\0Windowed\0")) {
+                if (ImGui::Combo(Above("Mode"), &mode, "Fullscreen\0Borderless\0Windowed\0")) {
                     s.display_mode = app::DisplayMode(mode);
                     app::ApplyDisplay();
                 }
@@ -913,7 +922,7 @@ void Draw(double fps) {
                     if (modes[i].width == s.width && modes[i].height == s.height) res_idx = int(i) + 1;
                 }
                 res += '\0';
-                if (ImGui::Combo("Resolution", &res_idx, res.c_str())) {
+                if (ImGui::Combo(Above("Resolution"), &res_idx, res.c_str())) {
                     if (res_idx == 0) s.width = s.height = 0;
                     else s.width = modes[res_idx - 1].width, s.height = modes[res_idx - 1].height;
                     app::ApplyDisplay();
@@ -928,12 +937,12 @@ void Draw(double fps) {
                 for (int i = 0; i < kAspects; i++) items += std::string(aspects[i]) + '\0';
                 if (aspect < 0) items += s.aspect + '\0', aspect = kAspects;  // a custom W:H from settings.toml
                 items += '\0';
-                if (ImGui::Combo("Aspect", &aspect, items.c_str()) && aspect < kAspects) s.aspect = aspects[aspect];
+                if (ImGui::Combo(Above("Aspect"), &aspect, items.c_str()) && aspect < kAspects) s.aspect = aspects[aspect];
 
                 {
                     const std::vector<std::string>& adapters = gpu::Adapters();
                     if (adapters.size() > 1 || !s.gpu.empty()) {
-                        if (ImGui::BeginCombo("Graphics adapter", s.gpu.empty() ? "Automatic" : s.gpu.c_str())) {
+                        if (ImGui::BeginCombo(Above("Graphics adapter"), s.gpu.empty() ? "Automatic" : s.gpu.c_str())) {
                             if (ImGui::Selectable("Automatic", s.gpu.empty())) s.gpu.clear();
                             for (const std::string& a : adapters)
                                 if (ImGui::Selectable(a.c_str(), a == s.gpu)) s.gpu = a;
@@ -950,20 +959,20 @@ void Draw(double fps) {
                 int rate = 0;
                 for (int i = 0; i < 5; i++)
                     if (kRates[i] == display::g_frame_rate) rate = i;
-                if (ImGui::Combo("Frame rate", &rate, "30 (original)\0 60\0 120\0 180\0 240\0"))
+                if (ImGui::Combo(Above("Frame rate"), &rate, "30 (original)\0 60\0 120\0 180\0 240\0"))
                     display::SetFrameRate(kRates[rate]);
 
                 constexpr uint32_t kAniso[] = {0, 2, 4, 8, 16};
                 int aniso = 0;
                 for (int i = 0; i < 5; i++)
                     if (kAniso[i] == s.aniso) aniso = i;
-                if (ImGui::Combo("Anisotropic", &aniso, "Game default\0 2x\0 4x\0 8x\0 16x\0"))
+                if (ImGui::Combo(Above("Anisotropic"), &aniso, "Game default\0 2x\0 4x\0 8x\0 16x\0"))
                     s.aniso = kAniso[aniso];
 
                 // one choice: no anti-aliasing, SMAA, or MSAA at a sample count (the two never run together)
                 constexpr uint32_t kAa[] = {0, 1, 2, 4, 8};  // 0 off, 1 SMAA, else MSAA samples
                 int aa = s.smaa ? 1 : s.msaa >= 8 ? 4 : s.msaa >= 4 ? 3 : s.msaa >= 2 ? 2 : 0;
-                if (ImGui::Combo("Anti-aliasing", &aa, "Off\0SMAA\0MSAA 2x\0MSAA 4x\0MSAA 8x\0")) {
+                if (ImGui::Combo(Above("Anti-aliasing"), &aa, "Off\0SMAA\0MSAA 2x\0MSAA 4x\0MSAA 8x\0")) {
                     s.smaa = aa == 1;
                     s.msaa = aa >= 2 ? kAa[aa] : 1;
                 }
@@ -1046,7 +1055,7 @@ void Draw(double fps) {
                     for (const audio::Device& d : devices)
                         if (d.id == s.audio_device) current = d.name;
                     if (!s.audio_device.empty() && current == "System default") current += " (selected device missing)";
-                    if (ImGui::BeginCombo("Output device", current.c_str())) {
+                    if (ImGui::BeginCombo(Above("Output device"), current.c_str())) {
                         if (ImGui::Selectable("System default", s.audio_device.empty())) {
                             s.audio_device.clear();
                             audio::SelectDevice(s.audio_device);
@@ -1061,7 +1070,7 @@ void Draw(double fps) {
                 }
                 {
                     int speakers = s.surround ? 1 : 0;
-                    if (ImGui::Combo("Speakers", &speakers, "Stereo\0005.1 surround\0")) s.surround = speakers == 1;
+                    if (ImGui::Combo(Above("Speakers"), &speakers, "Stereo\0005.1 surround\0")) s.surround = speakers == 1;
                     Hint("Stereo mixes for two speakers or headphones. 5.1 surround mixes for six speakers, as the "
                          "console does with Dolby Digital, and plays on as many as the output device has. Starts from "
                          "the next launch.");
@@ -1077,7 +1086,7 @@ void Draw(double fps) {
                 // whose controls: a list, not a second row of tabs, so the pad's cursor goes straight down the page
                 std::string players;
                 for (int p = 0; p < input::kPorts; p++) players += "Player " + std::to_string(p + 1) + '\0';
-                ImGui::Combo("Player", &g_player_now, players.c_str());
+                ImGui::Combo(Above("Player"), &g_player_now, players.c_str());
                 const int p = g_player_now;
                 ImGui::PushID(p);
                 DrawDevices(p);
@@ -1108,7 +1117,7 @@ void Draw(double fps) {
                 // each time it changes (xnet.cpp JoinAddress), and a half typed name is a DNS lookup
                 static char host[256];
                 if (ImGui::IsWindowAppearing()) std::snprintf(host, sizeof host, "%s", s.join_ip.c_str());
-                ImGui::InputTextWithHint("Host address", "leave empty to host or find local games", host, sizeof host);
+                ImGui::InputTextWithHint(Above("Host address"), "leave empty to host or find local games", host, sizeof host);
                 if (ImGui::IsItemDeactivatedAfterEdit()) s.join_ip = host;
                 if (!app::JoinArg().empty()) ImGui::Text("This copy joins %s (--join)", app::JoinArg().c_str());
                 Hints({"Leave empty to host, or to find games on your home network.",
@@ -1117,7 +1126,7 @@ void Draw(double fps) {
                        "For hosts on a port other than 3074, append the port after the IP (1.2.3.4:3075)."});
                 int port = int(s.system_link_port);
                 ImGui::BeginDisabled(app::PortArg() != 0);
-                if (ImGui::InputInt("Online play port", &port, 0, 0)) s.system_link_port = uint32_t(std::clamp(port, 1, 65535));
+                if (ImGui::InputInt(Above("Online play port"), &port, 0, 0)) s.system_link_port = uint32_t(std::clamp(port, 1, 65535));
                 ImGui::EndDisabled();
                 if (app::PortArg()) ImGui::Text("This copy uses %d (--port)", app::PortArg());
                 Hints({"UDP, 3074 as on the console.",
