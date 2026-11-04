@@ -1021,6 +1021,9 @@ void Draw(double fps) {
                 ImGui::Checkbox("Readable menu hints", &menus::g_bright_hints);
                 Hint("The hints above and below the multiplayer menus (R Configure) show as clearly as the menu's "
                      "title. Off: faint and flickering, as on the console.", true);
+                bool no_attract = !menus::g_attract;
+                if (ImGui::Checkbox("Disable attract video", &no_attract)) menus::g_attract = !no_attract;
+                Hint("The main menu no longer plays its video after two minutes without input.", true);
 
                 ImGui::SeparatorText("Gameplay");
                 ImGui::Checkbox("Skippable cutscenes", &cutscenes::g_skippable);

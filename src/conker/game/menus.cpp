@@ -92,6 +92,22 @@ X86_FUNC(sub_00236030) {
     __imp__sub_00236030(ctx, base);
 }
 
+// 0x1F9EB0: the frontend's attract timer, run from 0x1F9DA0 and at the end of 0x1FA7D0. With no pad held
+// (0x1F9E60: no button and every stick axis within 20) it adds the frame's seconds ([0x7FA21C]) to [0x8756A8], and
+// past 120 (0x648EA0) puts the frontend in state 0x10 ([0x776574]), which plays frontend\attract.xmv (0x1F9F80), and
+// returns 1. menus::g_attract off: the timer stays at 0 and it returns 0, so the menu waits however long it is left.
+bool menus::g_attract = true;
+X86_EXTERN_FUNC(__imp__sub_001F9EB0);
+X86_FUNC(sub_001F9EB0) {
+    if (menus::g_attract) {
+        __imp__sub_001F9EB0(ctx, base);
+        return;
+    }
+    constexpr uint32_t kIdleSeconds = 0x8756A8;
+    W32(kIdleSeconds, 0);
+    kernel::Return(ctx, 0, 0);
+}
+
 // [[hook]] after the stores at 0x23605A and 0x23607F, where the menu puts its cursor back on the item a game left from
 // (System Link 1, Xbox Live 0, Dumbots 2): one up, for the item gone
 void ConkerMpMenuCursor(X86Context& ctx, uint8_t* base) {

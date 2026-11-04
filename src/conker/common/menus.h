@@ -7,6 +7,10 @@
 // The game's menus (src/conker/game/menus.cpp).
 namespace menus {
 
+// settings.toml attract_video: the frontend plays its attract video (frontend\attract.xmv) after two minutes without
+// input, as on the console. Off: it never starts. Read each frame
+extern bool g_attract;
+
 // settings.toml bright_menu_hints: a multiplayer menu's page hints ("R Configure" over its list, the page under it)
 // drawn as solid as the menu's title, rather than the console's faint flickering strips. Read each frame
 extern bool g_bright_hints;
