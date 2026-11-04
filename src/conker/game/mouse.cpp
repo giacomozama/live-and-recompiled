@@ -162,6 +162,11 @@ struct Motion {
 };
 Motion g_motion[kPorts];
 
+// the scroll wheel's turn a match has not stepped the weapons by yet (120 a notch), the player's whose mouse looks
+// (the wheel's messages name no mouse); Wheel takes it, at most kMaxScroll notches kept
+std::atomic<int> g_scroll[kPorts] = {};
+constexpr int kNotch = 120, kMaxScroll = 3 * kNotch;
+
 void Clear(int port) {
     std::lock_guard lock(g_lock);
     g_motion[port].dx = g_motion[port].dy = 0;
@@ -257,6 +262,18 @@ void Message(void* hwnd, uint32_t msg, uintptr_t wp, intptr_t lp) {
         case app::kMsgSize:
         case app::kMsgMouseWheel:
             menus::Wheel(int16_t(uint16_t(wp >> 16)));
+            // in a match, while the mouse looks (no menu up), the wheel steps the weapons (Wheel)
+            if (msg == app::kMsgMouseWheel && g_held.load() && warp::Multiplayer()) {
+                const int mode = keyboard::ActiveMode();
+                for (int p = 0; p < kPorts; p++) {
+                    if (!g_look[mode][p] || !input::Has(p, input::Kind::Mouse)) continue;
+                    const int turn = int16_t(uint16_t(wp >> 16));
+                    int was = g_scroll[p].load();
+                    while (!g_scroll[p].compare_exchange_weak(was, std::clamp(was + turn, -kMaxScroll, kMaxScroll))) {
+                    }
+                    break;
+                }
+            }
             break;
         case app::kMsgMove:
         case kRefresh:
@@ -568,6 +585,7 @@ bool WheelOpen(int port, int64_t now) { return now - g_wheel_us[port].load(std::
 struct WheelStick {
     float x = 0, y = 0;  // up positive
     bool moved = false;  // the mouse moved since the wheel opened; until then the keys and pads drive it
+    int item = -1;  // the item the scroll wheel pointed at (Scroll), -1 once the mouse moves
 };
 WheelStick g_wheel[kPorts];
 constexpr float kWheelCounts = 150.0f;  // counts from the middle to the rim at 100% sensitivity
@@ -580,16 +598,79 @@ bool Aiming(int port, int64_t now) {
 
 }  // namespace
 
+namespace {
+
+// The scroll wheel steps a player's weapon. The inventory's slot is at +0x34, each slot 0x38 bytes from +0x40 and in
+// use while its first byte is set.
+// - The wheel shut: as the game's own switch does (0x330060, which goes round the eight slots for one of a kind), the
+//   next slot in use round from it taken, and [[player+0x568]+0x530] cleared as it changes.
+// - The weapons' wheel open: the wheel picks by the angle its arrow ([hud+0x2C], degrees) eases to from the left stick,
+//   so a slot written there is pulled back; the mouse's stick (WheelStick) points at the next item instead. The wheel
+//   shows the slots in use in order on an arc round the top (0x1CB060 puts its arrow on one): one item straight up,
+//   two across 180 degrees, more across 240, the first at the left, item k of n at 90 + span/2 - k span/(n - 1).
+//   The item pointed at is kept, so notches quicker than the arrow go on from it.
+// Away from the player steps back (left on the wheel), toward them on. Not while the inventory holds an item of its
+// own ([inventory+0x30], which takes the slots' place), nor with a single slot in use, nor on the chosen slot's own
+// wheel ([hud+0x4C]).
+void Scroll(int port, uint32_t inventory, uint32_t player, bool open, bool weapons) {
+    constexpr uint32_t kSlot = 0x34, kHeld = 0x30, kSlots = 0x40, kSlotSize = 0x38, kCount = 8;
+    constexpr uint32_t kState = 0x568, kSwitch = 0x530;
+    int turn = g_scroll[port].load(std::memory_order_relaxed);
+    const int notches = turn / kNotch;
+    while (!g_scroll[port].compare_exchange_weak(turn, turn - (turn / kNotch) * kNotch)) {
+    }
+    if (!notches || (open && !weapons) || !Readable(inventory, kSlots + kCount * kSlotSize) || R32(inventory + kHeld))
+        return;
+    const uint32_t was = R32(inventory + kSlot);
+    if (was >= kCount) return;
+    int items[kCount], n = 0, at = -1;
+    for (uint32_t i = 0; i < kCount; i++)
+        if (mem::Base()[inventory + kSlots + i * kSlotSize]) {
+            if (i == was) at = n;
+            items[n++] = int(i);
+        }
+    if (n < 2 || at < 0) return;
+    const int step = notches > 0 ? -1 : 1;
+
+    if (open) {
+        std::lock_guard lock(g_pad_lock);
+        WheelStick& w = g_wheel[port];
+        int k = w.item >= 0 && w.item < n ? w.item : at;
+        k = ((k + step * std::abs(notches)) % n + n) % n;
+        const float span = n == 2 ? 180.0f : 240.0f;
+        const float degrees = 90.0f + span / 2 - float(k) * span / float(n - 1);
+        const float r = degrees * 3.14159265f / 180.0f;
+        w.x = std::cos(r), w.y = std::sin(r);
+        w.moved = true;
+        w.item = k;
+        LOG_FIRST(1, "mouse: the scroll wheel points the weapon wheel");
+        return;
+    }
+
+    const int k = ((at + step * std::abs(notches)) % n + n) % n;
+    const uint32_t slot = uint32_t(items[k]);
+    if (slot == was) return;
+    std::memcpy(mem::Base() + inventory + kSlot, &slot, 4);
+    if (Readable(player + kState, 4)) {
+        const uint32_t state = R32(player + kState);
+        if (Readable(state + kSwitch, 4)) std::memset(mem::Base() + state + kSwitch, 0, 4);
+    }
+    LOG_FIRST(1, "mouse: the scroll wheel steps the weapons");
+}
+
+}  // namespace
+
 // 0x1C7C60, before it draws a match's HUD (the object at hud): notes the player whose weapon wheel is held open
 void Wheel(uint32_t hud) {
     constexpr uint32_t kInventory = 0x38, kWheels[] = {0x48, 0x4C}, kOwner = 0x0C, kActionsIndex = 0x60;
     if (!warp::Multiplayer() || !Readable(hud + kInventory, 0x18)) return;
-    bool open = false;
+    bool open = false, weapons = false;
     for (uint32_t w : kWheels) {
         const uint32_t state = R32(hud + w);
-        open |= Readable(state, 4) && R32(state) == 1;
+        const bool held = Readable(state, 4) && R32(state) == 1;
+        open |= held;
+        if (w == kWheels[0]) weapons = held;
     }
-    if (!open) return;
     const uint32_t inventory = R32(hud + kInventory);
     if (!Readable(inventory + kOwner, 4)) return;
     const uint32_t player = R32(inventory + kOwner);
@@ -597,8 +678,11 @@ void Wheel(uint32_t hud) {
     uint16_t port;
     std::memcpy(&port, mem::Base() + player + kActionsIndex, 2);
     if (port >= kPorts) return;
-    if (!WheelOpen(port, Now())) LOGR("mouse: player %u's weapon wheel is open, the mouse points it", port + 1u);
-    g_wheel_us[port].store(Now(), std::memory_order_relaxed);
+    if (open) {
+        if (!WheelOpen(port, Now())) LOGR("mouse: player %u's weapon wheel is open, the mouse points it", port + 1u);
+        g_wheel_us[port].store(Now(), std::memory_order_relaxed);
+    }
+    if (std::abs(g_scroll[port].load(std::memory_order_relaxed)) >= kNotch) Scroll(port, inventory, player, open, weapons);
 }
 
 // 0x2F99A0, the camera's turn by the stick (see the hook at the end of the file), after it has run: this frame's
@@ -778,6 +862,7 @@ void Pad(int port, input::Pad& pad) {
             const float len = std::hypot(w.x, w.y);
             if (len > 1.0f) w.x /= len, w.y /= len;
             w.moved = true;
+            w.item = -1;
         }
         const float len = std::hypot(w.x, w.y);
         if (w.moved && len >= kWheelPush) {
