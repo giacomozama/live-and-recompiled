@@ -15,6 +15,7 @@
 #include "xdk/hle.h"
 #include "cpu/x86_ops.h"
 #include "core/diag.h"
+#include "core/input.h"
 #include "core/loadtrace.h"
 #include "xdk/d3d8.h"
 #include "xdk/dsound.h"
@@ -25,6 +26,7 @@
 #include "common/fur.h"
 #include "common/grass.h"
 #include "common/loading.h"
+#include "common/ui.h"
 
 namespace {
 
@@ -92,17 +94,24 @@ X86_FUNC(sub_000601D0) {
 // and takes a skip (A, B or Start: 0x4110 in the pressed bits at +8 of the pad record 0x4E020 returns) only once the
 // cache copy queue is empty, so a press while the first launch's copy runs was lost and the movies looked
 // unskippable. Remember that press and hand it back each frame until the intro takes it, then put the pad as it was
-// so nothing else reads it a second time.
+// so nothing else reads it a second time. A left click (any player's mouse, the settings menu shut) skips as A does
+// (0x100): the mouse's buttons are bound to actions, not to A.
 X86_EXTERN_FUNC(__imp__sub_001F6C50);
 X86_FUNC(sub_001F6C50) {
     using kernel::R32;
-    constexpr uint32_t kSkipButtons = 0x4110;
+    constexpr uint32_t kSkipButtons = 0x4110, kA = 0x100;
+    constexpr int kMouse1 = 0x01;
     static uint32_t intro = 0, held = 0;
+    static bool clicked = false;
     const uint32_t self = ctx.eax;
     if (self != intro) intro = self, held = 0;
     const uint32_t pad = kernel::CallGuest(ctx, 0x4E020, {1});
     const uint32_t pressed = R32(pad + 8);
     held |= pressed & kSkipButtons;
+    bool click = false;
+    for (int p = 0; p < input::kPorts && !ui::Open(); p++) click |= input::KeyDown(p, kMouse1);
+    if (click && !clicked) held |= kA;  // pressed now, not held from before
+    clicked = click;
     kernel::W32(pad + 8, pressed | held);
     __imp__sub_001F6C50(ctx, base);
     kernel::W32(pad + 8, pressed);
