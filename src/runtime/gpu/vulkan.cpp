@@ -1128,8 +1128,7 @@ private:
     void FinishFront(Target& t);
     bool KeepPicture(const Surface& front, uint32_t slot);
     bool AcquireImage(uint32_t& bi, VkSemaphore acquired);
-    void DrawFrame(Image* picture, uint32_t bi);
-    void BlitFrame(VkImageView src);
+    void DrawFrame(Image* picture, uint32_t bi, bool fsr = true);
     void BuildUi();
     void DrawUi();
     void QueuePresent(uint32_t bi);
@@ -5440,19 +5439,6 @@ bool VulkanBackend::AcquireImage(uint32_t& bi, VkSemaphore acquired) {
     return true;
 }
 
-void VulkanBackend::BlitFrame(VkImageView src) {
-    // 16:9 when the console reports a widescreen display, else 4:3, or the shape a patched title draws
-    float aspect = app::FrameAspect();
-    float w = float(bb_w_);
-    float h = float(bb_h_);
-    float vw = std::min(w, h * aspect);
-    float vh = vw / aspect;
-    float uv[4] = {0, 0, 1, 1};
-    SetViewport((w - vw) / 2, (h - vh) / 2, vw, vh);
-    SetScissor(0, 0, int32_t(bb_w_), int32_t(bb_h_));
-    Blit(src, uv, {.gamma = gamma_, .rtv = swap_fmt_});
-}
-
 // the overlay, once a frame: each of the frame's pictures draws it (DrawUi)
 void VulkanBackend::BuildUi() {
     std::lock_guard lock(app::UiLock());
@@ -5476,9 +5462,12 @@ void VulkanBackend::DrawUi() {
     ForgetDrawCmd();
 }
 
-// a picture of the frame, readable (null: none), into the swap chain image bi, the overlay over it
-void VulkanBackend::DrawFrame(Image* picture, uint32_t bi) {
+// a picture of the frame, readable (null: none), into the swap chain image bi, the overlay over it; fsr false draws
+// it without FSR's upscaling and sharpening whatever the settings (the menu's blurred picture)
+void VulkanBackend::DrawFrame(Image* picture, uint32_t bi, bool fsr) {
     const app::Settings& set = app::Get();
+    fsr = fsr && set.fsr;
+    // 16:9 when the console reports a widescreen display, else 4:3, or the shape a patched title draws
     float aspect = app::FrameAspect();
     float w = float(bb_w_);
     float h = float(bb_h_);
@@ -5489,7 +5478,7 @@ void VulkanBackend::DrawFrame(Image* picture, uint32_t bi) {
 
     VkImageView final_src = picture ? picture->Sampled() : VK_NULL_HANDLE;
 
-    if (picture && set.fsr) {
+    if (picture && fsr) {
         if (picture->w < out_w || picture->h < out_h) {
             if (!fsr_easu_ || fsr_easu_->w != out_w || fsr_easu_->h != out_h) {
                 if (fsr_easu_) Retire(std::move(fsr_easu_));
@@ -5538,7 +5527,7 @@ void VulkanBackend::DrawFrame(Image* picture, uint32_t bi) {
     if (final_src) {
         SetViewport((w - vw) / 2, (h - vh) / 2, vw, vh);
         SetScissor(0, 0, int32_t(bb_w_), int32_t(bb_h_));
-        if (set.fsr) {
+        if (fsr) {
             float sharpness = float(set.fsr_sharpness) / 100.0f;
             float p[4] = {
                 1.0f / float(out_w),
@@ -5912,7 +5901,7 @@ void VulkanBackend::Redisplay(bool blur) {
                 pic = menu_blur_[1].get();
             }
         }
-        DrawFrame(pic, bi);
+        DrawFrame(pic, bi, pic == shown_.get());
         Submit(false, f.acquired[0], present_sem_[bi]);
         QueuePresent(bi);
         shown = 1;

@@ -69,7 +69,7 @@ void Load() {
     s.ambient_occlusion_radius = t["ambient_occlusion_radius"].value_or(s.ambient_occlusion_radius);
     s.fog = t["fog"].value_or(s.fog);
     s.fsr = t["fsr"].value_or(s.fsr);
-    s.fsr_sharpness = t["fsr_sharpness"].value_or(s.fsr_sharpness);
+    s.fsr_sharpness = std::min<uint32_t>(t["fsr_sharpness"].value_or(s.fsr_sharpness), 100);
     s.volume = std::min<uint32_t>(t["volume"].value_or(s.volume), 100);
     s.audio_device = t["audio_device"].value_or(s.audio_device);
     s.menu_sounds = t["menu_sounds"].value_or(s.menu_sounds);
