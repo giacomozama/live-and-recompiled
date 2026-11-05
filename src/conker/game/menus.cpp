@@ -1031,6 +1031,8 @@ struct Pointer {
     int steps = 0;  // presses toward it so far
     int jump = -1;  // the item a frontend list was sent to (g_jump), -1 none
     int64_t jump_us = 0;  // when
+    float drag = 0;  // a frontend screen without a list: the mouse's motion up (-) or down not stepped yet, 480 high
+    float drag_y = -1;  // and the cursor's y in the frame when last seen there, -1 none
 };
 Pointer g_pointer;  // game thread
 std::atomic<int> g_wheel{0};  // the wheel's turn not stepped yet, 120 a notch
@@ -1250,8 +1252,11 @@ void menus::Pad(int port, input::Pad& pad) {
     const bool list = now - l.shown_us <= kShownUs;
     const bool pub = !list && warp::CurrentLevel() == kFrontend && R32(kFrontendUi);
     const bool pause = !list && !pub && now - g_pause_us.load(std::memory_order_relaxed) <= kShownUs;
+    // a frontend screen with none of those (the multiplayer character choice's army and class carousels): the wheel
+    // steps it up or down as the d-pad does, and nothing else
+    const bool wheel_only = !list && !pub && !pause && warp::Frontend();
     // the on-screen keyboard over a list takes the mouse itself (sub_002563E0)
-    if (ui::Open() || app::Background() || Typing() || (!list && !pub && !pause)) {
+    if (ui::Open() || app::Background() || Typing() || (!list && !pub && !pause && !wheel_only)) {
         p = {};
         p.button = app::KeyDown(1);  // the click that shut the settings menu is not one here
         g_wheel.store(0);
@@ -1308,6 +1313,28 @@ void menus::Pad(int port, input::Pad& pad) {
         p.target = -1, p.pick = false;
         p.press = pub ? (w > 0 ? kPadLeft : kPadRight) : w > 0 ? kPadUp : kPadDown;
         p.from = -1;  // a step past the end is no reason to stop anything
+        p.press_us = now;
+        pad.buttons |= p.press;
+        return;
+    }
+    // and the mouse moved up or down steps it a press for each kDragStep of the frame's height it goes, at most
+    // kDragKept steps waiting
+    if (!wheel_only) p.drag_y = -1, p.drag = 0;
+    if (wheel_only) {
+        constexpr float kDragStep = 40.0f, kDragKept = 2.0f;
+        p.button = app::KeyDown(1);
+        float x, y, wx, wy, bw = 640, bh = 480;
+        if (!CursorInFrame(x, y, wx, wy, bw, bh) || bh <= 0) {
+            p.drag_y = -1, p.drag = 0;
+            return;
+        }
+        if (p.drag_y >= 0)
+            p.drag = std::clamp(p.drag + (y - p.drag_y) * 480.0f / bh, -kDragStep * kDragKept, kDragStep * kDragKept);
+        p.drag_y = y;
+        if (std::abs(p.drag) < kDragStep) return;
+        p.press = p.drag > 0 ? kPadDown : kPadUp;
+        p.drag -= p.drag > 0 ? kDragStep : -kDragStep;
+        p.target = -1, p.pick = false, p.from = -1;
         p.press_us = now;
         pad.buttons |= p.press;
         return;
