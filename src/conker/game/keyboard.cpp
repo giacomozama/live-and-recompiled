@@ -520,9 +520,8 @@ void Pad(int port, input::Pad& pad) {
     // screen it is B instead
     if (start || (!pause_keys && (port == 0 || input::Has(port, input::Kind::Keyboard)) && ui::EscStart()))
         pad.buttons |= kPadStart;
-    // Back is the console's Xbox Live, which there is none of: the quit key presses it on the pub's pictures alone,
-    // where it asks to quit instead (gamepad::Pad)
-    if (held[kButtonBack] && gamepad::Pub()) pad.buttons |= kPadBack;
+    // Back asks to quit on the pub's pictures, and gamepad::Pad keeps it from the game everywhere (no Xbox Live here)
+    if (held[kButtonBack]) pad.buttons |= kPadBack;
     if (held[kButtonLS]) pad.buttons |= kPadLS;
     if (held[kButtonRS]) pad.buttons |= kPadRS;
 
