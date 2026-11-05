@@ -68,6 +68,7 @@
 #include "gpu/shaders.h"
 #include "gpu/smaa_hlsl.h"
 #include "gpu/smaa_tex.h"
+#include "gpu/fsr_hlsl.h"
 #include "gpu/texture.h"
 #include "gpu/vertex.h"
 #include "kernel/kernel.h"
@@ -1082,7 +1083,7 @@ private:
     void FinishFront(Target& t);
     bool KeepPicture(const Surface& front, uint32_t slot);
     bool AcquireImage(uint32_t& bi, VkSemaphore acquired);
-    void DrawFrame(VkImageView picture, uint32_t bi);
+    void DrawFrame(Image* picture, uint32_t bi);
     void BlitFrame(VkImageView src);
     void BuildUi();
     void DrawUi();
@@ -1415,6 +1416,7 @@ private:
     // it goes through
     std::chrono::steady_clock::time_point held_since_{};
     ImageRef menu_blur_[2];
+    ImageRef fsr_easu_;
     uint32_t gen_taken_ = 0;
     bool replay_ = false;
     struct Run {
@@ -5098,7 +5100,55 @@ void VulkanBackend::DrawUi() {
 }
 
 // a picture of the frame, readable (null: none), into the swap chain image bi, the overlay over it
-void VulkanBackend::DrawFrame(VkImageView picture, uint32_t bi) {
+void VulkanBackend::DrawFrame(Image* picture, uint32_t bi) {
+    const app::Settings& set = app::Get();
+    float aspect = app::FrameAspect();
+    float w = float(bb_w_);
+    float h = float(bb_h_);
+    float vw = std::min(w, h * aspect);
+    float vh = vw / aspect;
+    uint32_t out_w = std::max(1u, uint32_t(std::round(vw)));
+    uint32_t out_h = std::max(1u, uint32_t(std::round(vh)));
+
+    VkImageView final_src = picture ? picture->Sampled() : VK_NULL_HANDLE;
+
+    if (picture && set.fsr) {
+        if (picture->w < out_w || picture->h < out_h) {
+            if (!fsr_easu_ || fsr_easu_->w != out_w || fsr_easu_->h != out_h) {
+                if (fsr_easu_) Retire(std::move(fsr_easu_));
+                fsr_easu_ = NewImage({.fmt = kBgra, .w = out_w, .h = out_h,
+                                      .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT});
+            }
+            if (fsr_easu_) {
+                float con[16] = {
+                    float(picture->w) / float(out_w),
+                    float(picture->h) / float(out_h),
+                    0.5f * float(picture->w) / float(out_w) - 0.5f,
+                    0.5f * float(picture->h) / float(out_h) - 0.5f,
+
+                    1.0f / float(picture->w),
+                    1.0f / float(picture->h),
+                    1.0f / float(picture->w),
+                    -1.0f / float(picture->h),
+
+                    -1.0f / float(picture->w),
+                    2.0f / float(picture->h),
+                    1.0f / float(picture->w),
+                    2.0f / float(picture->h),
+
+                    0.0f,
+                    4.0f / float(picture->h),
+                    float(out_w),
+                    float(out_h)
+                };
+                const VkImageView src_views[3] = {picture->Sampled(), VK_NULL_HANDLE, VK_NULL_HANDLE};
+                Pass(kFsrHlsl, "easu", kBgra, *fsr_easu_, out_w, out_h, src_views, con, -1, 16);
+                Transition(*fsr_easu_, kRead);
+                final_src = fsr_easu_->view;
+            }
+        }
+    }
+
     Image& bb = *bb_[bi];
     SetTargets(&bb, nullptr);
     bound_rt_ = bound_ds_ = nullptr;
@@ -5107,7 +5157,28 @@ void VulkanBackend::DrawFrame(VkImageView picture, uint32_t bi) {
     ca.clearValue.color = {{0, 0, 0, 1}};
     VkClearRect cr{{{0, 0}, {bb.w, bb.h}}, 0, 1};
     vkCmdClearAttachments(cmd_, 1, &ca, 1, &cr);
-    if (picture) BlitFrame(picture);
+
+    if (final_src) {
+        SetViewport((w - vw) / 2, (h - vh) / 2, vw, vh);
+        SetScissor(0, 0, int32_t(bb_w_), int32_t(bb_h_));
+        if (set.fsr) {
+            float sharpness = float(set.fsr_sharpness) / 100.0f;
+            float p[4] = {
+                1.0f / float(out_w),
+                1.0f / float(out_h),
+                sharpness,
+                gamma_ ? 1.0f : 0.0f
+            };
+            Alloc cb = Upload(kPassCbBytes);
+            std::memcpy(cb.cpu, p, sizeof(p));
+            DrawFullScreen(EnsurePassPipeline(kFsrHlsl, "rcas", swap_fmt_, -1), cb,
+                           {final_src, lut_->view, VK_NULL_HANDLE, VK_NULL_HANDLE});
+        } else {
+            float uv[4] = {0, 0, 1, 1};
+            Blit(final_src, uv, {.gamma = gamma_, .rtv = swap_fmt_});
+        }
+    }
+
     DrawUi();
     Transition(bb, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
 }
@@ -5377,7 +5448,7 @@ void VulkanBackend::Present(const Surface& front) {
         uint32_t bi = 0;
         if (!AcquireImage(bi, f.acquired[i])) break;
         BeginCommands(f.present[i]);
-        DrawFrame(pictures[i], bi);
+        DrawFrame(i < sources.size() ? sources[i] : nullptr, bi);
         Submit(false, f.acquired[i], present_sem_[bi]);
         held_.push_back({bi, now + std::chrono::duration_cast<std::chrono::steady_clock::duration>(
                                        std::chrono::duration<double>(gen_period_ * double(i) / double(pictures.size())))});
@@ -5435,7 +5506,7 @@ void VulkanBackend::Redisplay(bool blur) {
     if (AcquireImage(bi, f.acquired[0])) {
         BeginCommands(f.present[0]);
         if (shown_) Transition(*shown_, kRead);  // a remade target copied its picture out of it
-        VkImageView picture = shown_ ? shown_->view : VK_NULL_HANDLE;
+        Image* pic = shown_.get();
         if (shown_ && k > 0.0f) {
             uint32_t w = std::max(shown_->w / 2, 1u), h = std::max(shown_->h / 2, 1u);
             bool ok = true;
@@ -5454,10 +5525,10 @@ void VulkanBackend::Redisplay(bool blur) {
                 const VkImageView from_half[3] = {menu_blur_[0]->Sampled(), VK_NULL_HANDLE, VK_NULL_HANDLE};
                 Pass(kMenuBlurHlsl, "vblur", kBgra, *menu_blur_[1], w, h, from_half, p, -1);
                 Transition(*menu_blur_[1], kRead);
-                picture = menu_blur_[1]->view;
+                pic = menu_blur_[1].get();
             }
         }
-        DrawFrame(picture, bi);
+        DrawFrame(pic, bi);
         Submit(false, f.acquired[0], present_sem_[bi]);
         QueuePresent(bi);
         shown = 1;

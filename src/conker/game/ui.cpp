@@ -942,6 +942,11 @@ void Draw(double fps) {
 
                 ImGui::SeparatorText("Quality");
                 Slider("Render %", &s.render_percent, 25, 400, app::Settings{}.render_percent);
+                ImGui::Checkbox("AMD FSR 1.0", &s.fsr);
+                Hint("AMD FidelityFX Super Resolution: edge-adaptive spatial upscaling & contrast-adaptive sharpening.", true);
+                if (s.fsr) {
+                    Slider("FSR sharpness %", &s.fsr_sharpness, 0, 100, app::Settings{}.fsr_sharpness);
+                }
                 ImGui::Checkbox("V-Sync", &s.vsync);
 
                 constexpr uint32_t kRates[] = {30, 60, 120, 180, 240};
