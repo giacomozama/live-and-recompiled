@@ -45,6 +45,7 @@
 #include "core/input.h"
 #include "gpu/backend.h"
 #include "kernel/kernel.h"
+#include "version.h"
 
 namespace xnet {
 // runtime xdk/xnet.cpp
@@ -1256,8 +1257,17 @@ void Draw(double fps) {
 
         ImGui::Separator();
         ImGui::AlignTextToFramePadding();
+        // the build's version (git describe, cmake/version.cmake) at the footer line's far right; on a narrow window the
+        // hint is cut short of it
+        const float version_x = ImGui::GetWindowContentRegionMax().x - ImGui::CalcTextSize(XBE_VERSION).x;
+        const ImVec2 line = ImGui::GetCursorScreenPos();
+        ImGui::PushClipRect(line, ImVec2(ImGui::GetWindowPos().x + version_x - ImGui::GetStyle().ItemSpacing.x * 2.0f,
+                                         line.y + ImGui::GetFrameHeight()), true);
         ImGui::TextDisabled("Stick or d-pad move, LB / RB turn the tabs, A select, B back. F1 or Start + Back open and close this menu. "
                             "Changes are saved automatically.");
+        ImGui::PopClipRect();
+        ImGui::SameLine(version_x);
+        ImGui::TextDisabled("%s", XBE_VERSION);
         ImGui::PopStyleVar(2);
     }
     ImGui::End();

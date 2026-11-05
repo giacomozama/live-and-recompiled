@@ -37,6 +37,16 @@ set(XBE_ALSO_SHA1 68a37f0d03d73dabc86a848df5ec1820dd551254)
 # target name = GAME_EXE in tools/build.bat, xbe = GAME_XBE
 add_xbe_image(Game default.xbe game.toml ${GAME_PARTITIONS} game)
 
+# the version the settings menu shows (generated/version.h, cmake/version.cmake): the checkout's `git describe`, read
+# again every build
+set(VERSION_H ${CMAKE_BINARY_DIR}/generated/version.h)
+add_custom_target(version_header
+    COMMAND ${CMAKE_COMMAND} -DROOT=${CMAKE_CURRENT_SOURCE_DIR} -DOUT=${VERSION_H} -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/version.cmake
+    BYPRODUCTS ${VERSION_H}
+    VERBATIM)
+add_dependencies(Game_host version_header)
+target_include_directories(Game_host PRIVATE ${CMAKE_BINARY_DIR}/generated)
+
 # a player kit (the Zig builds, with the game in assets/): Setup and everything but the game code, for players to build
 # from their own copy
 if(XBE_ZIG_TARGET AND TARGET Game)
