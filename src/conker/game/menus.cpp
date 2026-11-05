@@ -161,32 +161,19 @@ bool ConkerOnlineOptions(X86Context& ctx, uint8_t* base) {
 // A match's pause menu (0x1F77C0) builds its items each frame, UTF-16 key names at 0x87C828: Continue, Quit, Xbox Live,
 // Controller, then Change Class, Change Team and Restart when they apply. ebp is their count, [esp+0x28 + item] set
 // skips an item (greyed), and the indices of the last three are [esp+0x1C], [esp+0x20] and ebx (-1 when absent);
-// Xbox Live and Controller are the fixed 2 and 3. [[hook]] before 0x1F8CEC, the main page's input and draw: Xbox Live
-// goes, the rest move up, and Controller (now 2) shows FT_Options' label ("Options").
+// Xbox Live and Controller are the fixed 2 and 3. [[hook]] before 0x1F8CEC, the main page's input and draw: Xbox Live,
+// which there is none of, shows FT_Options' label ("Options") in its place, never greyed.
 void ConkerPauseItems(X86Context& ctx, uint8_t* base) {
-    constexpr uint32_t kItems = 0x87C828, kXboxLiveKey = 0x5F74CC, kControllerKey = 0x5F74B0;
-    const uint32_t skip = ctx.esp + 0x28;
-    const int count = int32_t(ctx.ebp);
-    if (count < 4 || R32(kItems + 8) != kXboxLiveKey) return;
-    for (int i = 2; i < count - 1; i++) {
-        W32(kItems + i * 4, R32(kItems + (i + 1) * 4));
-        base[skip + i] = base[skip + i + 1];
-    }
-    base[skip + count - 1] = 0;
+    constexpr uint32_t kItems = 0x87C828, kXboxLiveKey = 0x5F74CC;
+    if (int32_t(ctx.ebp) < 4 || R32(kItems + 8) != kXboxLiveKey) return;
     static const uint32_t options = GuestText("FT_Options");
-    if (R32(kItems + 8) == kControllerKey) W32(kItems + 8, options);
-    ctx.ebp = uint32_t(count - 1);
-    auto up = [&](uint32_t& index) {
-        if (int32_t(index) > 2 && int32_t(index) < count) index--;
-    };
-    up(kernel::G<uint32_t>(ctx.esp + 0x1C));
-    up(kernel::G<uint32_t>(ctx.esp + 0x20));
-    up(ctx.ebx);
+    W32(kItems + 8, options);
+    base[ctx.esp + 0x28 + 2] = 0;
 }
 
-// [[hook]] before 0x1F8DEB, A on an item other than Continue and Quit, eax the item: Options (2) opens the settings
-// menu for the pausing player's pad ([0x776558], a player a port) and goes on as the Controller page did, with the
-// select sound (0x1F8E97); the rest skip the fixed Xbox Live and Controller tests (0x1F8E37)
+// [[hook]] before 0x1F8DEB, A on an item other than Continue and Quit, eax the item: Options (Xbox Live's 2) opens the
+// settings menu for the pausing player's pad ([0x776558], a player a port), with the select sound (0x1F8E97); the
+// rest go on to the game's Controller test (0x1F8E1C), so Controller opens its own page
 bool ConkerPauseOptions(X86Context& ctx, uint8_t* base) {
     constexpr uint32_t kPlayer = 0x776558;
     if (ctx.eax != 2) return false;

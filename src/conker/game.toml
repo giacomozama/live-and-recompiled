@@ -415,14 +415,14 @@ after = true
 call = "ConkerMpMenuCursor"
 
 [[hook]]
-at = 0x1F8CEC  # match pause menu, main page: Xbox Live out of the items, Controller shown as Options
+at = 0x1F8CEC  # match pause menu, main page: Options in Xbox Live's place
 call = "ConkerPauseItems"
 
 [[hook]]
-at = 0x1F8DEB  # its A: Options opens the settings menu, the rest past the fixed Xbox Live and Controller tests
+at = 0x1F8DEB  # its A: Options opens the settings menu, the rest past the Xbox Live test (Controller its page)
 call = "ConkerPauseOptions"
 on_true = 0x1F8E97
-on_false = 0x1F8E37
+on_false = 0x1F8E1C
 
 [[hook]]
 at = 0x23A2DE  # Online menu: its items with Options after them
