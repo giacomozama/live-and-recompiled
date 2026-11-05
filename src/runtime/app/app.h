@@ -33,6 +33,9 @@ struct Settings {
     // ambient occlusion from the depth buffer, first: its strength in % (0 off) and its reach in the title's units
     uint32_t ambient_occlusion = 0;
     uint32_t ambient_occlusion_radius = 30;
+    // AMD FidelityFX Super Resolution 1.0 (EASU spatial upscaling + RCAS contrast-adaptive sharpening)
+    bool fsr = false;
+    uint32_t fsr_sharpness = 80;
     uint32_t volume = 100;           // the game's sound in %, the mixer's output scaled by its square
     std::string audio_device;         // an audio::Device id, "" the system default
     bool menu_sounds = true;          // the settings menu's sounds (audio::Play)
