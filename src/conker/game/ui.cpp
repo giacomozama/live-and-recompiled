@@ -367,6 +367,8 @@ void DrawController(int player) {
     Slider("Vibration %", &gamepad::g_vibration_percent[player], 0, 100, 100);
     ImGui::EndDisabled();
     Hint("How hard the controller shakes. Takes effect from the next rumble.");
+    Hint("Invert aim and Vibration are single player only: in a match the profile's own (the game's profile menu) "
+         "decide. Vibration % applies in matches too.");
 }
 
 // a player's mouse look
@@ -377,6 +379,7 @@ void DrawMouse(int player) {
     Slider("Horizontal %", &mouse::g_sensitivity[player], 10, 500, mouse::kDefaultSensitivity);
     Slider("Vertical %", &mouse::g_sensitivity_y[player], 10, 500, mouse::kDefaultSensitivity);
     ImGui::Checkbox("Invert Y", &mouse::g_invert_y[player]);
+    Hint("Single player only: in a match the mouse follows the profile's Invert.", true);
 }
 
 // a player's keys

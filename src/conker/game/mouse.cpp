@@ -59,6 +59,7 @@
 
 #include "app/app.h"
 #include "common/display.h"
+#include "common/gamepad.h"
 #include "common/menus.h"
 #include "common/ui.h"
 #include "common/warp.h"
@@ -592,6 +593,10 @@ bool Aiming(int port, int64_t now) {
     return InTank(port, now) && now - g_aim_us[port].load(std::memory_order_relaxed) < kAimUs;
 }
 
+// the mouse's own turn (Turn, TankAim) inverted: single player's by its setting, a match's by the player's profile,
+// as the game inverts the stick there
+bool InvertTurn(int port) { return warp::Multiplayer() ? gamepad::MatchInvert(port) : g_invert_y[port]; }
+
 }  // namespace
 
 namespace {
@@ -766,7 +771,7 @@ void Turn(uint32_t actions, uint32_t turn, uint32_t ret, uint32_t player) {
     // counts into degrees: right lowers the yaw, up raises the pitch (as the stick does); raw y grows downward
     const float yaw = float(dx) * kDegreesPerCount * float(g_sensitivity[port]) / 100.0f;
     float pitch = float(-dy) * kDegreesPerCount * float(g_sensitivity_y[port]) / 100.0f;
-    if (g_invert_y[port]) pitch = -pitch;
+    if (InvertTurn(int(port))) pitch = -pitch;
     // the frame's turns, which come off the yaw and the pitch
     WF(turn + kYawTurn, RF(turn + kYawTurn) + yaw);
     WF(turn + kPitchTurn, RF(turn + kPitchTurn) - pitch);
@@ -818,7 +823,7 @@ void TankAim(uint32_t player) {
     LOG_FIRST(1, "mouse: look aims the tank");
     const float yaw = float(dx) * kDegreesPerCount * float(g_sensitivity[port]) / 100.0f;
     float pitch = float(-dy) * kDegreesPerCount * float(g_sensitivity_y[port]) / 100.0f;
-    if (g_invert_y[port]) pitch = -pitch;
+    if (InvertTurn(int(port))) pitch = -pitch;
     WF(cam + kYaw, RF(cam + kYaw) - yaw);
     WF(cam + kPitch, RF(cam + kPitch) - pitch);
 }
@@ -893,7 +898,7 @@ void Pad(int port, input::Pad& pad) {
         }
         // counts into degrees; raw y grows downward
         float y = float(-dy) * kDegreesPerCount * float(g_sensitivity_y[port]) / 100.0f;
-        if (g_invert_y[port]) y = -y;
+        if (!warp::Multiplayer() && g_invert_y[port]) y = -y;  // a match's stick takes the profile's invert
         l.x.debt = std::clamp(l.x.debt + float(dx) * kDegreesPerCount * float(g_sensitivity[port]) / 100.0f,
                               -l.x.max_debt, l.x.max_debt);
         l.y.debt = std::clamp(l.y.debt + y, -l.y.max_debt, l.y.max_debt);

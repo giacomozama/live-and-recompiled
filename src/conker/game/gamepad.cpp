@@ -2,6 +2,7 @@
 // before the game reads them, and its two Options pages, the pause menu's and the frontend's, open the settings menu
 // instead.
 #include <algorithm>
+#include <atomic>
 #include <cstdint>
 
 #include "cpu/x86_ops.h"
@@ -26,11 +27,26 @@
 // 0 to 3, through the table at 0x68C308): Emily, Victoria, Samantha and Elspeth, which 0x4D6E0 runs with two flags,
 // jump on A rather than a stick's click (Victoria, Elspeth) and the sticks swapped (Samantha, Elspeth). The keys
 // follow it (keyboard::SetScheme).
+// In a match the function takes neither byte: invert from the player's profile (profile+0x11B5, which 0x4D6E0 takes to
+// negate the camera stick's y, aiming or not) and vibration from profile+0x11B6 (through 0x4E250), as the profile's
+// own menu in the game sets them; players 3 and 4 get no invert. So the settings menu's invert aim and vibration are
+// single player's alone, and the mouse takes the profile's invert (MatchInvert) in place of its own. The strength
+// (Rumble) applies in both: the game has no setting for it.
 bool gamepad::g_invert_aim[input::kPorts] = {};
 bool gamepad::g_vibration[input::kPorts] = {true, true, true, true};
 uint32_t gamepad::g_vibration_percent[input::kPorts] = {100, 100, 100, 100};
 
-// the motors' speeds the game sets (XInputSetState, the player's port) scaled; a change applies from the next rumble
+namespace {
+// each player's invert as 0x4D1F0 last left it (*edi), the profile's in a match
+std::atomic<bool> g_game_invert[input::kPorts];
+}  // namespace
+
+bool gamepad::MatchInvert(int port) {
+    return port >= 0 && port < input::kPorts && g_game_invert[port].load(std::memory_order_relaxed);
+}
+
+// the motors' speeds the game sets (XInputSetState, the player's port) scaled; a change applies from the next rumble.
+// In a match too: the profile turns rumble on or off, but its strength is ours alone
 void gamepad::Rumble(int port, uint16_t& left, uint16_t& right) {
     if (port < 0 || port >= input::kPorts) return;
     const uint32_t percent = std::min(g_vibration_percent[port], 100u);
@@ -45,9 +61,12 @@ X86_FUNC(sub_0004D1F0) {
         base[0x84B140] = gamepad::g_invert_aim[player] ? 0 : 1;
         base[0x84B141] = gamepad::g_vibration[player] ? 1 : 0;
     }
-    const uint32_t scheme = ctx.eax;
+    const uint32_t scheme = ctx.eax, invert = ctx.edi;
     __imp__sub_0004D1F0(ctx, base);
-    if (player < uint32_t(input::kPorts)) keyboard::SetScheme(int(player), int(kernel::R32(scheme)));
+    if (player < uint32_t(input::kPorts)) {
+        keyboard::SetScheme(int(player), int(kernel::R32(scheme)));
+        g_game_invert[player].store(base[invert] != 0, std::memory_order_relaxed);
+    }
 }
 
 // 0x203B50: the pause menu's input, once a frame while paused (0x204060). Its page is [0x849AF8]: 0 the pause screen,
