@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <deque>
 #include <mutex>
 #include <set>
 #include <string>
@@ -1249,7 +1250,8 @@ void menus::Pad(int port, input::Pad& pad) {
     const bool list = now - l.shown_us <= kShownUs;
     const bool pub = !list && warp::CurrentLevel() == kFrontend && R32(kFrontendUi);
     const bool pause = !list && !pub && now - g_pause_us.load(std::memory_order_relaxed) <= kShownUs;
-    if (ui::Open() || app::Background() || (!list && !pub && !pause)) {
+    // the on-screen keyboard over a list takes the mouse itself (sub_002563E0)
+    if (ui::Open() || app::Background() || Typing() || (!list && !pub && !pause)) {
         p = {};
         p.button = app::KeyDown(1);  // the click that shut the settings menu is not one here
         g_wheel.store(0);
@@ -1495,4 +1497,202 @@ X86_FUNC(sub_003F9CB0) {
     const int word = name == "YES" ? 0 : name == "NO" ? 1 : -1;
     if (word >= 0 && out && int32_t(ctx.eax) >= 0)  // -1: not found, or found empty
         if (const uint32_t text = R32(out)) KeepYesNo(word, text);
+}
+
+// The multiplayer menus' on-screen keyboard (a profile's name: Rename Profile, a new profile), run by 0x256C90 each
+// frame it is up (from 0x21D810 and 0x226040), which inserts what its input 0x2563E0 returns at the text's cursor:
+// a character (0 < code < 0xFFFC; dropped once the name is full), -1 Backspace, 0xFFFC and 0xFFFD the cursor left and
+// right, 0xFFFE Create (0x256C90 returns 4, the name taken) and 0xFFFF Cancel (3, as B does). 0x2563E0 moves its
+// highlight by the pad of [[0x8470FC]+8] and on A (0x100 in that pad's buttons at +8) returns its key's code; the
+// highlight is a row [0x849D88] and a column [0x849D8C]: column 0 the buttons on the left, rows 0 to 5 (Create,
+// Cancel, Shift, Caps Lock, Symbol, Accented), and columns 1 to 10 the keys, rows 0 to 4, of the page [0x849D98]
+// (0 letters, 1 accented letters, 2 symbols): on row 3 columns 7 to 10 are Backspace, on row 4 1 to 6 Space, 7 and 8
+// the left arrow, 9 and 10 the right one. Pages 1 and 2 take rows 0 to 3 from their tables (0x6BE87E accented,
+// 0x6BE82E symbols, a UTF-16 character at (row * 10 + column) * 2, 0 no key); an accented letter is typed in lower
+// case as it plus 0x20 (0x178 as 0xFF, 0xDF as it is). 0x254F80 draws it, its origin its third and fourth arguments
+// (0, 0 from both): the keys 26 by 26 pixels of the 640 by 480 frame every 29, the first at 301, 176, the buttons on
+// the left 151 to 273 wide.
+//
+// While it is up, the keyboard types into it (the window's text input on: menus::Message queues what is typed and
+// 0x2563E0 returns one a frame, with the game's key sound 7 of 0x2431E0) and keyboard::Pad leaves the pad to the
+// controllers; the mouse moved over a key moves the highlight there (the move's sound 6) and a click on one presses A
+// on it for that frame.
+namespace {
+
+constexpr uint32_t kOskRow = 0x849D88, kOskColumn = 0x849D8C, kOskPage = 0x849D98;
+constexpr uint32_t kOskPadPointer = 0x8470FC, kOskA = 0x100;
+constexpr uint32_t kOskAccented = 0x6BE87E, kOskSymbols = 0x6BE82E;
+constexpr uint32_t kOskBackspace = 0xFFFFFFFF, kOskLeft = 0xFFFC, kOskRight = 0xFFFD, kOskCreate = 0xFFFE,
+                   kOskCancel = 0xFFFF;
+constexpr uint32_t kOskSound = 0x2431E0, kOskKeySound = 7, kOskMoveSound = 6;
+constexpr float kOskTop = 176 - 1.5f, kOskStep = 29, kOskKeys = 301 - 1.5f, kOskButtons0 = 149, kOskButtons1 = 276;
+constexpr size_t kOskQueue = 64;
+
+std::atomic<int64_t> g_typing_us{0};  // 0x2563E0 last ran
+std::atomic<bool> g_text_on{false};   // the window's text input asked on
+std::mutex g_typed_lock;
+std::deque<uint32_t> g_typed;  // codes for 0x2563E0 to return, under g_typed_lock
+float g_osk_x = 0, g_osk_y = 0;  // 0x254F80's origin, game thread
+struct OskPointer {
+    float x = -1, y = -1;  // the cursor in the window when last seen
+    bool button = false;
+};
+OskPointer g_osk_pointer;  // game thread
+
+// a character one of its pages has
+bool Typeable(uint32_t c) {
+    if (c == ' ' || (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')) return true;
+    if (c < 0x21 || c > 0xFFFF) return false;
+    for (int i = 0; i < 50; i++) {
+        const uint32_t symbol = kernel::G<uint16_t>(kOskSymbols + uint32_t(i) * 2);
+        const uint32_t accented = kernel::G<uint16_t>(kOskAccented + uint32_t(i) * 2);
+        if (symbol && c == symbol) return true;
+        if (!accented) continue;
+        const uint32_t lower = accented == 0x178 ? 0xFF : accented == 0xDF ? accented : accented + 0x20;
+        if (c == accented || c == lower) return true;
+    }
+    return false;
+}
+
+// the cell of the point (the frame's pixels), false off the keys; it may be one the page has no key on (OskKey)
+bool OskCell(float x, float y, int& row, int& column) {
+    x -= g_osk_x, y -= g_osk_y;
+    if (y < kOskTop) return false;
+    row = int((y - kOskTop) / kOskStep);
+    if (x >= kOskButtons0 && x < kOskButtons1) {
+        column = 0;
+        return row <= 5;
+    }
+    if (x < kOskKeys || x >= kOskKeys + 10 * kOskStep) return false;
+    column = 1 + int((x - kOskKeys) / kOskStep);
+    return row <= 4;
+}
+
+// the page has a key there
+bool OskKey(int row, int column) {
+    if (column == 0) return row >= 0 && row <= 5;
+    if (column < 1 || column > 10 || row < 0 || row > 4) return false;
+    if (row == 4 || (row == 3 && column > 6)) return true;  // Space and the arrows, Backspace
+    const uint32_t page = R32(kOskPage);
+    if (page != 1 && page != 2) return true;
+    const uint32_t table = page == 1 ? kOskAccented : kOskSymbols;
+    return kernel::G<uint16_t>(table + uint32_t(row * 10 + column) * 2) != 0;
+}
+
+void OskSound(X86Context& ctx, uint32_t sound) {
+    const uint32_t eax = ctx.eax;
+    ctx.eax = sound;
+    kernel::CallGuest(ctx, kOskSound, {});
+    ctx.eax = eax;
+}
+
+// it went (Create or Cancel): the typing stops at once
+void OskGone() {
+    g_typing_us.store(0);
+    {
+        std::lock_guard lock(g_typed_lock);
+        g_typed.clear();
+    }
+    if (g_text_on.exchange(false)) app::TextInput(false);
+}
+
+}  // namespace
+
+bool menus::Typing() {
+    const bool up = NowUs() - g_typing_us.load() <= kShownUs;
+    if (!up && g_text_on.load() && g_text_on.exchange(false)) app::TextInput(false);
+    return up;
+}
+
+void menus::Message(uint32_t msg, uintptr_t wp, intptr_t lp) {
+    if (NowUs() - g_typing_us.load() > kShownUs) return;
+    const bool repeat = (lp & (1 << 30)) != 0;
+    uint32_t code = 0;
+    if (msg == app::kMsgChar) {
+        if (Typeable(uint32_t(wp))) code = uint32_t(wp);
+    } else if (msg == app::kMsgKeyDown) {
+        switch (wp) {
+            case 0x0D: code = repeat ? 0 : kOskCreate; break;   // Enter
+            case 0x1B: code = repeat ? 0 : kOskCancel; break;   // Escape
+            case 0x08: code = kOskBackspace; break;
+            case 0x25: code = kOskLeft; break;
+            case 0x27: code = kOskRight; break;
+            default: break;
+        }
+    }
+    if (!code) return;
+    std::lock_guard lock(g_typed_lock);
+    if (g_typed.size() < kOskQueue) g_typed.push_back(code);
+}
+
+// 0x254F80: the keyboard drawn, its origin the third and fourth arguments
+X86_EXTERN_FUNC(__imp__sub_00254F80);
+X86_FUNC(sub_00254F80) {
+    g_osk_x = F32(ctx.esp + 0xC);
+    g_osk_y = F32(ctx.esp + 0x10);
+    __imp__sub_00254F80(ctx, base);
+}
+
+// 0x2563E0: the keyboard's input, each frame it is up
+X86_EXTERN_FUNC(__imp__sub_002563E0);
+X86_FUNC(sub_002563E0) {
+    const int64_t now = NowUs();
+    mouse::InMenu();
+    if (now - g_typing_us.exchange(now) > kShownUs) {  // it came up
+        {
+            std::lock_guard lock(g_typed_lock);
+            g_typed.clear();
+        }
+        // the click that opened it is not one on a key, nor does the cursor resting there move the highlight
+        g_osk_pointer = {};
+        float w, h;
+        app::Cursor(g_osk_pointer.x, g_osk_pointer.y, w, h);
+        g_osk_pointer.button = app::KeyDown(1);
+        if (!g_text_on.exchange(true)) app::TextInput(true);
+        if (TraceMouse()) LOGR("menu mouse: on-screen keyboard up");
+    }
+
+    // what was typed, one a frame
+    uint32_t code = 0;
+    {
+        std::lock_guard lock(g_typed_lock);
+        if (!g_typed.empty()) code = g_typed.front(), g_typed.pop_front();
+    }
+    if (code) {
+        if (code != kOskCreate && code != kOskCancel) OskSound(ctx, kOskKeySound);
+        else OskGone();
+        kernel::Return(ctx, code, 0);
+        return;
+    }
+
+    // the mouse: over a key the highlight goes there, a click presses A on it
+    bool click = false;
+    OskPointer& p = g_osk_pointer;
+    if (!ui::Open() && !app::Background()) {
+        float x = -1, y = -1, wx = -1, wy = -1, bw = 640, bh = 480;
+        int row = -1, column = -1;
+        const bool in = CursorInFrame(x, y, wx, wy, bw, bh) && OskCell(x, y, row, column) && OskKey(row, column);
+        const bool button = app::KeyDown(1), clicked = button && !p.button;
+        const bool moved = wx != p.x || wy != p.y;
+        p.x = wx, p.y = wy, p.button = button;
+        if (in && (moved || clicked) &&
+            (int32_t(R32(kOskRow)) != row || int32_t(R32(kOskColumn)) != column)) {
+            W32(kOskRow, uint32_t(row));
+            W32(kOskColumn, uint32_t(column));
+            if (!clicked) OskSound(ctx, kOskMoveSound);
+        }
+        click = in && clicked;
+        if (clicked && TraceMouse())
+            LOGR("menu mouse: keyboard click at %.1f,%.1f of %.0fx%.0f (origin %.1f,%.1f), row %d column %d%s", x, y,
+                 bw, bh, g_osk_x, g_osk_y, row, column, in ? "" : ", no key");
+    }
+    uint32_t buttons = 0, was = 0;
+    if (click) {
+        const uint32_t input = R32(kOskPadPointer);
+        const uint32_t pad = input ? R32(input + 8) : 0;
+        if (pad) buttons = pad + 8, was = R32(buttons), W32(buttons, was | kOskA);
+    }
+    __imp__sub_002563E0(ctx, base);
+    if (buttons) W32(buttons, was);
+    if (ctx.eax == kOskCreate || ctx.eax == kOskCancel) OskGone();
 }

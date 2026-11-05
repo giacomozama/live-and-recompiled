@@ -138,12 +138,14 @@ void* Window();  // HWND on Windows, SDL_Window elsewhere
 // The platform's window as the game's hooks see it, the same on Windows and on the SDL window elsewhere.
 // GameInfo::message's numbers are Win32's; the SDL window sends these the Win32 way too: kMsgKeyDown with the
 // virtual-key code in wp and bit 30 of lp set on auto repeat, kMsgMouseWheel as WM_MOUSEWHEEL, kMsgActivate with LOWORD(wp) 0 when the window loses
-// the focus, kMsgSize and kMsgMove without arguments, and messages Post sent.
+// the focus, kMsgSize and kMsgMove without arguments, kMsgChar as WM_CHAR (one character, while TextInput is on), and
+// messages Post sent.
 enum : uint32_t {
     kMsgMove = 0x0003,
     kMsgSize = 0x0005,
     kMsgActivate = 0x0006,
     kMsgKeyDown = 0x0100,
+    kMsgChar = 0x0102,  // a character typed, its code point in wp (Windows: a UTF-16 unit, control characters too)
     kMsgMouseWheel = 0x020A,  // the signed turn in HIWORD(wp), 120 a notch, away from the player positive
     kMsgApp = 0x8000,                  // WM_APP: a game's own from here
     // raw relative motion: int32 dx in wp's low half and dy in its high half (MotionWp), the mouse's input::Device id
@@ -162,6 +164,8 @@ void SetTitle(const std::wstring& title);   // window thread
 bool Focused();                             // window thread: the game window has the keyboard
 bool Background();                          // any thread: the game window lost the focus, as of its last message
 void HoldMouse(bool hold);                  // window thread, SDL only: the cursor hidden, motion as kMsgMouseMotion
+// any thread: typed text comes as kMsgChar while on (the SDL window's text input; Windows sends WM_CHAR always)
+void TextInput(bool on);
 // a message box over the game; ask: Yes and No, true for Yes
 bool Alert(const std::wstring& text, bool ask = false);
 // the display's modes, de-duplicated by size, largest first

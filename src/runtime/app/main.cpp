@@ -325,6 +325,7 @@ void SetTitle(const std::wstring& title) { SetWindowTextW(g_hwnd, title.c_str())
 bool Focused() { return g_hwnd && GetForegroundWindow() == g_hwnd && !IsIconic(g_hwnd); }
 bool Background() { return g_background.load(std::memory_order_relaxed); }
 void HoldMouse(bool) {}  // the game's own mouse code holds it on Windows
+void TextInput(bool) {}  // TranslateMessage sends WM_CHAR always
 
 bool Alert(const std::wstring& text, bool ask) {
     UINT type = ask ? MB_ICONWARNING | MB_YESNO | MB_DEFBUTTON2 : MB_ICONERROR;

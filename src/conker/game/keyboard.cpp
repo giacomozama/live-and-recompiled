@@ -419,6 +419,13 @@ void Pad(int port, input::Pad& pad) {
         return;
     }
 
+    // the on-screen keyboard is up: the keys type into it and the mouse works its keys (menus::Typing), so neither
+    // drives the pad; what is still held as it goes (the Enter that made the name) stays off the pad until let go
+    if (menus::Typing()) {
+        ui::Muzzle(port);
+        return;
+    }
+
     const int mode = ActiveMode();
     auto down = [&](Action a) { return Down(mode, port, a); };
     if (int16_t x, y; MoveStick(mode, port, x, y)) {

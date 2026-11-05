@@ -39,7 +39,7 @@ int g_instance = 0;
 int g_port = 0;
 std::string g_join;
 uint32_t g_user = 0;  // the event type Post, ApplyDisplay and OpenGameWindow send to the window thread
-enum : int32_t { kUserPost, kUserApply, kUserOpen };
+enum : int32_t { kUserPost, kUserApply, kUserOpen, kUserText };
 std::atomic<uint64_t> g_desktop{0};  // width << 32 | height, read on any thread
 
 // virtual-key codes and the keys SDL names by position; the generic Shift, Ctrl and Alt take either side
@@ -222,6 +222,15 @@ bool Handle(const SDL_Event& e) {
             if (vk == kVkF6 && !e.key.repeat) x86_profile_mark();
             break;
         }
+        case SDL_EVENT_TEXT_INPUT:  // UTF-8, a character at a time to the game
+            for (const unsigned char* p = reinterpret_cast<const unsigned char*>(e.text.text); p && *p;) {
+                uint32_t c = *p++;
+                int more = c >= 0xF0 ? 3 : c >= 0xE0 ? 2 : c >= 0xC0 ? 1 : 0;
+                c &= more == 3 ? 0x07 : more == 2 ? 0x0F : more == 1 ? 0x1F : 0x7F;
+                for (; more && (*p & 0xC0) == 0x80; more--) c = c << 6 | (*p++ & 0x3F);
+                if (!more) Send(kMsgChar, c);
+            }
+            break;
         case SDL_EVENT_WINDOW_FOCUS_GAINED:
             g_background = false;
             Send(kMsgActivate, 1);
@@ -298,6 +307,9 @@ bool Handle(const SDL_Event& e) {
                 Send(uint32_t(reinterpret_cast<uintptr_t>(e.user.data1)));
             } else if (e.user.code == kUserApply) {
                 ApplyNow();
+            } else if (e.user.code == kUserText) {
+                if (e.user.data1) SDL_StartTextInput(g_window);
+                else SDL_StopTextInput(g_window);
             } else if (e.user.code == kUserOpen) {
                 if (e.user.data1) ApplyNow();
                 SDL_ShowWindow(g_window);
@@ -365,6 +377,8 @@ bool Cursor(float& x, float& y, float& w, float& h) {
 }
 
 void Post(uint32_t msg) { PushUser(kUserPost, msg); }
+
+void TextInput(bool on) { PushUser(kUserText, on); }
 
 void Quit() {
     SDL_Event e{};

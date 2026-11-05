@@ -1325,6 +1325,7 @@ bool Message(void* hwnd, uint32_t msg, uintptr_t wp, intptr_t lp, intptr_t* resu
         default:
             break;
     }
+    if (!g_open.load() && !g_quit.load()) menus::Message(msg, wp, lp);  // the on-screen keyboard's typing
     mouse::Message(hwnd, msg, wp, lp);
     return false;
 }

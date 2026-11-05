@@ -27,6 +27,14 @@ void Pad(int port, input::Pad& pad);
 // shown list's cursor up or down a notch at a time
 void Wheel(int turn);
 
+// The multiplayer menus' on-screen keyboard (a profile's name): while it is up, the keyboard types into it (the
+// characters its pages have, Enter Create, Escape Cancel, Backspace and the arrows its own keys) and the mouse works
+// its keys, the keyboard and mouse no longer drive the pad nor the menu lists. Typing: it is up (any thread; on the
+// game thread it also turns the window's text input off once it is gone). Message, from ui::Message on the window
+// thread: the keys and characters typed
+bool Typing();
+void Message(uint32_t msg, uintptr_t wp, intptr_t lp);
+
 // from single player's pause screen's input, each frame it runs: a click on one of its prompts presses the prompt's
 // button
 void Paused();

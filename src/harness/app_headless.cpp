@@ -70,6 +70,7 @@ void SetTitle(const std::wstring&) {}
 bool Focused() { return false; }
 bool Background() { return false; }
 void HoldMouse(bool) {}
+void TextInput(bool) {}
 bool Alert(const std::wstring&, bool) { return false; }
 std::vector<Mode> DisplayModes() { return {Desktop()}; }
 
