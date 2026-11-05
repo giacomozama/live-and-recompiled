@@ -6,6 +6,9 @@
 // button's icon is drawn as the key its action is bound to (src/conker/common/prompts.cpp).
 namespace prompts {
 
+// the setting keyboard_prompts: off, every prompt keeps the console's button icons, whatever the player last used
+extern bool g_on;
+
 // the image to draw in place of a face button's icon (0 A, 1 B, 2 X, 3 Y) for the player on the port: a guest texture
 // of the first key bound to that button which has a sprite, while the player last used the keyboard or mouse; 0
 // keeps the icon (a controller in use, or no sprite for the keys bound). Game thread

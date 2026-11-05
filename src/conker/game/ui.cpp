@@ -36,6 +36,7 @@
 #include "common/loading.h"
 #include "common/menus.h"
 #include "common/mouse.h"
+#include "common/prompts.h"
 #include "common/reflection.h"
 #include "common/rope.h"
 #include "common/vignette.h"
@@ -1044,6 +1045,11 @@ void Draw(double fps) {
                 bool no_attract = !menus::g_attract;
                 if (ImGui::Checkbox("Disable attract video", &no_attract)) menus::g_attract = !no_attract;
                 Hint("The main menu no longer plays its video after two minutes without input.", true);
+
+                ImGui::SeparatorText("Keyboard and mouse");
+                ImGui::Checkbox("Keyboard button prompts", &prompts::g_on);
+                Hint("While you play with the keyboard and mouse, the game's button icons show the keys they are "
+                     "bound to. Off: the controller's buttons, as on the console.", true);
 
                 ImGui::SeparatorText("Gameplay");
                 ImGui::Checkbox("Skippable cutscenes", &cutscenes::g_skippable);

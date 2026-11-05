@@ -21,6 +21,8 @@
 
 namespace prompts {
 
+bool g_on = true;
+
 #ifdef PROMPTS_SPRITES
 
 namespace {
@@ -100,12 +102,12 @@ uint32_t KeyTexture(int vk) {
 }  // namespace
 
 uint32_t KeySprite(int port, int vk) {
-    if (port < 0 || port >= input::kPorts || input::LastUsed(port) != input::Source::Keyboard) return 0;
+    if (!g_on || port < 0 || port >= input::kPorts || input::LastUsed(port) != input::Source::Keyboard) return 0;
     return KeyTexture(vk);
 }
 
 uint32_t ActionIcon(int port, int action) {
-    if (action < 0 || action >= keyboard::kActions || port < 0 || port >= input::kPorts) return 0;
+    if (!g_on || action < 0 || action >= keyboard::kActions || port < 0 || port >= input::kPorts) return 0;
     if (input::LastUsed(port) != input::Source::Keyboard) return 0;
     for (int vk : keyboard::g_keys[keyboard::ActiveMode()][port][action])
         if (const uint32_t tex = KeyTexture(vk)) return tex;
