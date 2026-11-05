@@ -75,7 +75,7 @@ const char* InLanguage(const char* en, const char* de, const char* fr, const cha
 // slot of its label in the frontend's strings ([0x849800], a pointer each, resolved from the key names at 0x6BDAB0),
 // its handler and a condition, up to an item of slot 0. 0x75E760 is Xbox Live (slot 0xC9), System Link (0xC8),
 // Dumbots (0xC7) and Profiles (0x2FD); 0x75E718 the same with one more item. Xbox Live's item goes from both, and
-// System Link's slot points at "Online", as does the slot of its own menu's title (0x118, the menu 0x23A2E3 runs,
+// System Link's slot points at "Online/LAN", as does the slot of its own menu's title (0x118, the menu 0x23A2E3 runs,
 // only reached from this one).
 X86_EXTERN_FUNC(__imp__sub_00236030);
 X86_FUNC(sub_00236030) {
@@ -88,7 +88,7 @@ X86_FUNC(sub_00236030) {
             for (uint32_t k = 0; k < 12; k += 4) W32(list + i * 12 + k, R32(list + (i + 1) * 12 + k));
         } while (R32(list + i++ * 12));
     }
-    static const uint32_t online = GuestText("Online");  // the same in every language
+    static const uint32_t online = GuestText("Online/LAN");  // the same in every language
     if (const uint32_t strings = R32(kStrings)) {
         W32(strings + kSystemLink * 4, online);
         W32(strings + kSystemLinkTitle * 4, online);
