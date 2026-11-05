@@ -26,7 +26,7 @@
 //
 //   move W A S D   look arrows and the mouse   jump space   crouch left ctrl, C   attack mouse 1   aim mouse 2
 //   use E   weapon mode Z   reload R   camera zoom mouse 3   ability Q   cycle equipped tab   vote V   radio T
-//   pause enter (and Escape)   Xbox Live backspace
+//   pause enter (and Escape)   quit backspace
 //
 // Every player's actions can be rebound, to up to two keys or mouse buttons each: in the menu (Esc), or in
 // settings.toml's [playerN.keys] tables by key name (move_up = 'W', jump = ['Space', 'Mouse 4'], 'none' unbinds).
@@ -102,7 +102,7 @@ constexpr ActionInfo kInfo[kActions] = {
     {"reload", "Reload", 'R'},              {"zoom", "Camera zoom", kMouse3},
     {"ability", "Abilities", 'Q'},          {"cycle", "Cycle equipped", kTab},
     {"vote", "Vote", 'V'},                  {"radio", "Radio mode", 'T'},
-    {"pause", "Pause", kEnter},             {"xbox_live", "Xbox Live", kBackspace},
+    {"pause", "Pause", kEnter},             {"quit", "Quit", kBackspace},
 };
 
 // the scheme each port's player has, as the game last picked it (SetScheme); Emily's until a match picks one
@@ -288,7 +288,7 @@ int Drives(int scheme, int action) {
         case kVote: return kButtonBlack;
         case kRadio: return kButtonWhite;
         case kPause: return kButtonStart;
-        case kXboxLive: return kButtonBack;
+        case kQuit: return kButtonBack;
         default: return -1;  // the sticks
     }
 }
@@ -520,7 +520,9 @@ void Pad(int port, input::Pad& pad) {
     // screen it is B instead
     if (start || (!pause_keys && (port == 0 || input::Has(port, input::Kind::Keyboard)) && ui::EscStart()))
         pad.buttons |= kPadStart;
-    if (held[kButtonBack]) pad.buttons |= kPadBack;
+    // Back is the console's Xbox Live, which there is none of: the quit key presses it on the pub's pictures alone,
+    // where it asks to quit instead (gamepad::Pad)
+    if (held[kButtonBack] && gamepad::Pub()) pad.buttons |= kPadBack;
     if (held[kButtonLS]) pad.buttons |= kPadLS;
     if (held[kButtonRS]) pad.buttons |= kPadRS;
 

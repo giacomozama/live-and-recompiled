@@ -23,7 +23,8 @@ enum Action : int {
     kReload,
     kZoom,        // single player's camera zoom, the right stick's click
     kAbility, kCycle, kVote, kRadio,  // multiplayer's own
-    kPause, kXboxLive,
+    kPause,
+    kQuit,  // the console's Back, on the pub's pictures only, where it asks to quit (no Xbox Live here)
     kActions
 };
 

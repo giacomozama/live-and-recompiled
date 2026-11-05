@@ -410,7 +410,7 @@ void DrawKeys(int player) {
                      {kReload, "Reload"}, {kUse, "Use (story)"}}},
         {"Multiplayer", {{kAbility, "Abilities"}, {kCycle, "Cycle equipped"}, {kVote, "Vote"},
                          {kRadio, "Radio mode"}}},
-        {"Game", {{kPause, "Pause"}, {kXboxLive, "Xbox Live"}}},
+        {"Game", {{kPause, "Pause"}, {kQuit, "Quit (title menu)"}}},
     };
     // two columns, the groups in pairs
     if (!ImGui::BeginTable("##groups", 2, ImGuiTableFlags_SizingStretchSame)) return;
