@@ -192,14 +192,9 @@ const std::vector<app::Mode>& Modes() {
     return modes;
 }
 
-// the set of controls (keyboard::Mode) the player tabs show, the same in each: the one in use when the menu opened,
-// until picked
-int g_controls_mode = keyboard::kSinglePlayer;
-
-// the keyboard action waiting for its new key, -1 none, whose, in which set and which of its keys; render thread only
+// the keyboard action waiting for its new key, -1 none, whose and which of its keys; render thread only
 int g_rebind = -1;
 int g_rebind_player = 0;
-int g_rebind_mode = 0;
 int g_rebind_slot = 0;
 // a rebind waits for every key to be up before it takes one, so the click that started it is not the key
 bool g_rebind_armed = false;
@@ -248,8 +243,8 @@ void PollRebind() {
         }
         // a key drives one of the player's actions once: wherever it was, it swaps with the key it replaces (this
         // action's other slot included)
-        int& target = keyboard::g_keys[g_rebind_mode][g_rebind_player][g_rebind][g_rebind_slot];
-        for (auto& keys : keyboard::g_keys[g_rebind_mode][g_rebind_player])
+        int& target = keyboard::g_keys[g_rebind_player][g_rebind][g_rebind_slot];
+        for (auto& keys : keyboard::g_keys[g_rebind_player])
             for (int& k : keys)
                 if (&k != &target && k == vk) k = target;
         target = vk;
@@ -374,26 +369,29 @@ void DrawController(int player) {
     Hint("How hard the controller shakes. Takes effect from the next rumble.");
 }
 
-// a player's mouse look, in one set of controls
-void DrawMouse(int mode, int player) {
+// a player's mouse look
+void DrawMouse(int player) {
     ImGui::SeparatorText("Mouse");
-    ImGui::Checkbox("Mouse look", &mouse::g_look[mode][player]);
+    ImGui::Checkbox("Mouse look", &mouse::g_look[player]);
     Hint("Move the mouse to look around. Open this menu (F1) or press Alt+Tab to get the cursor back.", true);
-    Slider("Horizontal %", &mouse::g_sensitivity[mode][player], 10, 500, mouse::kDefaultSensitivity);
-    Slider("Vertical %", &mouse::g_sensitivity_y[mode][player], 10, 500, mouse::kDefaultSensitivity);
-    ImGui::Checkbox("Invert Y", &mouse::g_invert_y[mode][player]);
+    Slider("Horizontal %", &mouse::g_sensitivity[player], 10, 500, mouse::kDefaultSensitivity);
+    Slider("Vertical %", &mouse::g_sensitivity_y[player], 10, 500, mouse::kDefaultSensitivity);
+    ImGui::Checkbox("Invert Y", &mouse::g_invert_y[player]);
 }
 
-// a player's keys, in one set of controls
-void DrawKeys(int mode, int player) {
-    // another player's tab or set: its rebind is done
-    if (g_rebind >= 0 && (g_rebind_player != player || g_rebind_mode != mode)) g_rebind = -1;
+// a player's keys
+void DrawKeys(int player) {
+    // another player's tab: its rebind is done
+    if (g_rebind >= 0 && g_rebind_player != player) g_rebind = -1;
     PollRebind();
     g_cancel_hovered = false;  // the waiting row sets it again as it draws
     ImGui::SeparatorText("Keyboard");
     Hint("Each action can have two keys or mouse buttons. Click a slot, then press the key you want.");
     Hint("Right-click a slot (Y on a controller) to clear it. Picking a key that is already used swaps the two.");
-    // a frame per part of the controller; the frame names the part, so a row only names its action
+    Hint("Keys are bound to actions: in a match they follow the controller scheme of the player's profile.");
+    if (const int scheme = keyboard::Scheme(player))
+        ImGui::Text("In use now: %s's controls", keyboard::SchemeName(scheme));
+    // a frame per kind of action; the frame names it, so a row only names its action
     struct Row {
         int action;
         const char* label;
@@ -404,16 +402,17 @@ void DrawKeys(int mode, int player) {
     };
     using namespace keyboard;
     static const Group kGroups[] = {
-        {"Left stick", {{kMoveUp, "Up"}, {kMoveDown, "Down"}, {kMoveLeft, "Left"}, {kMoveRight, "Right"},
-                        {kLS, "Click"}}},
-        {"Right stick (camera)", {{kCamUp, "Up"}, {kCamDown, "Down"}, {kCamLeft, "Left"}, {kCamRight, "Right"},
-                                  {kRS, "Click"}}},
-        {"D-pad", {{kDpadUp, "Up"}, {kDpadDown, "Down"}, {kDpadLeft, "Left"}, {kDpadRight, "Right"}}},
-        {"Face buttons", {{kA, "A"}, {kB, "B"}, {kX, "X"}, {kY, "Y"}}},
-        {"Shoulders and triggers", {{kLB, "LB (white)"}, {kRB, "RB (black)"}, {kLT, "LT"}, {kRT, "RT"}}},
-        {"Start / Back", {{kStart, "Start"}, {kBack, "Back"}}},
+        {"Movement", {{kMoveUp, "Forward"}, {kMoveDown, "Back"}, {kMoveLeft, "Left"}, {kMoveRight, "Right"},
+                      {kJump, "Jump"}, {kCrouch, "Crouch"}}},
+        {"Camera", {{kLookUp, "Look up"}, {kLookDown, "Look down"}, {kLookLeft, "Look left"},
+                    {kLookRight, "Look right"}, {kZoom, "Zoom (story)"}}},
+        {"Weapons", {{kAttack, "Attack / fire"}, {kAim, "Aim / take out"}, {kWeaponMode, "First person / mode"},
+                     {kReload, "Reload"}, {kUse, "Use (story)"}}},
+        {"Multiplayer", {{kAbility, "Abilities"}, {kCycle, "Cycle equipped"}, {kVote, "Vote"},
+                         {kRadio, "Radio mode"}}},
+        {"Game", {{kPause, "Pause"}, {kXboxLive, "Xbox Live"}}},
     };
-    // two columns, the groups in pairs: the sticks, d-pad and face buttons, shoulders and start / back
+    // two columns, the groups in pairs
     if (!ImGui::BeginTable("##groups", 2, ImGuiTableFlags_SizingStretchSame)) return;
     for (const Group& g : kGroups) {
         ImGui::TableNextColumn();
@@ -437,12 +436,11 @@ void DrawKeys(int mode, int player) {
                 if (s) ImGui::SameLine(0, spacing);
                 ImGui::PushID(s);
                 const bool waiting = g_rebind == r.action && g_rebind_slot == s;
-                if (ImGui::Button(waiting ? "press..." : KeyName(g_keys[mode][player][r.action][s]),
+                if (ImGui::Button(waiting ? "press..." : KeyName(g_keys[player][r.action][s]),
                                   ImVec2(key_w, 0)) &&
                     !g_rebind_settle) {
                     g_rebind = r.action;
                     g_rebind_player = player;
-                    g_rebind_mode = mode;
                     g_rebind_slot = s;
                     g_rebind_armed = false;
                 }
@@ -451,7 +449,7 @@ void DrawKeys(int mode, int player) {
                 // (Y on a slot the pad has focused does too)
                 if ((ImGui::IsItemClicked(ImGuiMouseButton_Right) || (g_pad.y && ImGui::IsItemFocused())) &&
                     g_rebind < 0 && !g_rebind_settle)
-                    g_keys[mode][player][r.action][s] = 0;
+                    g_keys[player][r.action][s] = 0;
                 ImGui::PopID();
             }
             ImGui::SameLine(0, spacing);
@@ -460,8 +458,8 @@ void DrawKeys(int mode, int player) {
                 ImGui::Button("Cancel", ImVec2(reset, 0));
                 g_cancel_hovered = ImGui::IsItemHovered();
             } else {
-                ImGui::BeginDisabled(IsDefault(mode, player, r.action));
-                if (ImGui::Button("Reset", ImVec2(reset, 0))) ResetKey(mode, player, r.action);
+                ImGui::BeginDisabled(IsDefault(player, r.action));
+                if (ImGui::Button("Reset", ImVec2(reset, 0))) ResetKey(player, r.action);
                 ImGui::EndDisabled();
                 if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
                     ImGui::SetTooltip("default: %s", ActionDefault(r.action).c_str());
@@ -473,7 +471,7 @@ void DrawKeys(int mode, int player) {
     }
     ImGui::EndTable();
     if (ImGui::Button("Default keys")) {
-        keyboard::ResetKeys(mode, player);
+        keyboard::ResetKeys(player);
         g_rebind = -1;
     }
 }
@@ -731,7 +729,6 @@ void Draw(double fps) {
     const bool open = g_open.load();
     const bool quit = g_quit.load();
     if (!open) g_rebind = -1;  // closing the menu cancels a rebind
-    if (open && !was_open) g_controls_mode = keyboard::ActiveMode();
     if ((open || quit) && kernel::Held() == warp::Multiplayer()) kernel::Hold(!warp::Multiplayer());
 
     // the menu saves itself: once its settings have held still for kSaveDelay (not every frame of a slider's drag),
@@ -760,11 +757,9 @@ void Draw(double fps) {
 
     // the window thread takes or lets go of the cursor, as a player with a mouse turns mouse look on or off, or gets
     // or loses the mouse
-    // or its set of controls changes with the level
     int look = 0;
-    const int in_use = keyboard::ActiveMode();
     for (int p = 0; p < input::kPorts; p++)
-        if (mouse::g_look[in_use][p] && input::Has(p, input::Kind::Mouse)) look |= 1 << p;
+        if (mouse::g_look[p] && input::Has(p, input::Kind::Mouse)) look |= 1 << p;
     if (look != last_look) {
         last_look = look;
         app::Post(mouse::kRefresh);
@@ -1107,21 +1102,8 @@ void Draw(double fps) {
                 ImGui::PushID(p);
                 DrawDevices(p);
                 DrawController(p);
-                // the devices are the player's in both; the mouse settings and keys below are the set's
-                // picked here
-                ImGui::SeparatorText("Controls for");
-                ImGui::RadioButton("Single player", &g_controls_mode, keyboard::kSinglePlayer);
-                ImGui::SameLine();
-                ImGui::RadioButton("Multiplayer matches", &g_controls_mode, keyboard::kMultiplayer);
-                Hint(keyboard::ActiveMode() == keyboard::kMultiplayer ? "In a match: multiplayer's are in use."
-                                                                      : "Single player's are in use now.");
-                const int mode = g_controls_mode;
-                if (mode == keyboard::kMultiplayer && ImGui::Button("Copy single player's keys and mouse")) {
-                    keyboard::CopyToMultiplayer(p);
-                    g_rebind = -1;
-                }
-                DrawMouse(mode, p);
-                DrawKeys(mode, p);
+                DrawMouse(p);
+                DrawKeys(p);
                 keys_shown = true;
                 ImGui::PopID();
                 end_tab();

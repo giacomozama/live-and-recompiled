@@ -667,13 +667,13 @@ constexpr uint32_t kSetTexture = 0x539960, kHudQuad = 0x1CA7F0;
 constexpr uint32_t kTriggerQuad = 0x1CC749;  // 0x1CAD90's return in 0x1CC620, drawing the trigger's box
 struct PanelIcon {
     uint32_t ret;  // 0x1CAD90's return, drawing the piece
-    int action;
+    int button;  // keyboard::Button
     float u, v, size;  // the icon's centre in the piece's texture (0..1) and the square its key covers
 };
 // on the pieces' 128 by 128 texels: X's icon spans 95..111 by 48..63, Y's 61..75 by 24..39
 constexpr PanelIcon kPanelIcons[] = {
-    {0x1CC11B, keyboard::kX, 103.5f / 128, 56.0f / 128, 20.5f / 128},
-    {0x1CC1D1, keyboard::kY, 68.5f / 128, 32.0f / 128, 20.5f / 128},
+    {0x1CC11B, keyboard::kButtonX, 103.5f / 128, 56.0f / 128, 20.5f / 128},
+    {0x1CC1D1, keyboard::kButtonY, 68.5f / 128, 32.0f / 128, 20.5f / 128},
 };
 constexpr float kTriggerKey = 0.6f;  // the trigger's key, of its box's side
 int g_hud_port = -1;             // whose HUD 0x1C7C60 draws, -1 outside it. Game thread
@@ -718,7 +718,7 @@ void menus::HudPlayer(uint32_t hud) {
 // [[hook]] at 0x1CB031, 0x1CAD90 about to draw its quad (its texture set): the trigger's box as its key
 void ConkerHudQuad(X86Context& ctx, uint8_t* base) {
     if (g_hud_port < 0 || R32(ctx.esp + 8) != kTriggerQuad) return;
-    const uint32_t key = prompts::ActionIcon(g_hud_port, keyboard::kLT);
+    const uint32_t key = prompts::ButtonIcon(g_hud_port, keyboard::kButtonLT);
     if (!key) return;
     g_trigger_texture = R32(ctx.esp + 0x1C);
     SetTexture(ctx, key);
@@ -745,7 +745,7 @@ void ConkerHudQuadDrawn(X86Context& ctx, uint8_t* base) {
     const uint32_t ret = R32(ctx.esp + 0x18);
     for (const PanelIcon& icon : kPanelIcons) {
         if (icon.ret != ret) continue;
-        const uint32_t key = prompts::ActionIcon(g_hud_port, icon.action);
+        const uint32_t key = prompts::ButtonIcon(g_hud_port, icon.button);
         if (!key) return;
         KeySquare(base, g_corners, R32(ctx.esp), R32(ctx.esp + 4), R32(ctx.esp + 8), icon.u, icon.v, icon.size);
         SetTexture(ctx, key);
@@ -811,7 +811,7 @@ void menus::ActionPrompt(X86Context& ctx, uint8_t* base, void (*draw)(X86Context
     ctx.ecx = g_prompt_pairs, ctx.eax = g_prompt_pairs + 8;
     W32(esp + 0x10, 1);
     WF32(esp + 0x14, scale);
-    g_prompt_key = g_hud_port >= 0 ? prompts::ActionIcon(g_hud_port, keyboard::kA) : 0;
+    g_prompt_key = g_hud_port >= 0 ? prompts::ButtonIcon(g_hud_port, keyboard::kButtonA) : 0;
     g_action_prompt = true;
     draw(ctx, base);
     g_action_prompt = false;

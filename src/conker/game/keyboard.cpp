@@ -6,22 +6,34 @@
 // accept input with no controller plugged in; port 0 always is. A player's controller keeps
 // working: the keys only override the axes and buttons they are actually driving.
 //
-// The default layout, around WASD and the mouse (mouse look is on by default):
+// Keys are bound to actions, and an action presses the button the player's controls have it on (Drives): single
+// player's (and every menu's out of a match), or in a match the controller scheme of the player's profile, which
+// 0x4D1F0 picks (gamepad.cpp hooks it, SetScheme). The schemes, as the profile's controller page shows them:
 //
-//   left stick   W A S D          camera (right stick)   arrow keys, and the mouse
-//   d-pad        1 / 2 / 3 / 4 (up / right / down / left)
-//   A / B        space / E or right mouse                X / Y   R / tab
-//   LB / RB      T (white) / K (black)                   LT / RT Q or middle mouse / left ctrl or left mouse
-//   start        enter            back                   backspace
-//   stick clicks left shift (left) / left alt (right)
+//                   single player     Emily       Victoria    Samantha     Elspeth
+//   move            left stick        left        left        right        right
+//   look            right stick       right       right       left         left
+//   jump            A                 left click  A           right click  A
+//   reload          X                 A           left click  A            right click
+//   aim             B (take out)      right click right click left click   left click   (a match's Zoom)
+//   camera zoom     right click       -           -           -            -
+//   crouch          RT (duck)         B (posture) B           B            B
+//   use             B                 -           -           -            -
+//   attack / fire RT, first person / weapon mode LT, ability X, cycle equipped Y, vote black, radio white: in all
+//   (out of a match ability, cycle, vote and radio keep Emily's buttons, for the menus)
+//
+// The default keys, around WASD and the mouse (mouse look is on by default):
+//
+//   move W A S D   look arrows and the mouse   jump space   crouch left ctrl, C   attack mouse 1   aim mouse 2
+//   use E   weapon mode Z   reload R   camera zoom mouse 3   ability Q   cycle equipped tab   vote V   radio T
+//   pause enter (and Escape)   Xbox Live backspace
 //
 // Every player's actions can be rebound, to up to two keys or mouse buttons each: in the menu (Esc), or in
-// settings.toml's [playerN.keys] tables by key name (move_up = 'W', a = ['Space', 'Mouse 1'], 'none' unbinds).
-// Multiplayer has a set of its own, keys and mouse settings both, in [playerN.multiplayer]: it starts as a copy of
-// single player's, and is used in multiplayer matches only (its menus keep single player's).
+// settings.toml's [playerN.keys] tables by key name (move_up = 'W', jump = ['Space', 'Mouse 4'], 'none' unbinds).
 //
-// With mouse look on (src/conker/game/mouse.cpp) the mouse also turns the camera, over the camera keys while it moves.
+// With mouse look on (src/conker/game/mouse.cpp) the mouse also turns the camera, over the look keys while it moves.
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <chrono>
 #include <cmath>
@@ -52,7 +64,7 @@
 
 namespace keyboard {
 
-int g_keys[kModes][input::kPorts][kActions][kSlots];
+int g_keys[input::kPorts][kActions][kSlots];
 
 namespace {
 
@@ -67,7 +79,6 @@ enum : int {
 
 // the console controller's button bit (see input::Pad)
 enum : uint16_t {
-    kPadUp = 1 << 0, kPadDown = 1 << 1, kPadLeft = 1 << 2, kPadRight = 1 << 3,
     kPadStart = 1 << 4, kPadBack = 1 << 5, kPadLS = 1 << 6, kPadRS = 1 << 7,
 };
 
@@ -80,19 +91,22 @@ struct ActionInfo {
     int vk, vk2 = 0;    // defaults
 };
 constexpr ActionInfo kInfo[kActions] = {
-    {"move_up", "Move up", 'W'},             {"move_down", "Move down", 'S'},
-    {"move_left", "Move left", 'A'},         {"move_right", "Move right", 'D'},
-    {"camera_up", "Camera up", kUp},         {"camera_down", "Camera down", kDown},
-    {"camera_left", "Camera left", kLeft},   {"camera_right", "Camera right", kRight},
-    {"dpad_up", "D-pad up", '1'},            {"dpad_down", "D-pad down", '3'},
-    {"dpad_left", "D-pad left", '4'},        {"dpad_right", "D-pad right", '2'},
-    {"a", "A", kSpace},                      {"b", "B", 'E', kMouse2},
-    {"x", "X", 'R'},                         {"y", "Y", kTab},
-    {"lb", "LB (white)", 'T'},               {"rb", "RB (black)", 'K'},
-    {"lt", "LT", 'Q', kMouse3},              {"rt", "RT", kLCtrl, kMouse1},
-    {"start", "Start", kEnter},              {"back", "Back", kBackspace},
-    {"ls", "Left stick click", kLShift},     {"rs", "Right stick click", kLAlt},
+    {"move_up", "Move forward", 'W'},       {"move_down", "Move back", 'S'},
+    {"move_left", "Move left", 'A'},        {"move_right", "Move right", 'D'},
+    {"camera_up", "Look up", kUp},          {"camera_down", "Look down", kDown},
+    {"camera_left", "Look left", kLeft},    {"camera_right", "Look right", kRight},
+    {"jump", "Jump", kSpace},               {"crouch", "Crouch", kLCtrl, 'C'},
+    {"attack", "Attack / fire", kMouse1},
+    {"use", "Use", 'E'},                    {"aim", "Aim / take out weapon", kMouse2},
+    {"weapon_mode", "First person / weapon mode", 'Z'},
+    {"reload", "Reload", 'R'},              {"zoom", "Camera zoom", kMouse3},
+    {"ability", "Abilities", 'Q'},          {"cycle", "Cycle equipped", kTab},
+    {"vote", "Vote", 'V'},                  {"radio", "Radio mode", 'T'},
+    {"pause", "Pause", kEnter},             {"xbox_live", "Xbox Live", kBackspace},
 };
+
+// the scheme each port's player has, as the game last picked it (SetScheme); Emily's until a match picks one
+std::atomic<int> g_scheme[input::kPorts] = {1, 1, 1, 1};
 
 // the keys that have a name, so they can be bound; null for the rest
 const char* Named(int vk) {
@@ -133,8 +147,8 @@ bool SameName(const char* a, const char* b) {
     return *a == *b;
 }
 
-bool Down(int mode, int port, Action a) {
-    for (int vk : g_keys[mode][port][a])
+bool Down(int port, Action a) {
+    for (int vk : g_keys[port][a])
         if (vk && input::KeyDown(port, vk)) return true;
     return false;
 }
@@ -189,14 +203,14 @@ void OnSquare(double degrees, int16_t& x, int16_t& y) {
 }
 
 // the left stick from the movement keys; false while neither they nor a held spin drive it
-bool MoveStick(int mode, int port, int16_t& x, int16_t& y) {
+bool MoveStick(int port, int16_t& x, int16_t& y) {
     Thumb& t = g_thumb[port];
     const int64_t now = NowUs();
     const double dt = std::clamp(double(now - t.last) / 1e6, 0.0, 0.1);
     t.last = now;
 
-    const int16_t kx = Axis(Down(mode, port, kMoveLeft), Down(mode, port, kMoveRight));
-    const int16_t ky = Axis(Down(mode, port, kMoveDown), Down(mode, port, kMoveUp));
+    const int16_t kx = Axis(Down(port, kMoveLeft), Down(port, kMoveRight));
+    const int16_t ky = Axis(Down(port, kMoveDown), Down(port, kMoveUp));
     if (kx == 0 && ky == 0) {  // no key, or two opposite ones
         if (!t.held) return false;
         if (t.released == 0) t.released = now;
@@ -230,14 +244,54 @@ bool MoveStick(int mode, int port, int16_t& x, int16_t& y) {
 }
 
 [[maybe_unused]] const bool g_defaults = [] {  // before Load, at static init
-    for (int m = 0; m < kModes; m++)
-        for (int p = 0; p < input::kPorts; p++) ResetKeys(m, p);
+    for (int p = 0; p < input::kPorts; p++) ResetKeys(p);
     return true;
 }();
 
 }  // namespace
 
-int ActiveMode() { return warp::Multiplayer() ? kMultiplayer : kSinglePlayer; }
+int Scheme(int port) {
+    if (port < 0 || port >= input::kPorts || !warp::Multiplayer()) return 0;
+    return g_scheme[port].load(std::memory_order_relaxed);
+}
+
+const char* SchemeName(int scheme) {
+    constexpr const char* kNames[kSchemes] = {"Single player", "Emily", "Victoria", "Samantha", "Elspeth"};
+    return scheme >= 0 && scheme < kSchemes ? kNames[scheme] : "";
+}
+
+void SetScheme(int port, int scheme) {
+    if (port < 0 || port >= input::kPorts || scheme < 0 || scheme >= kSchemes) return;
+    if (g_scheme[port].exchange(scheme) != scheme)
+        LOGR("input: player %d's keys follow the %s controls", port + 1, SchemeName(scheme));
+}
+
+bool Southpaw(int scheme) { return scheme == 3 || scheme == 4; }
+
+int Drives(int scheme, int action) {
+    const bool story = scheme <= 0 || scheme >= kSchemes;
+    // Victoria and Elspeth have jump on A and reload on a stick's click, Emily and Samantha the other way round; the
+    // southpaw schemes swap the sticks, their clicks with them
+    const bool jump_on_a = scheme == 2 || scheme == 4;
+    const int click = Southpaw(scheme) ? kButtonRS : kButtonLS;  // the click that jumps or reloads
+    switch (action) {
+        case kJump: return story || jump_on_a ? kButtonA : click;
+        case kReload: return story ? kButtonX : jump_on_a ? click : kButtonA;
+        case kAim: return story ? kButtonB : Southpaw(scheme) ? kButtonLS : kButtonRS;  // a match's Zoom
+        case kZoom: return story ? kButtonRS : -1;
+        case kCrouch: return story ? kButtonRT : kButtonB;  // single player ducks on RT, a match's posture is B
+        case kUse: return story ? kButtonB : -1;
+        case kAttack: return kButtonRT;
+        case kWeaponMode: return kButtonLT;
+        case kAbility: return kButtonX;
+        case kCycle: return kButtonY;
+        case kVote: return kButtonBlack;
+        case kRadio: return kButtonWhite;
+        case kPause: return kButtonStart;
+        case kXboxLive: return kButtonBack;
+        default: return -1;  // the sticks
+    }
+}
 
 const char* ActionLabel(int action) { return action >= 0 && action < kActions ? kInfo[action].label : ""; }
 
@@ -252,31 +306,20 @@ const char* KeyName(int vk) { return vk ? Named(vk) : "-"; }
 
 bool Bindable(int vk) { return vk > 0 && vk < 0x100 && vk != kEscape && vk != kF1 && Named(vk); }
 
-void ResetKey(int mode, int player, int action) {
-    if (mode < 0 || mode >= kModes || player < 0 || player >= input::kPorts || action < 0 || action >= kActions)
-        return;
-    g_keys[mode][player][action][0] = kInfo[action].vk;
-    g_keys[mode][player][action][1] = kInfo[action].vk2;
+void ResetKey(int player, int action) {
+    if (player < 0 || player >= input::kPorts || action < 0 || action >= kActions) return;
+    g_keys[player][action][0] = kInfo[action].vk;
+    g_keys[player][action][1] = kInfo[action].vk2;
 }
 
-void ResetKeys(int mode, int player) {
-    for (int a = 0; a < kActions; a++) ResetKey(mode, player, a);
+void ResetKeys(int player) {
+    for (int a = 0; a < kActions; a++) ResetKey(player, a);
 }
 
-bool IsDefault(int mode, int player, int action) {
-    if (mode < 0 || mode >= kModes || player < 0 || player >= input::kPorts || action < 0 || action >= kActions)
-        return false;
-    const int(&keys)[kSlots] = g_keys[mode][player][action];
+bool IsDefault(int player, int action) {
+    if (player < 0 || player >= input::kPorts || action < 0 || action >= kActions) return false;
+    const int(&keys)[kSlots] = g_keys[player][action];
     return keys[0] == kInfo[action].vk && keys[1] == kInfo[action].vk2;
-}
-
-void CopyToMultiplayer(int player) {
-    if (player < 0 || player >= input::kPorts) return;
-    std::memcpy(g_keys[kMultiplayer][player], g_keys[kSinglePlayer][player], sizeof g_keys[kSinglePlayer][player]);
-    mouse::g_look[kMultiplayer][player] = mouse::g_look[kSinglePlayer][player];
-    mouse::g_sensitivity[kMultiplayer][player] = mouse::g_sensitivity[kSinglePlayer][player];
-    mouse::g_sensitivity_y[kMultiplayer][player] = mouse::g_sensitivity_y[kSinglePlayer][player];
-    mouse::g_invert_y[kMultiplayer][player] = mouse::g_invert_y[kSinglePlayer][player];
 }
 
 #ifdef KEYBOARD_TOML
@@ -332,18 +375,18 @@ toml::table SaveKeys(const int (&player)[kActions][kSlots]) {
 }
 
 // a player's mouse settings, from their table (or the file's top level, where player 1's were before)
-void LoadMouse(const toml::table& t, int m, int p) {
-    mouse::g_look[m][p] = t["mouse_look"].value_or(mouse::g_look[m][p]);
-    mouse::g_sensitivity[m][p] = t["mouse_sensitivity"].value_or(mouse::g_sensitivity[m][p]);
-    mouse::g_sensitivity_y[m][p] = t["mouse_sensitivity_y"].value_or(mouse::g_sensitivity_y[m][p]);
-    mouse::g_invert_y[m][p] = t["mouse_invert_y"].value_or(mouse::g_invert_y[m][p]);
+void LoadMouse(const toml::table& t, int p) {
+    mouse::g_look[p] = t["mouse_look"].value_or(mouse::g_look[p]);
+    mouse::g_sensitivity[p] = t["mouse_sensitivity"].value_or(mouse::g_sensitivity[p]);
+    mouse::g_sensitivity_y[p] = t["mouse_sensitivity_y"].value_or(mouse::g_sensitivity_y[p]);
+    mouse::g_invert_y[p] = t["mouse_invert_y"].value_or(mouse::g_invert_y[p]);
 }
 
-void SaveMouse(toml::table& t, int m, int p) {
-    t.insert_or_assign("mouse_look", mouse::g_look[m][p]);
-    t.insert_or_assign("mouse_sensitivity", int64_t(mouse::g_sensitivity[m][p]));
-    t.insert_or_assign("mouse_sensitivity_y", int64_t(mouse::g_sensitivity_y[m][p]));
-    t.insert_or_assign("mouse_invert_y", mouse::g_invert_y[m][p]);
+void SaveMouse(toml::table& t, int p) {
+    t.insert_or_assign("mouse_look", mouse::g_look[p]);
+    t.insert_or_assign("mouse_sensitivity", int64_t(mouse::g_sensitivity[p]));
+    t.insert_or_assign("mouse_sensitivity_y", int64_t(mouse::g_sensitivity_y[p]));
+    t.insert_or_assign("mouse_invert_y", mouse::g_invert_y[p]);
 }
 
 
@@ -351,28 +394,24 @@ std::string PlayerTable(int p) { return "player" + std::to_string(p + 1); }
 
 }  // namespace
 
+// the keys of actions this file does not know (the controller buttons' of before, a = 'Space') are left out, and those
+// actions keep their defaults; the multiplayer set of before ([playerN.multiplayer]) is no longer read, and goes as
+// the file is saved
 void Load(const void* table) {
     const toml::table& t = *static_cast<const toml::table*>(table);
     for (int p = 0; p < input::kPorts; p++) {
         const toml::table* player = t[PlayerTable(p)].as_table();
         const bool keys = player && (*player)["keys"].as_table();
         const bool look = player && (*player)["mouse_look"];
-        if (p == 0 && !keys) LoadKeys(t["keys"].as_table(), g_keys[kSinglePlayer][0]);
-        if (p == 0 && !look) LoadMouse(t, kSinglePlayer, 0);
-        if (player) {
-            LoadKeys((*player)["keys"].as_table(), g_keys[kSinglePlayer][p]);
-            LoadMouse(*player, kSinglePlayer, p);
-            gamepad::g_invert_aim[p] = (*player)["invert_aim"].value_or(gamepad::g_invert_aim[p]);
-            gamepad::g_vibration[p] = (*player)["vibration"].value_or(gamepad::g_vibration[p]);
-            gamepad::g_vibration_percent[p] =
-                std::min((*player)["vibration_percent"].value_or(gamepad::g_vibration_percent[p]), 100u);
-        }
-        // a player's multiplayer set starts as their single player one: what its table leaves out stays so
-        CopyToMultiplayer(p);
-        const toml::table* multi = player ? (*player)["multiplayer"].as_table() : nullptr;
-        if (!multi) continue;
-        LoadKeys((*multi)["keys"].as_table(), g_keys[kMultiplayer][p]);
-        LoadMouse(*multi, kMultiplayer, p);
+        if (p == 0 && !keys) LoadKeys(t["keys"].as_table(), g_keys[0]);
+        if (p == 0 && !look) LoadMouse(t, 0);
+        if (!player) continue;
+        LoadKeys((*player)["keys"].as_table(), g_keys[p]);
+        LoadMouse(*player, p);
+        gamepad::g_invert_aim[p] = (*player)["invert_aim"].value_or(gamepad::g_invert_aim[p]);
+        gamepad::g_vibration[p] = (*player)["vibration"].value_or(gamepad::g_vibration[p]);
+        gamepad::g_vibration_percent[p] =
+            std::min((*player)["vibration_percent"].value_or(gamepad::g_vibration_percent[p]), 100u);
     }
 }
 
@@ -382,15 +421,12 @@ void Save(void* table) {
     for (int p = 0; p < input::kPorts; p++) {
         toml::table* player = t[PlayerTable(p)].as_table();
         if (!player) player = t.insert_or_assign(PlayerTable(p), toml::table{}).first->second.as_table();
-        SaveMouse(*player, kSinglePlayer, p);
+        SaveMouse(*player, p);
         player->insert_or_assign("invert_aim", gamepad::g_invert_aim[p]);
         player->insert_or_assign("vibration", gamepad::g_vibration[p]);
         player->insert_or_assign("vibration_percent", int64_t(gamepad::g_vibration_percent[p]));
-        player->insert_or_assign("keys", SaveKeys(g_keys[kSinglePlayer][p]));
-        toml::table multi;
-        SaveMouse(multi, kMultiplayer, p);
-        multi.insert_or_assign("keys", SaveKeys(g_keys[kMultiplayer][p]));
-        player->insert_or_assign("multiplayer", std::move(multi));
+        player->insert_or_assign("keys", SaveKeys(g_keys[p]));
+        player->erase("multiplayer");
     }
 }
 
@@ -426,24 +462,26 @@ void Pad(int port, input::Pad& pad) {
         return;
     }
 
-    const int mode = ActiveMode();
-    auto down = [&](Action a) { return Down(mode, port, a); };
-    if (int16_t x, y; MoveStick(mode, port, x, y)) {
-        pad.lx = x;
-        pad.ly = y;
+    // each action's keys press the button the player's controls have it on, the sticks' keys the stick that does
+    // their part
+    const int scheme = Scheme(port);
+    const bool southpaw = Southpaw(scheme);
+    auto down = [&](Action a) { return Down(port, a); };
+    bool held[kButtons] = {};
+    for (int a = 0; a < kActions; a++)
+        if (const int b = Drives(scheme, a); b >= 0 && down(Action(a))) held[b] = true;
+    if (int16_t x, y; MoveStick(port, x, y)) {
+        (southpaw ? pad.rx : pad.lx) = x;
+        (southpaw ? pad.ry : pad.ly) = y;
     }
-    if (down(kCamUp) || down(kCamDown) || down(kCamLeft) || down(kCamRight)) {
-        pad.rx = Axis(down(kCamLeft), down(kCamRight));
-        pad.ry = Axis(down(kCamDown), down(kCamUp));
+    if (down(kLookUp) || down(kLookDown) || down(kLookLeft) || down(kLookRight)) {
+        (southpaw ? pad.lx : pad.rx) = Axis(down(kLookLeft), down(kLookRight));
+        (southpaw ? pad.ly : pad.ry) = Axis(down(kLookDown), down(kLookUp));
     }
 
-    if (down(kDpadUp)) pad.buttons |= kPadUp;
-    if (down(kDpadDown)) pad.buttons |= kPadDown;
-    if (down(kDpadLeft)) pad.buttons |= kPadLeft;
-    if (down(kDpadRight)) pad.buttons |= kPadRight;
     // single player's pause screen and its quit prompt: their face buttons are fixed keys (menus::PauseKeys), the
     // bindings left out, so the prompts can show them. A key held as the page came up (the Escape that paused, the Q
-    // that asked to quit, the Enter that answered No) counts once let go, and so does Start's on those pages
+    // that asked to quit, the Enter that answered No) counts once let go, and so does Pause's on those pages
     static bool armed[0x100] = {};
     static int armed_page = -1;
     const int page = port == 0 && !input::t_presence ? menus::KeyPage() : -1;
@@ -473,26 +511,22 @@ void Pad(int port, input::Pad& pad) {
     }
     bool start = false;
     if (!pause_keys) {
-        start = down(kStart);
+        start = held[kButtonStart];
     } else if (!menus::PauseKeysTakeStart(page)) {
-        for (int vk : g_keys[mode][port][kStart]) start |= vk && fresh(vk);
+        for (int vk : g_keys[port][kPause]) start |= vk && fresh(vk);
     }
 
     // Escape is the console's Start, for the keyboards (the menu's own Esc is not: ui::EscStart); on the pause
     // screen it is B instead
     if (start || (!pause_keys && (port == 0 || input::Has(port, input::Kind::Keyboard)) && ui::EscStart()))
         pad.buttons |= kPadStart;
-    if (down(kBack)) pad.buttons |= kPadBack;
-    if (down(kLS)) pad.buttons |= kPadLS;
-    if (down(kRS)) pad.buttons |= kPadRS;
+    if (held[kButtonBack]) pad.buttons |= kPadBack;
+    if (held[kButtonLS]) pad.buttons |= kPadLS;
+    if (held[kButtonRS]) pad.buttons |= kPadRS;
 
-    // analog face buttons: A B X Y black(RB) white(LB) LT RT; on those screens the fixed keys' instead
-    for (int face = 0; face < 4; face++)
-        if (!menus::FaceFixed(page, face) && down(Action(kA + face))) pad.analog[face] = 0xFF;
-    if (down(kRB)) pad.analog[4] = 0xFF;  // black / right bumper
-    if (down(kLB)) pad.analog[5] = 0xFF;  // white / left bumper
-    if (down(kLT)) pad.analog[6] = 0xFF;  // left trigger
-    if (down(kRT)) pad.analog[7] = 0xFF;  // right trigger
+    // analog buttons: A B X Y black white LT RT (Button's order); on those screens the fixed keys' faces instead
+    for (int b = kButtonA; b <= kButtonRT; b++)
+        if (held[b] && !(b <= kButtonY && menus::FaceFixed(page, b))) pad.analog[b] = 0xFF;
 
     ui::Unmuzzle(port, pad);  // what shut the menu stays unpressed until it is let go
     menus::Pad(port, pad);  // the mouse points and clicks on the game's menu lists and the pub's pictures
@@ -503,10 +537,10 @@ void Pad(int port, input::Pad& pad) {
     stickwatch::Tick();  // XBE_STICK_WATCH: F11 finds the code that reads the right stick
 
     // the first key of each: the rest are in the settings log
-    auto key = [&](Action a) { return KeyName(g_keys[mode][0][a][0]); };
-    LOG_FIRST(1, "input: keyboard controls active (move %s%s%s%s, camera %s%s%s%s, A %s, B %s, X %s, Y %s)",
-              key(kMoveUp), key(kMoveLeft), key(kMoveDown), key(kMoveRight), key(kCamUp), key(kCamLeft),
-              key(kCamDown), key(kCamRight), key(kA), key(kB), key(kX), key(kY));
+    auto key = [&](Action a) { return KeyName(g_keys[0][a][0]); };
+    LOG_FIRST(1, "input: keyboard controls active (move %s%s%s%s, look %s%s%s%s, jump %s, use %s, attack %s, aim %s)",
+              key(kMoveUp), key(kMoveLeft), key(kMoveDown), key(kMoveRight), key(kLookUp), key(kLookLeft),
+              key(kLookDown), key(kLookRight), key(kJump), key(kUse), key(kAttack), key(kAim));
 }
 
 }  // namespace keyboard

@@ -7,17 +7,16 @@
 
 // Mouse look: each player's mouse turns their camera as the right stick does (src/conker/game/mouse.cpp). The window
 // thread reads raw mouse motion and holds the cursor in the window; keyboard::Pad hands the motion to the game as
-// right stick.
+// the stick that turns the camera (the right one, the left in a southpaw scheme).
 namespace mouse {
 
-// per set of controls (keyboard::Mode) and player, settings.toml [playerN] (or [playerN.multiplayer]) mouse_look,
-// mouse_sensitivity (percent, horizontal), mouse_sensitivity_y (percent, vertical) and mouse_invert_y; read live, so
-// the menu applies them, and the running level's set is the one used
-extern bool g_look[keyboard::kModes][input::kPorts];
-extern uint32_t g_sensitivity[keyboard::kModes][input::kPorts];
-extern uint32_t g_sensitivity_y[keyboard::kModes][input::kPorts];
+// per player, settings.toml [playerN] mouse_look, mouse_sensitivity (percent, horizontal), mouse_sensitivity_y
+// (percent, vertical) and mouse_invert_y; read live, so the menu applies them
+extern bool g_look[input::kPorts];
+extern uint32_t g_sensitivity[input::kPorts];
+extern uint32_t g_sensitivity_y[input::kPorts];
 constexpr uint32_t kDefaultSensitivity = 100;  // both, and what the menu resets them to
-extern bool g_invert_y[keyboard::kModes][input::kPorts];
+extern bool g_invert_y[input::kPorts];
 
 // posted to the game window when the setting changes off the window thread (WM_APP + 0x41); Message refreshes
 constexpr uint32_t kRefresh = 0x8000 + 0x41;
@@ -36,7 +35,7 @@ void InMenu();
 // within the last fifth of a second (InMenu); as the last poll found it
 bool GameMenu();
 
-// from keyboard::Pad: the last frame's motion of the port's mice as right stick, while the cursor is held
+// from keyboard::Pad: the last frame's motion of the port's mice as the camera's stick, while the cursor is held
 void Pad(int port, input::Pad& pad);
 
 }  // namespace mouse

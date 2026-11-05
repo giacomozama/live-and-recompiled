@@ -9,6 +9,7 @@
 #include "xdk/hle.h"
 
 #include "common/gamepad.h"
+#include "common/keyboard.h"
 #include "common/menus.h"
 #include "common/mouse.h"
 #include "common/ui.h"
@@ -21,6 +22,10 @@
 // defaults by 0x352410). The function runs for each player in turn (0x4D320, the player whose actions struct
 // 0x763260 + edx*0x1B0 it fills), so the player's own settings go into the bytes before each read; the game's menus
 // and a save loaded don't change them.
+// The scheme it writes is 0 single player's (0x4D470) or 1 to 4 a multiplayer profile's (the byte at profile+0x11B4,
+// 0 to 3, through the table at 0x68C308): Emily, Victoria, Samantha and Elspeth, which 0x4D6E0 runs with two flags,
+// jump on A rather than a stick's click (Victoria, Elspeth) and the sticks swapped (Samantha, Elspeth). The keys
+// follow it (keyboard::SetScheme).
 bool gamepad::g_invert_aim[input::kPorts] = {};
 bool gamepad::g_vibration[input::kPorts] = {true, true, true, true};
 uint32_t gamepad::g_vibration_percent[input::kPorts] = {100, 100, 100, 100};
@@ -40,7 +45,9 @@ X86_FUNC(sub_0004D1F0) {
         base[0x84B140] = gamepad::g_invert_aim[player] ? 0 : 1;
         base[0x84B141] = gamepad::g_vibration[player] ? 1 : 0;
     }
+    const uint32_t scheme = ctx.eax;
     __imp__sub_0004D1F0(ctx, base);
+    if (player < uint32_t(input::kPorts)) keyboard::SetScheme(int(player), int(kernel::R32(scheme)));
 }
 
 // 0x203B50: the pause menu's input, once a frame while paused (0x204060). Its page is [0x849AF8]: 0 the pause screen,

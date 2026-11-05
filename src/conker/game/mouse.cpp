@@ -68,14 +68,12 @@
 
 namespace mouse {
 
-bool g_look[keyboard::kModes][input::kPorts] = {{true, true, true, true}, {true, true, true, true}};
-uint32_t g_sensitivity[keyboard::kModes][input::kPorts] = {
-    {kDefaultSensitivity, kDefaultSensitivity, kDefaultSensitivity, kDefaultSensitivity},
-    {kDefaultSensitivity, kDefaultSensitivity, kDefaultSensitivity, kDefaultSensitivity}};
-uint32_t g_sensitivity_y[keyboard::kModes][input::kPorts] = {
-    {kDefaultSensitivity, kDefaultSensitivity, kDefaultSensitivity, kDefaultSensitivity},
-    {kDefaultSensitivity, kDefaultSensitivity, kDefaultSensitivity, kDefaultSensitivity}};
-bool g_invert_y[keyboard::kModes][input::kPorts] = {};
+bool g_look[input::kPorts] = {true, true, true, true};
+uint32_t g_sensitivity[input::kPorts] = {kDefaultSensitivity, kDefaultSensitivity, kDefaultSensitivity,
+                                         kDefaultSensitivity};
+uint32_t g_sensitivity_y[input::kPorts] = {kDefaultSensitivity, kDefaultSensitivity, kDefaultSensitivity,
+                                           kDefaultSensitivity};
+bool g_invert_y[input::kPorts] = {};
 
 namespace {
 
@@ -186,9 +184,8 @@ void Record(int port, int32_t dx, int32_t dy) {
 
 // a player looks with a mouse they have
 bool AnyLook() {
-    const int mode = keyboard::ActiveMode();
     for (int p = 0; p < kPorts; p++)
-        if (g_look[mode][p] && input::Has(p, input::Kind::Mouse)) return true;
+        if (g_look[p] && input::Has(p, input::Kind::Mouse)) return true;
     return false;
 }
 
@@ -249,7 +246,7 @@ void Message(void* hwnd, uint32_t msg, uintptr_t wp, intptr_t lp) {
             // more than a nudge of the desk: the player took the mouse up (the prompts show keys)
             if (std::abs(dx) + std::abs(dy) >= 4) input::Used(port, input::Source::Keyboard);
             if (!g_held.load()) break;
-            if (port >= 0 && g_look[keyboard::ActiveMode()][port]) Record(port, dx, dy);
+            if (port >= 0 && g_look[port]) Record(port, dx, dy);
             break;
         }
         case app::kMsgActivate:
@@ -264,9 +261,8 @@ void Message(void* hwnd, uint32_t msg, uintptr_t wp, intptr_t lp) {
             menus::Wheel(int16_t(uint16_t(wp >> 16)));
             // in a match, while the mouse looks (no menu up), the wheel steps the weapons (Wheel)
             if (msg == app::kMsgMouseWheel && g_held.load() && warp::Multiplayer()) {
-                const int mode = keyboard::ActiveMode();
-                for (int p = 0; p < kPorts; p++) {
-                    if (!g_look[mode][p] || !input::Has(p, input::Kind::Mouse)) continue;
+                            for (int p = 0; p < kPorts; p++) {
+                    if (!g_look[p] || !input::Has(p, input::Kind::Mouse)) continue;
                     const int turn = int16_t(uint16_t(wp >> 16));
                     int was = g_scroll[p].load();
                     while (!g_scroll[p].compare_exchange_weak(was, std::clamp(was + turn, -kMaxScroll, kMaxScroll))) {
@@ -305,14 +301,14 @@ struct Look {
 Look g_looks[kPorts];
 
 // a step on each axis as a right stick, aimed at the middle of the step so the game's truncations land on it
-void Stick(input::Pad& pad, int x, int y) {
+void Stick(input::Pad& pad, int x, int y, bool left = false) {
     const float px = x ? std::copysign((float(std::abs(x)) + 0.5f) * 512.0f / 32767.0f, float(x)) : 0.0f;
     const float py = y ? std::copysign((float(std::abs(y)) + 0.5f) * 512.0f / 32767.0f, float(y)) : 0.0f;
     const float len = std::hypot(px, py);
     if (len == 0.0f) return;
     const float out = (kDeadZone + (1.0f - kDeadZone) * len) / len;
-    pad.rx = int16_t(std::clamp(px * out, -1.0f, 1.0f) * 32767.0f);
-    pad.ry = int16_t(std::clamp(py * out, -1.0f, 1.0f) * 32767.0f);
+    (left ? pad.lx : pad.rx) = int16_t(std::clamp(px * out, -1.0f, 1.0f) * 32767.0f);
+    (left ? pad.ly : pad.ry) = int16_t(std::clamp(py * out, -1.0f, 1.0f) * 32767.0f);
 }
 
 // the step whose turn this frame comes nearest the debt, and the debt it leaves
@@ -709,8 +705,7 @@ void Turn(uint32_t actions, uint32_t turn, uint32_t ret, uint32_t player) {
     constexpr uint32_t kPitchMin = 0x18, kPitchMax = 0x1C;  // in the camera's settings, [turn]
     if (actions < kPlayer1Actions || (actions - kPlayer1Actions) % kActionsSize) return;
     const uint32_t port = (actions - kPlayer1Actions) / kActionsSize;
-    const int mode = keyboard::ActiveMode();
-    if (port >= uint32_t(kPorts) || !g_look[mode][port] || !g_held.load() || !Readable(turn, kPitchEased + 4)) return;
+    if (port >= uint32_t(kPorts) || !g_look[port] || !g_held.load() || !Readable(turn, kPitchEased + 4)) return;
     if (WheelOpen(int(port), Now())) return;  // the mouse points the weapon wheel (Pad)
     if (ret == kWeaponTurnReturn && warp::Multiplayer()) {
         // a match's scope (the view zoomed in), or an aircraft (the player's state at +0xA4 is kFlying while they
@@ -769,9 +764,9 @@ void Turn(uint32_t actions, uint32_t turn, uint32_t ret, uint32_t player) {
     }
 
     // counts into degrees: right lowers the yaw, up raises the pitch (as the stick does); raw y grows downward
-    const float yaw = float(dx) * kDegreesPerCount * float(g_sensitivity[mode][port]) / 100.0f;
-    float pitch = float(-dy) * kDegreesPerCount * float(g_sensitivity_y[mode][port]) / 100.0f;
-    if (g_invert_y[mode][port]) pitch = -pitch;
+    const float yaw = float(dx) * kDegreesPerCount * float(g_sensitivity[port]) / 100.0f;
+    float pitch = float(-dy) * kDegreesPerCount * float(g_sensitivity_y[port]) / 100.0f;
+    if (g_invert_y[port]) pitch = -pitch;
     // the frame's turns, which come off the yaw and the pitch
     WF(turn + kYawTurn, RF(turn + kYawTurn) + yaw);
     WF(turn + kPitchTurn, RF(turn + kPitchTurn) - pitch);
@@ -804,8 +799,7 @@ void TankAim(uint32_t player) {
     if (actions < kPlayer1Actions || (actions - kPlayer1Actions) % kActionsSize) return;
     const uint32_t port = (actions - kPlayer1Actions) / kActionsSize;
     const int64_t now = Now();
-    const int mode = keyboard::ActiveMode();
-    if (port >= uint32_t(kPorts) || !g_look[mode][port] || !g_held.load() || !InTank(int(port), now) ||
+    if (port >= uint32_t(kPorts) || !g_look[port] || !g_held.load() || !InTank(int(port), now) ||
         WheelOpen(int(port), now))
         return;
     if (!Readable(player + kView, 4)) return;
@@ -822,9 +816,9 @@ void TankAim(uint32_t player) {
     }
     if (!dx && !dy) return;
     LOG_FIRST(1, "mouse: look aims the tank");
-    const float yaw = float(dx) * kDegreesPerCount * float(g_sensitivity[mode][port]) / 100.0f;
-    float pitch = float(-dy) * kDegreesPerCount * float(g_sensitivity_y[mode][port]) / 100.0f;
-    if (g_invert_y[mode][port]) pitch = -pitch;
+    const float yaw = float(dx) * kDegreesPerCount * float(g_sensitivity[port]) / 100.0f;
+    float pitch = float(-dy) * kDegreesPerCount * float(g_sensitivity_y[port]) / 100.0f;
+    if (g_invert_y[port]) pitch = -pitch;
     WF(cam + kYaw, RF(cam + kYaw) - yaw);
     WF(cam + kPitch, RF(cam + kPitch) - pitch);
 }
@@ -837,9 +831,11 @@ void Pad(int port, input::Pad& pad) {
     if (menu != g_game_menu.exchange(menu)) app::Post(kRefresh);
     std::lock_guard lock(g_pad_lock);
     Look& l = g_looks[port];
-    const int mode = keyboard::ActiveMode();
+    // the camera's stick is the left one in a southpaw scheme, and the stick that moves (pointing the weapon wheel)
+    // the right
+    const bool southpaw = keyboard::Southpaw(keyboard::Scheme(port));
     const bool calibrating = port == 0 && Calibrate(pad, now);
-    if (calibrating || !g_look[mode][port] || !g_held.load()) {
+    if (calibrating || !g_look[port] || !g_held.load()) {
         l.x.Reset(), l.y.Reset();
         if (!calibrating) Clear(port);
         g_wheel[port] = {};
@@ -856,7 +852,7 @@ void Pad(int port, input::Pad& pad) {
             g_motion[port].dx = g_motion[port].dy = 0;
         }
         if (dx || dy) {
-            const float scale = float(g_sensitivity[mode][port]) / 100.0f / kWheelCounts;
+            const float scale = float(g_sensitivity[port]) / 100.0f / kWheelCounts;
             w.x += float(dx) * scale;
             w.y -= float(dy) * scale;  // raw y grows downward
             const float len = std::hypot(w.x, w.y);
@@ -866,8 +862,8 @@ void Pad(int port, input::Pad& pad) {
         }
         const float len = std::hypot(w.x, w.y);
         if (w.moved && len >= kWheelPush) {
-            pad.lx = int16_t(std::clamp(w.x / len, -1.0f, 1.0f) * 32767.0f);
-            pad.ly = int16_t(std::clamp(w.y / len, -1.0f, 1.0f) * 32767.0f);
+            (southpaw ? pad.rx : pad.lx) = int16_t(std::clamp(w.x / len, -1.0f, 1.0f) * 32767.0f);
+            (southpaw ? pad.ry : pad.ly) = int16_t(std::clamp(w.y / len, -1.0f, 1.0f) * 32767.0f);
             LOG_FIRST(1, "mouse: the mouse points the weapon wheel");
         }
         return;
@@ -877,7 +873,7 @@ void Pad(int port, input::Pad& pad) {
     if (Aiming(port, now) || now - g_turned_us[port].load(std::memory_order_relaxed) < kTurnedUs) {
         l.x.Reset(), l.y.Reset();
         if (warp::Multiplayer() && now - g_nudge_us[port].load(std::memory_order_relaxed) < kNudgeUs)
-            Stick(pad, g_nudge_x[port].load(std::memory_order_relaxed), 0);
+            Stick(pad, g_nudge_x[port].load(std::memory_order_relaxed), 0, southpaw);
         return;
     }
 
@@ -896,16 +892,16 @@ void Pad(int port, input::Pad& pad) {
             resting = now - m.moved_us > kRestUs;
         }
         // counts into degrees; raw y grows downward
-        float y = float(-dy) * kDegreesPerCount * float(g_sensitivity_y[mode][port]) / 100.0f;
-        if (g_invert_y[mode][port]) y = -y;
-        l.x.debt = std::clamp(l.x.debt + float(dx) * kDegreesPerCount * float(g_sensitivity[mode][port]) / 100.0f,
+        float y = float(-dy) * kDegreesPerCount * float(g_sensitivity_y[port]) / 100.0f;
+        if (g_invert_y[port]) y = -y;
+        l.x.debt = std::clamp(l.x.debt + float(dx) * kDegreesPerCount * float(g_sensitivity[port]) / 100.0f,
                               -l.x.max_debt, l.x.max_debt);
         l.y.debt = std::clamp(l.y.debt + y, -l.y.max_debt, l.y.max_debt);
         Pay(l.x, l.frame, resting);
         Pay(l.y, l.frame, resting);
     }
     if (!l.x.step && !l.y.step) return;  // still: the keyboard's or a gamepad's right stick stands
-    Stick(pad, l.x.step, l.y.step);
+    Stick(pad, l.x.step, l.y.step, southpaw);
     LOG_FIRST(1, "mouse: look drives the right stick");
 }
 
@@ -915,14 +911,12 @@ void Pad(int port, input::Pad& pad) {
 
 namespace mouse {
 
-bool g_look[keyboard::kModes][input::kPorts] = {};
-uint32_t g_sensitivity[keyboard::kModes][input::kPorts] = {
-    {kDefaultSensitivity, kDefaultSensitivity, kDefaultSensitivity, kDefaultSensitivity},
-    {kDefaultSensitivity, kDefaultSensitivity, kDefaultSensitivity, kDefaultSensitivity}};
-uint32_t g_sensitivity_y[keyboard::kModes][input::kPorts] = {
-    {kDefaultSensitivity, kDefaultSensitivity, kDefaultSensitivity, kDefaultSensitivity},
-    {kDefaultSensitivity, kDefaultSensitivity, kDefaultSensitivity, kDefaultSensitivity}};
-bool g_invert_y[keyboard::kModes][input::kPorts] = {};
+bool g_look[input::kPorts] = {};
+uint32_t g_sensitivity[input::kPorts] = {kDefaultSensitivity, kDefaultSensitivity, kDefaultSensitivity,
+                                         kDefaultSensitivity};
+uint32_t g_sensitivity_y[input::kPorts] = {kDefaultSensitivity, kDefaultSensitivity, kDefaultSensitivity,
+                                           kDefaultSensitivity};
+bool g_invert_y[input::kPorts] = {};
 
 void Message(void*, uint32_t, uintptr_t, intptr_t) {}
 

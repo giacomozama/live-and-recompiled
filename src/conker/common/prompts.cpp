@@ -106,19 +106,24 @@ uint32_t KeySprite(int port, int vk) {
     return KeyTexture(vk);
 }
 
-uint32_t ActionIcon(int port, int action) {
-    if (!g_on || action < 0 || action >= keyboard::kActions || port < 0 || port >= input::kPorts) return 0;
+// the keys of the actions that press the button in the player's controls, in the actions' order
+uint32_t ButtonIcon(int port, int button) {
+    if (!g_on || button < 0 || button >= keyboard::kButtons || port < 0 || port >= input::kPorts) return 0;
     if (input::LastUsed(port) != input::Source::Keyboard) return 0;
-    for (int vk : keyboard::g_keys[keyboard::ActiveMode()][port][action])
-        if (const uint32_t tex = KeyTexture(vk)) return tex;
+    const int scheme = keyboard::Scheme(port);
+    for (int a = 0; a < keyboard::kActions; a++) {
+        if (keyboard::Drives(scheme, a) != button) continue;
+        for (int vk : keyboard::g_keys[port][a])
+            if (const uint32_t tex = KeyTexture(vk)) return tex;
+    }
     return 0;
 }
 
-uint32_t KeyIcon(int port, int face) { return face < 0 || face > 3 ? 0 : ActionIcon(port, keyboard::kA + face); }
+uint32_t KeyIcon(int port, int face) { return face < 0 || face > 3 ? 0 : ButtonIcon(port, face); }
 
 #else
 
-uint32_t ActionIcon(int, int) { return 0; }
+uint32_t ButtonIcon(int, int) { return 0; }
 uint32_t KeyIcon(int, int) { return 0; }
 uint32_t KeySprite(int, int) { return 0; }
 
