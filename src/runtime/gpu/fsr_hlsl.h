@@ -3,6 +3,9 @@
 // AMD FidelityFX Super Resolution 1.0 (FSR 1.0)
 // EASU (Edge-Adaptive Spatial Upsampling) & RCAS (Robust Contrast-Adaptive Sharpening)
 // Adapted for HLSL 5.0 / Vulkan SPIR-V 1.6
+// Based on ffx_fsr1.h from https://github.com/GPUOpen-Effects/FidelityFX-FSR
+// Copyright (c) 2021 Advanced Micro Devices, Inc. All rights reserved.
+// MIT License; full text in THIRD_PARTY.txt
 
 namespace gpu {
 
