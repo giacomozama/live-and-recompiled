@@ -717,7 +717,7 @@ const Snap* MovedFrom(const Frame& prev, const Frame& cur, uint32_t n) {
 // sprite carried along whole. A 2D draw's constants never change, so it was found by its turn alone, and that pairs it
 // with another sprite whenever the frame's turns shift: a loading bar's blocks, a block taken part way toward its
 // neighbour, were drawn scrambled (capture 214722 pics 114-116). So all but its positions the same, byte for byte
-// (texture coordinates, colours), and every vertex moved by the same step: a sprite that changes its shape (the
+// (texture coordinates, colors), and every vertex moved by the same step: a sprite that changes its shape (the
 // peephole's circle, closing) went part way while what fits around it didn't, showing the scene through the seams
 // (capture 214710 pic 70). A step further than the draw's reach is a jump (a bubble shown somewhere else)
 struct SpriteBox {

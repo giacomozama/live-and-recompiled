@@ -122,7 +122,7 @@ inline void AppendBytes(std::vector<uint8_t>& v, const void* p, size_t n) {
 // F3 captures only with diag::CaptureDir set
 bool CaptureOn();
 
-// the memory byte R G B A take in a 32 bit colour format, as texture.cpp decodes it
+// the memory byte R G B A take in a 32 bit color format, as texture.cpp decodes it
 void DepthByteOrder(uint32_t format, float order[4]);
 // which of those orders: 0 ARGB, 1 ABGR, 2 BGRA, 3 RGBA; and the order of each
 int DepthByteLayout(uint32_t format);
@@ -221,7 +221,7 @@ struct PsoKey {
     uint32_t fill;
     int32_t zbias;
     float zslope;
-    uint32_t rtfmt;    // DXGI format of the colour target, whichever API draws it
+    uint32_t rtfmt;    // DXGI format of the color target, whichever API draws it
     uint32_t samples;  // of the bound targets
 };
 
@@ -262,7 +262,7 @@ struct GuestExtent {
     uint32_t h;
 };
 
-// a renderer's targets by key: a surface's colour or depth target
+// a renderer's targets by key: a surface's color or depth target
 inline uint64_t TargetMapKey(uint32_t data, bool depth) { return uint64_t(data) << 1 | (depth ? 1 : 0); }
 
 // a smaller depth surface's console size, above the address bits
@@ -300,13 +300,13 @@ TexKind TextureKind(const TextureDesc& d);
 
 constexpr float kUpscaledMin = 1.01f;  // host texels per console texel past rounding: the target is upscaled
 
-// a P8 texture's palette: its colours, their address (part of the texture's key) and their hash, all 0 without one
+// a P8 texture's palette: its colors, their address (part of the texture's key) and their hash, all 0 without one
 struct StagePalette {
-    uint32_t colours[256] = {};
+    uint32_t colors[256] = {};
     uint32_t va = 0;
     uint64_t hash = 0;
 };
-// a P8 texture is decoded with the stage's palette: 256 colours, fewer by the size code in the top two bits
+// a P8 texture is decoded with the stage's palette: 256 colors, fewer by the size code in the top two bits
 void ReadStagePalette(const State& s, int stage, const TextureDesc& d, StagePalette& palette);
 
 // D3DTEXF: 1 point, 2 linear, 3 anisotropic

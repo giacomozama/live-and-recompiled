@@ -10,13 +10,13 @@ bool lighting::g_per_pixel = true;
 namespace {
 
 // The lit programs (69 shapes in the captures: Conker, the other characters, skinned and rigid props) work out two
-// colours from the unit view space normal in a register of their own (R0, R2, R5, R6 or R10 so far) and the view space
+// colors from the unit view space normal in a register of their own (R0, R2, R5, R6 or R10 so far) and the view space
 // position: the room's ambient, a quadratic in the normal per channel, (n, 1) M (n, 1) with M c166..c169 for red,
 // c170..c173 green and c174..c177 blue; and the key light, c180 times max(N.L, 0) toward c179 negated, less the blob
 // shadows: groups of four blobs (c50..c53, and c54..c61 for the programs that take three groups), each strength / d^2
 // from the position placed by c63..c65 and clipped where it lies above the blob. Most put the ambient in oD0, some
 // times a scale from an input (an occlusion baked into the mesh), and the key light in oD1; a few put the sum of the
-// two in oD0. The colours are then interpolated across each triangle, which the long ones of a tail or an arm show:
+// two in oD0. The colors are then interpolated across each triangle, which the long ones of a tail or an arm show:
 // the key light's edge and the blob shadows crawl along them as they move. The shading hands on the normal and the
 // position instead and works both out again at each pixel. The program's own oD0 gives the ambient's scale. Registers
 // are hardware order, D3D's + 96.
@@ -71,7 +71,7 @@ constexpr const char* kVs = R"(    {
         o.x1 = float4(p, 0);
     })";
 
-// the colours again at the pixel: the back faces of a two sided draw keep the back colours the program left them
+// the colors again at the pixel: the back faces of a two sided draw keep the back colors the program left them
 constexpr const char* kPs = R"({
     float nl = length(i.x0.xyz);
     if ((!PS_TWO_SIDED || front) && nl > 1e-6) {

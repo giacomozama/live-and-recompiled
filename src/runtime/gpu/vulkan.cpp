@@ -403,7 +403,7 @@ float depth(O i) : SV_Depth { return depthat(int2(i.p.xy)); }
 void stencilbit(O i) { if (((stencilat(int2(i.p.xy)) >> opts.x) & 1) == 0) discard; }
 )";
 
-// a D24S8 depth buffer as the console's memory holds it, read through a 32 bit colour format:
+// a D24S8 depth buffer as the console's memory holds it, read through a 32 bit color format:
 // R G B A take the bytes order picks
 const char* kDepthBytesHlsl = R"(
 cbuffer B : register(b1) { float4 order; };
@@ -505,7 +505,7 @@ VkFormat VkFormatOf(uint32_t dxgi) {
     }
 }
 
-// a colour target's format as the pipeline key names it, D3D12's way, so shaders.rec serves both renderers
+// a color target's format as the pipeline key names it, D3D12's way, so shaders.rec serves both renderers
 uint32_t DxgiOf(VkFormat f) { return f == kBgra ? DXGI_FORMAT_B8G8R8A8_UNORM : DXGI_FORMAT_UNKNOWN; }
 
 bool HasStencil(VkFormat f) { return f == VK_FORMAT_D24_UNORM_S8_UINT || f == VK_FORMAT_D32_SFLOAT_S8_UINT; }
@@ -529,7 +529,7 @@ struct Handles {
 struct Image : std::enable_shared_from_this<Image> {
     VkImage image = VK_NULL_HANDLE;
     VmaAllocation alloc = nullptr;              // null: the swap chain's
-    VkImageView view = VK_NULL_HANDLE;          // every aspect: a colour image sampled, any image as an attachment
+    VkImageView view = VK_NULL_HANDLE;          // every aspect: a color image sampled, any image as an attachment
     VkImageView depth_view = VK_NULL_HANDLE;    // a depth and stencil image's depth, sampled
     VkImageView stencil_view = VK_NULL_HANDLE;  // and its stencil
     VkFormat format = VK_FORMAT_UNDEFINED;
@@ -619,7 +619,7 @@ struct Target {
     std::vector<uint8_t> read;    // what Sync left in guest memory
     ImageRef fb;                  // copy read by draws that sample the target they render to
     uint64_t fb_draw = 0;         // the draw fb was copied for, which its other stages reading the target share
-    // a depth target read as a 32 bit colour texture: its bytes as colour, R the top depth byte (DepthBytes)
+    // a depth target read as a 32 bit color texture: its bytes as color, R the top depth byte (DepthBytes)
     ImageRef zb;
     VkFormat fmt = kBgra;
     // multisampling (app::Settings::msaa): draws and clears go to ms, res takes them back before it is read
@@ -635,7 +635,7 @@ struct Tex {
     uint64_t sig = 0;
     uint64_t whole = 0;  // every byte hashed, as sig is at its last upload
     uint64_t frame = 0;
-    uint64_t palette = 0;  // hash of the colours a P8 texture was decoded with
+    uint64_t palette = 0;  // hash of the colors a P8 texture was decoded with
     uint8_t sign = 0;      // channels uploaded offset by 128 (OffsetSigned)
 };
 
@@ -654,7 +654,7 @@ struct BlitOptions {
     bool gamma = false;       // through the gamma lookup
     bool alpha = false;       // the source's alpha, else 1
     uint32_t taps = 1;        // n x n box filter per pixel
-    float mul = 1;            // colour scale
+    float mul = 1;            // color scale
     VkFormat rtv = kBgra;     // the target's format
     bool over = false;        // premultiplied over the target, which keeps its alpha
     uint32_t samples = 1;     // the target's
@@ -1045,7 +1045,7 @@ private:
     Image* BindGuestTexture(const State& s, int stage, const TextureDesc& d, const FormatInfo& fi,
                             DrawTextures& stages);
     bool CreateTexture(Tex& tx, const TextureDesc& d, const FormatInfo& fi, uint64_t key);
-    void UploadTexture(Tex& tx, const TextureDesc& d, const uint8_t* p, const uint32_t* colours);
+    void UploadTexture(Tex& tx, const TextureDesc& d, const uint8_t* p, const uint32_t* colors);
     void UploadTextureLevel(Tex& tx, uint32_t f, uint32_t l, const std::vector<uint8_t>& px, uint32_t pitch);
     void EnsurePixelShader(const PixelKey& pk, DrawShaders& sh);
     void BuildPipelineKey(const State& s, const Assembled& a, uint64_t vh, uint64_t ph, PsoKey& k);
@@ -1143,7 +1143,7 @@ private:
     bool ReadBack(Image& im, uint32_t w, uint32_t h, std::vector<uint8_t>& out);
     void CapStep(const Surface& rt);
     void CapAround(const State& s);
-    // an image CapSave shrinks to w x h and writes, colour times mul
+    // an image CapSave shrinks to w x h and writes, color times mul
     struct CapImage {
         Image* res;
         VkImageView view;
@@ -1800,7 +1800,7 @@ bool VulkanBackend::PickDevice() {
 #ifdef _WIN32
     // Intel's 7th to 10th generation graphics (Kaby Lake to Comet Lake) crash on boot with a driver older than 31.0.101.2145:
     // igvk64.dll's vkCmdBeginRendering sets a "depth/stencil attachment present" flag for a pass that has one and never
-    // clears it, so a later pass with a colour attachment alone has the driver read a depth view from an attachment slot
+    // clears it, so a later pass with a color attachment alone has the driver read a depth view from an attachment slot
     // nothing filled in, a null pointer (access violation at igvk64.dll+5CFAB2 in 2135). 2145 clears the flag at the start
     // of each call.
     // (Intel packs the version's last two parts into driverVersion: 101 << 14 | 2145)
@@ -2353,7 +2353,7 @@ void VulkanBackend::SetFullViewport(uint32_t w, uint32_t h) {
     SetScissor(0, 0, int32_t(w), int32_t(h));
 }
 
-// one w x h colour target for a Blit, the draw's bound targets forgotten
+// one w x h color target for a Blit, the draw's bound targets forgotten
 void VulkanBackend::SetBlitTarget(Image& im, uint32_t w, uint32_t h) {
     SetTargets(&im, nullptr);
     bound_rt_ = bound_ds_ = nullptr;
@@ -2415,7 +2415,7 @@ void VulkanBackend::HostBarrier() {
                          nullptr);
 }
 
-// colour to 0, depth to 1 and stencil to 0, as D3D12 clears a new target
+// color to 0, depth to 1 and stencil to 0, as D3D12 clears a new target
 void VulkanBackend::ClearWhole(Image& im) {
     Transition(im, kDst);
     Barrier();
@@ -2562,7 +2562,7 @@ void VulkanBackend::CreateSampledTarget(Target& t) {
     if (t.ms) ClearWhole(*t.ms);
 }
 
-// res takes what was drawn to the samples since: colour averaged, depth and stencil the first sample's
+// res takes what was drawn to the samples since: color averaged, depth and stencil the first sample's
 void VulkanBackend::ResolveSamples(Target& t) {
     if (!t.ms_ahead) return;
     t.ms_ahead = false;
@@ -2753,7 +2753,7 @@ void VulkanBackend::CopyDepthStencil(Image& src, bool from_ms, Image& dst, uint3
     bound_rt_ = bound_ds_ = nullptr;
 }
 
-// a depth buffer drawn as colour into another depth buffer's memory: copied as depth
+// a depth buffer drawn as color into another depth buffer's memory: copied as depth
 bool VulkanBackend::DepthCopy(const State& s) {
     TextureDesc d;
     if (!s.rt.header || !s.textures[0] || !Describe(s.textures[0], d) || Format(d.format).depth || d.cube ||
@@ -2898,7 +2898,7 @@ VkPipeline VulkanBackend::CreatePipeline(VkGraphicsPipelineCreateInfo& ci, const
     return p;
 }
 
-// a full screen pass's pipeline: solid, no culling, one colour target or a depth one
+// a full screen pass's pipeline: solid, no culling, one color target or a depth one
 VkPipeline VulkanBackend::CreateFullScreenPipeline(const Spirv& vs, const Spirv& ps, const FullScreenDesc& d) const {
     VkPipelineVertexInputStateCreateInfo vi{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
     VkPipelineInputAssemblyStateCreateInfo ia{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
@@ -2926,7 +2926,7 @@ VkPipeline VulkanBackend::CreateFullScreenPipeline(const Spirv& vs, const Spirv&
     VkPipelineColorBlendAttachmentState ba{};
     ba.colorWriteMask = 0xF;
     if (d.blend == 1) {
-        // premultiplied colour, the target keeps its alpha
+        // premultiplied color, the target keeps its alpha
         ba.blendEnable = VK_TRUE;
         ba.srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
         ba.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
@@ -3009,7 +3009,7 @@ void VulkanBackend::Pass(const char* hlsl, const char* entry, VkFormat rtv, Imag
     bound_rt_ = bound_ds_ = nullptr;
 }
 
-// the depth target's bytes as colour, drawn again each time a draw reads them; null when there is no memory for it
+// the depth target's bytes as color, drawn again each time a draw reads them; null when there is no memory for it
 Image* VulkanBackend::DepthBytes(Target& z, uint32_t format) {
     if (!z.zb) {
         z.zb = NewImage({.w = z.w, .h = z.h,
@@ -3401,7 +3401,7 @@ void VulkanBackend::UploadTextureLevel(Tex& tx, uint32_t f, uint32_t l, const st
     vkCmdCopyBufferToImage(cmd_, a.buf, im.image, kDst, 1, &r);
 }
 
-void VulkanBackend::UploadTexture(Tex& tx, const TextureDesc& d, const uint8_t* p, const uint32_t* colours) {
+void VulkanBackend::UploadTexture(Tex& tx, const TextureDesc& d, const uint8_t* p, const uint32_t* colors) {
     Transition(*tx.res, kDst);
     uint32_t faces = d.cube ? 6 : 1;
     std::vector<uint8_t> px, up;
@@ -3433,7 +3433,7 @@ void VulkanBackend::UploadTexture(Tex& tx, const TextureDesc& d, const uint8_t* 
                 uh = h;
                 continue;
             }
-            DecodeLevel(d, l, f, p, colours, px, pitch);
+            DecodeLevel(d, l, f, p, colors, px, pitch);
             if (tx.sign) {
                 // r g b a to the bytes of a B G R A texel
                 uint8_t x[4] = {uint8_t(tx.sign & 4 ? 0x80 : 0), uint8_t(tx.sign & 2 ? 0x80 : 0), uint8_t(tx.sign & 1 ? 0x80 : 0),
@@ -3483,7 +3483,7 @@ Image* VulkanBackend::BindGuestTexture(const State& s, int stage, const TextureD
             tx.sig = sig;
             tx.whole = total > kSigWholeMax ? Hash(p, total) ^ mark : 0;
             tx.sign = sign;
-            UploadTexture(tx, d, p, palette.va ? palette.colours : nullptr);
+            UploadTexture(tx, d, p, palette.va ? palette.colors : nullptr);
         }
     }
     stages.view[stage] = tx.res->view;
@@ -3529,7 +3529,7 @@ Image* VulkanBackend::BindTexture(const State& s, int stage, DrawTextures& stage
     if (tit != targets_.end() && !d.cube && d.depth == 1 && !fi.compressed) {
         return BindTargetTexture(s, stage, d, tit->second, stages);
     }
-    // a depth buffer read through a 32 bit colour format: the GPU holds it, guest memory does not
+    // a depth buffer read through a 32 bit color format: the GPU holds it, guest memory does not
     if (tit == targets_.end() && !fi.depth && !fi.compressed && fi.bits == 32 && !d.cube && d.depth == 1) {
         auto zit = targets_.find(SizedTargetKey(d.data, true, d.width, d.height));
         if (zit != targets_.end() && zit->second.res) {
@@ -3568,7 +3568,7 @@ VkSampler VulkanBackend::MakeSampler(const SamplerDesc& sd) {
     ci.compareOp = sd.compare ? VkCompareOp(sd.compare - 1) : VK_COMPARE_OP_NEVER;
     ci.minLod = sd.min_lod;
     ci.maxLod = std::max(sd.max_lod, sd.min_lod);
-    // the border colour: Vulkan's three fixed ones when it is one of them, else a custom one where the GPU has them
+    // the border color: Vulkan's three fixed ones when it is one of them, else a custom one where the GPU has them
     const float* b = sd.border;
     bool border = sd.u == VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER || sd.v == VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER ||
                   sd.w == VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
@@ -4871,7 +4871,7 @@ void VulkanBackend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t
     // pipeline
     PsoKey k;
     BuildPipelineKey(s, a, sh.vh, sh.ph, k);
-    // ProgramShading::depth_alpha: the depth goes in a pass of its own after the colour, where it isn't faint; and so
+    // ProgramShading::depth_alpha: the depth goes in a pass of its own after the color, where it isn't faint; and so
     // does a g_surface_depth surface's, which the title draws without
     VkPipeline zpso = VK_NULL_HANDLE;
     const ProgramShading* zps = sh.shading ? &g_program_shading[sh.shading - 1] : nullptr;
@@ -4941,7 +4941,7 @@ void VulkanBackend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t
             fprintf(cap_, "\n     points sprite %u size %g scale %u %g %g %g limits %g %g | raw 318 %X 31C %X 43C %X",
                     s.rs[kRsPointSpriteEnable], c.pts[0], s.rs[kRsPointScaleEnable], c.ptsk[0], c.ptsk[1], c.ptsk[2],
                     c.pts[2], c.pts[3], s.simple[0x318 >> 2], s.simple[0x31C >> 2], s.simple[0x43C >> 2]);
-        // the border colour as the title set it (ARGB), with the D3DTADDRESS codes it came with
+        // the border color as the title set it (ARGB), with the D3DTADDRESS codes it came with
         for (int i = 0; i < 4; i++) {
             if (!stages.res[i] && i >= 2) continue;
             SamplerDesc sd = StageSampler(s, i, stages, UnitTexcoords(s, a), app::Get().aniso);
@@ -6162,7 +6162,7 @@ void VulkanBackend::CapSave(Target& t, const char* name) {
     CapSave({.res = t.res.get(), .view = t.res->Sampled(), .w = full ? t.w : t.gw, .h = full ? t.h : t.gh}, name);
 }
 
-// XBE_CAPTURE_VS=<hex shader handle>, XBE_CAPTURE_RT=<hex surface address>: the colour and depth targets before each
+// XBE_CAPTURE_VS=<hex shader handle>, XBE_CAPTURE_RT=<hex surface address>: the color and depth targets before each
 // draw with that vertex shader or into that surface, and before the draw after the last of them
 void VulkanBackend::CapAround(const State& s) {
     static const char* env = std::getenv("XBE_CAPTURE_VS");

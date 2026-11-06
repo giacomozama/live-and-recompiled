@@ -107,15 +107,15 @@ TexKind TextureKind(const TextureDesc& d) {
 void ReadStagePalette(const State& s, int stage, const TextureDesc& d, StagePalette& palette) {
     constexpr uint32_t kFmtP8 = 0x0B;          // D3DFMT_P8
     constexpr uint32_t kPaletteCommon = 0;     // D3DPalette: Common, its top two bits the size code
-    constexpr uint32_t kPaletteData = 4;       // D3DPalette: Data, physical address of the colours
+    constexpr uint32_t kPaletteData = 4;       // D3DPalette: Data, physical address of the colors
     constexpr uint32_t kPaletteSizeShift = 30;
     if (d.format != kFmtP8 || !s.palettes[size_t(stage)]) return;
     uint32_t header = s.palettes[size_t(stage)];
     palette.va = mem::VirtualFromPhysical(kernel::R32(header + kPaletteData));
     uint32_t size_code = kernel::R32(header + kPaletteCommon) >> kPaletteSizeShift;
-    size_t bytes = (std::size(palette.colours) >> size_code) * sizeof(uint32_t);
-    std::memcpy(palette.colours, kernel::HostPtr(palette.va), bytes);
-    palette.hash = Hash(palette.colours, sizeof(palette.colours));
+    size_t bytes = (std::size(palette.colors) >> size_code) * sizeof(uint32_t);
+    std::memcpy(palette.colors, kernel::HostPtr(palette.va), bytes);
+    palette.hash = Hash(palette.colors, sizeof(palette.colors));
 }
 
 void ClassifyShaders(const State& s, const Assembled& a, uint32_t count, ShaderChoice& sh) {
@@ -750,7 +750,7 @@ void WriteBmp(const std::filesystem::path& p, const std::vector<uint8_t>& px, ui
 // pixel centres sample such a quad from its first texel to half a texel short of its far edge; upscaled, the far
 // edge's last half texel is drawn too, and wrapped it blends in the opposite edge (thin dark lines on HUD sprites).
 // Clamped, it takes the edge texel instead, which a wrapped texture used once over 0..1 has there anyway. Border
-// is read as clamp too: the dung boulders' floor splats drew their quads' outlines in the border colour.
+// is read as clamp too: the dung boulders' floor splats drew their quads' outlines in the border color.
 // A vertex program has to pass its coordinates through as they are: the throne room candles' flames read 0..1 as
 // 2 - v, wrapped onto the flame; clamped, every pixel took the transparent edge row and the flames were gone.
 bool UnitTexcoords(const State& s, const Assembled& a) {

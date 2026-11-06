@@ -80,7 +80,7 @@ std::atomic<bool> g_esc_swallow{false};
 // the main tab to show next frame (Show asks for one, the bumpers turn), -1 none; the tab drawn now; the player
 // the Controls tab shows
 constexpr int kMainTabs = 9, kControlsTab = 4, kMultiplayerTab = 5, kQuitTab = 8;
-// the Quit tab's colour
+// the Quit tab's color
 constexpr ImVec4 kDanger(0.93f, 0.33f, 0.33f, 1.0f);
 std::atomic<int> g_tab_target{-1};
 int g_tab_now = 0;
@@ -1080,7 +1080,7 @@ void Draw(double fps) {
                 Hint("Smoother light and shadows on characters and objects.", true);
                 bool no_fog = !s.fog;
                 if (ImGui::Checkbox("Disable fog", &no_fog)) s.fog = !no_fog;
-                Hint("Clears the haze over faraway scenery. Many places get their intended colour from fog, so "
+                Hint("Clears the haze over faraway scenery. Many places get their intended color from fog, so "
                      "this is best left unticked.", true);
 
                 ImGui::SeparatorText("Fur");

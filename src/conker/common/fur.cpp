@@ -15,7 +15,7 @@ namespace {
 // the view space position. Registers in the HLSL are hardware order, D3D's + 96.
 constexpr const char* kMatch = "mac_mul(((c[181]).xxxx), ((i.v5).xxxx))";
 
-// Of them the little girl squirrel's two scale the colour by the vertex colour, R9 * v0, as no other furry
+// Of them the little girl squirrel's two scale the color by the vertex color, R9 * v0, as no other furry
 // character's do: the shading left patches on her face, so her shells keep the game's own look and only the depth split.
 // XBE_FUR_SHADE_ALL=1 shades hers too, to compare on a character that may share her programs
 constexpr const char* kGirlSkip = "mac_mul(((R9).xyzw), ((i.v0).xxxx))";
@@ -37,7 +37,7 @@ constexpr const char* kVs = R"(    {
         o.x1 = float4(x, y, z, sum > 1e-4 ? key / sum : 0);
     })";
 
-// the shells, over the colour the game lit them with, as a volume of fur the way Perlin's hypertexture lights one: the
+// the shells, over the color the game lit them with, as a volume of fur the way Perlin's hypertexture lights one: the
 // key light reaches a shell through the fur above it, (1 - h) deep along the normal and longer the more it slants in,
 // and is let through by Beer's law with red going deepest, so the coat warms rather than greys toward the roots
 // (40% of the light is let through regardless: the game's own lighting already darkens the side away from it); the
@@ -49,7 +49,7 @@ constexpr const char* kVs = R"(    {
 // shaded, about as bright as before on the whole. The strands are thickened first: the test then cuts them where their
 // alpha is 60% of its reference at the roots, 80% at the tips, so they taper, with alpha stretched from there to 1 over
 // the reference to 1 so their middles blend as before. The skin pass under the fur only takes the blob shadows: the
-// program's sum at the pixel, its edge eased, taking at most 40% of the key light's share of the colour
+// program's sum at the pixel, its edge eased, taking at most 40% of the key light's share of the color
 constexpr const char* kPs = R"({
     float h = i.x0.w;
     float ref = ((int)misc.y == 4 || (int)misc.y == 6) ? misc.x / 255 : 0;

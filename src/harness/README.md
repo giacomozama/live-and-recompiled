@@ -38,7 +38,7 @@ Environment:
 - `REF=N` every Nth frame drawn by the reference renderer into `cap/ref_<frame>.tga`
 - `snap` file in the run folder: the next two frames drawn into `snap_1.tga` and `snap_2.tga`
 - `CAP=N` every Nth frame's draws listed in `cap/draws_<frame>.txt`
-- `PROBES="x,y x,y"` log every colour the reference renderer writes at those pixels of linear `PROBE_WIDTH` (640) wide
+- `PROBES="x,y x,y"` log every color the reference renderer writes at those pixels of linear `PROBE_WIDTH` (640) wide
   targets; `TRACE="x,y"` logs the combiner registers there
 - `XBE_PERF` as on Windows
 

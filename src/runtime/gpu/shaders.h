@@ -22,7 +22,7 @@ struct TexInfo {
 };
 enum : uint8_t {
     kTexWide = 4,  // an upscaled target shrunk by the pass: each tap averaged over console texels
-    // a depth buffer's bytes read as colour (stage 0 of a programmable draw: a depth of field's focus mask), bits 5
+    // a depth buffer's bytes read as color (stage 0 of a programmable draw: a depth of field's focus mask), bits 5
     // and 6 the DepthByteLayout: nearer pixels around lend the draw their output (DepthSpread)
     kTexDepthBytes = 16,
 };
@@ -64,12 +64,12 @@ struct PixelKey {
 // when set, hands a grid of floats its shaders read as Texture2D<float> xfield (t4) with SamplerState xfield_smp (s4),
 // linear and clamped; it is uploaded again when its version moves on. functions is HLSL at the top of its shaders,
 // after the constants, for vs, ps and tess to call.
-// depth_alpha, when above 0, splits each of its draws that blends and writes depth in two: the colour without the
-// depth write, then a depth pass (no colour, no stencil) where the output's alpha reaches depth_alpha, so what blends
+// depth_alpha, when above 0, splits each of its draws that blends and writes depth in two: the color without the
+// depth write, then a depth pass (no color, no stencil) where the output's alpha reaches depth_alpha, so what blends
 // in fainter leaves the depth behind it; with top set, only the draws whose x there is above 0 (the shells, not the
 // skin under them). also lists more text the translation must contain as well as match, for an entry that takes only
 // one shape of a program; without, text it must not contain, for an entry that leaves one shape out. pre runs in the pixel shader before the combiner stages, after the textures are fetched (before
-// the fixed function's stages, which fetch as they go), and may change v0 and v1; PS_TWO_SIDED is 1 there when the back faces take the back colours. plain: the shading reads
+// the fixed function's stages, which fetch as they go), and may change v0 and v1; PS_TWO_SIDED is 1 there when the back faces take the back colors. plain: the shading reads
 // no constants of its own (no clock, fill or top), so a draw in the state of the one before may reuse its pipeline.
 // screen, when set, copies the draw's render target just before each of its draws, what the draw blends over, for its
 // shaders to read as Texture2D xscreen (t5) with SamplerState xscreen_smp (s5), linear and clamped, at the pixel's
@@ -130,7 +130,7 @@ inline std::vector<ProgramWatch> g_program_watch;  // filled before the title bo
 // A game's surfaces that blend over what lies under them without writing depth, while *on holds: a floor with the
 // reflection under it, whose depth is the reflection's to a depth of field that reads the depth buffer. takes gets
 // each draw that blends and tests depth but doesn't write it, with v0 at vertices spread over it (WatchedDraw's v[0],
-// the other fields unset); one it takes writes its depth after its colour, where its output's alpha reaches alpha.
+// the other fields unset); one it takes writes its depth after its color, where its output's alpha reaches alpha.
 struct SurfaceDepthHook {
     const bool* on = nullptr;
     bool (*takes)(const WatchedDraw&) = nullptr;
@@ -185,7 +185,7 @@ uint32_t ProgramRelativeBase(const std::vector<uint32_t>& program);
 // fixed function vertex state a shader is built for
 struct FixedKey {
     uint32_t light = 0;    // bit 0 lighting, 1 specular, 2 local viewer, 3 normalize, then D3DMCS 2 bits each from bit 8:
-                           // diffuse, specular, ambient, emissive (material when the vertex lacks that colour)
+                           // diffuse, specular, ambient, emissive (material when the vertex lacks that color)
     uint32_t types = 0;    // D3DLIGHTTYPE per light, 2 bits each, 0 off
     uint32_t tex[4] = {};  // per stage: coordinate set, texgen at bit 4, D3DTTFF count at bit 8, projected bit 11, set size at bit 12
 };
@@ -207,7 +207,7 @@ struct ShaderHooks {
     // shadow(t, s, uv, z, fmt, px, size), float4, t a Texture2D<float> and s its SamplerComparisonState: a macro, since
     // the Vulkan renderer's SPIR-V can't take a texture as a function's argument (a hook may define a function)
     virtual std::string Shadow() const;
-    // what spreadtap scales a render target's colour by
+    // what spreadtap scales a render target's color by
     virtual std::string ReadScale(const TexInfo&) const { return "1"; }
     // a cube sampled along dir at stage i, empty for a plain sample
     virtual std::string Cube(const TexInfo&, int, const std::string&) const { return {}; }

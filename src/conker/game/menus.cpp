@@ -503,7 +503,7 @@ void ConkerPageHintAlpha(X86Context& ctx, uint8_t* base) {
 // The prompts of single player's pause screen ("A Quit?", "B Resume", "Y Options") are the pause UI's: each button's
 // icon an image the sprite routines (0x356000..0x35A000) draw as a quad already in the back buffer's pixels, by
 // DrawVerticesUP from one of kSpriteDraws (the vertices on the stack: count, then data and stride). The icons are the
-// UI's own copies of a_butt, b_butt, x_butt and y_butt: 32 by 32 DXT textures, told apart by their colour (Button).
+// UI's own copies of a_butt, b_butt, x_butt and y_butt: 32 by 32 DXT textures, told apart by their color (Button).
 // ConkerSpriteDraw keeps the box of each quad drawn with one of them on stage 0, the shadow's drawn just before it in
 // with it; a prompt reaches from its icon to the next icon right of it, its label between. menus::Paused, from the
 // pause screen's input each frame, says the screen is up.
@@ -512,10 +512,10 @@ namespace {
 struct Prompt {
     float x0 = 0, y0 = 0, x1 = 0, y1 = 0;
     int64_t seen_us = 0;
-    // a word's look this frame, to tell the highlighted one: its tallest glyph, and the colour of its glyphs past the
+    // a word's look this frame, to tell the highlighted one: its tallest glyph, and the color of its glyphs past the
     // shadow (the brightest, ARGB)
     float glyph = 0;
-    uint32_t colour = 0;
+    uint32_t color = 0;
 };
 std::mutex g_prompt_lock;
 Prompt g_prompts[4];  // by face button: A B X Y, under g_prompt_lock
@@ -555,8 +555,8 @@ void LogPrompts(float x, float y, int face, int64_t now) {
 }
 
 // the face button a texture is the icon of (0 A, 1 B, 2 X, 3 Y), -1 for any other: a 32 by 32 DXT texture (format
-// word +0xC: colour 15:8, log2 sizes from bit 20) whose coloured blocks average green, red, blue or yellow (a
-// yellowish green for A, an orange yellow for Y). Each block's two end colours (RGB565 at +8 and +0xA of DXT3 and
+// word +0xC: color 15:8, log2 sizes from bit 20) whose colored blocks average green, red, blue or yellow (a
+// yellowish green for A, an orange yellow for Y). Each block's two end colors (RGB565 at +8 and +0xA of DXT3 and
 // DXT5's 16 bytes) count, greys and blacks not.
 int Button(uint32_t tex) {
     static std::unordered_map<uint64_t, int> known;  // by the texture and its texels, game thread
@@ -564,8 +564,8 @@ int Button(uint32_t tex) {
     if (const auto it = known.find(key); it != known.end()) return it->second;
     int& b = known[key];
     b = -1;
-    const uint32_t format = R32(tex + 0xC), colour = format >> 8 & 0xFF;
-    if ((colour != 0x0E && colour != 0x0F) || (format >> 20 & 0xF) != 5 || (format >> 24 & 0xF) != 5) return b;
+    const uint32_t format = R32(tex + 0xC), color = format >> 8 & 0xFF;
+    if ((color != 0x0E && color != 0x0F) || (format >> 20 & 0xF) != 5 || (format >> 24 & 0xF) != 5) return b;
     const uint32_t texels = mem::VirtualFromPhysical(R32(tex + 4) & 0x0FFFFFFF);
     constexpr uint32_t kBytes = 8 * 8 * 16;
     if (!texels || !mem::IsCommitted(texels) || !mem::IsCommitted(texels + kBytes - 1)) return b;
@@ -583,7 +583,7 @@ int Button(uint32_t tex) {
     else if (g > r && g > bl) b = 0;
     else if (r > g * 1.8f && r > bl) b = 1;
     else if (r > bl && g > bl) b = 3;
-    if (TraceMouse()) LOGR("menu mouse: texture %08X colour %.2f %.2f %.2f, button %d", tex, r, g, bl, b);
+    if (TraceMouse()) LOGR("menu mouse: texture %08X color %.2f %.2f %.2f, button %d", tex, r, g, bl, b);
     return b;
 }
 
@@ -671,9 +671,9 @@ void ConkerSpriteDraw(X86Context& ctx, uint8_t* base) {
 // (invSelectR, from 0x1CC1CC) Y's by the weapon, and the box between them is the left trigger's icon on its own
 // (userInterface\triggerL, G, I or S by the console's language, 0x1CC620 drawing it from 0x1CC744). Each is a quad of
 // 0x1CAD90: four corners at [esp+4]..[esp+0x10] (each an x and a y: top left, top right, bottom left, bottom right),
-// the texture at +0x14 and the colour at +0x18. It sets the texture (D3DDevice_SetTexture 0x539960, the stage in eax,
+// the texture at +0x14 and the color at +0x18. It sets the texture (D3DDevice_SetTexture 0x539960, the stage in eax,
 // unless [0x771764] says it is set already) and draws by 0x1CA7F0 (the corners pushed, al a shadow first, ebx the
-// colour), which writes the vertices into the push buffer. While the player whose HUD it is last used the keyboard or
+// color), which writes the vertices into the push buffer. While the player whose HUD it is last used the keyboard or
 // mouse, the trigger's box is drawn as its key (the texture swapped for the draw, on a smaller square in the box's
 // middle), and each piece of the panel has its key drawn over its icon after it, by the same two calls. The keys go at twice the panel's alpha (the panel is
 // drawn at about half), so the icon does not show through them.
@@ -701,7 +701,7 @@ void SetTexture(X86Context& ctx, uint32_t tex) {
     kernel::CallGuest(ctx, kSetTexture, {tex});
 }
 
-uint32_t KeyAlpha(uint32_t colour) { return std::min(0xFFu, (colour >> 24) * 2) << 24 | (colour & 0xFFFFFF); }
+uint32_t KeyAlpha(uint32_t color) { return std::min(0xFFu, (color >> 24) * 2) << 24 | (color & 0xFFFFFF); }
 
 // a key's square of side size (of the quad's) centred at u, v on the quad with these corners (top left, top right,
 // bottom left), written as four corners to out (allocated the first time)
@@ -737,7 +737,7 @@ void ConkerHudQuad(X86Context& ctx, uint8_t* base) {
     if (!key) return;
     g_trigger_texture = R32(ctx.esp + 0x1C);
     SetTexture(ctx, key);
-    W32(ctx.esp + 0x20, KeyAlpha(R32(ctx.esp + 0x20)));  // the colour, read into ebx next
+    W32(ctx.esp + 0x20, KeyAlpha(R32(ctx.esp + 0x20)));  // the color, read into ebx next
     // the corners, read next: the key's smaller square in their place
     KeySquare(base, g_trigger_corners, R32(ctx.esp + 0xC), R32(ctx.esp + 0x10), R32(ctx.esp + 0x14), 0.5f, 0.5f,
               kTriggerKey);
@@ -746,7 +746,7 @@ void ConkerHudQuad(X86Context& ctx, uint8_t* base) {
     if (!std::exchange(told, true)) LOGR("prompts: the weapon panel's trigger shows its key");
 }
 
-// [[hook]] at 0x1CB052, 0x1CAD90's quad drawn (its corners still pushed, ebx the colour, esi the texture): the trigger's
+// [[hook]] at 0x1CB052, 0x1CAD90's quad drawn (its corners still pushed, ebx the color, esi the texture): the trigger's
 // texture back, or a panel piece's key over its icon
 void ConkerHudQuadDrawn(X86Context& ctx, uint8_t* base) {
     const uint32_t eax = ctx.eax, ebx = ctx.ebx;
@@ -940,7 +940,7 @@ int Highlighted(int64_t now) {
     if (yes.glyph > no.glyph * 1.04f) return 1;
     if (no.glyph > yes.glyph * 1.04f) return 2;
     auto light = [](uint32_t c) { return int(c >> 16 & 0xFF) + int(c >> 8 & 0xFF) + int(c & 0xFF); };
-    const int ly = light(yes.colour), ln = light(no.colour);
+    const int ly = light(yes.color), ln = light(no.color);
     if (ly > ln + 24) return 1;
     if (ln > ly + 24) return 2;
     return -1;
@@ -999,7 +999,7 @@ void ConkerTextQuad(X86Context& ctx, uint8_t* base) {
         g_label_x0 = std::min(g_label_x0, x0), g_label_x1 = std::max(g_label_x1, x1);
         if (!g_word) return;
     }
-    const uint32_t colour = R32(kQuad + 0x10);  // the first vertex's diffuse
+    const uint32_t color = R32(kQuad + 0x10);  // the first vertex's diffuse
     const int64_t now = NowUs();
     std::lock_guard lock(g_prompt_lock);
     Prompt& pr = g_words[g_word - 1];
@@ -1012,7 +1012,7 @@ void ConkerTextQuad(X86Context& ctx, uint8_t* base) {
     pr.seen_us = now;
     pr.glyph = std::max(pr.glyph, y1 - y0);
     auto light = [](uint32_t c) { return (c >> 16 & 0xFF) + (c >> 8 & 0xFF) + (c & 0xFF); };
-    if (light(colour) >= light(pr.colour)) pr.colour = colour;
+    if (light(color) >= light(pr.color)) pr.color = color;
 }
 
 // [[hook]] before 0x203CE9, the quit prompt's A: eax the value it goes by (0 No), the word clicked instead
@@ -1387,8 +1387,8 @@ void menus::Pad(int port, input::Pad& pad) {
             if (toward && TraceMouse()) {
                 std::lock_guard lock(g_prompt_lock);
                 LOGR("menu mouse: over %s, lit %d (Yes %.1f high %08X, No %.1f high %08X), presses %s",
-                     p.word == 1 ? "Yes" : "No", lit, g_words[0].glyph, g_words[0].colour, g_words[1].glyph,
-                     g_words[1].colour, toward == kPadDown ? "down" : "up");
+                     p.word == 1 ? "Yes" : "No", lit, g_words[0].glyph, g_words[0].color, g_words[1].glyph,
+                     g_words[1].color, toward == kPadDown ? "down" : "up");
             }
             if (!toward) {
                 p.word = 0;

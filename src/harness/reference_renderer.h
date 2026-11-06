@@ -14,7 +14,7 @@ void Draw(const gpu::State& s, uint32_t prim, uint32_t start, uint32_t count, co
 // visibility tests: pixels drawn while the title counts, since the last clear
 void ClearCount();
 uint64_t Counted();
-// 24 bit TGA of a surface's colour
+// 24 bit TGA of a surface's color
 bool WriteTga(const gpu::Surface& s, const char* path);
 // 24 bit TGA of a stage texture's decoded image, false if it cannot be described
 bool DumpTexture(uint32_t header, const char* path);

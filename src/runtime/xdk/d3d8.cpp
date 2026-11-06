@@ -385,7 +385,7 @@ constexpr uint32_t kDirtyFog = 0x2000, kDirtyCombiners = 0x800, kDirtyLights = 0
 constexpr uint32_t kDirtyVertexFormat = 0x10, kDirtyStreams = 0x40, kDirtyNoVertexState = 0x40000000;
 
 // NV097_SET_COMBINER_SPECULAR_FOG_CW0 / _CW1 the library's fog flush (0x5421D0) pushes when no pixel shader with
-// its own final combiner is bound: fog on, A fog alpha, B R0 (+ specular), C fog colour; fog off, D R0 (+ specular)
+// its own final combiner is bound: fog on, A fog alpha, B R0 (+ specular), C fog color; fog off, D R0 (+ specular)
 constexpr uint32_t kFinalFogged = 0x130C0300, kFinalPlain = 0x0C, kFinalSpecular = 0x20000, kFinalEfgh = 0x1C80;
 
 // The library's fog flush (0x5421D0): NV097_SET_FOG_ENABLE, and when on _MODE and _PARAMS, worked out from the D3D
@@ -1396,7 +1396,7 @@ HLE_STDCALL(D3DDevice_SetTexture, 2) {
     return 0;
 }
 
-// SetPalette(stage, palette): the colours a P8 texture of the stage looks up
+// SetPalette(stage, palette): the colors a P8 texture of the stage looks up
 HLE_STDCALL(D3DDevice_SetPalette, 2) {
     XDK_REQUIRE("d3d", XDK_KEY(CDevice_Palettes));
     std::lock_guard<std::recursive_mutex> lock(g_lock);
@@ -2059,7 +2059,7 @@ void EndPrimitive() {
 // a stage gets pointed at a freshly rendered surface. Nothing consumed the values, they only reached simple[].
 // Build the D3DPixelContainer the renderers already read from them: the offset arrives as a raw physical address
 // (surface headers carry the 0x80000000 view), and the format word has the same layout as the D3D one Describe
-// decodes - colour bits 15:8, dimensionality 7:4, cube bit 2, mip levels 19:16, log2 sizes from bit 20. One
+// decodes - color bits 15:8, dimensionality 7:4, cube bit 2, mip levels 19:16, log2 sizes from bit 20. One
 // header per distinct pair keeps the renderers' caches steady (FindImage keys on the decoded values).
 uint32_t InlineTexture(uint32_t offset, uint32_t format) {
     if (!offset || !format) return 0;
@@ -2099,7 +2099,7 @@ void RawTextureState(uint32_t stage, uint32_t sub, uint32_t v) {
             put(gpu::kTssAddressV, (v >> 8) & 0xF);
             put(gpu::kTssAddressW, (v >> 16) & 0xF);
             break;
-        case 0x0C:  // CONTROL0: colour key 1:0 (D3DTCOLORKEYOP), alpha kill bit 2, anisotropy log2 5:4
+        case 0x0C:  // CONTROL0: color key 1:0 (D3DTCOLORKEYOP), alpha kill bit 2, anisotropy log2 5:4
             put(gpu::kTssColorKeyOp, v & 3);
             put(gpu::kTssAlphaKill, v & 4 ? 4 : 0);  // D3DTALPHAKILL_ENABLE
             put(gpu::kTssMaxAnisotropy, 1u << ((v >> 4) & 3));

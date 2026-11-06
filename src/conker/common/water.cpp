@@ -123,12 +123,12 @@ constexpr const char* kDsHead = R"(    {
 
 // Per pixel, the ripples' slope drives what the swirl drove on the console: the combiners read the copy of the screen
 // (t1) bumped by the swirl (t0) as much as a tenth of the screen, which buries any movement of the surface under the
-// riverbed's, and mix it with the water's colour by r0.a (stage 4, then times c10 of the final stage). Here it is read
+// riverbed's, and mix it with the water's color by r0.a (stage 4, then times c10 of the final stage). Here it is read
 // again where the swirl bent it (duv1 through bumpmat[1]), kSwirlKeep of that, and bent further by the surface's tilt in
 // view space, and the difference put in its place, so the surface shows as it moves over the swirl's look; the slopes
 // are shaded a little, lighter facing a light from +x+z; and the surface catches the sky at grazing angles (Schlick's
 // Fresnel) and a glint of a high sun, seen from above or from under it, less what a flat surface would, which the
-// console's colour already holds: still water is as bright as it was. Some water draws (the sewer's sludge) set their
+// console's color already holds: still water is as bright as it was. Some water draws (the sewer's sludge) set their
 // stages up otherwise, a dot product reading the copy at stage 2 and no swirl: those are shaded and lit by the
 // surface the same, but not read again.
 constexpr float kRefract = 0.15f;  // screen widths of bend per unit of slope
@@ -166,7 +166,7 @@ constexpr const char* kPsTail = R"(
 constexpr const char* kPoolMatch = "(mac_mul(((i.v3).xyzz), ((R6).yyyy)) + ((R11).xyzz))";
 constexpr const char* kPoolScale = "mac_mul(((c[132]).xxxw), ((i.v1).xyzw))";
 constexpr float kPoolShift = 30;     // units the textures are read off by per unit of slope
-constexpr float kPoolMurk = 0.35f;   // how far what lies under the surface is clouded toward its colour
+constexpr float kPoolMurk = 0.35f;   // how far what lies under the surface is clouded toward its color
 constexpr float kPoolBlur = 0.003f;  // screen widths what lies under it is softened over
 constexpr float kPoolGain = 2.5f;    // the sheet's ripples on a pool, seen from above, against a river's
 constexpr float kPoolRipple = 24;    // units, about the shortest ripple the sheet holds
@@ -248,7 +248,7 @@ constexpr const char* kPoolCoords = R"(
 )";
 constexpr const char* kPoolPost = R"(
 #if !DEPTH_PASS
-    xunder = lerp(xunder, outc.rgb * 0.8, POOL_MURK);  // and clouded toward the water's own colour
+    xunder = lerp(xunder, outc.rgb * 0.8, POOL_MURK);  // and clouded toward the water's own color
     outc.rgb = lerp(xunder, outc.rgb, saturate(outc.a)) * xshade + xlight;
     outc.a = 1;
 #endif

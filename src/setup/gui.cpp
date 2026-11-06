@@ -78,7 +78,7 @@ struct Window {
 
 Window* g_ui = nullptr;
 
-// the window's colours: dark grays and one blue
+// the window's colors: dark grays and one blue
 const Fl_Color kBackground = fl_rgb_color(0x22, 0x22, 0x22), kField = fl_rgb_color(0x2e, 0x2e, 0x2e),
                kButton = fl_rgb_color(0x3a, 0x3a, 0x3a), kText = fl_rgb_color(0xe8, 0xe8, 0xe8),
                kMuted = fl_rgb_color(0xa0, 0xa0, 0xa0), kLog = fl_rgb_color(0x1a, 0x1a, 0x1a),

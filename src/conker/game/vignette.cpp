@@ -3,9 +3,9 @@
 // edges (texture FE), in a dark grey (FF0F0F0F) that darkens the picture where the mask has alpha.
 //
 // 0x15CAF0 draws such an overlay (cdecl: its object first on the stack, called through the overlay types' tables at
-// 0x587880 and on): the object keeps its type in byte +4C, its colour as B G R A in +4D to +50, its rectangle at +2C
+// 0x587880 and on): the object keeps its type in byte +4C, its color as B G R A in +4D to +50, its rectangle at +2C
 // (x y w h, floats), its layer count at +68 and each layer's texture from +6C. With the setting off the hook skips
-// that one overlay, and only while its colour is a neutral grey: one tinted (red, when hurt) is drawn as ever.
+// that one overlay, and only while its color is a neutral grey: one tinted (red, when hurt) is drawn as ever.
 #include "common/vignette.h"
 
 #include <cstdlib>
@@ -29,8 +29,8 @@ bool IsVignette(uint32_t obj) {
     using kernel::R32;
     if (!obj || R32(obj + 0x68) != 2 || R32(obj + 0x6C) != 0xFFFFFFFE || R32(obj + 0x70) != 0xFE) return false;
     if (F32(obj + 0x2C) != 0 || F32(obj + 0x30) != 0 || F32(obj + 0x34) != 320 || F32(obj + 0x38) != 240) return false;
-    const uint32_t colour = R32(obj + 0x4C) >> 8;  // B G R from +4D
-    const uint32_t b = colour & 0xFF, g = colour >> 8 & 0xFF, r = colour >> 16 & 0xFF;
+    const uint32_t color = R32(obj + 0x4C) >> 8;  // B G R from +4D
+    const uint32_t b = color & 0xFF, g = color >> 8 & 0xFF, r = color >> 16 & 0xFF;
     return r == g && g == b;
 }
 

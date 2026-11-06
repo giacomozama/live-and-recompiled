@@ -525,7 +525,7 @@ std::string PsHelpers() { return kPsSbyte + Hooks().Shadow() + kPsTail; }
 // drawn strand by strand, leaves the in focus body behind it crisp between the strands, a pixel or two on the
 // console, plain holes upscaled. A lens spreads the near blur over what's behind it: the combiners run again for depth
 // taps on two rings, 1 and 2 console pixels out, and a nearer tap's output (its blur, over this pixel's blurred
-// colour) replaces the pixel's when it blurs more, the outer ring's at 60%. An in focus foreground blurs nothing, so
+// color) replaces the pixel's when it blurs more, the outer ring's at 60%. An in focus foreground blurs nothing, so
 // the background beside it stays as it was. The depth bytes are the target's size: i.pos is the texel.
 std::string DepthSpread(const TexInfo& t, const std::string& combiners) {
     float order[4];
@@ -663,10 +663,10 @@ uint64_t Hash(const void* p, size_t n, uint64_t h) {
 
 namespace {
 
-// The fog setting off: a final combiner D + lerp(C, B, A) that blends to the fog colour by the fog factor, A the fog
+// The fog setting off: a final combiner D + lerp(C, B, A) that blends to the fog color by the fog factor, A the fog
 // register, gets the constant A that keeps the other side. The library's own reads the factor as D3D does (A fog.a,
 // B R0, C fog: 1 unfogged), Conker's raw one the other way round (A fog.a, B fog, C R0: 0 unfogged), so the zeroed
-// fog constants alone would turn the latter's draws flat fog colour.
+// fog constants alone would turn the latter's draws flat fog color.
 uint32_t Unfogged(uint32_t abcd) {
     constexpr uint32_t kFogReg = 3, kZero = 0x00, kOne = 0x20;  // the zero register, unsigned inverted for 1
     auto reg = [&](int shift) { return (abcd >> shift) & 0xF; };
@@ -773,7 +773,7 @@ std::string VertexProgramHlsl(const std::vector<uint32_t>& prog, uint16_t regs, 
     }
     s += kVsEpilogue;
     // a program that never writes oFog leaves its draws unfogged: Conker's blood drops (point sprites) are drawn with
-    // the vertex fog the library pushes for D3DFOG_NONE, which on a zero oFog came out flat fog colour
+    // the vertex fog the library pushes for D3DFOG_NONE, which on a zero oFog came out flat fog color
     if (!fog) s += "    o.fogamt = 1;\n";
     if (shading) s += std::string(Shading(shading).vs) + "\n";
     return s + kVsReturn;
@@ -1113,7 +1113,7 @@ std::string PixelHlsl(const PixelKey& k) {
             body += Hooks().Fetched(t, i);
             if ((k.alphakill >> i) & 1) body += F("if (t%d.a == 0) discard;\n", i);
             const char* dst = f[8] == 5 ? "tmp" : "cur";
-            // an op that reads the texture of a stage without one leaves the current colour as it was, as on the
+            // an op that reads the texture of a stage without one leaves the current color as it was, as on the
             // console: Conker's peephole bars select it over black vertices and draw black, the Hello terminal's
             // cursor modulates it with its green ones and draws green
             auto reads_tex = [&](int op) {

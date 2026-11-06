@@ -80,7 +80,7 @@ uint32_t Texture(const Sprite& s) {
     hdr[0] = kTextureCommon;
     hdr[1] = mem::PhysicalFromVirtual(data);
     hdr[2] = 0;
-    // DMA channel A, two dimensions, the colour format, one level, log2 sizes
+    // DMA channel A, two dimensions, the color format, one level, log2 sizes
     hdr[3] = 0x01 | 2u << 4 | kA8R8G8B8 << 8 | 1u << 16 | log2 << 20 | log2 << 24;
     hdr[4] = 0;
     LOGI("prompts: %.*s, %ux%u on %u", int(s.key.size()), s.key.data(), w, h, side);

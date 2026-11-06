@@ -1,6 +1,6 @@
 // CPU reference renderer. Surfaces, textures, vertex programs, register combiners and fixed function stages are
 // evaluated per the XDK's definitions, decoded the way gpu/shaders.cpp decodes them for HLSL.
-// PROBES="x,y x,y": log each colour written at those pixels of linear PROBE_WIDTH (640) wide targets, the first
+// PROBES="x,y x,y": log each color written at those pixels of linear PROBE_WIDTH (640) wide targets, the first
 // probe with its triangle's vertices; TRACE="x,y": log the combiner registers of fragments there.
 #include "reference_renderer.h"
 
@@ -483,7 +483,7 @@ float FogAmount(const State& s, float d) {
 enum Attr { kD0, kD1, kB0, kB1, kFog, kT0, kAttrs = kT0 + 4 };
 
 struct Fragment {
-    Vec v0, v1, fog;  // fog: colour, amount in w
+    Vec v0, v1, fog;  // fog: color, amount in w
     Vec tc[4];
 };
 
@@ -660,7 +660,7 @@ struct Combiners {
         }
     }
 
-    // an input byte: register, channel (alpha or the colour/blue), input mapping
+    // an input byte: register, channel (alpha or the color/blue), input mapping
     void Input(uint32_t v, bool alpha, float r[3]) const {
         Vec x = Var(v & 0xF);
         bool a = v & 0x10;
@@ -924,7 +924,7 @@ uint32_t StencilResult(uint32_t op, uint32_t v, uint32_t ref) {
         default: return v;
     }
 }
-// GL blend factors, 0x8001 to 0x8004 take the constant colour
+// GL blend factors, 0x8001 to 0x8004 take the constant color
 float BlendFactor(uint32_t f, const Vec& src, const Vec& dst, const Vec& k, int ch) {
     switch (f) {
         case 0: return 0;
@@ -1255,9 +1255,9 @@ void Draw(const State& s, uint32_t prim, uint32_t start, uint32_t count, const u
             tri[i].h[3] = v.pos[3];
             std::copy(v.attr, v.attr + kAttrs, tri[i].attr);
         }
-        // flat shading takes the first vertex's colours
+        // flat shading takes the first vertex's colors
         const Vec* provoking = tri[0].attr;
-        Vec flat_colour[4] = {provoking[kD0], provoking[kD1], provoking[kB0], provoking[kB1]};
+        Vec flat_color[4] = {provoking[kD0], provoking[kD1], provoking[kB0], provoking[kB1]};
         // clipped against w > near_w: a triangle leaves at most four corners
         Clip poly[4];
         int corners = 0;
@@ -1309,7 +1309,7 @@ void Draw(const State& s, uint32_t prim, uint32_t start, uint32_t count, const u
                     Vec attr[kAttrs];
                     for (int a = 0; a < kAttrs; a++)
                         for (int j = 0; j < 4; j++) attr[a][j] = (b0 * p0.attr[a][j] + b1 * p1.attr[a][j] + b2 * p2.attr[a][j]) / iw;
-                    if (flat) std::copy(flat_colour, flat_colour + 4, attr);
+                    if (flat) std::copy(flat_color, flat_color + 4, attr);
                     Fragment frag;
                     bool back = two_sided && !front;
                     frag.v0 = attr[back ? kB0 : kD0];
@@ -1379,7 +1379,7 @@ bool WriteTga(const Surface& s, const char* path) {
     if (!p.ok) return false;
     FILE* f = std::fopen(path, "wb");
     if (!f) return false;
-    uint8_t head[18] = {0, 0, 2};  // uncompressed true colour
+    uint8_t head[18] = {0, 0, 2};  // uncompressed true color
     head[12] = uint8_t(p.w), head[13] = uint8_t(p.w >> 8), head[14] = uint8_t(p.h), head[15] = uint8_t(p.h >> 8);
     head[16] = 24;
     head[17] = 0x20;  // top row first
