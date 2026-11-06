@@ -61,6 +61,7 @@ extern char** environ;
 #include "kernel/disc.h"
 #include "setup.h"
 #include "store.h"
+#include "version.h"
 
 namespace fs = std::filesystem;
 
@@ -1152,7 +1153,8 @@ int main(int argc, char** argv) {
         else if (a == "--toolchain" && more) opt.toolchain = fs::absolute(argv[++i]);
         else if (a == "--root" && more) i++;
         else if (a == "--help" || a == "-h") {
-            std::printf("usage: setup [--cli] [--source GAME] [--work DIR] [--game-dir DIR] "
+            std::printf("Live & Recompiled Setup " XBE_VERSION "\n"
+                        "usage: setup [--cli] [--source GAME] [--work DIR] [--game-dir DIR] "
                         "[--jobs N] [--keep] [--portable] [--toolchain DIR] [--root DIR] [--fetch-toolchain]\n"
                         "  no options: a window with the same choices\n");
             return 0;

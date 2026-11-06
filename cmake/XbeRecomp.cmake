@@ -89,6 +89,14 @@ target_include_directories(xbe_symbols PRIVATE ${XBE_ROOT_DIR}/src/runtime)
 target_compile_definitions(xbe_symbols PRIVATE _CRT_SECURE_NO_WARNINGS)
 target_link_libraries(xbe_symbols PRIVATE Zydis tomlplusplus::tomlplusplus)
 
+# the build's version (generated/version.h, cmake/version.cmake): the checkout's `git describe`, read again every build;
+# the settings menu and Setup's window show it
+set(VERSION_H ${CMAKE_BINARY_DIR}/generated/version.h)
+add_custom_target(version_header
+    COMMAND ${CMAKE_COMMAND} -DROOT=${XBE_ROOT_DIR} -DOUT=${VERSION_H} -P ${XBE_ROOT_DIR}/cmake/version.cmake
+    BYPRODUCTS ${VERSION_H}
+    VERBATIM)
+
 # Setup, the player-side build: finds the game, recompiles it and links it with a prebuilt host (add_xbe_player_kit),
 # from a window or the command line
 add_executable(setup ${XBE_ROOT_DIR}/src/setup/main.cpp
@@ -101,7 +109,8 @@ if(WIN32)
 else()
     set_target_properties(setup PROPERTIES OUTPUT_NAME setup-linux)
 endif()
-target_include_directories(setup PRIVATE ${XBE_ROOT_DIR}/src/runtime)
+target_include_directories(setup PRIVATE ${XBE_ROOT_DIR}/src/runtime ${CMAKE_BINARY_DIR}/generated)
+add_dependencies(setup version_header)
 target_compile_definitions(setup PRIVATE _CRT_SECURE_NO_WARNINGS)
 target_link_libraries(setup PRIVATE tomlplusplus::tomlplusplus miniz)
 if(WIN32)
@@ -143,7 +152,9 @@ else()
         add_dependencies(setup_gui_${backend} fltk_${backend})
         set_target_properties(setup_gui_${backend} PROPERTIES PREFIX "" OUTPUT_NAME setup-gui-${backend}
             LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/setup-gui CXX_VISIBILITY_PRESET hidden)
-        target_include_directories(setup_gui_${backend} PRIVATE ${fltk_SOURCE_DIR} ${dir} ${XBE_ROOT_DIR}/src/runtime)
+        target_include_directories(setup_gui_${backend} PRIVATE ${fltk_SOURCE_DIR} ${dir} ${XBE_ROOT_DIR}/src/runtime
+            ${CMAKE_BINARY_DIR}/generated)
+        add_dependencies(setup_gui_${backend} version_header)
         target_compile_options(setup_gui_${backend} PRIVATE -idirafter /usr/include)
         target_link_libraries(setup_gui_${backend} PRIVATE ${dir}/lib/libfltk.a ${gui_libs_${backend}} ${CMAKE_DL_LIBS} m pthread)
         target_link_options(setup_gui_${backend} PRIVATE -Wl,--version-script=${XBE_ROOT_DIR}/src/setup/gui.map

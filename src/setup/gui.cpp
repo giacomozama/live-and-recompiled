@@ -28,6 +28,7 @@
 #endif
 
 #include "setup.h"
+#include "version.h"
 
 namespace fs = std::filesystem;
 
@@ -435,6 +436,11 @@ int RunWindow(const Options& defaults) {
     title->labelfont(FL_HELVETICA_BOLD);
     title->labelsize(22);
     title->labelcolor(kText);
+    // the build's version (git describe, cmake/version.cmake), as the release archives are named, at the title's right
+    auto* version = new Fl_Box(M, y, W - 2 * M, 34, XBE_VERSION);
+    version->align(FL_ALIGN_RIGHT | FL_ALIGN_INSIDE);
+    version->labelcolor(kMuted);
+    version->labelsize(13);
     y += 48;
 
     auto row = [&](Row& r, const char* name, const fs::path& value, bool two) {
