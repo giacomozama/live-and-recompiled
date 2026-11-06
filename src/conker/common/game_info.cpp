@@ -43,6 +43,7 @@ const app::GameInfo app::kGame = {
     .images = {{"default.xbe", "Game"}},  // each recompiled xbe and its exe, for title launches
     .options = {{"fps_overlay", &ui::g_fps_overlay, nullptr},  // ImGui settings menu options (src/conker/game/ui.cpp)
                 {"fps_in_title", &ui::g_fps_title, nullptr},
+                {"ui_accent", nullptr, &ui::g_accent},  // the settings menu's accent color, 0 blue to 6 purple, 4 orange by default (ui_font.cpp)
                 {"frame_rate", nullptr, &display::g_frame_rate},  // 30, 60, 120, 180 or 240 (src/conker/game/display.cpp)
                 {"fov", nullptr, &display::g_fov},  // the view's height in degrees in play, 50 the console's (display.cpp)
                 {"hud_split", &display::g_hud_split, nullptr},  // a match's HUD unstretched, at the display's edges (display.cpp)

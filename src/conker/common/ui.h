@@ -45,5 +45,6 @@ void Unmuzzle(int port, input::Pad& pad);
 // settings.toml options (app::Option): the fps overlay and the fps in the window title
 extern bool g_fps_overlay;
 extern bool g_fps_title;
+extern uint32_t g_accent;  // the menu's accent color, an index into the six or seven hues (ui_font.cpp)
 
 }  // namespace ui

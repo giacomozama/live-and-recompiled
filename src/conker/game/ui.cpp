@@ -57,6 +57,7 @@ int PortError();
 namespace ui {
 
 bool g_fps_overlay = false;
+uint32_t g_accent = 4;  // orange
 bool g_fps_title = true;
 
 namespace {
@@ -260,7 +261,8 @@ void Hint(const char* text, bool checkbox = false) {
     const ImGuiStyle& style = ImGui::GetStyle();
     const float indent = checkbox ? ImGui::GetFrameHeight() + style.ItemInnerSpacing.x : 0.0f;
     ImGui::PushFont(nullptr, std::max(std::round(style.FontSizeBase * 0.8f), 11.0f));
-    ImGui::SetCursorPosY(ImGui::GetCursorPosY() - style.ItemSpacing.y * 0.5f);  // close to its setting
+    // close to its setting; a checkbox's label sits mid-frame, so under a dropdown or slider it keeps the full spacing
+    if (checkbox) ImGui::SetCursorPosY(ImGui::GetCursorPosY() - style.ItemSpacing.y * 0.5f);
     if (indent > 0) ImGui::Indent(indent);
     ImGui::PushStyleColor(ImGuiCol_Text, style.Colors[ImGuiCol_TextDisabled]);
     ImGui::TextWrapped("%s", text);
@@ -729,6 +731,7 @@ void Draw(double fps) {
     static double last_fps = -1.0;
     static bool last_title = !g_fps_title;
     static int last_look = -1;
+    app::UiAccent(int(g_accent));
     PadFrame(g_open.load(), g_quit.load());
     const bool open = g_open.load();
     const bool quit = g_quit.load();
@@ -947,6 +950,32 @@ void Draw(double fps) {
                     if (ImGui::Combo(Above("Text"), &lang, "English\0Japanese\0German\0French\0Spanish\0Italian\0"))
                         s.language = kKeys[lang];
                     Hint("The game's menus and on-screen text. Starts from the next launch. The voices stay in English.");
+                }
+                ImGui::SeparatorText("Appearance");
+                {
+                    ImGui::AlignTextToFramePadding();
+                    ImGui::TextUnformatted("UI accent color");
+                    const float size = ImGui::GetFrameHeight() * 1.1f, gap = size * 0.4f;
+                    ImGui::Indent(6.0f);  // room for the selected one's ring, which the window would clip
+                    for (uint32_t i = 0; i < 7; i++) {
+                        if (i) ImGui::SameLine(0.0f, gap);
+                        ImGui::PushID(int(i));
+                        float rgb[3];
+                        app::UiAccentColor(int(i), rgb);
+                        const ImVec4 color(rgb[0], rgb[1], rgb[2], 1.0f);
+                        const ImVec2 p = ImGui::GetCursorScreenPos();
+                        if (ImGui::InvisibleButton("##swatch", ImVec2(size, size))) g_accent = i;
+                        ImDrawList* dl = ImGui::GetWindowDrawList();
+                        dl->AddRectFilled(p, ImVec2(p.x + size, p.y + size), ImGui::GetColorU32(color), size * 0.25f);
+                        if (g_accent == i)
+                            dl->AddRect(ImVec2(p.x - 2.5f, p.y - 2.5f), ImVec2(p.x + size + 2.5f, p.y + size + 2.5f),
+                                        IM_COL32(255, 255, 255, 235), size * 0.25f + 2.5f, 0, 3.0f);
+                        else if (ImGui::IsItemHovered())
+                            dl->AddRect(p, ImVec2(p.x + size, p.y + size), IM_COL32(255, 255, 255, 120), size * 0.25f, 0, 1.5f);
+                        ImGui::PopID();
+                    }
+                    ImGui::Unindent(6.0f);
+                    Hint("The color of the selection and the sliders in this menu.");
                 }
                 end_tab();
             }
@@ -1435,6 +1464,7 @@ void SwallowEsc() { g_esc_swallow.store(true); }
 namespace ui {
 
 bool g_fps_overlay = false;
+uint32_t g_accent = 4;  // orange
 bool g_fps_title = true;
 
 void Draw(double) {}

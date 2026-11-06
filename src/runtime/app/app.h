@@ -198,6 +198,8 @@ void FinishHandover();  // any thread but the window thread's: opens the game wi
 std::recursive_mutex& UiLock();
 // the overlay's font (ui_font.cpp), sized to the window's height
 void UiFont();        // after ImGui::CreateContext
+void UiAccent(int index);  // the accent color, 0 to 6; UiLock held
+void UiAccentColor(int index, float rgb[3]);  // that accent, for the settings menu's swatches
 void UiFontResize();  // each frame before ImGui's, UiLock held
 
 // what the game repo defines once

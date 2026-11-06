@@ -18,31 +18,28 @@ namespace {
 // a line of text a 67.5th of the window's height, 16 px at 1080p; never under ImGui's own 13
 constexpr float kLinesPerHeight = 67.5f, kMinPx = 13.0f, kDefaultPx = 13.0f;
 
+// the accents the settings menu offers
+constexpr ImVec4 kAccents[] = {
+    {0.30f, 0.62f, 1.00f, 1.0f},  // Blue
+    {0.20f, 0.78f, 0.62f, 1.0f},  // Teal
+    {0.36f, 0.80f, 0.40f, 1.0f},  // Green
+    {1.00f, 0.72f, 0.20f, 1.0f},  // Amber
+    {1.00f, 0.50f, 0.28f, 1.0f},  // Orange
+    {1.00f, 0.38f, 0.60f, 1.0f},  // Pink
+    {0.68f, 0.46f, 1.00f, 1.0f},  // Purple
+};
+constexpr int kAccentCount = int(sizeof(kAccents) / sizeof(kAccents[0]));
+int g_accent = 4;  // orange
+
 ImGuiStyle g_base;  // ImGui's style at its own 13 px font
 float g_px = 0.0f;
 
 }  // namespace
 
 // flat, rounded and neutral: greys for everything at rest, the accent only where a control is selected, focused or held
-static void Look() {
-    ImGuiStyle& st = ImGui::GetStyle();
-    st.WindowBorderSize = st.ChildBorderSize = st.PopupBorderSize = st.FrameBorderSize = st.TabBorderSize = 0.0f;
-    st.WindowRounding = 16.0f;
-    st.PopupRounding = 12.0f;
-    st.ChildRounding = 10.0f;
-    st.FrameRounding = 8.0f;
-    st.GrabRounding = 8.0f;
-    st.TabRounding = 8.0f;
-    st.TabBarBorderSize = 0.0f;   // no line under the tabs
-    st.TabBarOverlineSize = 0.0f;
-    st.ScrollbarRounding = 12.0f;
-    st.ScrollbarSize = 10.0f;
-    st.WindowPadding = ImVec2(20.0f, 16.0f);
-    st.SeparatorTextBorderSize = 1.0f;
-    st.SeparatorTextPadding = ImVec2(10.0f, 4.0f);
-
+static void Colors(ImGuiStyle& st) {
     auto grey = [](float v, float a = 1.0f) { return ImVec4(v, v, v + 0.01f, a); };
-    const ImVec4 accent(0.30f, 0.62f, 1.00f, 1.00f);
+    const ImVec4 accent = kAccents[g_accent];
     auto tint = [&](float a) { return ImVec4(accent.x, accent.y, accent.z, a); };
     ImVec4* c = st.Colors;
     c[ImGuiCol_Text] = grey(0.92f);
@@ -90,6 +87,26 @@ static void Look() {
     c[ImGuiCol_ModalWindowDimBg] = ImVec4(0, 0, 0, 0.55f);
 }
 
+static void Look() {
+    ImGuiStyle& st = ImGui::GetStyle();
+    st.WindowBorderSize = st.ChildBorderSize = st.PopupBorderSize = st.FrameBorderSize = st.TabBorderSize = 0.0f;
+    st.WindowRounding = 16.0f;
+    st.PopupRounding = 12.0f;
+    st.ChildRounding = 10.0f;
+    st.FrameRounding = 8.0f;
+    st.GrabRounding = 8.0f;
+    st.TabRounding = 8.0f;
+    st.TabBarBorderSize = 0.0f;   // no line under the tabs
+    st.TabBarOverlineSize = 0.0f;
+    st.ScrollbarRounding = 12.0f;
+    st.ScrollbarSize = 10.0f;
+    st.WindowPadding = ImVec2(20.0f, 16.0f);
+    st.SeparatorTextBorderSize = 1.0f;
+    st.SeparatorTextPadding = ImVec2(10.0f, 4.0f);
+
+    Colors(st);
+}
+
 // ImGui rasterizes the font's glyphs as each size first needs them
 void UiFont() {
     Look();
@@ -97,6 +114,19 @@ void UiFont() {
     ImFontConfig cfg;
     cfg.FontDataOwnedByAtlas = false;  // the bytes are the executable's
     ImGui::GetIO().Fonts->AddFontFromMemoryTTF(const_cast<unsigned char*>(kUiFont), int(kUiFontSize), 0.0f, &cfg);
+}
+
+void UiAccentColor(int index, float rgb[3]) {
+    const ImVec4& c = kAccents[std::clamp(index, 0, kAccentCount - 1)];
+    rgb[0] = c.x, rgb[1] = c.y, rgb[2] = c.z;
+}
+
+void UiAccent(int index) {
+    index = std::clamp(index, 0, kAccentCount - 1);
+    if (index == g_accent) return;
+    g_accent = index;
+    Colors(ImGui::GetStyle());
+    Colors(g_base);
 }
 
 void UiFontResize() {
