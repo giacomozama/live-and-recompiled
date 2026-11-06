@@ -53,6 +53,8 @@ message(STATUS "[3/5] staging ${DEST}")
 file(REMOVE_RECURSE ${DEST})
 file(COPY ${XBE_BUILDS}/zig-windows/package/Game/ DESTINATION ${DEST})
 file(COPY ${XBE_ROOT}/LICENSE DESTINATION ${DEST})
+# Windows opens a file by its extension, so that archive carries the licence as LICENSE.txt
+file(COPY_FILE ${XBE_ROOT}/LICENSE ${DEST}/LICENSE.txt ONLY_IF_DIFFERENT)
 if(NOT CMAKE_HOST_WIN32)
     # the Linux half beside it: kit.toml and the rest are the same in both
     file(COPY ${XBE_BUILDS}/zig-glibc/package/Game/kit/linux.toml DESTINATION ${DEST}/kit)
@@ -160,17 +162,17 @@ if(code OR NOT version)
 endif()
 # one archive per platform, each a LiveAndRecompiled/ folder with that platform's Setup: a zip for Windows, and for Linux a
 # .tar.gz, which keeps setup-linux executable (unzip tools often drop the bit)
-function(archive os setup ext flags format)
+function(archive os setup license ext flags format)
     set(file ${OUT}/${NAME}-${version}-${os}-x86_64.${ext})
     file(REMOVE ${file})
     execute_process(COMMAND ${CMAKE_COMMAND} -E tar ${flags} ${file} --format=${format}
-            ${NAME}/${setup} ${NAME}/LICENSE ${NAME}/THIRD_PARTY.txt
+            ${NAME}/${setup} ${NAME}/${license} ${NAME}/THIRD_PARTY.txt
         WORKING_DIRECTORY ${OUT} COMMAND_ERROR_IS_FATAL ANY)
     file(SIZE ${file} size)
     math(EXPR mb "(${size} + 524288) / 1048576")
     message(STATUS "      ${file} (${mb} MB)")
 endfunction()
-archive(windows setup-windows.exe zip cf zip)
+archive(windows setup-windows.exe LICENSE.txt zip cf zip)
 if(EXISTS ${DEST}/setup-linux)
-    archive(linux setup-linux tar.gz czf gnutar)
+    archive(linux setup-linux LICENSE tar.gz czf gnutar)
 endif()
