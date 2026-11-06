@@ -8,6 +8,10 @@ namespace cutscenes {
 // XBE_SKIPPABLE_CUTSCENES variable turns it on as well. Read on each test, so the F1 menu applies it live.
 extern bool g_skippable;
 
+// settings.toml english_bubbles (on by default): the intro and ending monologues on the throne show speech bubbles
+// in English too, as in every other language (hooks.cpp, the hook on 0x56AD4). Read each line, so it applies live.
+extern bool g_english_bubbles;
+
 // how far the hold to skip has come, 0 to 1; 0 when nothing is held or no cutscene is testing for it. Any thread
 float Hold();
 

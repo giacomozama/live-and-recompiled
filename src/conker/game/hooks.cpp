@@ -120,6 +120,17 @@ X86_FUNC(sub_001F6C50) {
     if (R32(self) != 1) held = 0;  // skipped, or the movies ended
 }
 
+// [[hook]] before 0x56AD4 in the cutscene speech command (0x569A0, ebx the command: +2 its text, +6 its flags). A
+// line flagged 0x100 shows no speech bubble in English, which the next instruction tests eax (XGetLanguage) for:
+// Conker's monologues on the throne, in the intro and the ending, whose text the English game has all the same.
+// cutscenes::g_english_bubbles: not English, so they get their bubbles as in the other languages.
+bool cutscenes::g_english_bubbles = true;
+
+void ConkerEnglishBubble(X86Context& ctx, uint8_t* base) {
+    (void)base;
+    if (cutscenes::g_english_bubbles) ctx.eax = 0;
+}
+
 // 0x4FF00: may LT end the playing in-engine cutscene (edi its slot)? The title allows it only for cutscenes the
 // player has seen (0x4EBE0, a bit per cutscene at 0x765608), never for the intro's first one (mode 0x18, cutscene
 // 1), in mode 0x1D (the intro's later scenes) only cutscene 5, and not in the last half second.

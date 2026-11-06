@@ -1151,6 +1151,9 @@ void Draw(double fps) {
                 Check("Skippable cutscenes", &cutscenes::g_skippable);
                 Hint("Hold any button, but pause, for a second to skip any cutscene, even ones you haven't seen. Off: "
                      "LT skips the ones you have.", true);
+                Check("Speech bubbles in Intro and Ending cutscenes", &cutscenes::g_english_bubbles);
+                Hint("Conker's monologues on the throne show speech bubbles in English too, as they do in every other "
+                     "language. Off: no bubbles there in English, as on the console.", true);
                 Check("Fade instead of loading screens", &loading::g_fade);
                 Hint("Loads fade to black and back instead of showing the loading screen, which also makes them much "
                      "faster.", true);

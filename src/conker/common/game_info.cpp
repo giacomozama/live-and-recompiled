@@ -48,6 +48,7 @@ const app::GameInfo app::kGame = {
                 {"fov", nullptr, &display::g_fov},  // the view's height in degrees in play, 50 the console's (display.cpp)
                 {"hud_split", &display::g_hud_split, nullptr},  // a match's HUD unstretched, at the display's edges (display.cpp)
                 {"skippable_cutscenes", &cutscenes::g_skippable, nullptr},  // LT skips any cutscene (hooks.cpp)
+                {"english_bubbles", &cutscenes::g_english_bubbles, nullptr},  // the throne monologues' bubbles in English (hooks.cpp)
                 {"fade_loads", &loading::g_fade, nullptr},  // a fade to black instead of loading screens (hooks.cpp)
                 {"rope_physics", &rope::g_physics, nullptr},  // ropes swing as a weighted chain (rope.cpp)
                 {"grass_wind", &grass::g_wind, nullptr},  // distant grass sways too (hooks.cpp)
