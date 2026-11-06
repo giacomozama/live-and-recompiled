@@ -589,6 +589,31 @@ int Button(uint32_t tex) {
 
 }  // namespace
 
+// A frontend options page's value rows ("Number of Lives", "Timer") have the triggers' icons either side of the value,
+// drawn by 0x20C6E0's tail: the icon's resource from 0x1F5310 (LT: l_butt, or g_butt, s_butt or i_butt by the
+// console's language) and 0x1F53B0 (RT: r_butt or d_butt), each drawn by 0x21D4B0 through the sprite routines. On the
+// keyboard the value steps by the move left and right keys (the stick), so while player 1 plays with the keyboard the
+// icons are drawn as those keys: TriggerIcon names the action whose key the sprite routines draw until the icon is done.
+namespace {
+int g_trigger_icon = -1;  // keyboard::Action, -1 none; game thread
+}  // namespace
+
+// [[hook]] after 0x20C7D3 (0x1F5310) and 0x20C848 (0x1F53B0): the trigger's icon is drawn next
+void ConkerTriggerIconL(X86Context& ctx, uint8_t* base) {
+    (void)ctx, (void)base;
+    g_trigger_icon = keyboard::kMoveLeft;
+}
+void ConkerTriggerIconR(X86Context& ctx, uint8_t* base) {
+    (void)ctx, (void)base;
+    g_trigger_icon = keyboard::kMoveRight;
+}
+
+// [[hook]] at 0x20C7EB and 0x20C860, 0x21D4B0's returns: the icon drawn
+void ConkerTriggerIconDone(X86Context& ctx, uint8_t* base) {
+    (void)ctx, (void)base;
+    g_trigger_icon = -1;
+}
+
 // [[hook]] before each of the sprite routines' DrawVerticesUP calls (kSpriteDraws in game.toml): a button's icon, while
 // the pause screen is up
 void ConkerSpriteDraw(X86Context& ctx, uint8_t* base) {
@@ -602,6 +627,9 @@ void ConkerSpriteDraw(X86Context& ctx, uint8_t* base) {
         tex = d3d::State().textures[0];
     }
     if (!tex) return;
+    // a frontend option row's trigger icons (TriggerIcon): the keys that step its value, the move left and right ones
+    if (const int action = g_trigger_icon; action >= 0 && page == menus::kMenuList)
+        if (const uint32_t key = prompts::ActionIcon(0, action)) d3d::TextureForNextDraw(0, key);
     const int b = Button(tex);
     // the icon as a key, while player 1 plays with the keyboard (its shadow too, drawn first): the fixed key
     // keyboard::Pad takes for the button there (the pause screen's on its quit prompt too, whose prompts stay on

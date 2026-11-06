@@ -18,6 +18,9 @@ uint32_t KeyIcon(int port, int face);
 // the player's controls have on it
 uint32_t ButtonIcon(int port, int button);
 
+// the same for one action (keyboard::Action): the first of its keys that has a sprite
+uint32_t ActionIcon(int port, int action);
+
 // the same for one key (a virtual-key code), whatever it is bound to: a prompt that takes a fixed key; 0 keeps the
 // icon
 uint32_t KeySprite(int port, int vk);

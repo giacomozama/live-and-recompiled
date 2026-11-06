@@ -462,6 +462,23 @@ call = "ConkerTextQuad"
 at = 0x203CE9  # the quit prompt's A: the word the mouse clicked
 call = "ConkerQuitChoice"
 
+# a frontend option row's trigger icons as the move left / right keys (menus.cpp TriggerIcon)
+[[hook]]
+at = 0x20C7D8  # 0x1F5310 returned: LT's icon drawn next
+call = "ConkerTriggerIconL"
+
+[[hook]]
+at = 0x20C7EB  # drawn
+call = "ConkerTriggerIconDone"
+
+[[hook]]
+at = 0x20C84D  # 0x1F53B0 returned: RT's icon drawn next
+call = "ConkerTriggerIconR"
+
+[[hook]]
+at = 0x20C860  # drawn
+call = "ConkerTriggerIconDone"
+
 # kSpriteDraws: the sprite routines' DrawVerticesUP calls, single player's pause prompts' icons among them, for the mouse
 [[hook]]
 at = 0x356E21

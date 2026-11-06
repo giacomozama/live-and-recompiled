@@ -119,11 +119,20 @@ uint32_t ButtonIcon(int port, int button) {
     return 0;
 }
 
+uint32_t ActionIcon(int port, int action) {
+    if (!g_on || action < 0 || action >= keyboard::kActions || port < 0 || port >= input::kPorts) return 0;
+    if (input::LastUsed(port) != input::Source::Keyboard) return 0;
+    for (int vk : keyboard::g_keys[port][action])
+        if (const uint32_t tex = KeyTexture(vk)) return tex;
+    return 0;
+}
+
 uint32_t KeyIcon(int port, int face) { return face < 0 || face > 3 ? 0 : ButtonIcon(port, face); }
 
 #else
 
 uint32_t ButtonIcon(int, int) { return 0; }
+uint32_t ActionIcon(int, int) { return 0; }
 uint32_t KeyIcon(int, int) { return 0; }
 uint32_t KeySprite(int, int) { return 0; }
 
