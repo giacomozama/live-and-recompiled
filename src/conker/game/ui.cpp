@@ -289,15 +289,21 @@ void Hints(std::initializer_list<const char*> lines) {
 
 // a setting's label to the left of its widget, in a column as wide for every setting (wrapped if it is longer): draws
 // it, sizes the widget that follows it (to the row's end, less `after` for a button beside it) and returns the widget's hidden label
-float LabelWidth() { return ImGui::GetFontSize() * 13.0f; }
+float LabelWidth() { return std::min(ImGui::GetFontSize() * 13.0f, ImGui::GetContentRegionAvail().x * 0.4f); }  // less in a narrow column
+// on to the value column on the same line, `start` the label's screen x (SameLine's offset would be off in a table cell)
+void ToValueColumn(float start, float width) {
+    ImGui::SameLine(0.0f, 0.0f);
+    ImGui::SetCursorScreenPos(ImVec2(start + width + ImGui::GetStyle().ItemSpacing.x, ImGui::GetCursorScreenPos().y));
+}
 const char* Beside(const char* label, float after = 0.0f) {
     static std::string id;
-    const float x = ImGui::GetCursorPosX(), gap = ImGui::GetStyle().ItemSpacing.x;
+    const float x = ImGui::GetCursorScreenPos().x, width = LabelWidth();
     ImGui::AlignTextToFramePadding();
-    ImGui::PushTextWrapPos(ImGui::GetCursorScreenPos().x + LabelWidth());
+    ImGui::PushTextWrapPos(ImGui::GetCursorScreenPos().x + width);
     ImGui::TextUnformatted(label);
     ImGui::PopTextWrapPos();
-    ImGui::SameLine(x + LabelWidth() + gap);
+    ImGui::SameLine(0.0f, 0.0f);
+    ImGui::SetCursorScreenPos(ImVec2(x + width + ImGui::GetStyle().ItemSpacing.x, ImGui::GetCursorScreenPos().y));
     const float room = ImGui::GetContentRegionAvail().x;
     ImGui::SetNextItemWidth(std::max(room - after, ImGui::GetFontSize() * 4.0f));
     id = std::string("##") + label;
@@ -365,11 +371,11 @@ void DeviceCombo(int player, input::Kind kind) {
 // a player's devices, and whether new controllers find a player on their own (shared by all, under each tab)
 void DrawDevices(int player) {
     ImGui::SeparatorText("Devices");
-    const float x0 = ImGui::GetCursorPosX();
+    const float x0 = ImGui::GetCursorScreenPos().x, label_width = LabelWidth();
     for (input::Kind kind : {input::Kind::Keyboard, input::Kind::Mouse, input::Kind::Controller}) {
         ImGui::AlignTextToFramePadding();
         ImGui::TextUnformatted(kind == input::Kind::Keyboard ? "Keyboard" : kind == input::Kind::Mouse ? "Mouse" : "Controller");
-        ImGui::SameLine(x0 + LabelWidth() + ImGui::GetStyle().ItemSpacing.x);  // the column of the other settings
+        ToValueColumn(x0, label_width);  // the column of the other settings
         DeviceCombo(player, kind);
     }
     bool auto_assign = input::AutoAssign();
@@ -386,9 +392,8 @@ void DrawController(int player) {
     ImGui::BeginDisabled(!gamepad::g_vibration[player]);
     Slider("Vibration %", &gamepad::g_vibration_percent[player], 0, 100, 100);
     ImGui::EndDisabled();
-    Hint("How hard the controller shakes. Takes effect from the next rumble.");
-    Hint("Invert aim and Vibration are single player only: in a match the profile's own (the game's profile menu) "
-         "decide. Vibration % applies in matches too.");
+    Hint("How hard the controller shakes. NOTE: These Invert aim and Vibration settings are single player only: "
+         "in multiplayer, the profile's own in-engine settings decide.");
 }
 
 // a player's mouse look
@@ -409,9 +414,7 @@ void DrawKeys(int player) {
     PollRebind();
     g_cancel_hovered = false;  // the waiting row sets it again as it draws
     ImGui::SeparatorText("Keyboard");
-    Hint("Each action can have two keys or mouse buttons. Click a slot, then press the key you want.");
     Hint("Right-click a slot (Y on a controller) to clear it. Picking a key that is already used swaps the two.");
-    Hint("Keys are bound to actions: in a match they follow the controller scheme of the player's profile.");
     if (const int scheme = keyboard::Scheme(player))
         ImGui::Text("In use now: %s's controls", keyboard::SchemeName(scheme));
     // a frame per kind of action; the frame names it, so a row only names its action
@@ -429,9 +432,9 @@ void DrawKeys(int player) {
                       {kJump, "Jump"}, {kCrouch, "Crouch"}}},
         {"Camera", {{kLookUp, "Look up"}, {kLookDown, "Look down"}, {kLookLeft, "Look left"},
                     {kLookRight, "Look right"}, {kZoom, "Zoom (story)"}}},
-        {"Weapons", {{kAttack, "Attack / fire"}, {kAim, "Aim / take out"}, {kWeaponMode, "First person / mode"},
+        {"Weapons", {{kAttack, "Attack / fire"}, {kAim, "Aim / equip weapon"}, {kWeaponMode, "First person / mode"},
                      {kReload, "Reload"}, {kUse, "Use (story)"}}},
-        {"Multiplayer", {{kAbility, "Abilities"}, {kCycle, "Cycle equipped"}, {kVote, "Vote"},
+        {"Multiplayer", {{kAbility, "Abilities"}, {kCycle, "Cycle equipped (hold for item wheel)"}, {kVote, "Vote kick"},
                          {kRadio, "Radio mode"}}},
         {"Game", {{kPause, "Pause"}, {kQuit, "Quit (title menu)"}}},
     };
@@ -972,12 +975,12 @@ void Draw(double fps) {
                 ImGui::SeparatorText("Appearance");
                 {
                     ImGui::AlignTextToFramePadding();
-                    const float x0 = ImGui::GetCursorPosX();
+                    const float x0 = ImGui::GetCursorScreenPos().x, label_width = LabelWidth();
                     ImGui::TextUnformatted("UI accent color");
                     const float size = ImGui::GetFrameHeight() * 1.1f, gap = size * 0.4f;
                     for (uint32_t i = 0; i < 7; i++) {
                         if (i) ImGui::SameLine(0.0f, gap);
-                        else ImGui::SameLine(x0 + LabelWidth() + ImGui::GetStyle().ItemSpacing.x);
+                        else ToValueColumn(x0, label_width);
                         ImGui::PushID(int(i));
                         float rgb[3];
                         app::UiAccentColor(int(i), rgb);
@@ -1201,8 +1204,14 @@ void Draw(double fps) {
                 const int p = g_player_now;
                 ImGui::PushID(p);
                 DrawDevices(p);
-                DrawController(p);
-                DrawMouse(p);
+                // side by side
+                if (ImGui::BeginTable("##pads", 2, ImGuiTableFlags_SizingStretchSame)) {
+                    ImGui::TableNextColumn();
+                    DrawController(p);
+                    ImGui::TableNextColumn();
+                    DrawMouse(p);
+                    ImGui::EndTable();
+                }
                 DrawKeys(p);
                 keys_shown = true;
                 ImGui::PopID();
