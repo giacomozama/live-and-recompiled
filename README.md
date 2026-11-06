@@ -23,7 +23,7 @@ trademarks of their respective owners.
 - **Controls** - Full gamepad and keyboard + mouse support.
 - **Multiplayer** - Full multiplayer support, with local split-screen, LAN autodiscovery and direct IP over the internet.
 - **Mods** - Convenient, plug-and-play modding layer to easily install mods, such as the [Decensor Patch/Mod](https://github.com/nastys/conker-live-and-reloaded-decensor) by nastys.
-- **Quality of life** - Bypass loading screens and skip any cutscene without having seen it once first.
+- **Quality of life** - Bypass loading screens and skip any cutscene without having seen it once first, by holding any button.
 - **Settings menu** - A comprehensive settings menu worthy of a PC game.
 
 The settings are in the Esc menu and in `settings.toml`.

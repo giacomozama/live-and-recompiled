@@ -9,6 +9,7 @@
 #include <bit>
 #include <cstdlib>
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstring>
 
@@ -25,6 +26,7 @@
 #include "common/display.h"
 #include "common/fur.h"
 #include "common/grass.h"
+#include "common/keyboard.h"
 #include "common/loading.h"
 #include "common/ui.h"
 
@@ -121,9 +123,78 @@ X86_FUNC(sub_001F6C50) {
 // 0x4FF00: may LT end the playing in-engine cutscene (edi its slot)? The title allows it only for cutscenes the
 // player has seen (0x4EBE0, a bit per cutscene at 0x765608), never for the intro's first one (mode 0x18, cutscene
 // 1), in mode 0x1D (the intro's later scenes) only cutscene 5, and not in the last half second.
-// cutscenes::g_skippable (or XBE_SKIPPABLE_CUTSCENES): any cutscene, seen or not, still not in the last half second. Mode 0x21 skips on a
-// button of its own and keeps its test.
-bool cutscenes::g_skippable = false;
+// cutscenes::g_skippable (or XBE_SKIPPABLE_CUTSCENES) replaces LT: any button held for a second (all but Start
+// and Back on a controller, all but Escape, F1 and the pause and quit keys on the keyboard) skips any cutscene, seen or
+// not, still not in the last half second. The widget the ImGui overlay draws (cutscenes::Hold) fills as it is held.
+// Mode 0x21 skips on a button of its own and keeps its test.
+bool cutscenes::g_skippable = true;
+
+namespace {
+
+constexpr double kSkipHold = 1.0;
+std::atomic<float> g_hold_progress{0.0f};
+std::atomic<int64_t> g_hold_seen{INT64_MIN};  // steady-clock microseconds of the hook's last test
+
+int64_t NowUs() {
+    return std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now().time_since_epoch())
+        .count();
+}
+
+// a button other than the pause and quit ones held on any port: a controller's buttons, triggers, d-pad and stick
+// clicks, or any key or mouse button
+bool SkipButtonHeld() {
+    constexpr uint16_t kStartBack = 0x10 | 0x20;
+    for (int p = 0; p < input::kPorts; p++) {
+        const input::Pad pad = input::Raw(p);
+        if (pad.connected) {
+            if (pad.buttons & ~kStartBack) return true;
+            for (uint8_t a : pad.analog)
+                if (a > 64) return true;
+        }
+        // any key or mouse button (virtual-key codes 1 to 254) but Escape and F1, which open the menu, and the
+        // ones bound to pause or quit
+        for (int vk = 1; vk < 0xFF; vk++) {
+            if (vk == 0x1B || vk == 0x70) continue;
+            if (!input::KeyDown(p, vk)) continue;
+            bool special = false;
+            for (int a : {keyboard::kPause, keyboard::kQuit})
+                for (int bound : keyboard::g_keys[p][a]) special |= bound == vk;
+            if (!special) return true;
+        }
+    }
+    return false;
+}
+
+// held for kSkipHold seconds? A button already down when the cutscene began (or the settings menu shut) does not
+// count until it is let go
+bool SkipHeld() {
+    static bool armed = false, running = false;
+    static int64_t since = 0;
+    const int64_t now = NowUs();
+    if (now - g_hold_seen.load() > 250000) armed = running = false;  // the last test was a different cutscene's
+    g_hold_seen.store(now);
+    const bool down = !ui::Open() && SkipButtonHeld();
+    if (!down) {
+        armed = !ui::Open();
+        running = false;
+        g_hold_progress.store(0.0f);
+        return false;
+    }
+    if (!armed) return false;
+    if (!running) running = true, since = now;
+    const double held = double(now - since) / 1e6;
+    g_hold_progress.store(float(std::min(held / kSkipHold, 1.0)));
+    if (held < kSkipHold) return false;
+    armed = running = false;  // the next cutscene wants a fresh press
+    g_hold_progress.store(0.0f);
+    return true;
+}
+
+}  // namespace
+
+float cutscenes::Hold() {
+    return NowUs() - g_hold_seen.load() <= 250000 ? g_hold_progress.load() : 0.0f;
+}
 
 X86_EXTERN_FUNC(__imp__sub_0004FF00);
 X86_FUNC(sub_0004FF00) {
@@ -131,13 +202,12 @@ X86_FUNC(sub_0004FF00) {
     using kernel::R32;
     uint32_t mode = R32(0x7FA1F8);
     if ((env || cutscenes::g_skippable) && mode != 0x21) {
-        // the player whose skip button counts, its pressed buttons at +0xA0, and the "no skipping" flag
-        uint32_t player = 0x763260 + (int8_t(base[0x6BCFEB]) > 0 ? 0 : 0x14 * 0x1B0);
-        bool pressed = R32(player + 0xA0) != 0 && !base[0x7655F7];
+        // the "no skipping" flag; the last half second is not skippable
         float fps;
         std::memcpy(&fps, base + 0x7F9F5C, 4);
         int32_t now = int32_t(R32(0x76F0F8 + ctx.edi * 4)), end = int32_t(R32(0x76F0E8 + ctx.edi * 4));
-        kernel::Return(ctx, pressed && now + int32_t(fps) / 2 < end ? 1 : 0, 0);
+        const bool allowed = !base[0x7655F7] && now + int32_t(fps) / 2 < end;
+        kernel::Return(ctx, allowed && SkipHeld() ? 1 : 0, 0);
         return;
     }
     __imp__sub_0004FF00(ctx, base);

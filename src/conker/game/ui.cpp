@@ -783,6 +783,52 @@ void Draw(double fps) {
         ImGui::PopStyleVar();
     }
 
+    // a cutscene's hold to skip: a pill at the bottom right whose border fills as the button is held
+    if (const float hold = cutscenes::Hold(); hold > 0.0f && !open && !quit) {
+        ImDrawList* dl = ImGui::GetForegroundDrawList();
+        const ImVec2 display = ImGui::GetIO().DisplaySize;
+        const float unit = ImGui::GetFontSize() * 1.35f;  // the widget and its text, larger than the menu's
+        const char* label = "Hold to skip";
+        const float font = unit;
+        const ImVec2 text = ImGui::GetFont()->CalcTextSizeA(font, FLT_MAX, 0.0f, label);
+        const float h = unit * 2.4f, w = text.x + h * 1.1f, r = h * 0.5f, margin = unit * 1.6f, thick = unit * 0.2f;
+        const ImVec2 c(display.x - margin - w * 0.5f, display.y - margin - h * 0.5f);
+        const ImVec2 lo(c.x - w * 0.5f, c.y - h * 0.5f), hi(c.x + w * 0.5f, c.y + h * 0.5f);
+        dl->AddRectFilled(lo, hi, IM_COL32(0, 0, 0, 150), r);
+        dl->AddText(ImGui::GetFont(), font, ImVec2(c.x - text.x * 0.5f, c.y - text.y * 0.5f),
+                    IM_COL32(255, 255, 255, 235), label);
+        // along the outline from the top's middle, clockwise: half the top, the right cap, the bottom, the left cap,
+        // half the top
+        const float s = w - h, pi = 3.14159265f, cap = pi * r, total = 2.0f * s + 2.0f * cap;
+        auto at = [&](float t) {
+            if (t < s * 0.5f) return ImVec2(c.x + t, lo.y);
+            t -= s * 0.5f;
+            if (t < cap) {
+                const float a = -pi * 0.5f + t / r;
+                return ImVec2(c.x + s * 0.5f + r * std::cos(a), c.y + r * std::sin(a));
+            }
+            t -= cap;
+            if (t < s) return ImVec2(c.x + s * 0.5f - t, hi.y);
+            t -= s;
+            if (t < cap) {
+                const float a = pi * 0.5f + t / r;
+                return ImVec2(c.x - s * 0.5f + r * std::cos(a), c.y + r * std::sin(a));
+            }
+            t -= cap;
+            return ImVec2(c.x - s * 0.5f + t, lo.y);
+        };
+        // the track and the fill walk the same outline, so they overlap exactly
+        auto stroke = [&](float length, ImU32 color) {
+            const int steps = std::max(2, int(length / 2.0f));
+            std::vector<ImVec2> pts;
+            pts.reserve(steps + 1);
+            for (int i = 0; i <= steps; i++) pts.push_back(at(length * float(i) / float(steps)));
+            dl->AddPolyline(pts.data(), int(pts.size()), color, ImDrawFlags_None, thick);
+        };
+        stroke(total, IM_COL32(255, 255, 255, 60));
+        stroke(total * std::min(hold, 1.0f), ImGui::GetColorU32(ImGuiCol_CheckMark));
+    }
+
     // the prompt alone: a modal over the game, which is held. It goes when Cancel, B or Esc shut it
     if (quit && !open) {
         if (!ImGui::IsPopupOpen("Quit?")) ImGui::OpenPopup("Quit?");
@@ -1052,7 +1098,8 @@ void Draw(double fps) {
 
                 ImGui::SeparatorText("Gameplay");
                 ImGui::Checkbox("Skippable cutscenes", &cutscenes::g_skippable);
-                Hint("Press LT to skip any cutscene, even ones you haven't seen.", true);
+                Hint("Hold any button, but pause, for a second to skip any cutscene, even ones you haven't seen. Off: "
+                     "LT skips the ones you have.", true);
                 ImGui::Checkbox("Fade instead of loading screens", &loading::g_fade);
                 Hint("Loads fade to black and back instead of showing the loading screen, which also makes them much "
                      "faster.", true);
