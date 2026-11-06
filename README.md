@@ -18,12 +18,15 @@ trademarks of their respective owners.
 ## Features
 
 - **High frame rates** - 60, 120, 180 or 240 FPS instead of the original 30.
-- **Any aspect ratio** - Ultrawide and other displays get a wider view.
-- **Better graphics** - Anti-aliasing, additional post-processing effects, visual and gameplay enhancements.
-- **Controls** - Xbox, PlayStation and Switch controllers with rumble, or keyboard and mouse with mouse look.
-- **Skippable cutscenes** - Skip any in-engine cutscene without having seen them once first.
+- **Any aspect ratio** - Play the game at any aspect ratio.
+- **Better graphics** - Vulkan rendering at any resolution, SMAA or MSAA anti-aliasing, AMD FSR 1.0 upscaling and sharpening, per-pixel lighting, ambient occlusion, and toggles for fog, vignette and more.
+- **Controls** - Full gamepad and keyboard + mouse support.
+- **Multiplayer** - Full multiplayer support, with local split-screen, LAN autodiscovery and direct IP over the internet.
+- **Mods** - Convenient, plug-and-play modding layer to easily install mods, such as the [Decensor Patch/Mod](https://github.com/nastys/conker-live-and-reloaded-decensor) by nastys.
+- **Quality of life** - Bypass loading screens and skip any cutscene without having seen it once first.
+- **Settings menu** - A comprehensive settings menu worthy of a PC game.
 
-Everything is configurable in the Esc menu and in `settings.toml`.
+The settings are in the Esc menu and in `settings.toml`.
 
 Settings and saves live in `%APPDATA%\LiveAndRecompiled` on Windows and in `~/.config/LiveAndRecompiled` and
 `~/.local/share/LiveAndRecompiled` on Linux; logs and caches in `%LOCALAPPDATA%\LiveAndRecompiled`, or
@@ -32,9 +35,9 @@ in its folder instead.
 
 ## Status
 
-Single player is playable start to finish. It's expected to be mostly bug free and optimized almost everywhere.
+The recomp is fully implemented, both single and multiplayer.
 
-Multiplayer and Dumbots work with some quirks, but haven't been tested thoroughly.
+That does not mean there won't be bugs or that no more features can be added. Bug reports and feature requests are very much appreciated.
 
 See [KNOWN_ISSUES.md](KNOWN_ISSUES.md) for the known issues.
 
