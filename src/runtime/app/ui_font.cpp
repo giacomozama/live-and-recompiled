@@ -90,11 +90,11 @@ static void Colors(ImGuiStyle& st) {
 static void Look() {
     ImGuiStyle& st = ImGui::GetStyle();
     st.WindowBorderSize = st.ChildBorderSize = st.PopupBorderSize = st.FrameBorderSize = st.TabBorderSize = 0.0f;
-    st.WindowRounding = 16.0f;
-    st.PopupRounding = 12.0f;
-    st.ChildRounding = 10.0f;
-    st.FrameRounding = 8.0f;
-    st.GrabRounding = 8.0f;
+    st.WindowRounding = 12.0f;
+    st.PopupRounding = 9.0f;
+    st.ChildRounding = 8.0f;
+    st.FrameRounding = 6.0f;
+    st.GrabRounding = 6.0f;
     st.TabRounding = 8.0f;
     st.TabBarBorderSize = 0.0f;   // no line under the tabs
     st.TabBarOverlineSize = 0.0f;
