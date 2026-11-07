@@ -1187,15 +1187,79 @@ void Draw(double fps) {
                 {
                     int speakers = s.surround ? 1 : 0;
                     if (ImGui::Combo(Beside("Speakers"), &speakers, "Stereo\0005.1 surround\0")) s.surround = speakers == 1;
-                    Hint("Stereo mixes for two speakers or headphones. 5.1 surround mixes for six speakers, as the "
-                         "console does with Dolby Digital, and plays on as many as the output device has. Starts from "
-                         "the next launch.");
+                    Hint("Stereo mixes for two speakers or headphones. 5.1 surround mixes for six speakers and "
+                         "plays on as many as the output device has. Starts from the next launch.");
                 }
                 ImGui::Dummy(ImVec2(0.0f, ImGui::GetStyle().ItemSpacing.y * 0.75f));  // set apart from the hint above
                 Check("Mute in background", &s.mute_in_background);
                 Hint("No sound while you are in another window.", true);
                 Check("Menu sounds", &s.menu_sounds);
                 Hint("The sounds of changing tabs and settings and of moving around this menu with the keyboard or a pad.", true);
+                // the mixer's choices, where how the console sounds isn't settled
+                ImGui::SeparatorText("Mix");
+                {
+                    const app::Settings def{};
+                    // at full size, not a dimmed hint: it is the first thing to read in this section
+                    ImGui::TextWrapped("If the game already sounds good to you, leave these as they are.");
+                    ImGui::Dummy(ImVec2(0.0f, ImGui::GetStyle().ItemSpacing.y * 0.75f));
+                    ImGui::BeginDisabled(s.surround);
+                    int backs = s.stereo_full_backs ? 1 : 0;
+                    if (ImGui::Combo(Beside("Back speakers in stereo"), &backs, "-3 dB\0Full level\0"))
+                        s.stereo_full_backs = backs == 1;
+                    Hint("How loud the back speakers' sounds are when folded into the left and right ones.");
+                    Check("Subwoofer in stereo", &s.stereo_sub);
+                    Hint("Folds the subwoofer channel into both speakers.", true);
+                    ImGui::EndDisabled();
+                    Slider("Reverb %", &s.reverb, 0, 200, def.reverb);
+                    Hint("The room echo in caves, halls and the like.");
+                    int resampler = int(std::min<uint32_t>(s.resampler, 2));
+                    if (ImGui::Combo(Beside("Resampling"), &resampler, "Linear\0Cubic\0Sinc\0"))
+                        s.resampler = uint32_t(resampler);
+                    Hint("How sounds recorded at lower rates are played at 48 kHz. Cubic and Sinc are sharper than "
+                         "Linear.");
+                    Check("Crosstalk cancellation", &s.crosstalk);
+                    Hint("Widens positioned sounds over two speakers.", true);
+                    Check("Doppler effect", &s.doppler);
+                    Hint("Moving sounds rise and fall in pitch as they pass.", true);
+                    Check("Distance muffling", &s.distance_filters);
+                    Hint("Far and blocked sounds lose their highs.", true);
+                    Check("Voice headroom", &s.voice_headroom);
+                    Hint("Lowers some sounds to leave room in the mix. Off plays every sound at full level, which "
+                         "changes the balance between music, voices and effects.", true);
+                    Check("Sound envelopes", &s.envelopes);
+                    Hint("Sounds fade in, swell and fade out, and looping sounds play out their endings when they "
+                         "stop.", true);
+                    Check("Sound wobble (LFO)", &s.lfo);
+                    Hint("Vibrato and tremolo on the sounds that ask for them.", true);
+                    Check("Sound filters", &s.voice_filters);
+                    Hint("Muffled or resonant sounds keep their filtering.", true);
+                    Check("Soft clipping", &s.soft_clip);
+                    Hint("When the mix gets too loud it is rounded off instead of cut flat, which crackles less.", true);
+                    // every Mix setting back to its default; greyed out while they already are
+                    const bool same = s.stereo_full_backs == def.stereo_full_backs && s.stereo_sub == def.stereo_sub &&
+                                      s.reverb == def.reverb && s.crosstalk == def.crosstalk &&
+                                      s.doppler == def.doppler && s.distance_filters == def.distance_filters &&
+                                      s.resampler == def.resampler && s.voice_headroom == def.voice_headroom &&
+                                      s.soft_clip == def.soft_clip && s.envelopes == def.envelopes &&
+                                      s.lfo == def.lfo && s.voice_filters == def.voice_filters;
+                    ImGui::Dummy(ImVec2(0.0f, ImGui::GetStyle().ItemSpacing.y * 0.75f));
+                    ImGui::BeginDisabled(same);
+                    if (ImGui::Button("Reset mix to defaults")) {
+                        s.stereo_full_backs = def.stereo_full_backs;
+                        s.stereo_sub = def.stereo_sub;
+                        s.reverb = def.reverb;
+                        s.crosstalk = def.crosstalk;
+                        s.doppler = def.doppler;
+                        s.distance_filters = def.distance_filters;
+                        s.resampler = def.resampler;
+                        s.voice_headroom = def.voice_headroom;
+                        s.soft_clip = def.soft_clip;
+                        s.envelopes = def.envelopes;
+                        s.lfo = def.lfo;
+                        s.voice_filters = def.voice_filters;
+                    }
+                    ImGui::EndDisabled();
+                }
                 end_tab();
             }
 

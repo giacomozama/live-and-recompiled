@@ -7,6 +7,7 @@
 #include <cmath>
 #include <cstring>
 
+#include "app/app.h"
 #include "core/log.h"
 #include "xdk/layout.h"
 
@@ -110,7 +111,7 @@ void Xtalk(Effect& e, uint32_t n) {
         g_x[e.base + 64] = 0xF88313;
     }
     float c0 = F(X(e, 63)), c1 = F(X(e, 64));
-    bool on = X(e, kFlags) & kMix;
+    bool on = (X(e, kFlags) & kMix) && app::Get().crosstalk;  // the Audio setting can pass them through
     for (int p = 0; p < 2; p++) {
         const float* l = Buf(X(e, 5 + p * 2));
         const float* r = Buf(X(e, 6 + p * 2));
@@ -159,6 +160,7 @@ void Rev(Effect& e, uint32_t n) {
     float* out[4];
     for (int k = 0; k < 4; k++) out[k] = Buf(X(e, 7 + k));
     bool mix = X(e, kFlags) & kMix;
+    const float level = app::Get().reverb / 100.0f;  // the Audio setting's
     const Late& p = g_rev;
     uint32_t size = uint32_t(r.in.size());
     for (uint32_t i = 0; i < n; i++) {
@@ -186,7 +188,7 @@ void Rev(Effect& e, uint32_t n) {
             float v = r.damp[k] - 0.5f * sum + y * p.scale[k];
             r.line[k][r.pos[k]] = std::abs(v) < 1e-20f ? 0.0f : v;
             r.pos[k] = (r.pos[k] + 1) % 5000;
-            out[k][i] = (mix ? out[k][i] : 0) + early[k] + s[k];
+            out[k][i] = (mix ? out[k][i] : 0) + (early[k] + s[k]) * level;
         }
         r.in_pos = (r.in_pos + 1) % size;
     }

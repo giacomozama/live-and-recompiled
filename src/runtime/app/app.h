@@ -50,6 +50,20 @@ struct Settings {
     bool mute_in_background = false;  // silent while the game window lacks the focus (Background)
     // the speakers the console reports and the mixer plays on: stereo, or 5.1 surround; read at launch (audio::Channels)
     bool surround = false;
+    // the mixer's choices where no one agrees what the console sounds like; the defaults are what the console's own
+    // code does (dsound.cpp, dsfx.cpp), read as the mix runs
+    bool stereo_full_backs = false;  // on two speakers the backs fold into their side at 0 dB, not the encoder's -3 dB
+    bool stereo_sub = false;         // on two speakers the sub folds into both sides at -3 dB, which the encoder drops
+    uint32_t reverb = 100;           // the room reverb's level in % (the DSP's reverb is approximated, not run)
+    bool crosstalk = true;           // the GP's crosstalk cancellers on 3D sounds; off passes their inputs through
+    bool doppler = true;             // 3D voices' Doppler pitch shift
+    bool distance_filters = true;    // 3D voices' I3DL2 direct and room low-pass filters
+    uint32_t resampler = 0;          // how voices are read between their samples: 0 linear, 1 cubic, 2 sinc
+    bool voice_headroom = true;      // voices keep the library's headroom (-6 dB on most 2D ones) and SetHeadroom's
+    bool soft_clip = false;          // the mix bends towards full scale instead of clipping at it
+    bool envelopes = true;           // XACT's volume, pitch and cutoff envelopes, release envelopes and release tails
+    bool lfo = true;                 // XACT's LFOs (vibrato, tremolo, filter sweeps); their rate and depth are a guess
+    bool voice_filters = true;       // XACT's per-sound DLS2 low-pass filters
     bool shader_warmup = true;       // make the shaders shaders.rec lists while the title boots
     std::string gpu;                  // the name of the graphics adapter to draw with, "" the best there is (read at launch)
     std::string renderer = "vulkan";  // which gpu::Backend draws, read at launch (gpu/backend.cpp)

@@ -75,6 +75,18 @@ void Load() {
     s.menu_sounds = t["menu_sounds"].value_or(s.menu_sounds);
     s.mute_in_background = t["mute_in_background"].value_or(s.mute_in_background);
     s.surround = t["surround"].value_or(s.surround);
+    s.stereo_full_backs = t["stereo_full_backs"].value_or(s.stereo_full_backs);
+    s.stereo_sub = t["stereo_sub"].value_or(s.stereo_sub);
+    s.reverb = std::min<uint32_t>(t["reverb"].value_or(s.reverb), 200);
+    s.crosstalk = t["crosstalk"].value_or(s.crosstalk);
+    s.doppler = t["doppler"].value_or(s.doppler);
+    s.distance_filters = t["distance_filters"].value_or(s.distance_filters);
+    s.resampler = std::min<uint32_t>(t["resampler"].value_or(s.resampler), 2);
+    s.voice_headroom = t["voice_headroom"].value_or(s.voice_headroom);
+    s.soft_clip = t["soft_clip"].value_or(s.soft_clip);
+    s.envelopes = t["envelopes"].value_or(s.envelopes);
+    s.lfo = t["lfo"].value_or(s.lfo);
+    s.voice_filters = t["voice_filters"].value_or(s.voice_filters);
     s.shader_warmup = t["shader_warmup"].value_or(s.shader_warmup);
     s.gpu = t["gpu"].value_or(s.gpu);
     s.renderer = t["renderer"].value_or(s.renderer);
@@ -130,6 +142,18 @@ toml::table Table() {
                   {"menu_sounds", s.menu_sounds},
                   {"mute_in_background", s.mute_in_background},
                   {"surround", s.surround},
+                  {"stereo_full_backs", s.stereo_full_backs},
+                  {"stereo_sub", s.stereo_sub},
+                  {"reverb", s.reverb},
+                  {"crosstalk", s.crosstalk},
+                  {"doppler", s.doppler},
+                  {"distance_filters", s.distance_filters},
+                  {"resampler", s.resampler},
+                  {"voice_headroom", s.voice_headroom},
+                  {"soft_clip", s.soft_clip},
+                  {"envelopes", s.envelopes},
+                  {"lfo", s.lfo},
+                  {"voice_filters", s.voice_filters},
                   {"shader_warmup", s.shader_warmup},
                   {"gpu", s.gpu},
                   {"renderer", s.renderer},

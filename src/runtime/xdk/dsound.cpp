@@ -130,6 +130,29 @@ struct Packet {
     uint32_t used = 0;
 };
 
+// the cubic and sinc resamplers' window: kHalf frames up to the one playing and kHalf after it
+constexpr int kHalf = 8, kTaps = 2 * kHalf;
+
+// XACT's envelopes, LFOs and filters, as the library writes DSENVELOPEDESC, DSLFODESC and DSFILTERDESC into the VP's
+// voice registers (0x4CA942, 0x4CA813, 0x4CAAD4) and the VP steps them, once every 32 samples (xemu's vp.c)
+constexpr uint32_t kModFrame = 32;
+enum EnvState : uint8_t { kEnvOff, kEnvDelay, kEnvAttack, kEnvHold, kEnvDecay, kEnvSustain, kEnvRelease, kEnvDone };
+struct Envelope {
+    uint8_t start = kEnvOff;  // DSEG_MODE: the state a voice starts in (off, delay, attack or hold)
+    uint16_t delay = 0, attack = 0, hold = 0, decay = 0, release = 0;  // 12 bits each, in 512 sample units
+    uint8_t sustain = 0;
+    int8_t pitch = 0, cutoff = 0;  // the multi envelope's scales, 32 pitch units (1/128 octave) a step
+    uint8_t cur = kEnvOff;
+    int32_t count = 0;
+    float level = 255;  // as the VP last set it; a release decays from it
+};
+struct Lfo {
+    uint32_t delay = 0, delta = 0;  // in 512 sample units; the rate, delta / 65536 of a cycle per 32 samples
+    int8_t pitch = 0, cutoff = 0, amp = 0;
+    uint32_t count = 0;
+    double phase = 0;
+};
+
 struct Voice {
     uint32_t obj = 0;
     bool stream = false;
@@ -177,6 +200,21 @@ struct Voice {
     double recent = 0;  // F3: mean square mixed, smoothed over about half a second
     int64_t fed = 0, done = 0, born = 0;  // F3: steady ms of the last packet in, the last packet out, creation
     float lp[2][8] = {};  // the I3DL2 filters' last outputs, direct and room, by channel
+    // XACT's shaping: amplitude and multi (pitch and cutoff) envelopes, the multi and pitch LFOs, the DLS2 filter
+    Envelope ea, ef;
+    Lfo lfo[2];
+    uint32_t fmode = 0;   // DSFILTERDESC mode: 0 bypass, 1 DLS2, 2 parametric EQ, 3 DLS2 and EQ (mono)
+    int32_t fc = 0;       // DLS2 cutoff, 4.12 octaves of the filter's coefficient
+    uint32_t fq = 0;      // DLS2 damping, 0x8000 the least resonant
+    float svf[8][2] = {};  // the filter's low and band pass state by channel
+    uint32_t tick = 0;     // samples left in this envelope frame
+    float amp_from = 1, amp_to = 1, mod_pitch = 0, mod_fc = 0;
+    bool in_release = false;  // a release envelope is playing out before the voice stops or its flush completes
+    // the resampler's window (cubic, sinc), by channel: entry i is frame win_f - (kHalf - 1) + i of the voice's data
+    float win[kTaps][8] = {};
+    int win_fill = -1;     // entries read from the data, from the first; -1 starts the window afresh
+    int64_t win_f = 0;
+    double win_seen = -1;  // pos as the last Pull left it; a pos moved by anything else starts the window afresh
     // ADPCM block cache
     int64_t block = -1;
     int16_t decoded[65 * 8];
@@ -304,8 +342,9 @@ double BasePitch(const Voice& v) {
 double Rate(const Voice& v) {
     if (v.mixin) return audio::kRate;
     double p = BasePitch(v);
-    if (v.calc3d && (v.flags & 0x1000000)) p += v.t3d.pitch;
-    if (const Voice* s = v.out ? Submix(v) : nullptr) p += BasePitch(*s) + (s->calc3d ? s->t3d.pitch : 0);
+    const bool doppler = app::Get().doppler;
+    if (doppler && v.calc3d && (v.flags & 0x1000000)) p += v.t3d.pitch;
+    if (const Voice* s = v.out ? Submix(v) : nullptr) p += BasePitch(*s) + (doppler && s->calc3d ? s->t3d.pitch : 0);
     return audio::kRate * std::exp2(std::clamp(p, -32767.0, 8191.0) / 4096.0);
 }
 // SetFrequency: a rate, or 0 for the format's own (DSBFREQUENCY_ORIGINAL)
@@ -379,6 +418,7 @@ int Routes(const Voice& v, Route* r) {
     // with no effects image, a voice heard only through effects (or a submix it has no target for) plays dry on the
     // front pair, at its loudest send
     bool heard = dsfx::Loaded();
+    const float hr = app::Get().voice_headroom ? v.headroom : 1.0f;  // the Audio setting can play every voice without it
     for (uint32_t s = 0; s < n; s++) heard |= Speaker(bin[s]) || (bin[s] == kMultipass && Submix(v));
     int count = 0;
     auto add = [&](uint32_t b, int c, float x) {
@@ -393,7 +433,7 @@ int Routes(const Voice& v, Route* r) {
         uint32_t pair = c / 2 * 2 + 1 < channels ? 2 : 1, end = std::min(per * (c / 2 + 1), n);
         for (uint32_t s = per * (c / 2) + c % 2; s < end; s += pair) {
             uint32_t b = bin[s];
-            float x = Db(v.bin_mb[b]) * v.volume * v.headroom * (v.calc3d ? Att3d(v.t3d, b) : att);
+            float x = Db(v.bin_mb[b]) * v.volume * hr * (v.calc3d ? Att3d(v.t3d, b) : att);
             float left = std::min(1.0f, 1.0f - pan), right = std::min(1.0f, 1.0f + pan);
             if (!heard) {
                 add(0, c, x * left);
@@ -416,11 +456,143 @@ void Deactivate(Voice& v) {
 // a mixin buffer has no data of its own and mixes what reaches it from the start: Conker never plays its own
 bool Plays(const Voice& v) {
     if (v.mixin) return true;
-    return !(v.paused || v.sync || v.hold || v.flushing || (!v.stream && !v.playing));
+    return !(v.paused || v.sync || v.hold || (v.flushing && !v.in_release) || (!v.stream && !v.playing));
 }
 
 // the voice's next frames, its channels interleaved (at most kChannels); silence once it runs out. A mixin buffer
 // reads its submix, one channel, as the VP reads the multipass bin.
+// one VP step of an envelope, its value 0..1. The curves are xemu's: attack a linear rise, decay an exponential fall
+// to the sustain level, release an exponential fall of 60 dB from the level it starts at.
+float StepEnv(Envelope& e) {
+    switch (e.cur) {
+        case kEnvOff:
+            e.level = 255;
+            return 1;
+        case kEnvDelay:
+            e.level = 0;
+            if (e.count <= 0) e.cur = kEnvAttack, e.count = 0;
+            else e.count--;
+            return 0;
+        case kEnvAttack: {
+            int32_t span = e.attack * 16;
+            float x = span ? std::min(255.0f, e.count * 255.0f / span) : 255.0f;
+            e.level = x;
+            if (e.count >= span) e.cur = kEnvHold, e.count = e.hold * 16;
+            else e.count++;
+            return x / 255;
+        }
+        case kEnvHold:
+            e.level = 255;
+            if (e.count <= 0) e.cur = kEnvDecay, e.count = e.decay * 16;
+            else e.count--;
+            return 1;
+        case kEnvDecay: {
+            float x = e.decay ? 255.0f * std::pow(0.99988799f, float(e.decay * 16 - e.count) * 4096.0f / e.decay) : 0.0f;
+            if (x <= e.sustain + 0.2f || e.count <= 0) {
+                e.cur = kEnvSustain;
+                x = e.sustain;
+            } else {
+                e.count--;
+            }
+            e.level = x;
+            return x / 255;
+        }
+        case kEnvSustain:
+            e.level = e.sustain;
+            return e.sustain / 255.0f;
+        case kEnvRelease: {
+            if (!e.release || e.count <= 0) {
+                e.cur = kEnvDone;
+                return 0;
+            }
+            float t = std::clamp(1.0f - e.count / (e.release * 16.0f), 0.0f, 1.0f);
+            e.count--;
+            return std::exp(-6.91f * t) * e.level / 255;
+        }
+        default: return 0;
+    }
+}
+void StartEnv(Envelope& e) {
+    e.cur = e.start <= kEnvHold ? e.start : kEnvOff;
+    e.count = e.cur == kEnvDelay ? e.delay * 16 : e.cur == kEnvHold ? e.hold * 16 : 0;
+    e.level = e.cur == kEnvOff || e.cur == kEnvHold ? 255.0f : 0.0f;
+}
+// the VP starts a voice: its envelopes from their start states, its LFOs from their delays, its filter empty
+void VoiceOn(Voice& v) {
+    StartEnv(v.ea);
+    StartEnv(v.ef);
+    for (Lfo& l : v.lfo) l.count = l.delay * 16, l.phase = 0;
+    std::memset(v.svf, 0, sizeof v.svf);
+    v.tick = 0;
+    // from the level the amplitude envelope starts at, so its first frame doesn't ramp from full
+    const bool silent = app::Get().envelopes && v.ea.cur != kEnvOff && v.ea.cur != kEnvHold;
+    v.amp_from = v.amp_to = silent ? 0.0f : 1.0f;
+    v.mod_pitch = v.mod_fc = 0;
+    v.in_release = false;
+}
+// a stop or flush asking for the release envelope: the voice plays on through it when it has one to play
+bool StartRelease(Voice& v) {
+    if (!app::Get().envelopes || !v.ea.release) return false;
+    for (Envelope* e : {&v.ea, &v.ef}) e->cur = kEnvRelease, e->count = e->release * 16;
+    v.in_release = true;
+    return true;
+}
+// one VP frame of the envelopes and LFOs: the amplitude to reach by its end, the pitch and cutoff offsets in 4.12
+void StepMods(Voice& v) {
+    const app::Settings& s = app::Get();
+    float amp = 1, pitch = 0, fc = 0;
+    if (s.envelopes) {
+        amp = StepEnv(v.ea);
+        float f = StepEnv(v.ef);
+        pitch += v.ef.pitch * 32.0f * f;
+        fc += v.ef.cutoff * 32.0f * f;
+    }
+    if (s.lfo)
+        for (int k = 0; k < 2; k++) {
+            Lfo& l = v.lfo[k];
+            if (!l.delta) continue;
+            if (l.count) {
+                l.count--;
+                continue;
+            }
+            l.phase = std::fmod(l.phase + l.delta / 65536.0, 1.0);
+            const float p = float(l.phase);
+            const float tri = p < 0.25f ? 4 * p : p < 0.75f ? 2 - 4 * p : 4 * p - 4;  // from 0, up first
+            pitch += l.pitch * 32.0f * tri;
+            if (k == 0) {
+                fc += l.cutoff * 32.0f * tri;
+                amp *= std::max(0.0f, 1.0f + l.amp * tri / 256.0f);
+            }
+        }
+    v.amp_from = v.amp_to;
+    v.amp_to = amp;
+    v.mod_pitch = pitch;
+    v.mod_fc = fc;
+}
+// whether the VP runs the voice's DLS2 low-pass: on a 3D voice mode 1 (DLS2 and I3DL2), on a 2D one mode 1, or mode 3
+// too when it is mono (0x4CAAD4's modes, xemu's vp.c)
+bool Dls2(const Voice& v) {
+    if (!app::Get().voice_filters) return false;
+    if (v.flags & 0x200010) return v.fmode == 1;
+    return v.channels == 2 ? v.fmode == 1 : (v.fmode & 1) != 0;
+}
+
+// the sinc kernel's taps for a frame t (0..1) past the one playing: a Blackman windowed sinc over the window, low-pass
+// at c (1 the output's Nyquist, less when the voice plays faster than 48 kHz), summing to one
+void SincTaps(float t, float c, float* k) {
+    constexpr double kPi = 3.14159265358979323846;
+    double sum = 0, w[kTaps];
+    for (int i = 0; i < kTaps; i++) {
+        double x = (i - (kHalf - 1)) - double(t), u = x / kHalf;
+        double s = std::abs(x) < 1e-9 ? 1.0 : std::sin(kPi * c * x) / (kPi * c * x);
+        w[i] = std::abs(u) >= 1 ? 0.0 : s * (0.42 + 0.5 * std::cos(kPi * u) + 0.08 * std::cos(2 * kPi * u));
+        sum += w[i];
+    }
+    for (int i = 0; i < kTaps; i++) k[i] = float(w[i] / sum);
+}
+
+// the Audio setting's resampler, how a voice's samples are read between its frames: 0 linear (between this frame and
+// the next), 1 cubic (Catmull-Rom over four), 2 sinc (sixteen)
 void Pull(Voice& v, float* ab, uint32_t frames) {
     uint32_t ch = std::min<uint32_t>(std::max<uint32_t>(v.channels, 1), kChannels);
     std::memset(ab, 0, frames * ch * sizeof(float));
@@ -429,8 +601,68 @@ void Pull(Voice& v, float* ab, uint32_t frames) {
         return;
     }
     uint32_t base = v.data + v.play_start;
-    double step = Rate(v) / audio::kRate;
-    float now[kChannels], next[kChannels];  // this frame and the next, interpolated between
+    const double rate = Rate(v) / audio::kRate;
+    double step = rate * std::exp2(v.mod_pitch / 4096.0);
+    const uint32_t mode = std::min<uint32_t>(app::Get().resampler, 2);
+    const bool dls2 = Dls2(v);
+    // a release that can't play out (the setting is off, or the data ran out) ends now
+    auto end_release = [&] {
+        if (!v.in_release) return;
+        v.in_release = false;
+        if (!v.stream) v.playing = false;
+    };
+    if (v.in_release && !app::Get().envelopes) end_release();
+    if (v.pos != v.win_seen) v.win_fill = -1;
+    static const std::vector<float> kSinc = [] {  // 1024 phases at the output's Nyquist
+        std::vector<float> k(1024 * kTaps);
+        for (int p = 0; p < 1024; p++) SincTaps(p / 1024.0f, 1.0f, &k[size_t(p) * kTaps]);
+        return k;
+    }();
+    // frame f + j of the data into s; false when it is a stream's not queued yet, to read again later
+    uint32_t start = 0, end = 0;
+    auto fetch = [&](uint32_t f, uint32_t j, float* s) {
+        uint64_t at = uint64_t(f) + j;
+        if (v.stream) {
+            for (const Packet& pk : v.packets) {
+                uint32_t n = FramesOf(v, pk.size);
+                if (at < n) {
+                    for (uint32_t c = 0; c < ch; c++) s[c] = Sample(v, pk.data, uint32_t(at), int(c));
+                    return true;
+                }
+                at -= n;
+            }
+            return false;
+        }
+        if (at >= end) {
+            if (!v.looping || end <= start) {
+                for (uint32_t c = 0; c < ch; c++) s[c] = 0;
+                return true;
+            }
+            at = start + (at - start) % (end - start);
+        }
+        for (uint32_t c = 0; c < ch; c++) s[c] = Sample(v, base, uint32_t(at), int(c));
+        return true;
+    };
+    // moves the window to frame f and reads what it lacks; a frame not queued yet holds the one before
+    auto slide = [&](uint32_t f) {
+        int64_t d = int64_t(f) - v.win_f;
+        if (v.win_fill < 0 || d < 0 || d >= kTaps) {
+            std::memset(v.win, 0, sizeof v.win);
+            v.win_fill = kHalf - 1;
+        } else if (d > 0) {
+            std::memmove(v.win[0], v.win[d], size_t(kTaps - d) * sizeof v.win[0]);
+            v.win_fill = int(std::max<int64_t>(v.win_fill - d, kHalf - 1));
+        }
+        v.win_f = f;
+        for (int i = v.win_fill; i < kTaps; i++) {
+            if (fetch(f, uint32_t(i - (kHalf - 1)), v.win[i])) {
+                if (v.win_fill == i) v.win_fill++;
+            } else if (i > 0) {
+                std::memcpy(v.win[i], v.win[i - 1], sizeof v.win[i]);
+            }
+        }
+    };
+    float now[kChannels], next[kChannels];  // linear: this frame and the next, interpolated between
     for (uint32_t i = 0; i < frames; i++) {
         uint32_t f = uint32_t(v.pos);
         if (v.stream) {
@@ -440,45 +672,112 @@ void Pull(Voice& v, float* ab, uint32_t frames) {
                 pk.used = pk.size;
                 Complete(v, pk, 0);
                 v.pos -= FramesOf(v, pk.size);
+                v.win_f -= FramesOf(v, pk.size);
                 f = uint32_t(v.pos);
                 if (v.packets.empty() && !v.ending) v.starved = true;
             }
             if (v.packets.empty()) {
                 v.pos = 0;
+                v.win_seen = -1;
+                end_release();
                 if (v.ending) Deactivate(v);
                 return;
             }
-            Packet& pk = v.packets.front();
-            bool last = f + 1 >= FramesOf(v, pk.size);
-            for (uint32_t c = 0; c < ch; c++) {
-                now[c] = Sample(v, pk.data, f, int(c));
-                next[c] = !last                  ? Sample(v, pk.data, f + 1, int(c))
-                          : v.packets.size() > 1 ? Sample(v, v.packets[1].data, 0, int(c))
-                                                 : now[c];
+            if (mode == 0) {
+                Packet& pk = v.packets.front();
+                bool last = f + 1 >= FramesOf(v, pk.size);
+                for (uint32_t c = 0; c < ch; c++) {
+                    now[c] = Sample(v, pk.data, f, int(c));
+                    next[c] = !last                  ? Sample(v, pk.data, f + 1, int(c))
+                              : v.packets.size() > 1 ? Sample(v, v.packets[1].data, 0, int(c))
+                                                     : now[c];
+                }
             }
         } else {
-            uint32_t start = v.looping ? FramesOf(v, v.loop_start) : 0;
-            uint32_t end = FramesOf(v, v.looping ? v.loop_start + v.loop_len : v.play_len);
+            start = v.looping ? FramesOf(v, v.loop_start) : 0;
+            end = FramesOf(v, v.looping ? v.loop_start + v.loop_len : v.play_len);
             if (f >= end) {
                 if (!v.looping || end <= start) {
                     v.playing = false;
                     v.pos = 0;
+                    v.win_seen = -1;
+                    end_release();
                     return;
                 }
+                uint32_t was = f;
                 v.pos = start + std::fmod(v.pos - start, double(end - start));
                 f = uint32_t(v.pos);
+                v.win_f += int64_t(f) - int64_t(was);
             }
-            if (!v.data) return;
-            uint32_t after = f + 1 < end ? f + 1 : v.looping ? start : f;
-            for (uint32_t c = 0; c < ch; c++) {
-                now[c] = Sample(v, base, f, int(c));
-                next[c] = Sample(v, base, after, int(c));
+            if (!v.data) {
+                v.win_seen = -1;
+                return;
+            }
+            if (mode == 0) {
+                uint32_t after = f + 1 < end ? f + 1 : v.looping ? start : f;
+                for (uint32_t c = 0; c < ch; c++) {
+                    now[c] = Sample(v, base, f, int(c));
+                    next[c] = Sample(v, base, after, int(c));
+                }
             }
         }
+        // a new VP frame: the envelopes and LFOs step, and the pitch follows them; a finished release stops the voice
+        if (v.tick == 0) {
+            StepMods(v);
+            step = rate * std::exp2(v.mod_pitch / 4096.0);
+            v.tick = kModFrame;
+            if (v.in_release && v.ea.cur == kEnvDone) {
+                end_release();
+                v.win_seen = -1;
+                if (!v.stream) v.pos = 0;
+                return;
+            }
+        }
+        const float amp = v.amp_to + (v.amp_from - v.amp_to) * float(v.tick - 1) / kModFrame;
+        v.tick--;
         float t = float(v.pos - f);
-        for (uint32_t c = 0; c < ch; c++) ab[i * ch + c] = now[c] + (next[c] - now[c]) * t;
+        float* o = &ab[i * ch];
+        if (mode == 0) {
+            for (uint32_t c = 0; c < ch; c++) o[c] = now[c] + (next[c] - now[c]) * t;
+        } else if (slide(f); mode == 1) {
+            for (uint32_t c = 0; c < ch; c++) {
+                float p0 = v.win[kHalf - 2][c], p1 = v.win[kHalf - 1][c], p2 = v.win[kHalf][c], p3 = v.win[kHalf + 1][c];
+                o[c] = p1 + 0.5f * t * (p2 - p0 + t * (2 * p0 - 5 * p1 + 4 * p2 - p3 + t * (3 * (p1 - p2) + p3 - p0)));
+            }
+        } else {
+            float own[kTaps];
+            const float* k = &kSinc[size_t(std::min(int(t * 1024), 1023)) * kTaps];
+            if (step > 1.0001) {  // faster than 48 kHz: low-pass below the output's Nyquist
+                SincTaps(t, float(1.0 / step), own);
+                k = own;
+            }
+            for (uint32_t c = 0; c < ch; c++) {
+                float y = 0;
+                for (int n = 0; n < kTaps; n++) y += k[n] * v.win[n][c];
+                o[c] = y;
+            }
+        }
+        // the DLS2 low-pass, the VP's state variable filter as xemu runs it: the coefficient 2^(fc / 4096) of the
+        // output rate, damping fq / 0x8000, the input scaled to keep the resonance in range
+        if (dls2) {
+            const float fcf = std::clamp(std::exp2((float(int16_t(v.fc)) + v.mod_fc) / 4096.0f), 0.003906f, 1.0f);
+            const float q = std::clamp(v.fq / 32768.0f, 0.079407f, 1.0f), qn = std::sqrt(q / 2 + 0.01f);
+            for (uint32_t c = 0; c < ch; c++) {
+                float& l = v.svf[c][0];
+                float& b = v.svf[c][1];
+                b -= b * b * b * 0.001f;
+                float h = o[c] * qn - l - q * b;
+                b += fcf * h;
+                l += fcf * b;
+                if (std::abs(l) < 1e-20f) l = 0;
+                if (std::abs(b) < 1e-20f) b = 0;
+                o[c] = std::clamp(l, -1.0f, 1.0f);
+            }
+        }
+        for (uint32_t c = 0; c < ch; c++) o[c] *= amp;
         v.pos += step;
     }
+    v.win_seen = v.pos;
 }
 
 // how a voice is routed: volume and headroom in mB, then bin:channel=mB for each channel it takes, before bin
@@ -552,7 +851,7 @@ void Render(float* out, uint32_t frames) {
         uint32_t ch = std::min<uint32_t>(std::max<uint32_t>(v->channels, 1), kChannels);
         // a 3D voice's I3DL2 filters: the direct path's on every bin but the reverb send, the room's on that
         const float* in[2] = {ab.data(), ab.data()};
-        for (int p = 0; p < 2 && v->calc3d; p++) {
+        for (int p = 0; p < 2 && v->calc3d && app::Get().distance_filters; p++) {
             if (!v->t3d.filter[p]) continue;
             float a = float(std::min<int32_t>(v->t3d.filter[p], 0xFFFF)) / 65536.0f;
             std::vector<float>& f = filtered[p];
@@ -598,10 +897,13 @@ void Render(float* out, uint32_t frames) {
     // (front left and right, back left and right). On 5.1 each bin is its speaker and the sub is heard; on two
     // speakers the console's encoder DSP (the DOLBY image, run with the stereo setting of 0x4CD798) folds the centre
     // at -3 dB into both sides and each back at -3 dB into its own, and drops the sub. The effect sends and a
-    // multipass bin nothing reads are not heard.
+    // multipass bin nothing reads are not heard. The Audio settings can take the backs at 0 dB and fold the sub at
+    // -3 dB into both sides instead.
     static const uint8_t kSpeakerOf[10] = {0, 1, 2, 3, 4, 5, 0, 1, 4, 5};
+    const app::Settings& set = app::Get();
+    const float back = set.stereo_full_backs ? 1.0f : 0.707f;
     for (uint32_t b = 0; b < kBins; b++) {
-        bool sub_heard = b == 3 && speakers == 6;
+        bool sub_heard = b == 3 && (speakers == 6 || set.stereo_sub);
         if (!(Speaker(b) || sub_heard) || (b > 5 && dsfx::Loaded())) continue;
         const float* src = &bus[size_t(b) * frames];
         if (speakers == 6) {
@@ -610,10 +912,11 @@ void Render(float* out, uint32_t frames) {
             for (uint32_t i = 0; i < frames; i++) out[i * 6 + o] += src[i] * g;
             continue;
         }
-        float g = float(1 << g_bin_headroom[b]) * (b == 2 || kSpeakerOf[b] >= 4 ? 0.707f : 1.0f);
+        const bool both = b == 2 || b == 3;  // the centre and the sub go to both sides
+        float g = float(1 << g_bin_headroom[b]) * (both ? 0.707f : kSpeakerOf[b] >= 4 ? back : 1.0f);
         for (uint32_t i = 0; i < frames; i++) {
-            if (b == 2 || !(b & 1)) out[i * 2] += src[i] * g;
-            if (b == 2 || (b & 1)) out[i * 2 + 1] += src[i] * g;
+            if (both || !(b & 1)) out[i * 2] += src[i] * g;
+            if (both || (b & 1)) out[i * 2 + 1] += src[i] * g;
         }
     }
     // XBE_AUDIO_RECORD=<file>: the game's mix before the volume setting, raw interleaved float32 at 48 kHz, to compare
@@ -631,12 +934,16 @@ void Render(float* out, uint32_t frames) {
     // the volume setting, squared to follow loudness, and silence in the background if asked; a change ramps over the
     // block so it doesn't click
     static float gain = 1.0f;
-    const app::Settings& set = app::Get();
     const float v = set.volume / 100.0f, want = set.mute_in_background && app::Background() ? 0.0f : v * v;
+    // past full scale the mix clips, or with the Audio setting bends from -2.5 dB towards it instead
+    const bool soft = set.soft_clip;
     for (uint32_t i = 0; i < frames; i++) {
         float g = gain + (want - gain) * float(i + 1) / float(frames);
-        for (uint32_t c = 0; c < speakers; c++)
-            out[i * speakers + c] = std::clamp(out[i * speakers + c] * g, -1.0f, 1.0f);
+        for (uint32_t c = 0; c < speakers; c++) {
+            float x = out[i * speakers + c] * g;
+            if (soft && std::abs(x) > 0.75f) x = std::copysign(0.75f + 0.25f * std::tanh((std::abs(x) - 0.75f) * 4.0f), x);
+            out[i * speakers + c] = std::clamp(x, -1.0f, 1.0f);
+        }
     }
     gain = want;
     static uint64_t rendered = 0;
@@ -665,7 +972,7 @@ int64_t NowMs() {
 // with it. Their callbacks join the queue the next DirectSoundDoWork runs.
 void FinishFlushes() {
     for (auto& [obj, v] : g_voices) {
-        if (!v.flushing) continue;
+        if (!v.flushing || v.in_release) continue;
         DSTRACE("dsound: %08X flush done, %zu packets", obj, v.packets.size());
         for (auto& pk : v.packets) Complete(v, pk, kFlushed);
         v.packets.clear();
@@ -1122,8 +1429,51 @@ HLE_STDCALL(IDirectSound_GetOutputLevels, 3) {
 HLE_STDCALL(DirectSoundCreateBuffer, 2) { return NewBuffer(a[0], a[1]); }
 HLE_STDCALL(IDirectSound_CreateSoundBuffer, 4) { return NewBuffer(a[1], a[2]); }
 
-// XBE_TRACE_DSOUND: what XACT asks of a voice's filter, envelope, LFO and pitch, which the host mixer does not play;
-// logged when a voice's descriptor changes
+// DSENVELOPEDESC (EG, mode, delay, attack, hold, decay, release, sustain, pitch scale, cutoff scale) as 0x4CA942 keeps
+// it: EG 1 the amplitude envelope, 0 the multi one, which alone has the scales. A playing voice's state carries on.
+void SetEnvelope(Voice& v, uint32_t desc) {
+    if (!desc) return;
+    const uint32_t eg = R32(desc);
+    if (eg > 1) return;
+    Envelope& e = eg ? v.ea : v.ef;
+    e.start = uint8_t(R32(desc + 4) & 0xF);
+    e.delay = uint16_t(R32(desc + 8) & 0xFFF);
+    e.attack = uint16_t(R32(desc + 0xC) & 0xFFF);
+    e.hold = uint16_t(R32(desc + 0x10) & 0xFFF);
+    e.decay = uint16_t(R32(desc + 0x14) & 0xFFF);
+    e.release = uint16_t(R32(desc + 0x18) & 0xFFF);
+    e.sustain = uint8_t(R32(desc + 0x1C));
+    if (!eg) {
+        e.pitch = int8_t(R32(desc + 0x20));
+        e.cutoff = int8_t(R32(desc + 0x24));
+    }
+}
+// DSLFODESC (LFO, delay, delta, pitch, cutoff, amplitude) as 0x4CA813 keeps it: LFO 0 the multi one (pitch, cutoff
+// and amplitude), 1 the pitch one. How the VP turns delta into a rate and the depths into pitch and level isn't
+// known; Lfo and StepMods hold the guess.
+void SetLfo(Voice& v, uint32_t desc) {
+    if (!desc) return;
+    const uint32_t k = R32(desc);
+    if (k > 1) return;
+    Lfo& l = v.lfo[k];
+    l.delay = R32(desc + 4) & 0x7FFF;
+    l.delta = R32(desc + 8) & 0x3FF;
+    l.pitch = int8_t(R32(desc + 0xC));
+    if (k == 0) {
+        l.cutoff = int8_t(R32(desc + 0x10));
+        l.amp = int8_t(R32(desc + 0x14));
+    }
+}
+// DSFILTERDESC (mode, Q, coefficients) as 0x4CAAD4 keeps it: DLS2 takes its cutoff and damping from the first two
+void SetFilter(Voice& v, uint32_t desc) {
+    if (!desc) return;
+    v.fmode = R32(desc) & 3;
+    v.fc = int32_t(int16_t(R32(desc + 8) & 0xFFFF));
+    v.fq = R32(desc + 0xC) & 0xFFFF;
+}
+
+// XBE_TRACE_DSOUND: what XACT asks of a voice's filter, envelope, LFO and pitch; logged when a voice's descriptor
+// changes
 static void TraceDesc(uint32_t obj, const char* name, uint32_t desc, uint32_t words) {
     if (!g_trace) return;
     static std::map<std::pair<uint32_t, std::string>, std::vector<uint32_t>> last;
@@ -1188,6 +1538,7 @@ BUFFER(SetBufferData, 3) {
     return 0;
 }
 BUFFER(Play, 4) {
+    if (!v.playing || v.in_release) VoiceOn(v);
     v.playing = true;
     v.looping = a[3] & 1;
     if (a[3] & 2) v.pos = 0;
@@ -1195,12 +1546,16 @@ BUFFER(Play, 4) {
     return 0;
 }
 BUFFER(Stop, 1) {
-    v.playing = false;
+    v.playing = v.in_release = false;
     return 0;
 }
-// (this, time low, time high, flags): stops now, the release envelope is not reproduced
+// (this, time low, time high, flags): DSBSTOPEX_ENVELOPE (1) plays the release envelope out first,
+// DSBSTOPEX_RELEASEWAVEFORM (2) leaves the loop and plays on to the end; neither stops it now. The time is not kept.
 BUFFER(StopEx, 4) {
-    v.playing = false;
+    if (!v.playing) return 0;
+    const bool tail = (a[3] & 2) && app::Get().envelopes && v.looping;
+    if (tail) v.looping = false;
+    if (!((a[3] & 1) && StartRelease(v)) && !tail) v.playing = false;
     return 0;
 }
 // (this, start, length) in bytes, 0 length plays to the end. The loop becomes the whole region.
@@ -1255,6 +1610,7 @@ BUFFER(SetFrequency, 2) {
 }
 BUFFER(SetFilter, 2) {
     TraceDesc(v.obj, "SetFilter", a[1], 6);  // DSFILTERDESC: mode, Q, four coefficients
+    SetFilter(v, a[1]);
     return 0;
 }
 BUFFER(SetHeadroom, 2) {
@@ -1339,7 +1695,7 @@ static void FlushStream(Voice& v) {
     for (auto& pk : v.packets) Complete(v, pk, kFlushed);
     v.packets.clear();
     v.pos = 0;
-    v.flushing = v.releasing = v.released = false;
+    v.flushing = v.releasing = v.released = v.in_release = false;
     for (auto it = g_done.begin(); it != g_done.end();) {
         if (it->voice != v.obj) {
             ++it;
@@ -1399,6 +1755,7 @@ STREAM(Process, 3) {
     if (g_trace) LOGR("dsound: %08X packet %08X %X%s", v.obj, pk.data, pk.size, v.active ? "" : " (starts)");
     v.packets.push_back(pk);
     v.fed = NowMs();
+    if (!v.active) VoiceOn(v);
     v.active = true;
     v.ending = v.released = v.starved = false;
     return 0;
@@ -1419,6 +1776,7 @@ STREAM(FlushEx, 4) {
     } else if (v.active) {
         v.flushing = true;
         v.releasing = a[3] & 4;  // DSSTREAMFLUSHEX_ENVELOPE
+        if (v.releasing) StartRelease(v);  // the flush waits for it
     }
     return 0;
 }
@@ -1430,6 +1788,7 @@ STREAM(Pause, 2) {
         return 0;
     }
     if (a[1] == 0 && v.hold) {
+        if (!v.active) VoiceOn(v);
         v.active = true;
         v.starved = false;
     }
@@ -1448,11 +1807,13 @@ STREAM(SetFrequency, 2) {
 }
 STREAM(SetFilter, 2) {
     TraceDesc(v.obj, "SetFilter", a[1], 6);
+    SetFilter(v, a[1]);
     return 0;
 }
-// the library's own writes voice registers a host stream does not have; envelopes are not played
 HLE_STDCALL(IDirectSoundStream_SetEG, 2) {
+    std::lock_guard<std::recursive_mutex> lock(g_lock);
     TraceDesc(a[0], "SetEG", a[1], 10);  // DSENVELOPEDESC
+    if (Voice* v = Find(a[0])) SetEnvelope(*v, a[1]);
     return 0;
 }
 STREAM(SetHeadroom, 2) {
@@ -1491,7 +1852,7 @@ HLE_STDCALL(IDirectSoundStream_SetOutputBuffer, 2) {
 }
 // (this, lPitch / pLfoDesc / pEnvelopeDesc): the library's bodies write a console voice sub-object the host's objects
 // never build. The pitch is kept as the library keeps it (0x4C3D2C): XACT sets each voice's rate with it, and varies
-// it per sound. The host mixer has no envelope or LFO, so those are only traced.
+// it per sound. The envelopes and LFOs are kept as the library writes them to the VP (SetEnvelope, SetLfo).
 // XBE_TRACE_DSOUND: a voice's pitch when it changes
 static void TracePitch(uint32_t obj, uint32_t pitch) {
     if (!g_trace) return;
@@ -1511,7 +1872,9 @@ HLE_STDCALL(IDirectSoundStream_SetPitch, 2) {
     return 0;
 }
 HLE_STDCALL(IDirectSoundStream_SetLFO, 2) {
+    std::lock_guard<std::recursive_mutex> lock(g_lock);
     TraceDesc(a[0], "SetLFO", a[1], 6);  // DSLFODESC
+    if (Voice* v = Find(a[0])) SetLfo(*v, a[1]);
     return 0;
 }
 HLE_STDCALL(IDirectSoundBuffer_SetPitch, 2) {
@@ -1524,11 +1887,15 @@ HLE_STDCALL(IDirectSoundBuffer_SetPitch, 2) {
     return 0;
 }
 HLE_STDCALL(IDirectSoundBuffer_SetLFO, 2) {
+    std::lock_guard<std::recursive_mutex> lock(g_lock);
     TraceDesc(a[0], "SetLFO", a[1], 6);
+    if (Voice* v = Find(a[0])) SetLfo(*v, a[1]);
     return 0;
 }
 HLE_STDCALL(IDirectSoundBuffer_SetEG, 2) {
+    std::lock_guard<std::recursive_mutex> lock(g_lock);
     TraceDesc(a[0], "SetEG", a[1], 10);
+    if (Voice* v = Find(a[0])) SetEnvelope(*v, a[1]);
     return 0;
 }
 // (this, DSVOICEPROPS): no voice is allocated on the host, so every field reads as zero (the struct is
