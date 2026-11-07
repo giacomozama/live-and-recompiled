@@ -74,6 +74,12 @@ Roboto Regular v2.138 (https://github.com/googlefonts/roboto-2), the overlay's f
 Copyright 2015 Google Inc. Licensed under the Apache License, Version 2.0; its text is with glslang's below.
 
 
+Noto Sans CJK JP (https://github.com/notofonts/noto-cjk), the overlay's Japanese characters, a subset
+
+Copyright 2014-2021 Adobe (http://www.adobe.com/), with Reserved Font Name 'Source'. Licensed under the SIL Open Font
+License 1.1 (https://openfontlicense.org).
+
+
 SDL 3.4.18 (https://github.com/libsdl-org/SDL)
 
 Copyright (C) 1997-2026 Sam Lantinga <slouken@libsdl.org>

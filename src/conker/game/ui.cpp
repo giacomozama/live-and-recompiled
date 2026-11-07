@@ -18,6 +18,8 @@
 #include <cwchar>
 #include <initializer_list>
 #include <string>
+#include <string_view>
+#include <unordered_map>
 #include <vector>
 
 #include <imgui.h>
@@ -256,6 +258,40 @@ void PollRebind() {
     }
 }
 
+#include "ui_text.inc"
+
+// the overlay's language: the settings' (the menu's Language combo changes it at once)
+int Column() {
+    static const char* const kKeys[] = {"english", "german", "french", "spanish", "italian", "japanese"};
+    const std::string& language = app::Get().language;
+    for (int i = 0; i < 6; i++)
+        if (language == kKeys[i]) return i;
+    return 0;
+}
+
+// the text in the overlay's language; English where there is no translation. Its English text is also the ID of
+// the widget that shows it, so a widget keeps its ID, and its focus, across languages
+__attribute__((format_arg(1))) const char* T(const char* en) {
+    static const std::unordered_map<std::string_view, const Line*> lines = [] {
+        std::unordered_map<std::string_view, const Line*> map;
+        for (const Line& line : kLines) map.emplace(line.en, &line);
+        return map;
+    }();
+    const auto it = lines.find(en);
+    if (it == lines.end()) return en;
+    const Line& l = *it->second;
+    const char* const text[] = {l.en, l.de, l.fr, l.es, l.it, l.ja};
+    return text[Column()];
+}
+
+// a dropdown's items, each in the overlay's language, as ImGui wants them
+std::string Items(std::initializer_list<const char*> items) {
+    std::string out;
+    for (const char* item : items) out += T(item), out += '\0';
+    out += '\0';
+    return out;
+}
+
 // a hint under the setting before it: smaller, dimmed and wrapped, lined up with a checkbox's label
 void Hint(const char* text, bool checkbox = false) {
     const ImGuiStyle& style = ImGui::GetStyle();
@@ -265,7 +301,7 @@ void Hint(const char* text, bool checkbox = false) {
     if (checkbox) ImGui::SetCursorPosY(ImGui::GetCursorPosY() - style.ItemSpacing.y * 0.5f);
     if (indent > 0) ImGui::Indent(indent);
     ImGui::PushStyleColor(ImGuiCol_Text, style.Colors[ImGuiCol_TextDisabled]);
-    ImGui::TextWrapped("%s", text);
+    ImGui::TextWrapped("%s", T(text));
     ImGui::PopStyleColor();
     if (indent > 0) ImGui::Unindent(indent);
     ImGui::PopFont();
@@ -280,7 +316,7 @@ void Hints(std::initializer_list<const char*> lines) {
     for (const char* line : lines) {
         ImGui::Bullet();
         ImGui::SameLine();
-        ImGui::TextWrapped("%s", line);  // wrapped lines line up under the first, past the bullet
+        ImGui::TextWrapped("%s", T(line));  // wrapped lines line up under the first, past the bullet
     }
     ImGui::PopStyleColor();
     ImGui::PopFont();
@@ -300,7 +336,7 @@ const char* Beside(const char* label, float after = 0.0f) {
     const float x = ImGui::GetCursorScreenPos().x, width = LabelWidth();
     ImGui::AlignTextToFramePadding();
     ImGui::PushTextWrapPos(ImGui::GetCursorScreenPos().x + width);
-    ImGui::TextUnformatted(label);
+    ImGui::TextUnformatted(T(label));
     ImGui::PopTextWrapPos();
     ImGui::SameLine(0.0f, 0.0f);
     ImGui::SetCursorScreenPos(ImVec2(x + width + ImGui::GetStyle().ItemSpacing.x, ImGui::GetCursorScreenPos().y));
@@ -315,12 +351,12 @@ struct SliderEnd { int frame = -1; float y = 0.0f; } g_slider_end;
 // a percent slider with a Reset beside it, greyed out while the value is its default
 void Slider(const char* label, uint32_t* v, uint32_t min, uint32_t max, uint32_t def) {
     ImGui::PushID(label);
-    const float reset = ImGui::CalcTextSize("Reset").x + ImGui::GetStyle().FramePadding.x * 2.0f;
+    const float reset = ImGui::CalcTextSize(T("Reset")).x + ImGui::GetStyle().FramePadding.x * 2.0f;
     Beside(label, reset + ImGui::GetStyle().ItemInnerSpacing.x);
     ImGui::SliderScalar("##slider", ImGuiDataType_U32, v, &min, &max, "%u");
     ImGui::SameLine(0, ImGui::GetStyle().ItemInnerSpacing.x);
     ImGui::BeginDisabled(*v == def);
-    if (ImGui::Button("Reset")) *v = def;
+    if (ImGui::Button(T("Reset"))) *v = def;
     ImGui::EndDisabled();
     ImGui::PopID();
     g_slider_end = {ImGui::GetFrameCount(), ImGui::GetCursorPosY()};
@@ -330,7 +366,7 @@ void Slider(const char* label, uint32_t* v, uint32_t min, uint32_t max, uint32_t
 bool Check(const char* label, bool* v) {
     if (g_slider_end.frame == ImGui::GetFrameCount() && std::fabs(ImGui::GetCursorPosY() - g_slider_end.y) < 0.5f)
         ImGui::Dummy(ImVec2(0.0f, ImGui::GetStyle().ItemSpacing.y * 0.75f));
-    return ImGui::Checkbox(label, v);
+    return ImGui::Checkbox((std::string(T(label)) + "##" + label).c_str(), v);
 }
 
 // the device in a player's keyboard, mouse or controller slot; picking one another player has moves it here
@@ -338,19 +374,24 @@ void DeviceCombo(int player, input::Kind kind) {
     using input::Kind;
     const std::vector<input::Device> devices = input::Devices(kind);
     const std::string held = input::Assigned(player, kind);
-    const char* all = kind == Kind::Keyboard ? "All other keyboards" : "All other mice";
+    const char* all = kind == Kind::Keyboard ? T("All other keyboards") : T("All other mice");
     // a device no longer connected keeps its name, without the #n
     auto label = [&](const std::string& key) -> std::string {
-        if (key.empty()) return "None";
+        if (key.empty()) return T("None");
         if (key == input::kAll) return all;
         for (const input::Device& d : devices)
             if (d.key == key) return d.label;
-        return key.substr(0, key.rfind('#')) + " (not connected)";
+        char text[512];
+        std::snprintf(text, sizeof text, T("%s (not connected)"), key.substr(0, key.rfind('#')).c_str());
+        return text;
     };
     // whose it is now, when another player's
     auto whose = [&](const std::string& key) -> std::string {
         const int p = input::Holder(kind, key);
-        return p >= 0 && p != player ? "  (player " + std::to_string(p + 1) + ")" : "";
+        if (p < 0 || p == player) return "";
+        char text[64];
+        std::snprintf(text, sizeof text, T("  (player %d)"), p + 1);
+        return text;
     };
     ImGui::PushID(int(kind));
     ImGui::SetNextItemWidth(-FLT_MIN);
@@ -358,23 +399,24 @@ void DeviceCombo(int player, input::Kind kind) {
         auto option = [&](const std::string& key, const std::string& text) {
             if (ImGui::Selectable((text + whose(key) + "##" + key).c_str(), held == key)) input::Assign(player, kind, key);
         };
-        option("", "None");
+        option("", T("None"));
         if (kind != Kind::Controller) option(input::kAll, all);
         for (const input::Device& d : devices) option(d.key, d.label);
         ImGui::EndCombo();
     }
     if (kind != Kind::Controller && held == input::kAll && ImGui::IsItemHovered())
-        ImGui::SetTooltip("Uses every %s not given to another player", kind == Kind::Keyboard ? "keyboard" : "mouse");
+        ImGui::SetTooltip("%s", kind == Kind::Keyboard ? T("Uses every keyboard not given to another player")
+                                                    : T("Uses every mouse not given to another player"));
     ImGui::PopID();
 }
 
 // a player's devices, and whether new controllers find a player on their own (shared by all, under each tab)
 void DrawDevices(int player) {
-    ImGui::SeparatorText("Devices");
+    ImGui::SeparatorText(T("Devices"));
     const float x0 = ImGui::GetCursorScreenPos().x, label_width = LabelWidth();
     for (input::Kind kind : {input::Kind::Keyboard, input::Kind::Mouse, input::Kind::Controller}) {
         ImGui::AlignTextToFramePadding();
-        ImGui::TextUnformatted(kind == input::Kind::Keyboard ? "Keyboard" : kind == input::Kind::Mouse ? "Mouse" : "Controller");
+        ImGui::TextUnformatted(T(kind == input::Kind::Keyboard ? "Keyboard" : kind == input::Kind::Mouse ? "Mouse" : "Controller"));
         ToValueColumn(x0, label_width);  // the column of the other settings
         DeviceCombo(player, kind);
     }
@@ -385,7 +427,7 @@ void DrawDevices(int player) {
 
 // a player's controller options, the game's own two (they replace its Options menu's)
 void DrawController(int player) {
-    ImGui::SeparatorText("Controller");
+    ImGui::SeparatorText(T("Controller"));
     Check("Invert aim", &gamepad::g_invert_aim[player]);
     Hint("Up on the right stick aims down while aiming. The camera and the mouse aren't affected.", true);
     Check("Vibration", &gamepad::g_vibration[player]);
@@ -398,7 +440,7 @@ void DrawController(int player) {
 
 // a player's mouse look
 void DrawMouse(int player) {
-    ImGui::SeparatorText("Mouse");
+    ImGui::SeparatorText(T("Mouse"));
     Check("Mouse look", &mouse::g_look[player]);
     Hint("Move the mouse to look around. Open this menu (F1) or press Alt+Tab to get the cursor back.", true);
     Slider("Horizontal %", &mouse::g_sensitivity[player], 10, 500, mouse::kDefaultSensitivity);
@@ -413,10 +455,10 @@ void DrawKeys(int player) {
     if (g_rebind >= 0 && g_rebind_player != player) g_rebind = -1;
     PollRebind();
     g_cancel_hovered = false;  // the waiting row sets it again as it draws
-    ImGui::SeparatorText("Keyboard");
+    ImGui::SeparatorText(T("Keyboard"));
     Hint("Right-click a slot (Y on a controller) to clear it. Picking a key that is already used swaps the two.");
     if (const int scheme = keyboard::Scheme(player))
-        ImGui::Text("In use now: %s's controls", keyboard::SchemeName(scheme));
+        ImGui::Text(T("In use now: %s's controls"), keyboard::SchemeName(scheme));
     // a frame per kind of action; the frame names it, so a row only names its action
     struct Row {
         int action;
@@ -445,10 +487,10 @@ void DrawKeys(int player) {
         ImGui::PushID(g.title);
         ImGui::BeginChild("##group", ImVec2(0, 0),
                           ImGuiChildFlags_Borders | ImGuiChildFlags_AutoResizeY | ImGuiChildFlags_NavFlattened);
-        ImGui::SeparatorText(g.title);
+        ImGui::SeparatorText(T(g.title));
         // label, the action's keys side by side, then its Reset; the keys line up down the frame
         const float spacing = ImGui::GetStyle().ItemInnerSpacing.x;
-        const float reset = std::max(ImGui::CalcTextSize("Reset").x, ImGui::CalcTextSize("Cancel").x) +
+        const float reset = std::max(ImGui::CalcTextSize(T("Reset")).x, ImGui::CalcTextSize(T("Cancel")).x) +
                             ImGui::GetStyle().FramePadding.x * 2.0f;  // the same button, either label
         const float avail = ImGui::GetContentRegionAvail().x;
         const float column = ImGui::GetCursorPosX() + avail * 0.3f;
@@ -456,13 +498,13 @@ void DrawKeys(int player) {
         for (const Row& r : g.rows) {
             ImGui::PushID(r.action);
             ImGui::AlignTextToFramePadding();
-            ImGui::TextUnformatted(r.label);
+            ImGui::TextUnformatted(T(r.label));
             ImGui::SameLine(column);
             for (int s = 0; s < kSlots; s++) {
                 if (s) ImGui::SameLine(0, spacing);
                 ImGui::PushID(s);
                 const bool waiting = g_rebind == r.action && g_rebind_slot == s;
-                if (ImGui::Button(waiting ? "press..." : KeyName(g_keys[player][r.action][s]),
+                if (ImGui::Button(waiting ? T("press...") : KeyName(g_keys[player][r.action][s]),
                                   ImVec2(key_w, 0)) &&
                     !g_rebind_settle) {
                     g_rebind = r.action;
@@ -481,14 +523,14 @@ void DrawKeys(int player) {
             ImGui::SameLine(0, spacing);
             if (g_rebind == r.action) {
                 // waiting: Reset becomes Cancel, which PollRebind honours when the left click lands on it
-                ImGui::Button("Cancel", ImVec2(reset, 0));
+                ImGui::Button(T("Cancel"), ImVec2(reset, 0));
                 g_cancel_hovered = ImGui::IsItemHovered();
             } else {
                 ImGui::BeginDisabled(IsDefault(player, r.action));
-                if (ImGui::Button("Reset", ImVec2(reset, 0))) ResetKey(player, r.action);
+                if (ImGui::Button(T("Reset"), ImVec2(reset, 0))) ResetKey(player, r.action);
                 ImGui::EndDisabled();
                 if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-                    ImGui::SetTooltip("default: %s", ActionDefault(r.action).c_str());
+                    ImGui::SetTooltip(T("default: %s"), ActionDefault(r.action).c_str());
             }
             ImGui::PopID();
         }
@@ -496,7 +538,7 @@ void DrawKeys(int player) {
         ImGui::PopID();
     }
     ImGui::EndTable();
-    if (ImGui::Button("Default keys")) {
+    if (ImGui::Button(T("Default keys"))) {
         keyboard::ResetKeys(player);
         g_rebind = -1;
     }
@@ -510,14 +552,14 @@ void DrawWarp() {
 
     const int current = warp::CurrentLevel();
     const char* current_name = warp::LevelName(current);
-    ImGui::SeparatorText("Current level");
+    ImGui::SeparatorText(T("Current level"));
     ImGui::Text("%d %s", current, current_name ? current_name : "");
     const std::string status = warp::Status();
     if (!status.empty()) ImGui::TextDisabled("%s", status.c_str());
 
-    ImGui::SeparatorText("Checkpoints");
+    ImGui::SeparatorText(T("Checkpoints"));
     Hint("Warning: these start a new game. Don't save afterwards over a save you want to keep.");
-    ImGui::InputTextWithHint("##filter", "filter by name or level", filter, sizeof filter);
+    ImGui::InputTextWithHint("##filter", T("filter by name or level"), filter, sizeof filter);
     const std::vector<warp::Checkpoint>& list = warp::Checkpoints();
     auto matches = [](const std::string& s) {
         std::string a = s, b = filter;
@@ -550,7 +592,7 @@ void DrawWarp() {
         ImGui::EndListBox();
     }
     ImGui::BeginDisabled(checkpoint < 0);
-    if (ImGui::Button("Start at checkpoint") && warp::GoCheckpoint(checkpoint)) Close();
+    if (ImGui::Button(T("Start at checkpoint")) && warp::GoCheckpoint(checkpoint)) Close();
     ImGui::EndDisabled();
     Hint("Or double-click one. Earlier checkpoints count as completed.");
 
@@ -563,36 +605,36 @@ void DrawWarp() {
             ids.push_back(i);
         }
     items += '\0';
-    auto level_combo = [&](const char* label, int* v) {
+    auto level_combo = [&](const char* label, const char* id, int* v) {
         int idx = int(std::find(ids.begin(), ids.end(), *v) - ids.begin());
         if (idx == int(ids.size())) idx = 0;
-        ImGui::Combo(label, &idx, items.c_str());
+        ImGui::Combo((std::string(T(label)) + "##" + id).c_str(), &idx, items.c_str());
         *v = ids[size_t(idx)];
     };
 
-    ImGui::SeparatorText("Level");
-    level_combo("Level##level", &level);
-    ImGui::InputInt("Spawn", &spawn);
+    ImGui::SeparatorText(T("Level"));
+    level_combo("Level", "level", &level);
+    ImGui::InputInt(T("Spawn"), &spawn);
     spawn = std::clamp(spawn, 0, 255);
-    if (ImGui::Button("Load level") && warp::GoLevel(level, spawn)) Close();
+    if (ImGui::Button(T("Load level")) && warp::GoLevel(level, spawn)) Close();
     Hint("Starts with no progress.");
 
-    ImGui::SeparatorText("Cutscenes");
+    ImGui::SeparatorText(T("Cutscenes"));
     int found_level = -1;
     const std::vector<int> found = warp::Cutscenes(&found_level);
     if (found_level >= 0) {
         const char* fn = warp::LevelName(found_level);
-        ImGui::Text("In %s:", fn ? fn : "this level");
-        if (found.empty()) ImGui::TextDisabled("none");
+        ImGui::Text(T("In %s:"), fn ? fn : T("this level"));
+        if (found.empty()) ImGui::TextDisabled("%s", T("none"));
         for (size_t i = 0; i < found.size(); i++) {
             if (i % 10) ImGui::SameLine();
             if (ImGui::Button(std::to_string(found[i]).c_str()) && warp::PlayCutscene(found_level, found[i])) Close();
         }
     }
-    level_combo("Level##cut", &cut_level);
-    ImGui::InputInt("Cutscene", &cut_index);
+    level_combo("Level", "cut", &cut_level);
+    ImGui::InputInt(T("Cutscene"), &cut_index);
     cut_index = std::clamp(cut_index, 0, 255);
-    if (ImGui::Button("Play cutscene") && warp::PlayCutscene(cut_level, cut_index)) Close();
+    if (ImGui::Button(T("Play cutscene")) && warp::PlayCutscene(cut_level, cut_index)) Close();
     Hint("Loads the level first. Nothing plays if that level doesn't have it.");
 }
 
@@ -732,13 +774,13 @@ void PadFrame(bool open, bool quit) {
 
 // the quit prompt's body. Cancel is where the pad starts, and B is Cancel too (ImGui's own back out leaves a modal up)
 bool QuitBody() {
-    ImGui::TextUnformatted("Quit the game? Progress since the last save is lost.");
+    ImGui::TextUnformatted(T("Quit the game? Progress since the last save is lost."));
     ImGui::Dummy(ImVec2(0.0f, ImGui::GetFontSize() * 0.8f));
     const ImGuiStyle& st = ImGui::GetStyle();
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(st.FramePadding.x * 2.0f, st.FramePadding.y * 1.5f));
-    if (ImGui::Button("Quit")) app::Quit();  // only posts: the window thread closes
+    if (ImGui::Button(T("Quit"))) app::Quit();  // only posts: the window thread closes
     ImGui::SameLine();
-    const bool cancel = ImGui::Button("Cancel");
+    const bool cancel = ImGui::Button(T("Cancel"));
     ImGui::SetItemDefaultFocus();
     ImGui::PopStyleVar();
     return !cancel && !g_pad.b;
@@ -811,7 +853,7 @@ void Draw(double fps) {
         ImDrawList* dl = ImGui::GetForegroundDrawList();
         const ImVec2 display = ImGui::GetIO().DisplaySize;
         const float unit = ImGui::GetFontSize() * 1.35f;  // the widget and its text, larger than the menu's
-        const char* label = "Hold to skip";
+        const char* label = T("Hold to skip");
         const float font = unit;
         const ImVec2 text = ImGui::GetFont()->CalcTextSizeA(font, FLT_MAX, 0.0f, label);
         const float h = unit * 2.4f, w = text.x + h * 1.1f, r = h * 0.5f, margin = unit * 1.6f, thick = unit * 0.2f;
@@ -920,8 +962,9 @@ void Draw(double fps) {
                 // the pad's cursor is the tab's highlight alone, no border (the tab draws its cursor as it begins)
                 ImGui::PushStyleColor(ImGuiCol_NavCursor, ImVec4(0, 0, 0, 0));
                 ImGui::PushStyleColor(ImGuiCol_Text, mine == kQuitTab ? kDanger : ImGui::GetStyleColorVec4(ImGuiCol_Text));
+                const std::string label = std::string(T(name)) + "##" + name;  // the English name is the ID
                 const bool selected =
-                    ImGui::BeginTabItem(name, nullptr, target == mine ? ImGuiTabItemFlags_SetSelected : 0);
+                    ImGui::BeginTabItem(label.c_str(), nullptr, target == mine ? ImGuiTabItemFlags_SetSelected : 0);
                 ImGui::PopStyleColor(2);
                 // ImGui picks the first item to hold the cursor from the first press of a direction, which then moves
                 // nothing: the open tab holds it from the start. Only while this window has the focus: with none (a
@@ -936,7 +979,7 @@ void Draw(double fps) {
                 const bool arrived = Arrived(g_main_focus) && !selected;
                 if (arrived) g_tab_target.store(mine), g_tab_arrived = true;
                 // drawn once the tabs are all in (below), when the one that is becoming selected is known
-                pills[mine] = {ImGui::GetItemRectMin(), ImGui::GetItemRectMax(), name,
+                pills[mine] = {ImGui::GetItemRectMin(), ImGui::GetItemRectMax(), T(name),
                                ImGui::IsItemHovered()};
                 if (selected) shown = mine;
                 if (!selected && (arrived || target == mine || ImGui::IsItemClicked())) pending = mine;
@@ -960,7 +1003,7 @@ void Draw(double fps) {
             };
 
             if (tab("General")) {
-                ImGui::SeparatorText("Language");
+                ImGui::SeparatorText(T("Language"));
                 {
                     // the languages the game has text for (aid/text), in XC_LANGUAGE order
                     static const char* const kKeys[] = {"english", "japanese", "german", "french", "spanish", "italian"};
@@ -968,15 +1011,15 @@ void Draw(double fps) {
                     int lang = 0;
                     for (int i = 0; i < kCount; i++)
                         if (s.language == kKeys[i]) lang = i;
-                    if (ImGui::Combo(Beside("Text"), &lang, "English\0Japanese\0German\0French\0Spanish\0Italian\0"))
+                    if (ImGui::Combo(Beside("Text"), &lang, "English\0日本語\0Deutsch\0Français\0Español\0Italiano\0"))
                         s.language = kKeys[lang];
                     Hint("Text only, requires restart. Voices stay in English.");
                 }
-                ImGui::SeparatorText("Appearance");
+                ImGui::SeparatorText(T("Appearance"));
                 {
                     ImGui::AlignTextToFramePadding();
                     const float x0 = ImGui::GetCursorScreenPos().x, label_width = LabelWidth();
-                    ImGui::TextUnformatted("UI accent color");
+                    ImGui::TextUnformatted(T("UI accent color"));
                     const float size = ImGui::GetFrameHeight() * 1.1f, gap = size * 0.4f;
                     for (uint32_t i = 0; i < 7; i++) {
                         if (i) ImGui::SameLine(0.0f, gap);
@@ -1002,15 +1045,15 @@ void Draw(double fps) {
             }
 
             if (tab("Graphics")) {
-                ImGui::SeparatorText("Display");
+                ImGui::SeparatorText(T("Display"));
                 int mode = int(s.display_mode);
-                if (ImGui::Combo(Beside("Mode"), &mode, "Fullscreen\0Borderless\0Windowed\0")) {
+                if (ImGui::Combo(Beside("Mode"), &mode, Items({"Fullscreen", "Borderless", "Windowed"}).c_str())) {
                     s.display_mode = app::DisplayMode(mode);
                     app::ApplyDisplay();
                 }
 
                 const std::vector<app::Mode>& modes = Modes();
-                std::string res = "Desktop";
+                std::string res = T("Desktop");
                 int res_idx = 0;
                 for (size_t i = 0; i < modes.size(); i++) {
                     res += '\0';
@@ -1030,7 +1073,7 @@ void Draw(double fps) {
                 for (int i = 0; i < kAspects; i++)
                     if (s.aspect == aspects[i]) aspect = i;
                 std::string items;
-                for (int i = 0; i < kAspects; i++) items += std::string(aspects[i]) + '\0';
+                for (int i = 0; i < kAspects; i++) items += std::string(i ? aspects[i] : T("auto")) + '\0';
                 if (aspect < 0) items += s.aspect + '\0', aspect = kAspects;  // a custom W:H from settings.toml
                 items += '\0';
                 if (ImGui::Combo(Beside("Aspect ratio"), &aspect, items.c_str()) && aspect < kAspects) s.aspect = aspects[aspect];
@@ -1038,8 +1081,8 @@ void Draw(double fps) {
                 {
                     const std::vector<std::string>& adapters = gpu::Adapters();
                     if (adapters.size() > 1 || !s.gpu.empty()) {
-                        if (ImGui::BeginCombo(Beside("Graphics adapter"), s.gpu.empty() ? "Automatic" : s.gpu.c_str())) {
-                            if (ImGui::Selectable("Automatic", s.gpu.empty())) s.gpu.clear();
+                        if (ImGui::BeginCombo(Beside("Graphics adapter"), s.gpu.empty() ? T("Automatic") : s.gpu.c_str())) {
+                            if (ImGui::Selectable(T("Automatic"), s.gpu.empty())) s.gpu.clear();
                             for (const std::string& a : adapters)
                                 if (ImGui::Selectable(a.c_str(), a == s.gpu)) s.gpu = a;
                             ImGui::EndCombo();
@@ -1051,7 +1094,7 @@ void Draw(double fps) {
                 Check("V-Sync", &s.vsync);
                 Hint("Waits for the display to refresh before showing each frame. Stops screen tearing; turn it off for the lowest latency.", true);
 
-                ImGui::SeparatorText("Quality");
+                ImGui::SeparatorText(T("Quality"));
                 Slider("Render %", &s.render_percent, 25, 200, app::Settings{}.render_percent);
                 Check("AMD FSR 1.0", &s.fsr);
                 Hint("AMD FidelityFX Super Resolution: edge-adaptive spatial upscaling & contrast-adaptive sharpening.", true);
@@ -1062,27 +1105,27 @@ void Draw(double fps) {
                 int rate = 0;
                 for (int i = 0; i < 5; i++)
                     if (kRates[i] == display::g_frame_rate) rate = i;
-                if (ImGui::Combo(Beside("Frame rate"), &rate, "30 (original)\0 60\0 120\0 180\0 240\0"))
+                if (ImGui::Combo(Beside("Frame rate"), &rate, Items({"30 (original)", " 60", " 120", " 180", " 240"}).c_str()))
                     display::SetFrameRate(kRates[rate]);
 
                 constexpr uint32_t kAniso[] = {0, 2, 4, 8, 16};
                 int aniso = 0;
                 for (int i = 0; i < 5; i++)
                     if (kAniso[i] == s.aniso) aniso = i;
-                if (ImGui::Combo(Beside("Anisotropic"), &aniso, "Game default\0 2x\0 4x\0 8x\0 16x\0"))
+                if (ImGui::Combo(Beside("Anisotropic"), &aniso, Items({"Game default", " 2x", " 4x", " 8x", " 16x"}).c_str()))
                     s.aniso = kAniso[aniso];
 
                 // one choice: no anti-aliasing, SMAA, or MSAA at a sample count (the two never run together)
                 constexpr uint32_t kAa[] = {0, 1, 2, 4, 8};  // 0 off, 1 SMAA, else MSAA samples
                 int aa = s.smaa ? 1 : s.msaa >= 8 ? 4 : s.msaa >= 4 ? 3 : s.msaa >= 2 ? 2 : 0;
-                if (ImGui::Combo(Beside("Anti-aliasing"), &aa, "Off\0SMAA\0MSAA 2x\0MSAA 4x\0MSAA 8x\0")) {
+                if (ImGui::Combo(Beside("Anti-aliasing"), &aa, Items({"Off", "SMAA", "MSAA 2x", "MSAA 4x", "MSAA 8x"}).c_str())) {
                     s.smaa = aa == 1;
                     s.msaa = aa >= 2 ? kAa[aa] : 1;
                 }
 
-                ImGui::SeparatorText("Post-processing");
+                ImGui::SeparatorText(T("Post-processing"));
                 Check("Vignette", &vignette::g_on);
-                Hint("The game's darkened screen edges. The red flash when you're hurt stays either way.", true);
+                Hint("The game's darkened screen edges.", true);
                 Slider("Film grain %", &s.film_grain, 0, 100, app::Settings{}.film_grain);
                 Slider("Chromatic aberration %", &s.chromatic_aberration, 0, 100, app::Settings{}.chromatic_aberration);
                 Slider("Ambient occlusion %", &s.ambient_occlusion, 0, 100, app::Settings{}.ambient_occlusion);
@@ -1093,10 +1136,10 @@ void Draw(double fps) {
             }
 
             if (tab("Enhancements")) {
-                ImGui::SeparatorText("Camera");
+                ImGui::SeparatorText(T("Camera"));
                 Slider("Field of view", &display::g_fov, display::kFovMin, display::kFovMax, display::kFov);
 
-                ImGui::SeparatorText("Lighting");
+                ImGui::SeparatorText(T("Lighting"));
                 Check("Per-pixel lighting", &lighting::g_per_pixel);
                 Hint("Smoother light and shadows on characters and objects.", true);
                 bool no_fog = !s.fog;
@@ -1104,17 +1147,17 @@ void Draw(double fps) {
                 Hint("Clears the haze over faraway scenery. Enabling this distorts colors pretty much everywhere "
                      "in the game, leaving it off is recommended.", true);
 
-                ImGui::SeparatorText("Fur");
+                ImGui::SeparatorText(T("Fur"));
                 Check("Fur shading", &fur::g_shading);
                 Hint("Makes fur look more voluminous and improves its shading.", true);
                 Check("Full distant fur", &fur::g_distant);
                 Hint("Keeps fur on far-away characters.", true);
 
-                ImGui::SeparatorText("Characters");
+                ImGui::SeparatorText(T("Characters"));
                 Check("Force max character LoD", &characters::g_max_lod);
                 Hint("Characters keep their full model and smooth animation however far away.", true);
 
-                ImGui::SeparatorText("Grass");
+                ImGui::SeparatorText(T("Grass"));
                 Check("Wind on distant grass", &grass::g_wind);
                 Hint("Faraway grass sways in the wind too.", true);
                 Check("Force max grass LoD", &grass::g_max_lod);
@@ -1123,18 +1166,18 @@ void Draw(double fps) {
                 if (Check("Don't fade distant grass", &solid)) grass::g_fade = !solid;
                 Hint("Faraway grass stays solid, however far, instead of fading away as on the console.", true);
 
-                ImGui::SeparatorText("Water and reflections");
+                ImGui::SeparatorText(T("Water and reflections"));
                 Check("Dynamic water", &water::g_dynamic);
                 Hint("Water ripples and makes waves as things move through it.", true);
                 Check("Floor depth of field", &reflection::g_floor_depth);
                 Hint("Fixes the blur on shiny, reflective floors.", true);
 
-                ImGui::SeparatorText("HUD");
+                ImGui::SeparatorText(T("HUD"));
                 Check("Unstretched multiplayer HUD", &display::g_hud_split);
                 Hint("On a widescreen display, the HUD in a multiplayer match keeps its shape, each part at the left, "
                      "the middle or the right of the screen. Off: it stretches across the screen.", true);
 
-                ImGui::SeparatorText("Menus");
+                ImGui::SeparatorText(T("Menus"));
                 Check("Readable menu hints", &menus::g_bright_hints);
                 Hint("The hints above and below the multiplayer menus (R Configure) show as clearly as the menu's "
                      "title. Off: faint and flickering, as on the console.", true);
@@ -1142,12 +1185,12 @@ void Draw(double fps) {
                 if (Check("Disable attract video", &no_attract)) menus::g_attract = !no_attract;
                 Hint("The main menu no longer plays its video after two minutes without input.", true);
 
-                ImGui::SeparatorText("Keyboard and mouse");
+                ImGui::SeparatorText(T("Keyboard and mouse"));
                 Check("Keyboard button prompts", &prompts::g_on);
                 Hint("While you play with the keyboard and mouse, the game's button icons show the keys they are "
                      "bound to. Off: the controller's buttons, as on the console.", true);
 
-                ImGui::SeparatorText("Gameplay");
+                ImGui::SeparatorText(T("Gameplay"));
                 Check("Skippable cutscenes", &cutscenes::g_skippable);
                 Hint("Hold any button, but pause, for a second to skip any cutscene, even ones you haven't seen. Off: "
                      "LT skips the ones you have.", true);
@@ -1167,12 +1210,14 @@ void Draw(double fps) {
                 {
                     static std::vector<audio::Device> devices;
                     if (devices.empty() || ImGui::IsWindowAppearing()) devices = audio::Devices();
-                    std::string current = "System default";
+                    const std::string system_default = T("System default");
+                    std::string current = system_default;
                     for (const audio::Device& d : devices)
                         if (d.id == s.audio_device) current = d.name;
-                    if (!s.audio_device.empty() && current == "System default") current += " (selected device missing)";
+                    if (!s.audio_device.empty() && current == system_default)
+                        current += std::string(" ") + T("(selected device missing)");
                     if (ImGui::BeginCombo(Beside("Output device"), current.c_str())) {
-                        if (ImGui::Selectable("System default", s.audio_device.empty())) {
+                        if (ImGui::Selectable(system_default.c_str(), s.audio_device.empty())) {
                             s.audio_device.clear();
                             audio::SelectDevice(s.audio_device);
                         }
@@ -1186,7 +1231,7 @@ void Draw(double fps) {
                 }
                 {
                     int speakers = s.surround ? 1 : 0;
-                    if (ImGui::Combo(Beside("Speakers"), &speakers, "Stereo\0005.1 surround\0")) s.surround = speakers == 1;
+                    if (ImGui::Combo(Beside("Speakers"), &speakers, Items({"Stereo", "5.1 surround"}).c_str())) s.surround = speakers == 1;
                     Hint("Stereo mixes for two speakers or headphones. 5.1 surround mixes for six speakers and "
                          "plays on as many as the output device has. Starts from the next launch.");
                 }
@@ -1196,15 +1241,15 @@ void Draw(double fps) {
                 Check("Menu sounds", &s.menu_sounds);
                 Hint("The sounds of changing tabs and settings and of moving around this menu with the keyboard or a pad.", true);
                 // the mixer's choices, where how the console sounds isn't settled
-                ImGui::SeparatorText("Mix");
+                ImGui::SeparatorText(T("Mix"));
                 {
                     const app::Settings def{};
                     // at full size, not a dimmed hint: it is the first thing to read in this section
-                    ImGui::TextWrapped("If the game already sounds good to you, leave these as they are.");
+                    ImGui::TextWrapped("%s", T("If the game already sounds good to you, leave these as they are."));
                     ImGui::Dummy(ImVec2(0.0f, ImGui::GetStyle().ItemSpacing.y * 0.75f));
                     ImGui::BeginDisabled(s.surround);
                     int backs = s.stereo_full_backs ? 1 : 0;
-                    if (ImGui::Combo(Beside("Back speakers in stereo"), &backs, "-3 dB\0Full level\0"))
+                    if (ImGui::Combo(Beside("Back speakers in stereo"), &backs, Items({"-3 dB", "Full level"}).c_str()))
                         s.stereo_full_backs = backs == 1;
                     Hint("How loud the back speakers' sounds are when folded into the left and right ones.");
                     Check("Subwoofer in stereo", &s.stereo_sub);
@@ -1213,7 +1258,7 @@ void Draw(double fps) {
                     Slider("Reverb %", &s.reverb, 0, 200, def.reverb);
                     Hint("The room echo in caves, halls and the like.");
                     int resampler = int(std::min<uint32_t>(s.resampler, 2));
-                    if (ImGui::Combo(Beside("Resampling"), &resampler, "Linear\0Cubic\0Sinc\0"))
+                    if (ImGui::Combo(Beside("Resampling"), &resampler, Items({"Linear", "Cubic", "Sinc"}).c_str()))
                         s.resampler = uint32_t(resampler);
                     Hint("How sounds recorded at lower rates are played at 48 kHz. Cubic and Sinc are sharper than "
                          "Linear.");
@@ -1244,7 +1289,7 @@ void Draw(double fps) {
                                       s.lfo == def.lfo && s.voice_filters == def.voice_filters;
                     ImGui::Dummy(ImVec2(0.0f, ImGui::GetStyle().ItemSpacing.y * 0.75f));
                     ImGui::BeginDisabled(same);
-                    if (ImGui::Button("Reset mix to defaults")) {
+                    if (ImGui::Button(T("Reset mix to defaults"))) {
                         s.stereo_full_backs = def.stereo_full_backs;
                         s.stereo_sub = def.stereo_sub;
                         s.reverb = def.reverb;
@@ -1266,7 +1311,12 @@ void Draw(double fps) {
             if (tab("Controls")) {
                 // whose controls: a list, not a second row of tabs, so the pad's cursor goes straight down the page
                 std::string players;
-                for (int p = 0; p < input::kPorts; p++) players += "Player " + std::to_string(p + 1) + '\0';
+                for (int p = 0; p < input::kPorts; p++) {
+                    char name[64];
+                    std::snprintf(name, sizeof name, T("Player %d"), p + 1);
+                    players += name;
+                    players += '\0';
+                }
                 ImGui::Combo(Beside("Player"), &g_player_now, players.c_str());
                 const int p = g_player_now;
                 ImGui::PushID(p);
@@ -1286,14 +1336,14 @@ void Draw(double fps) {
             }
 
             if (tab("Multiplayer")) {
-                ImGui::SeparatorText("Online play");
+                ImGui::SeparatorText(T("Online play"));
                 // edited in a copy and set as the field is left or Enter pressed: system link resolves the address
                 // each time it changes (xnet.cpp JoinAddress), and a half typed name is a DNS lookup
                 static char host[256];
                 if (ImGui::IsWindowAppearing()) std::snprintf(host, sizeof host, "%s", s.join_ip.c_str());
-                ImGui::InputTextWithHint(Beside("Host address"), "leave empty to host or find local games", host, sizeof host);
+                ImGui::InputTextWithHint(Beside("Host address"), T("leave empty to host or find local games"), host, sizeof host);
                 if (ImGui::IsItemDeactivatedAfterEdit()) s.join_ip = host;
-                if (!app::JoinArg().empty()) ImGui::Text("This copy joins %s (--join)", app::JoinArg().c_str());
+                if (!app::JoinArg().empty()) ImGui::Text(T("This copy joins %s (--join)"), app::JoinArg().c_str());
                 Hints({"Leave empty to host, or to find games on your home network.",
                        "For LAN hosts outside your subnet, enter their local IP.",
                        "For hosts over the internet, enter their public IP.",
@@ -1302,7 +1352,7 @@ void Draw(double fps) {
                 ImGui::BeginDisabled(app::PortArg() != 0);
                 if (ImGui::InputInt(Beside("Online play port"), &port, 0, 0)) s.system_link_port = uint32_t(std::clamp(port, 1, 65535));
                 ImGui::EndDisabled();
-                if (app::PortArg()) ImGui::Text("This copy uses %d (--port)", app::PortArg());
+                if (app::PortArg()) ImGui::Text(T("This copy uses %d (--port)"), app::PortArg());
                 Hints({"UDP, 3074 as on the console.",
                        "Hosting for players past the LAN: forward it on your router.",
                        "Each extra copy on this PC needs its own: launch it with --port N.",
@@ -1312,21 +1362,21 @@ void Draw(double fps) {
                 static int error = 0;
                 if (lan.empty() || ImGui::IsWindowAppearing())
                     lan = xnet::LocalAddress(), in_use = xnet::Port(), error = xnet::PortError();
-                ImGui::SeparatorText("This PC");
-                ImGui::Text("LAN IP: %s", lan.c_str());
-                if (!in_use) ImGui::Text("Port: not open yet (it opens with Online)");
-                else if (!error) ImGui::Text("Port: UDP %u", in_use);
-                else ImGui::TextColored(ImVec4(1.0f, 0.45f, 0.35f, 1.0f), "Port: UDP %u couldn't be opened (%s)", in_use,
-                                        error == 10048 ? "another program or copy has it" : "blocked");
+                ImGui::SeparatorText(T("This PC"));
+                ImGui::Text(T("LAN IP: %s"), lan.c_str());
+                if (!in_use) ImGui::Text("%s", T("Port: not open yet (it opens with Online)"));
+                else if (!error) ImGui::Text(T("Port: UDP %u"), in_use);
+                else ImGui::TextColored(ImVec4(1.0f, 0.45f, 0.35f, 1.0f), T("Port: UDP %u couldn't be opened (%s)"), in_use,
+                                        error == 10048 ? T("another program or copy has it") : T("blocked"));
                 end_tab();
             }
 
             if (tab("Mods")) {
                 // the folders are looked at again each time the tab opens, and on Rescan
                 if (ImGui::IsWindowAppearing()) app::ScanMods();
-                ImGui::SeparatorText("Mods");
+                ImGui::SeparatorText(T("Mods"));
                 std::vector<app::ModEntry>& mods = s.mods;
-                if (mods.empty()) ImGui::TextDisabled("No mods installed.");
+                if (mods.empty()) ImGui::TextDisabled("%s", T("No mods installed."));
                 int move = -1, to = -1;
                 const float arrow = ImGui::GetFrameHeight();
                 for (int i = 0; i < int(mods.size()); i++) {
@@ -1350,8 +1400,8 @@ void Draw(double fps) {
                        "A change starts from the next launch."});
                 ImGui::Dummy(gap);
                 if (app::ModsChanged())
-                    ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.35f, 1.0f), "Restart the game to use these mods.");
-                ImGui::SeparatorText("Installing");
+                    ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.35f, 1.0f), "%s", T("Restart the game to use these mods."));
+                ImGui::SeparatorText(T("Installing"));
                 static std::string dir;
                 if (dir.empty()) dir = app::ModsDir().string();
                 ImGui::TextWrapped("%s", dir.c_str());
@@ -1359,12 +1409,12 @@ void Draw(double fps) {
                 Hints({"Put each mod in its own folder here, laid out like the game's disc (dvddata\\...).",
                        "The game's own files are left as they are."});
                 ImGui::Dummy(gap);
-                if (ImGui::Button("Rescan")) app::ScanMods();
+                if (ImGui::Button(T("Rescan"))) app::ScanMods();
                 end_tab();
             }
 
             if (tab("Debug")) {
-                ImGui::SeparatorText("FPS");
+                ImGui::SeparatorText(T("FPS"));
                 Check("Overlay", &g_fps_overlay);
                 ImGui::SameLine();
                 Check("Window title", &g_fps_title);
@@ -1372,12 +1422,12 @@ void Draw(double fps) {
                 end_tab();
             }
             if (tab("Quit")) {
-                ImGui::TextUnformatted("Quit the game? Progress since the last save is lost.");
+                ImGui::TextUnformatted(T("Quit the game? Progress since the last save is lost."));
                 const auto shade = [](float f) { return ImVec4(kDanger.x * f, kDanger.y * f, kDanger.z * f, 1.0f); };
                 ImGui::PushStyleColor(ImGuiCol_Button, shade(0.75f));
                 ImGui::PushStyleColor(ImGuiCol_ButtonHovered, kDanger);
                 ImGui::PushStyleColor(ImGuiCol_ButtonActive, shade(0.6f));
-                if (ImGui::Button("Quit game")) app::Quit();  // the tab is the prompt: no second one
+                if (ImGui::Button(T("Quit game"))) app::Quit();  // the tab is the prompt: no second one
                 ImGui::PopStyleColor(3);
                 end_tab();
             }
@@ -1414,14 +1464,14 @@ void Draw(double fps) {
             // pad's cursor never lands on it
             const ImVec2 after = ImGui::GetCursorPos();
             const ImGuiStyle& st = ImGui::GetStyle();
-            const float width = ImGui::CalcTextSize("Close").x + st.FramePadding.x * 2.0f;
+            const float width = ImGui::CalcTextSize(T("Close")).x + st.FramePadding.x * 2.0f;
             ImGui::SetCursorPos(ImVec2(after.x + ImGui::GetContentRegionAvail().x - width, row_y));
             ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
             ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(1.0f, 1.0f, 1.0f, 0.07f));
             ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(1.0f, 1.0f, 1.0f, 0.12f));
             ImGui::PushItemFlag(ImGuiItemFlags_NoNav, true);
             ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, ImGui::GetFrameHeight() * 0.5f);  // a pill like the tabs
-            if (ImGui::Button("Close")) Close();
+            if (ImGui::Button(T("Close"))) Close();
             ImGui::PopStyleVar();
             ImGui::PopItemFlag();
             ImGui::PopStyleColor(3);
@@ -1437,8 +1487,8 @@ void Draw(double fps) {
         const ImVec2 line = ImGui::GetCursorScreenPos();
         ImGui::PushClipRect(line, ImVec2(ImGui::GetWindowPos().x + version_x - ImGui::GetStyle().ItemSpacing.x * 2.0f,
                                          line.y + ImGui::GetFrameHeight()), true);
-        ImGui::TextDisabled("Stick or d-pad move, LB / RB turn the tabs, A select, B back. F1 or Start + Back open and close this menu. "
-                            "Changes are saved automatically.");
+        ImGui::TextDisabled("%s", T("Stick or d-pad move, LB / RB turn the tabs, A select, B back. F1 or Start + Back open and close this menu. "
+                                    "Changes are saved automatically."));
         ImGui::PopClipRect();
         ImGui::SameLine(version_x);
         ImGui::TextDisabled("%s", XBE_VERSION);

@@ -12,6 +12,9 @@ namespace app {
 // the .ttf's bytes, generated from Roboto's release (cmake/XbeRecomp.cmake)
 extern const unsigned char kUiFont[];
 extern const size_t kUiFontSize;
+// the Japanese characters of the overlay's text, from Noto Sans CJK JP (tools/ui_font_ja.sh)
+extern const unsigned char kUiFontJa[];
+extern const size_t kUiFontJaSize;
 
 namespace {
 
@@ -114,6 +117,8 @@ void UiFont() {
     ImFontConfig cfg;
     cfg.FontDataOwnedByAtlas = false;  // the bytes are the executable's
     ImGui::GetIO().Fonts->AddFontFromMemoryTTF(const_cast<unsigned char*>(kUiFont), int(kUiFontSize), 0.0f, &cfg);
+    cfg.MergeMode = true;  // the characters Roboto lacks come from the second
+    ImGui::GetIO().Fonts->AddFontFromMemoryTTF(const_cast<unsigned char*>(kUiFontJa), int(kUiFontJaSize), 0.0f, &cfg);
 }
 
 void UiAccentColor(int index, float rgb[3]) {

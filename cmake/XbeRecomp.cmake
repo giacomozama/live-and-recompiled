@@ -201,6 +201,19 @@ extern const size_t kUiFontSize = sizeof(kUiFont);
 }
 ")
 list(APPEND XBE_IMGUI_SOURCES ${XBE_UI_FONT})
+# ... and the Japanese characters of the overlay's text, merged into it (tools/ui_font_ja.sh makes the file)
+set(XBE_UI_FONT_JA ${CMAKE_BINARY_DIR}/xbe_ui_font_ja.cpp)
+file(READ ${XBE_ROOT_DIR}/src/runtime/app/ui_font_ja.otf XBE_UI_FONT_JA_HEX HEX)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${XBE_ROOT_DIR}/src/runtime/app/ui_font_ja.otf)
+string(REGEX REPLACE "(..)" "0x\\1," XBE_UI_FONT_JA_HEX "${XBE_UI_FONT_JA_HEX}")
+file(CONFIGURE OUTPUT ${XBE_UI_FONT_JA} @ONLY CONTENT "// generated from ui_font_ja.otf
+#include <cstddef>
+namespace app {
+extern const unsigned char kUiFontJa[] = {${XBE_UI_FONT_JA_HEX}};
+extern const size_t kUiFontJaSize = sizeof(kUiFontJa);
+}
+")
+list(APPEND XBE_IMGUI_SOURCES ${XBE_UI_FONT_JA})
 
 # The host's platform: on Windows a Win32 window and XAudio2; elsewhere an SDL3 window and audio (XBE_SDL). Vulkan draws
 # on both. Each side's own sources are left out of the other's build.
