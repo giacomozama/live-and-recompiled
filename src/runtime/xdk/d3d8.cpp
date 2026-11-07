@@ -753,6 +753,7 @@ using namespace d3d;
 
 namespace {
 std::atomic<uint32_t> g_presents{0};
+std::atomic<int64_t> g_present_ms{0};  // steady ms of the last Swap
 }  // namespace
 
 // device
@@ -1001,6 +1002,14 @@ constexpr std::chrono::milliseconds kFadeOut{150}, kFadeIn{250}, kBlackEvery{250
 std::chrono::steady_clock::time_point g_fade_in_from;
 bool g_fading_in = false;
 
+int64_t d3d::MsSincePresent() {
+    const int64_t at = g_present_ms.load();
+    if (!at) return 0;
+    return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch())
+               .count() -
+           at;
+}
+
 bool d3d::LoadingScreenWanted() {
     using clock = std::chrono::steady_clock;
     static const bool always = std::getenv("XBE_LOADING_SCREEN") != nullptr;
@@ -1111,6 +1120,8 @@ HLE_STDCALL(D3DDevice_Swap, 1) {
     }
     std::lock_guard<std::recursive_mutex> lock(g_lock);
     g_presents++;
+    g_present_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                       std::chrono::steady_clock::now().time_since_epoch()).count();
     FadeIn();
     g_loading = false;  // a load, if one ran, is over
     g_front_skip = false;

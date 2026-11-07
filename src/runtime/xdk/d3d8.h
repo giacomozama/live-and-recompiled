@@ -62,5 +62,8 @@ void HudNote(const char* text);
 // and the next Swap fades back in. A false leaves the front buffer unpresented when the title moves its target off
 // it. XBE_LOADING_SCREEN set: always true, every screen drawn and shown as on the console.
 bool LoadingScreenWanted();
+// milliseconds since the title last presented (steady clock); dsound shortens release envelopes the title waits on
+// with the picture stopped
+int64_t MsSincePresent();
 
 }  // namespace d3d

@@ -14,7 +14,9 @@
 
 #include "app/app.h"
 #include "audio/audio.h"
+#include "kernel/memory.h"
 #include "xbe/xbe.h"
+#include "xdk/d3d8.h"
 #include "xdk/dsfx.h"
 #include "xdk/dsound.h"
 #include "xdk/hle.h"
@@ -210,6 +212,11 @@ struct Voice {
     uint32_t tick = 0;     // samples left in this envelope frame
     float amp_from = 1, amp_to = 1, mod_pitch = 0, mod_fc = 0;
     bool in_release = false;  // a release envelope is playing out before the voice stops or its flush completes
+    uint32_t rel_speed = 0;   // VP frames the release steps per frame once the title waits on it (0 as written)
+    int64_t rel_at = 0;       // XBE_TRACE_RELEASE: steady ms the release started
+    uint32_t rel_polls = 0;   // XBE_TRACE_RELEASE: GetStatus calls while it played
+    bool rel_late = false;    // XBE_TRACE_RELEASE: reported as overrunning its length
+    uint32_t stop_polls = 0;  // XBE_TRACE_RELEASE: GetStatus calls since the last StopEx or FlushEx, 0 none since
     // the resampler's window (cubic, sinc), by channel: entry i is frame win_f - (kHalf - 1) + i of the voice's data
     float win[kTaps][8] = {};
     int win_fill = -1;     // entries read from the data, from the first; -1 starts the window afresh
@@ -252,6 +259,58 @@ uint32_t g_ds = 0;
 dsfx::I3dl2 g_i3dl2{-10000, 0, 0, 1, 0.5f, -10000, 0, -10000, 0, 0, 0, 5000};  // F3: the last listener
 
 const bool g_trace = std::getenv("XBE_TRACE_DSOUND") != nullptr;
+// XBE_TRACE_RELEASE: every release envelope a stop or flush starts, how long it was meant to take and took, and how
+// often the title polled the voice meanwhile (a title waiting on it before it goes on)
+const bool g_trace_rel = std::getenv("XBE_TRACE_RELEASE") != nullptr;
+int64_t NowMs();
+uint32_t ReleaseMs(const Voice& v) { return uint32_t(uint64_t(v.ea.release) * 512 * 1000 / 48000); }
+// a title still polling a voice long after it asked it to stop: it waits on it, so its whole state
+void TraceStopPoll(Voice& v, uint32_t status) {
+    if (!g_trace_rel || !v.stop_polls || ++v.stop_polls != 300) return;
+    LOGR("release: %08X %s polled 300 times since its stop, status %X: playing %d looping %d paused %d active %d "
+         "flushing %d releasing %d released %d in_release %d envelope %u/%d (release %u ms) packets %zu pos %.0f",
+         v.obj, v.stream ? "stream" : "buffer", status, v.playing, v.looping, v.paused, v.active, v.flushing,
+         v.releasing, v.released, v.in_release, unsigned(v.ea.cur), v.ea.count, ReleaseMs(v), v.packets.size(), v.pos);
+}
+// XBE_TRACE_RELEASE: a title waiting with the picture stopped (a load, a stop it waits on): every half second after the
+// first one, the return addresses on the guest stack of the thread calling dsound, the first exact, later ones maybe
+// stale. The esp tells the title's main thread from XACT's.
+// the return addresses on the guest stack, the first exact, later ones maybe stale
+std::string GuestChain(const X86Context& ctx, int most) {
+    std::string chain;
+    int found = 0;
+    for (uint32_t i = 0; i < 1024 && found < most; i++) {
+        const uint32_t at = ctx.esp + i * 4;
+        if (!mem::IsCommitted(at)) break;
+        const uint32_t r = R32(at);
+        if (r < X86CodeBase || r >= X86CodeEnd) continue;
+        char t[24];
+        std::snprintf(t, sizeof t, " %08X", r);
+        chain += t;
+        found++;
+    }
+    return chain;
+}
+// XBE_TRACE_RELEASE: who makes, starts and flushes streams (the guest call chain)
+void TraceStreamCall(const X86Context& ctx, uint32_t obj, const char* name) {
+    if (g_trace_rel) LOGR("stream: %08X %s from%s", obj, name, GuestChain(ctx, 16).c_str());
+}
+void TraceStall(const X86Context& ctx, const char* from) {
+    if (!g_trace_rel) return;
+    const int64_t since = d3d::MsSincePresent();
+    if (since < 1000) return;
+    static std::atomic<int64_t> last{0};
+    const int64_t now = NowMs();
+    int64_t was = last.load();
+    if (now - was < 500 || !last.compare_exchange_strong(was, now)) return;
+    const std::string chain = GuestChain(ctx, 24);
+    LOGR("stall: %lld ms without a frame, %s on esp %08X:%s", (long long)since, from, ctx.esp, chain.c_str());
+}
+void TraceReleaseEnd(Voice& v, const char* why) {
+    if (!g_trace_rel || !v.in_release) return;
+    LOGR("release: %08X %s ends (%s) after %lld ms of %u, %u polls", v.obj, v.stream ? "stream" : "buffer", why,
+         (long long)(NowMs() - v.rel_at), ReleaseMs(v), v.rel_polls);
+}
 #define DSTRACE(...) \
     do {                \
         if (g_trace) LOGR(__VA_ARGS__); \
@@ -528,20 +587,43 @@ void VoiceOn(Voice& v) {
     const bool silent = app::Get().envelopes && v.ea.cur != kEnvOff && v.ea.cur != kEnvHold;
     v.amp_from = v.amp_to = silent ? 0.0f : 1.0f;
     v.mod_pitch = v.mod_fc = 0;
+    TraceReleaseEnd(v, "restarted");
     v.in_release = false;
 }
 // a stop or flush asking for the release envelope: the voice plays on through it when it has one to play
 bool StartRelease(Voice& v) {
     if (!app::Get().envelopes || !v.ea.release) return false;
     for (Envelope* e : {&v.ea, &v.ef}) e->cur = kEnvRelease, e->count = e->release * 16;
+    if (g_trace_rel)
+        LOGR("release: %08X %s starts, %u ms%s%s%s", v.obj, v.stream ? "stream" : "buffer", ReleaseMs(v),
+             v.paused ? " paused" : "", v.hold ? " held" : "", v.looping ? " looping" : "");
     v.in_release = true;
+    v.rel_speed = 0;
+    v.rel_at = NowMs();
+    v.rel_polls = 0;
+    v.rel_late = false;
     return true;
 }
+// the title waits with the picture stopped (no Swap for kStallMs): set by each Render. A release it waits on then
+// finishes over kHurryFrames VP frames (250 ms).
+constexpr int64_t kStallMs = 150;
+constexpr int32_t kHurryFrames = 375;
+bool g_stalled = false;
 // one VP frame of the envelopes and LFOs: the amplitude to reach by its end, the pitch and cutoff offsets in 4.12
 void StepMods(Voice& v) {
     const app::Settings& s = app::Get();
     float amp = 1, pitch = 0, fc = 0;
     if (s.envelopes) {
+        // a release the title waits on with the picture stopped (the frontend music's 3 s fade before a level loads,
+        // which was most of the load): what is left of it plays out over kHurryFrames
+        if (v.in_release && !v.rel_speed && g_stalled) {
+            const int32_t left = std::max(v.ea.count, v.ef.count);
+            v.rel_speed = uint32_t(std::max<int32_t>(1, (left + kHurryFrames - 1) / kHurryFrames));
+            if (g_trace_rel && v.rel_speed > 1)
+                LOGR("release: %08X hurried, the picture stopped: %u ms left over %u ms", v.obj,
+                     unsigned(int64_t(left) * kModFrame * 1000 / 48000), unsigned(kHurryFrames * kModFrame * 1000 / 48000));
+        }
+        for (uint32_t k = 1; k < v.rel_speed && v.ea.cur == kEnvRelease; k++) StepEnv(v.ea), StepEnv(v.ef);
         amp = StepEnv(v.ea);
         float f = StepEnv(v.ef);
         pitch += v.ef.pitch * 32.0f * f;
@@ -606,12 +688,13 @@ void Pull(Voice& v, float* ab, uint32_t frames) {
     const uint32_t mode = std::min<uint32_t>(app::Get().resampler, 2);
     const bool dls2 = Dls2(v);
     // a release that can't play out (the setting is off, or the data ran out) ends now
-    auto end_release = [&] {
+    auto end_release = [&](const char* why) {
         if (!v.in_release) return;
+        TraceReleaseEnd(v, why);
         v.in_release = false;
         if (!v.stream) v.playing = false;
     };
-    if (v.in_release && !app::Get().envelopes) end_release();
+    if (v.in_release && !app::Get().envelopes) end_release("setting off");
     if (v.pos != v.win_seen) v.win_fill = -1;
     static const std::vector<float> kSinc = [] {  // 1024 phases at the output's Nyquist
         std::vector<float> k(1024 * kTaps);
@@ -679,7 +762,7 @@ void Pull(Voice& v, float* ab, uint32_t frames) {
             if (v.packets.empty()) {
                 v.pos = 0;
                 v.win_seen = -1;
-                end_release();
+                end_release("packets ran out");
                 if (v.ending) Deactivate(v);
                 return;
             }
@@ -701,7 +784,7 @@ void Pull(Voice& v, float* ab, uint32_t frames) {
                     v.playing = false;
                     v.pos = 0;
                     v.win_seen = -1;
-                    end_release();
+                    end_release("data ran out");
                     return;
                 }
                 uint32_t was = f;
@@ -727,7 +810,7 @@ void Pull(Voice& v, float* ab, uint32_t frames) {
             step = rate * std::exp2(v.mod_pitch / 4096.0);
             v.tick = kModFrame;
             if (v.in_release && v.ea.cur == kEnvDone) {
-                end_release();
+                end_release("envelope done");
                 v.win_seen = -1;
                 if (!v.stream) v.pos = 0;
                 return;
@@ -832,6 +915,7 @@ void Render(float* out, uint32_t frames) {
     ab.resize(frames * kChannels);
     std::lock_guard<std::recursive_mutex> lock(g_lock);
     g_mixed = NowMs();
+    g_stalled = d3d::MsSincePresent() > kStallMs;
     // a submix plays once every voice routed to it has mixed in, so the deepest go first and the mixins last
     order.clear();
     for (auto& [obj, v] : g_voices) {
@@ -843,6 +927,13 @@ void Render(float* out, uint32_t frames) {
         return Depth(*a) > Depth(*b);
     });
     for (Voice* v : order) {
+        if (g_trace_rel && v->in_release && !v->rel_late && g_mixed - v->rel_at > ReleaseMs(*v) + 500) {
+            v->rel_late = true;
+            LOGR("release: %08X still releasing after %lld ms of %u:%s%s%s%s%s, envelope state %u", v->obj,
+                 (long long)(g_mixed - v->rel_at), ReleaseMs(*v), Plays(*v) ? " mixing" : " not mixing",
+                 v->paused ? " paused" : "", v->sync ? " sync" : "", v->hold ? " held" : "",
+                 v->flushing ? " flushing" : "", unsigned(v->ea.cur));
+        }
         if (!Plays(*v)) continue;
         Route r[16];
         int routes = Routes(*v, r);
@@ -974,6 +1065,7 @@ void FinishFlushes() {
     for (auto& [obj, v] : g_voices) {
         if (!v.flushing || v.in_release) continue;
         DSTRACE("dsound: %08X flush done, %zu packets", obj, v.packets.size());
+        if (g_trace_rel && v.releasing) LOGR("release: %08X stream flush done, ENVELOPECOMPLETE reported", obj);
         for (auto& pk : v.packets) Complete(v, pk, kFlushed);
         v.packets.clear();
         v.pos = 0;
@@ -1336,6 +1428,7 @@ HLE_STDCALL(IDirectSound_SetOrientation, 8) {
     return 0;
 }
 HLE_STDCALL(DirectSoundDoWork, 0) {
+    TraceStall(ctx, "DoWork");
     g_pumped = NowMs();
     std::vector<Done> done;
     {
@@ -1506,6 +1599,7 @@ static void Trace(const char* kind, const char* name, int nargs, const A& a) {
 #define BUFFER(name, nargs)                                 \
     static uint32_t buf_##name(Voice& v, const Args& a);    \
     HLE_STDCALL(IDirectSoundBuffer_##name, nargs) {         \
+        TraceStall(ctx, "buffer " #name);                   \
         std::lock_guard<std::recursive_mutex> lock(g_lock); \
         Voice* v = Find(a[0]);                              \
         Trace("buf", #name, nargs, a);                      \
@@ -1538,6 +1632,7 @@ BUFFER(SetBufferData, 3) {
     return 0;
 }
 BUFFER(Play, 4) {
+    v.stop_polls = 0;
     if (!v.playing || v.in_release) VoiceOn(v);
     v.playing = true;
     v.looping = a[3] & 1;
@@ -1546,12 +1641,14 @@ BUFFER(Play, 4) {
     return 0;
 }
 BUFFER(Stop, 1) {
+    TraceReleaseEnd(v, "Stop");
     v.playing = v.in_release = false;
     return 0;
 }
 // (this, time low, time high, flags): DSBSTOPEX_ENVELOPE (1) plays the release envelope out first,
 // DSBSTOPEX_RELEASEWAVEFORM (2) leaves the loop and plays on to the end; neither stops it now. The time is not kept.
 BUFFER(StopEx, 4) {
+    v.stop_polls = 1;
     if (!v.playing) return 0;
     const bool tail = (a[3] & 2) && app::Get().envelopes && v.looping;
     if (tail) v.looping = false;
@@ -1575,7 +1672,9 @@ BUFFER(SetLoopRegion, 3) {
     return 0;
 }
 BUFFER(GetStatus, 2) {
+    if (v.in_release) v.rel_polls++;
     W32(a[1], (v.playing ? 1u : 0u) | (v.playing && v.looping ? 4u : 0u));  // DSBSTATUS_PLAYING, DSBSTATUS_LOOPING
+    TraceStopPoll(v, R32(a[1]));
     return 0;
 }
 BUFFER(GetCurrentPosition, 3) {
@@ -1667,15 +1766,26 @@ BUFFER(SetFormat, 2) {
 
 // streams, the object carries the XDK's own vtable
 
-HLE_STDCALL(DirectSoundCreateStream, 2) { return NewStream(a[0], a[1]); }
+HLE_STDCALL(DirectSoundCreateStream, 2) {
+    const uint32_t r = NewStream(a[0], a[1]);
+    if (a[1]) TraceStreamCall(ctx, R32(a[1]), "made");
+    return r;
+}
 // (this, pdsd, ppStream, pUnkOuter): the title's own stream factory. Ordinal 0x3B of the DSOUND library;
 // the signature scan named the sibling (this, pdsb, ppBuffer, pUnkOuter) thunk CreateSoundBuffer, so this one
 // is CreateSoundStream. Leaving it to the library built a console object; the runtime builds a host one.
-HLE_STDCALL(IDirectSound_CreateSoundStream, 4) { return NewStream(a[1], a[2]); }
+HLE_STDCALL(IDirectSound_CreateSoundStream, 4) {
+    const uint32_t r = NewStream(a[1], a[2]);
+    if (a[2]) TraceStreamCall(ctx, R32(a[2]), "made");
+    return r;
+}
 
 #define STREAM(name, nargs)                                     \
     static uint32_t str_##name(Voice& v, const Args& a);        \
     HLE_STDCALL(CDirectSoundStream_##name, nargs) {             \
+        TraceStall(ctx, "stream " #name);                       \
+        if (!std::strcmp(#name, "FlushEx") || !std::strcmp(#name, "Pause") || !std::strcmp(#name, "Release")) \
+            TraceStreamCall(ctx, a[0], #name);                  \
         uint32_t r;                                             \
         std::vector<Done> flushed;                              \
         {                                                       \
@@ -1695,6 +1805,7 @@ static void FlushStream(Voice& v) {
     for (auto& pk : v.packets) Complete(v, pk, kFlushed);
     v.packets.clear();
     v.pos = 0;
+    TraceReleaseEnd(v, "Flush");
     v.flushing = v.releasing = v.released = v.in_release = false;
     for (auto it = g_done.begin(); it != g_done.end();) {
         if (it->voice != v.obj) {
@@ -1736,11 +1847,13 @@ STREAM(GetInfo, 2) {
 // takes "not playing" as finished). A stream releasing after an async flush still plays until the flush, and reports
 // ENVELOPECOMPLETE once it is done (the library's 0x4C8943 reads its voice flag 0x2000).
 STREAM(GetStatus, 2) {
+    if (v.in_release || v.releasing) v.rel_polls++;
     uint32_t st = v.packets.size() < v.max_packets ? 1u : 0u;
     if (v.active && v.starved && !v.flushing) st |= 0x60000;
     else if (v.active) st |= v.paused || v.sync ? 0x20000u : 0x10000u;
     if (v.released) st |= 0x80000;
     W32(a[1], st);
+    TraceStopPoll(v, st);
     static const char* watch_env = std::getenv("XBE_TRACE_VOICE");
     static const uint32_t watch = watch_env ? uint32_t(std::strtoul(watch_env, nullptr, 16)) : 0;
     if (watch == v.obj) LOGR("dsound: %08X GetStatus -> %X (%zu packets)", v.obj, st, v.packets.size());
@@ -1771,6 +1884,7 @@ STREAM(Flush, 1) {
 }
 // (this, time low, time high, flags): no flags flushes now, otherwise a started stream stops and flushes later
 STREAM(FlushEx, 4) {
+    v.stop_polls = 1;
     if (!a[3]) {
         FlushStream(v);
     } else if (v.active) {
