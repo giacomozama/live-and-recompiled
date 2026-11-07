@@ -177,8 +177,46 @@ void EndRevealAfterWarp() {
     if (any) LOGR("warp: a cutscene right after the warp ends the reveal, which would have played it black");
 }
 
+// The level's music, stopped at once. A new game asked for from inside a level, which the game only asks for from the
+// frontend, leaves the level's tunes playing, and the load waits for them: its last state (0x2AB870) waits in 0x18C00
+// until no wave bank is in use, and a streamed tune's bank is in use until the tune ends (Poovarotti's aria: 46 s).
+// The music manager ([0x847024] + 0x3C) keeps its tunes in a ring at [manager + 4] (nodes linked at +0xC, the cue at
+// +0); CAudioCue::SmartStop (0x212C0, edi the cue, bl immediate) stops one, through 0x19AA0 to the XACT stop
+// 0x400B80, which passes XACT flags 2 for bl 1 and 0 for bl 0 (the manager's own stop all, 0x1E570, uses 0: the tune
+// plays on). A cue with the fade flag (+0x1E) fades out over a while instead; cleared, it stops now.
+constexpr uint32_t kAudio = 0x847024;
+constexpr uint32_t kSmartStop = 0x212C0;
+constexpr uint32_t kSequenceNames = 0x658FD8;  // 0x2C a sequence, +0 its name; [cue] the sequence, below 0x119
+
+void StopLevelMusic(X86Context& ctx) {
+    if (g_level < 0 || InFrontend(g_level)) return;
+    const uint32_t audio = kernel::R32(kAudio);
+    const uint32_t music = audio ? kernel::R32(audio + 0x3C) : 0;
+    const uint32_t head = music ? kernel::R32(music + 4) : 0;
+    if (!head) return;
+    std::vector<uint32_t> cues;
+    for (uint32_t node = kernel::R32(head + 0xC); node && node != head && cues.size() < 64; node = kernel::R32(node + 0xC))
+        if (const uint32_t cue = kernel::R32(node)) cues.push_back(cue);
+    const uint32_t edi = ctx.edi, ebx = ctx.ebx;
+    for (uint32_t cue : cues) {
+        const uint32_t seq = kernel::R32(cue);
+        const uint32_t name = seq < 0x119 ? kernel::R32(kSequenceNames + seq * 0x2C) : 0;
+        LOGR("warp: stopping tune %08X (sequence %u %s), state %u, fade %u", cue, seq,
+             name ? reinterpret_cast<const char*>(kernel::g_base + name) : "?", kernel::R32(cue + 0x14),
+             kernel::G<uint8_t>(cue + 0x1E));
+        kernel::G<uint8_t>(cue + 0x1E) = 0;
+        ctx.edi = cue;
+        ctx.ebx = (ctx.ebx & ~0xFFu) | 1;
+        kernel::CallGuest(ctx, kSmartStop, {});
+    }
+    ctx.edi = edi;
+    ctx.ebx = ebx;
+    if (cues.empty()) LOGR("warp: the music manager has no tunes playing");
+}
+
 void Run(X86Context& ctx, const Request& r) {
     if (r.kind != Kind::Cutscene) g_warped = std::chrono::steady_clock::now();
+    if (r.kind != Kind::Cutscene) StopLevelMusic(ctx);
     switch (r.kind) {
         case Kind::Checkpoint: {
             const Checkpoint& c = Checkpoints()[size_t(r.a)];
