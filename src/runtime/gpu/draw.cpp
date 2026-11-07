@@ -685,6 +685,22 @@ void CaptureConstantChanges(FILE* f, const State& s, std::array<std::array<float
             fprintf(f, " c%d-c%d", r - kVsConstantBias, e - kVsConstantBias);
         r = e + 1;
     }
+    // the values of short runs (4 registers or fewer: not the bone matrices), e.g. a fur shell's offset
+    for (int r = 0; r < kVsConstants;) {
+        if (s.vsc[size_t(r)] == prev[size_t(r)]) {
+            r++;
+            continue;
+        }
+        int e = r;
+        while (e + 1 < kVsConstants && s.vsc[size_t(e + 1)] != prev[size_t(e + 1)]) e++;
+        if (e - r < 4) {
+            for (int k = r; k <= e; k++) {
+                const auto& v = s.vsc[size_t(k)];
+                fprintf(f, "\n     = c%d %g %g %g %g", k - kVsConstantBias, v[0], v[1], v[2], v[3]);
+            }
+        }
+        r = e + 1;
+    }
     prev = s.vsc.v;
 }
 

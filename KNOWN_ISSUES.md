@@ -10,4 +10,3 @@
 - dialogues don't play during some random cutscenes
 - the tommy gun in weasel's hand disappears while he is gunning berri down (inconsistent)
 - sometimes putting on the space suit in alien fight causes conker to still use his heist model
-- close-ups of Rodent in the final throne cutscene don't show his fur. this happens in the original as well.

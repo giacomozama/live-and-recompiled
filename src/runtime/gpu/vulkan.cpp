@@ -1364,6 +1364,7 @@ private:
     std::unordered_set<uint32_t> cap_seen_;
     std::unordered_set<uint64_t> cap_sh_;
     std::array<std::array<float, 4>, 192> cap_vsc_{};  // the vertex constants at the last captured draw
+    decltype(DrawConstants::pc) cap_pc_{};              // the pixel constants at the last captured draw
     struct CapTex {
         ImageRef res;
         VkImageView view;
@@ -4952,6 +4953,14 @@ void VulkanBackend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t
                     t[kTssAddressU], t[kTssAddressV], t[kTssBorderColor]);
         }
         CaptureConstantChanges(cap_, s, cap_vsc_);
+        // the alpha test (its reference and compare index, 7 always) and the pixel constants when they change
+        fprintf(cap_, "\n     atest ref %g func %g", c.misc[0], c.misc[1]);
+        if (std::memcmp(&cap_pc_, &c.pc, sizeof(cap_pc_)) != 0) {
+            std::memcpy(&cap_pc_, &c.pc, sizeof(cap_pc_));
+            fprintf(cap_, "\n     pcset");
+            for (size_t r = 0; r < std::size(c.pc); r++)
+                fprintf(cap_, " (%.3f %.3f %.3f %.3f)", c.pc[r][0], c.pc[r][1], c.pc[r][2], c.pc[r][3]);
+        }
         // a program's first draw also lists its constants
         if (count > kQuadVertices && !cap_sh_.count(sh.vkey)) CaptureInputs(cap_, s, a, c);
         EndDrawCapture(s, a, count, c);
@@ -5366,6 +5375,7 @@ void VulkanBackend::StartCapture() {
     cap_seen_.clear();
     cap_sh_.clear();
     cap_vsc_ = {};
+    std::memset(cap_pc_, 0, sizeof(cap_pc_));
 }
 
 // ramp_ holds the red, green and blue ramps, 256 entries each

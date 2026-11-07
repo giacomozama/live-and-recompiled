@@ -281,6 +281,26 @@ void ConkerGrassFull(X86Context& ctx, uint8_t* base) {
 // fur::g_distant (or XBE_FUR_DISTANT=0 off) weighs a farther object as at 0.4 R: every shell, at full length.
 bool fur::g_distant = true;
 
+// A player's fur shells (0x80322 in 0x7FB00, Rodent and the others drawn as players) leave the alpha test to whatever
+// drew before them: Rodent's material sets neither the compare nor the reference, so in the throne room's close-up of
+// him a prop's "greater than 229" cut every strand down to its densest texels, spots on bare skin, while in the rain
+// the "16 or more" left there drew the whole coat; the original does the same, hidden at 480p. An object's shells
+// (0x78460) get a reference of 10; the furry materials that set their own (Conker's) use "10 or more". The player's
+// get that too, through the game's own setter (0x537990: ecx the method, edx the value), before the shells' push
+// buffer runs, so a material that sets its own still does.
+X86_EXTERN_FUNC(sub_00537990);
+// [[hook]] at 0x80358, after the shells' stencil enable
+void ConkerFurAlphaTest(X86Context& ctx, uint8_t* base) {
+    const uint32_t ecx = ctx.ecx, edx = ctx.edx, eax = ctx.eax;
+    ctx.ecx = 0x4033C, ctx.edx = 0x206;  // NV097_SET_ALPHA_FUNC: greater or equal
+    X86_PUSH32(0x80358u);
+    sub_00537990(ctx, base);
+    ctx.ecx = 0x40340, ctx.edx = 10;  // NV097_SET_ALPHA_REF
+    X86_PUSH32(0x80358u);
+    sub_00537990(ctx, base);
+    ctx.ecx = ecx, ctx.edx = edx, ctx.eax = eax;
+}
+
 // [[hook]] at 0x8210C, xmm0 the object's distance from the player and xmm3 R
 void ConkerFurDistant(X86Context& ctx, uint8_t* base) {
     (void)base;
