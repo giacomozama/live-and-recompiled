@@ -14,6 +14,7 @@ enum : uint32_t {
     k3dPairA = 0x04,
     k3dPairB = 0x08,
     k3dI3dl2 = 0x10,
+    k3dPitch = 0x20,
     k3dAzimuth = 0x40,
     k3dFilter = 0x80
 };
@@ -23,6 +24,7 @@ struct Voice3dTerms {
     int32_t pair_b[2];   // [0] the 3D fronts, [1] the centre
     int32_t direct;      // I3DL2 direct path (occlusion): the 3D bins and the centre
     int32_t room;        // I3DL2 room: the reverb send
+    int32_t pitch;       // the Doppler shift, in the voice's pitch units (4.12 octaves); 0x4CA1AF adds it
     float azimuth;
     // the I3DL2 one-pole lowpasses, direct path and room (reverb send), as the calculator words them (0x4CC935):
     // the pole times 65536, 0 for none; the low and high halves of the voice's +0x3C (0x4CAAD4)

@@ -5,8 +5,10 @@
 #include <chrono>
 #include <cmath>
 #include <condition_variable>
+#include <cstdlib>
 #include <deque>
 #include <map>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -149,7 +151,11 @@ struct Voice {
     // ENVELOPECOMPLETE status before it stops reading the wave; without it, it streamed the rest after every stop.
     bool releasing = false, released = false;
     double pos = 0;  // frames
-    uint32_t freq = 0;
+    // the pitch, as the library keeps it (4.12 octaves from 48 kHz): SetFormat sets it to the format's rate, SetPitch
+    // and SetFrequency to theirs
+    bool has_pitch = false;
+    double pitch = 0;
+    uint32_t flags = 0;  // DSBUFFERDESC / DSSTREAMDESC flags
     // stream
     uint32_t max_packets = 1, callback = 0, context = 0;
     std::deque<Packet> packets;
@@ -289,6 +295,25 @@ Voice* Submix(const Voice& v) {
     auto it = v.out ? g_voices.find(v.out) : g_voices.end();
     return it != g_voices.end() && it->second.mixin && &it->second != &v ? &it->second : nullptr;
 }
+// a voice's own pitch: SetPitch's or SetFrequency's, else its format's rate (0x4C3995)
+double BasePitch(const Voice& v) {
+    return v.has_pitch ? v.pitch : 4096.0 * std::log2(double(std::max<uint32_t>(v.rate, 1)) / audio::kRate);
+}
+// the rate the voice plays at, from the pitch the library writes (0x4CA1AF): its own, plus its 3D descriptor's (the
+// Doppler shift) when it was made with 0x1000000, plus its mixin buffer's own and descriptor's, held to -32767..8191
+double Rate(const Voice& v) {
+    if (v.mixin) return audio::kRate;
+    double p = BasePitch(v);
+    if (v.calc3d && (v.flags & 0x1000000)) p += v.t3d.pitch;
+    if (const Voice* s = v.out ? Submix(v) : nullptr) p += BasePitch(*s) + (s->calc3d ? s->t3d.pitch : 0);
+    return audio::kRate * std::exp2(std::clamp(p, -32767.0, 8191.0) / 4096.0);
+}
+// SetFrequency: a rate, or 0 for the format's own (DSBFREQUENCY_ORIGINAL)
+void SetFrequency(Voice& v, uint32_t hz) {
+    v.has_pitch = hz != 0;
+    if (hz) v.pitch = 4096.0 * std::log2(double(hz) / audio::kRate);
+}
+
 // mixin buffers between the voice and the bins
 int Depth(const Voice& v) {
     int d = 0;
@@ -404,7 +429,7 @@ void Pull(Voice& v, float* ab, uint32_t frames) {
         return;
     }
     uint32_t base = v.data + v.play_start;
-    double step = double(v.freq ? v.freq : v.rate) / audio::kRate;
+    double step = Rate(v) / audio::kRate;
     float now[kChannels], next[kChannels];  // this frame and the next, interpolated between
     for (uint32_t i = 0; i < frames; i++) {
         uint32_t f = uint32_t(v.pos);
@@ -492,7 +517,7 @@ void Describe(uint32_t obj, const Voice& v) {
         d3 = b;
     }
     LOGR("dsound:  %08X %uch %uHz%s out %08X vol %d headroom %d%s bins%s 3d %s att %d%s pan %.2f level %d", obj,
-         v.channels, v.freq ? v.freq : v.rate, v.mixin ? " mixin" : "", v.out, mb(v.volume), mb(v.headroom),
+         v.channels, uint32_t(std::lround(Rate(v))), v.mixin ? " mixin" : "", v.out, mb(v.volume), mb(v.headroom),
          v.nbins ? "" : " default", bins.c_str(), v.calc3d ? "calc" : v.is3d ? "ds" : "no",
          v.calc3d ? mb(Att3d(v.t3d, 0)) : 0, d3.c_str(),
          v.pan3d, mb(float(std::sqrt(v.recent))));
@@ -571,7 +596,8 @@ void Render(float* out, uint32_t frames) {
     // the GP's output: the speaker bins with their headroom back. With an effects image the GP outputs bins 0-5 and
     // the crosstalk inputs reach them through its canceller; without one they are heard as the speakers they stand for
     // (front left and right, back left and right). On 5.1 each bin is its speaker and the sub is heard; on two
-    // speakers the backs go to their sides and the centre at -3 dB to both, and the sub isn't. The effect sends and a
+    // speakers the console's encoder DSP (the DOLBY image, run with the stereo setting of 0x4CD798) folds the centre
+    // at -3 dB into both sides and each back at -3 dB into its own, and drops the sub. The effect sends and a
     // multipass bin nothing reads are not heard.
     static const uint8_t kSpeakerOf[10] = {0, 1, 2, 3, 4, 5, 0, 1, 4, 5};
     for (uint32_t b = 0; b < kBins; b++) {
@@ -584,11 +610,23 @@ void Render(float* out, uint32_t frames) {
             for (uint32_t i = 0; i < frames; i++) out[i * 6 + o] += src[i] * g;
             continue;
         }
-        float g = float(1 << g_bin_headroom[b]) * (b == 2 ? 0.707f : 1.0f);
+        float g = float(1 << g_bin_headroom[b]) * (b == 2 || kSpeakerOf[b] >= 4 ? 0.707f : 1.0f);
         for (uint32_t i = 0; i < frames; i++) {
             if (b == 2 || !(b & 1)) out[i * 2] += src[i] * g;
             if (b == 2 || (b & 1)) out[i * 2 + 1] += src[i] * g;
         }
+    }
+    // XBE_AUDIO_RECORD=<file>: the game's mix before the volume setting, raw interleaved float32 at 48 kHz, to compare
+    // with a console recording (ffmpeg -f f32le -ar 48000 -ac <speakers> -i <file> out.wav)
+    static FILE* record = [] {
+        const char* p = std::getenv("XBE_AUDIO_RECORD");
+        FILE* f = p && *p ? std::fopen(p, "wb") : nullptr;
+        if (f) LOGR("dsound: recording the mix to %s (%u channels)", p, audio::Channels());
+        return f;
+    }();
+    if (record) {
+        std::fwrite(out, sizeof(float) * speakers, frames, record);
+        std::fflush(record);
     }
     // the volume setting, squared to follow loudness, and silence in the background if asked; a change ramps over the
     // block so it doesn't click
@@ -765,6 +803,7 @@ uint32_t NewBuffer(uint32_t desc, uint32_t out) {
     ReadFormat(v, R32(desc + 12));
     SetBins(v, R32(desc + 16));
     DSTRACE("dsound: %08X new buffer flags %X bytes %X", obj, flags, bytes);
+    v.flags = flags;
     v.is3d = flags & 0x10;  // DSBCAPS_CTRL3D
     v.mixin = flags & 0x2000;
     v.headroom = DefaultHeadroom(flags);
@@ -799,6 +838,7 @@ uint32_t NewStream(uint32_t desc, uint32_t out) {
     SetBins(v, R32(desc + 20));
     DSTRACE("dsound: %08X new stream flags %X packets %u callback %08X context %08X", obj, flags, v.max_packets, v.callback,
             v.context);
+    v.flags = flags;
     v.is3d = flags & 0x10;  // DSSTREAMCAPS_CTRL3D
     v.headroom = DefaultHeadroom(flags);
     W32(out, obj);
@@ -823,6 +863,7 @@ void dsound::SetVoice3d(uint32_t obj, uint32_t changed, const Voice3dTerms& t) {
     if (changed & k3dCone) h.cone = t.cone;
     if (changed & k3dPairA) std::copy(t.pair_a, t.pair_a + 2, h.pair_a);
     if (changed & k3dPairB) std::copy(t.pair_b, t.pair_b + 2, h.pair_b);
+    if (changed & k3dPitch) h.pitch = t.pitch;
     if (changed & k3dI3dl2) {
         h.direct = t.direct;
         h.room = t.room;
@@ -1081,6 +1122,25 @@ HLE_STDCALL(IDirectSound_GetOutputLevels, 3) {
 HLE_STDCALL(DirectSoundCreateBuffer, 2) { return NewBuffer(a[0], a[1]); }
 HLE_STDCALL(IDirectSound_CreateSoundBuffer, 4) { return NewBuffer(a[1], a[2]); }
 
+// XBE_TRACE_DSOUND: what XACT asks of a voice's filter, envelope, LFO and pitch, which the host mixer does not play;
+// logged when a voice's descriptor changes
+static void TraceDesc(uint32_t obj, const char* name, uint32_t desc, uint32_t words) {
+    if (!g_trace) return;
+    static std::map<std::pair<uint32_t, std::string>, std::vector<uint32_t>> last;
+    std::vector<uint32_t> w;
+    for (uint32_t i = 0; i < words; i++) w.push_back(desc ? R32(desc + i * 4) : 0);
+    auto& l = last[{obj, name}];
+    if (l == w) return;
+    l = w;
+    std::string t;
+    char b[16];
+    for (uint32_t x : w) {
+        std::snprintf(b, sizeof b, " %X", x);
+        t += b;
+    }
+    LOGR("dsound: %08X %s%s", obj, name, t.c_str());
+}
+
 // XBE_TRACE_DSOUND: the calls that start, stop or reroute a voice
 template <class A>
 static void Trace(const char* kind, const char* name, int nargs, const A& a) {
@@ -1190,10 +1250,13 @@ BUFFER(SetVolume, 2) {
     return 0;
 }
 BUFFER(SetFrequency, 2) {
-    v.freq = a[1];
+    SetFrequency(v, a[1]);
     return 0;
 }
-BUFFER(SetFilter, 2) { return 0; }
+BUFFER(SetFilter, 2) {
+    TraceDesc(v.obj, "SetFilter", a[1], 6);  // DSFILTERDESC: mode, Q, four coefficients
+    return 0;
+}
 BUFFER(SetHeadroom, 2) {
     v.headroom = Db(-int32_t(a[1]));
     return 0;
@@ -1241,7 +1304,7 @@ BUFFER(SetOutputBuffer, 2) {
 }
 BUFFER(SetFormat, 2) {
     ReadFormat(v, a[1]);
-    v.freq = 0;
+    v.has_pitch = false;
     v.block = -1;
     return 0;
 }
@@ -1292,7 +1355,7 @@ STREAM(AddRef, 1) { return uint32_t(++v.refs); }
 STREAM(SetFormat, 2) {
     FlushStream(v);
     ReadFormat(v, a[1]);
-    v.freq = 0;  // the XDK sets the pitch back to the new format's own rate
+    v.has_pitch = false;  // the XDK sets the pitch back to the new format's own rate (0x4C5B95)
     v.block = -1;
     return 0;
 }
@@ -1380,12 +1443,18 @@ STREAM(SetVolume, 2) {
     return 0;
 }
 STREAM(SetFrequency, 2) {
-    v.freq = a[1];
+    SetFrequency(v, a[1]);
     return 0;
 }
-STREAM(SetFilter, 2) { return 0; }
+STREAM(SetFilter, 2) {
+    TraceDesc(v.obj, "SetFilter", a[1], 6);
+    return 0;
+}
 // the library's own writes voice registers a host stream does not have; envelopes are not played
-HLE_STDCALL(IDirectSoundStream_SetEG, 2) { return 0; }
+HLE_STDCALL(IDirectSoundStream_SetEG, 2) {
+    TraceDesc(a[0], "SetEG", a[1], 10);  // DSENVELOPEDESC
+    return 0;
+}
 STREAM(SetHeadroom, 2) {
     v.headroom = Db(-int32_t(a[1]));
     return 0;
@@ -1420,14 +1489,48 @@ HLE_STDCALL(IDirectSoundStream_SetOutputBuffer, 2) {
     if (Voice* v = Find(a[0])) SetOut(*v, a[1]);
     return 0;
 }
-// (this, lPitch / pLfoDesc / pEnvelopeDesc): pitch, LFO and envelope writes all reach a console voice
-// sub-object the host's objects never build. The host mixer plays at the format rate (or the SetFrequency
-// override) and has no envelope or LFO, so these are dropped the way the XDK's own SetEG already is.
-HLE_STDCALL(IDirectSoundStream_SetPitch, 2) { return 0; }
-HLE_STDCALL(IDirectSoundStream_SetLFO, 2) { return 0; }
-HLE_STDCALL(IDirectSoundBuffer_SetPitch, 2) { return 0; }
-HLE_STDCALL(IDirectSoundBuffer_SetLFO, 2) { return 0; }
-HLE_STDCALL(IDirectSoundBuffer_SetEG, 2) { return 0; }
+// (this, lPitch / pLfoDesc / pEnvelopeDesc): the library's bodies write a console voice sub-object the host's objects
+// never build. The pitch is kept as the library keeps it (0x4C3D2C): XACT sets each voice's rate with it, and varies
+// it per sound. The host mixer has no envelope or LFO, so those are only traced.
+// XBE_TRACE_DSOUND: a voice's pitch when it changes
+static void TracePitch(uint32_t obj, uint32_t pitch) {
+    if (!g_trace) return;
+    static std::map<uint32_t, uint32_t> last;
+    auto it = last.find(obj);
+    if (it != last.end() && it->second == pitch) return;
+    last[obj] = pitch;
+    LOGR("dsound: %08X SetPitch %d", obj, int32_t(pitch));
+}
+HLE_STDCALL(IDirectSoundStream_SetPitch, 2) {
+    std::lock_guard<std::recursive_mutex> lock(g_lock);
+    TracePitch(a[0], a[1]);
+    if (Voice* v = Find(a[0])) {
+        v->has_pitch = true;
+        v->pitch = int32_t(a[1]);
+    }
+    return 0;
+}
+HLE_STDCALL(IDirectSoundStream_SetLFO, 2) {
+    TraceDesc(a[0], "SetLFO", a[1], 6);  // DSLFODESC
+    return 0;
+}
+HLE_STDCALL(IDirectSoundBuffer_SetPitch, 2) {
+    std::lock_guard<std::recursive_mutex> lock(g_lock);
+    TracePitch(a[0], a[1]);
+    if (Voice* v = Find(a[0])) {
+        v->has_pitch = true;
+        v->pitch = int32_t(a[1]);
+    }
+    return 0;
+}
+HLE_STDCALL(IDirectSoundBuffer_SetLFO, 2) {
+    TraceDesc(a[0], "SetLFO", a[1], 6);
+    return 0;
+}
+HLE_STDCALL(IDirectSoundBuffer_SetEG, 2) {
+    TraceDesc(a[0], "SetEG", a[1], 10);
+    return 0;
+}
 // (this, DSVOICEPROPS): no voice is allocated on the host, so every field reads as zero (the struct is
 // dwMixBinCount, 8 volume pairs, then 6 LONGs = 92 bytes)
 HLE_STDCALL(IDirectSoundBuffer_GetVoiceProperties, 2) {

@@ -374,11 +374,11 @@ X86_FUNC(sub_004C3F2F) {
 // 0x4C51B8 (buffer, descriptor; it calls 0x4C4BCB). Their shared body 0x4C3DFE stores the descriptor through the
 // console voice's [voice+0xb8], which the runtime's host objects do not build. XACT fills the descriptor from the
 // 3D calculator below (0x4C4613 writes it): +4 distance and +8 cone volume, +0x1C the I3DL2 direct path (occlusion),
-// in hundredths of a dB, +0x28 the azimuth in degrees. The fields keep their last values; the flags at +0 say which
-// the voice takes. XACT (0x54F082) computes every field for both voices of a 3D sound played through a submix, then
-// masks the flags: the submix keeps its pan and filters but not the distance and cone volumes (0xDC), the voice
-// feeding it those volumes but not the pan (0x33), so the distance is heard once. Hand the voice its 3D attenuation
-// and pan; without it every 3D sound played at full volume everywhere.
+// in hundredths of a dB, +0x24 the Doppler pitch, +0x28 the azimuth in degrees. The fields keep their last values;
+// the flags at +0 say which the voice takes. XACT (0x54F082) computes every field for both voices of a 3D sound
+// played through a submix, then masks the flags: the submix keeps its pan and filters but not the distance and cone
+// volumes (0xDC), the voice feeding it those volumes but not the pan (0x33), so the distance is heard once. Hand the
+// voice its 3D attenuation and pan; without it every 3D sound played at full volume everywhere.
 static void Voice3d(uint32_t obj, uint32_t d) {
     using kernel::R32;
     auto i = [&](uint32_t o) { return int32_t(R32(d + o)); };
@@ -403,6 +403,7 @@ static void Voice3d(uint32_t obj, uint32_t d) {
     t.pair_b[1] = i(0x18);
     t.direct = i(0x1C);
     t.room = i(0x20);
+    t.pitch = i(0x24);
     t.azimuth = f(0x28);
     t.filter[0] = i(0x30);
     t.filter[1] = i(0x34);
