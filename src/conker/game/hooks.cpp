@@ -567,6 +567,18 @@ void ConkerSwimSurface(X86Context& ctx, uint8_t* base) {
     ctx.xmm[1].f[0] = above - left;
 }
 
+// 0x312F80 (eax the player, each frame from 0x2D87B9) works out how fast a weapon mode's walk really went: the distance
+// from the frame's start (+0x84) to where it ended (+0x78), times 2, over the speed the stick asked for (+0x648, 34 a
+// full axis), kept to 0..1, times that speed, into [[player+0x568]+0x390]. The 2 fits a frame of two ticks. At 60 FPS a
+// frame moves half as far, so the speed read half: 0x3116E0 takes the run clips above 20 and plays a clip at 0.08 x the
+// speed, so at full stick Conker walked, slowly, and ran only on a diagonal (each axis has its own 34, up to 47 in all).
+// A frame of one tick counts its distance double, as two ticks' worth; longer frames were already past the clamp.
+// [[hook]] before 0x312FAB: xmm0 the distance times 2
+void ConkerWeaponWalkSpeed(X86Context& ctx, uint8_t* base) {
+    (void)base;
+    if (display::GameRate() > 30 && kernel::R32(0x7FA20C) == 1) ctx.xmm[0].f[0] *= 2.0f;
+}
+
 // 0x2D9FD0 (edi the player): eases the signed word [player+0x1D4] toward [player+0x1D6] once a frame, by a twelfth
 // of the gap and one more, never past it. The target comes from the ground Conker stands on (0x2D5340: the material
 // [player+0x298] & 0x1F in the table at 0x59D820, against [player+0x110]): on BarnOutside's thatched roof it drops
