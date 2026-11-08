@@ -362,6 +362,54 @@ void Slider(const char* label, uint32_t* v, uint32_t min, uint32_t max, uint32_t
     g_slider_end = {ImGui::GetFrameCount(), ImGui::GetCursorPosY()};
 }
 
+// Two percentages on one track, lo below hi and kept at least `gap` apart, with a Reset beside it. The handle nearest
+// the click takes the drag.
+void RangeSlider(const char* label, uint32_t* lo, uint32_t* hi, uint32_t min, uint32_t max, uint32_t gap,
+                 uint32_t def_lo, uint32_t def_hi) {
+    ImGui::PushID(label);
+    const ImGuiStyle& st = ImGui::GetStyle();
+    const float reset = ImGui::CalcTextSize(T("Reset")).x + st.FramePadding.x * 2.0f;
+    Beside(label, reset + st.ItemInnerSpacing.x);
+    const float w = ImGui::CalcItemWidth(), h = ImGui::GetFrameHeight();
+    const ImVec2 p = ImGui::GetCursorScreenPos();
+    ImGui::InvisibleButton("##range", ImVec2(w, h));
+    static int dragging = 0;  // 0 the low handle, 1 the high
+    const float r = h * 0.35f, x0 = p.x + r, span = std::max(w - 2.0f * r, 1.0f);
+    auto at = [&](uint32_t v) { return x0 + span * float(v - min) / float(max - min); };
+    if (ImGui::IsItemActivated()) {
+        const float mx = ImGui::GetIO().MousePos.x;
+        const float dl = std::fabs(mx - at(*lo)), dh = std::fabs(mx - at(*hi));
+        dragging = dl < dh || (dl == dh && mx < at(*lo)) ? 0 : 1;
+    }
+    if (ImGui::IsItemActive()) {
+        const float t = std::clamp((ImGui::GetIO().MousePos.x - x0) / span, 0.0f, 1.0f);
+        const uint32_t v = min + uint32_t(std::lround(t * float(max - min)));
+        if (dragging == 0) *lo = std::clamp(v, min, *hi - gap);
+        else *hi = std::clamp(v, *lo + gap, max);
+    }
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const float cy = p.y + h * 0.5f;
+    dl->AddRectFilled(ImVec2(p.x, cy - 2), ImVec2(p.x + w, cy + 2), ImGui::GetColorU32(ImGuiCol_FrameBg), 2.0f);
+    dl->AddRectFilled(ImVec2(at(*lo), cy - 2), ImVec2(at(*hi), cy + 2), ImGui::GetColorU32(ImGuiCol_SliderGrab), 2.0f);
+    for (int i = 0; i < 2; i++) {
+        const bool on = ImGui::IsItemActive() && dragging == i;
+        const uint32_t v = i ? *hi : *lo;
+        dl->AddCircleFilled(ImVec2(at(v), cy), r,
+                            ImGui::GetColorU32(on ? ImGuiCol_SliderGrabActive : ImGuiCol_SliderGrab));
+        char text[8];
+        std::snprintf(text, sizeof text, "%u", v);
+        const ImVec2 size = ImGui::CalcTextSize(text);
+        dl->AddText(ImVec2(at(v) - size.x * 0.5f, p.y + h + 1.0f), ImGui::GetColorU32(ImGuiCol_Text), text);
+    }
+    ImGui::SameLine(0, st.ItemInnerSpacing.x);
+    ImGui::BeginDisabled(*lo == def_lo && *hi == def_hi);
+    if (ImGui::Button(T("Reset"))) *lo = def_lo, *hi = def_hi;
+    ImGui::EndDisabled();
+    ImGui::Dummy(ImVec2(0.0f, ImGui::GetTextLineHeight() + 2.0f));  // room for the numbers under the track
+    ImGui::PopID();
+    g_slider_end = {ImGui::GetFrameCount(), ImGui::GetCursorPosY()};
+}
+
 // a checkbox; right under a slider it gets a little more room
 bool Check(const char* label, bool* v) {
     if (g_slider_end.frame == ImGui::GetFrameCount() && std::fabs(ImGui::GetCursorPosY() - g_slider_end.y) < 0.5f)
@@ -471,7 +519,7 @@ void DrawKeys(int player) {
     using namespace keyboard;
     static const Group kGroups[] = {
         {"Movement", {{kMoveUp, "Forward"}, {kMoveDown, "Back"}, {kMoveLeft, "Left"}, {kMoveRight, "Right"},
-                      {kJump, "Jump"}, {kCrouch, "Crouch"}}},
+                      {kJump, "Jump"}, {kCrouch, "Crouch"}, {kWalk, "Walk"}, {kCreep, "Creep"}}},
         {"Camera", {{kLookUp, "Look up"}, {kLookDown, "Look down"}, {kLookLeft, "Look left"},
                     {kLookRight, "Look right"}, {kZoom, "Zoom (story)"}}},
         {"Weapons", {{kAttack, "Attack / fire"}, {kAim, "Aim / equip weapon"}, {kWeaponMode, "First person / mode"},
@@ -533,6 +581,11 @@ void DrawKeys(int player) {
                     ImGui::SetTooltip(T("default: %s"), ActionDefault(r.action).c_str());
             }
             ImGui::PopID();
+        }
+        if (g.rows[0].action == kMoveUp) {  // the Walk and Creep tilts, under the movement keys
+            ImGui::Spacing();
+            RangeSlider("Creep / Walk %", &g_creep_percent[player], &g_walk_percent[player], kTiltMin, kTiltMax, kTiltGap,
+                        kDefaultCreep, kDefaultWalk);
         }
         ImGui::EndChild();
         ImGui::PopID();

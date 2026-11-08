@@ -23,6 +23,7 @@ enum Action : int {
     kReload,
     kZoom,        // single player's camera zoom, the right stick's click
     kAbility, kCycle, kVote, kRadio,  // multiplayer's own
+    kWalk, kCreep,  // held, the movement keys tilt the stick to g_walk_percent / g_creep_percent (keys are digital)
     kPause,
     kQuit,  // the console's Back, on the pub's pictures only, where it asks to quit (no Xbox Live here)
     kActions
@@ -51,6 +52,12 @@ bool Southpaw(int scheme);
 // either one drives it, 0 unbound; read live, so the menu rebinds
 constexpr int kSlots = 2;
 extern int g_keys[input::kPorts][kActions][kSlots];
+
+// settings.toml [playerN] walk_percent and creep_percent: the stick tilt while the Walk / Creep key is held; Creep is
+// always the lower, kTiltGap apart at least; read live
+constexpr uint32_t kDefaultWalk = 52, kDefaultCreep = 42, kTiltMin = 5, kTiltMax = 95, kTiltGap = 5;
+extern uint32_t g_walk_percent[input::kPorts];
+extern uint32_t g_creep_percent[input::kPorts];
 
 const char* ActionLabel(int action);   // for the F1 menu, "Jump"
 std::string ActionDefault(int action);  // its default keys' names, "E, Mouse 2"

@@ -26,7 +26,7 @@
 //
 //   move W A S D   look arrows and the mouse   jump space   crouch left ctrl, C   attack mouse 1   aim mouse 2
 //   use E   weapon mode Z   reload R   camera zoom mouse 3   ability Q   cycle equipped tab   vote V   radio T
-//   pause enter (and Escape)   quit backspace
+//   walk left shift (52% stick tilt by default)   creep left alt (42%), both set in the menu   pause enter (and Escape)   quit backspace
 //
 // Every player's actions can be rebound, to up to two keys or mouse buttons each: in the menu (Esc), or in
 // settings.toml's [playerN.keys] tables by key name (move_up = 'W', jump = ['Space', 'Mouse 4'], 'none' unbinds).
@@ -65,6 +65,8 @@
 namespace keyboard {
 
 int g_keys[input::kPorts][kActions][kSlots];
+uint32_t g_walk_percent[input::kPorts] = {kDefaultWalk, kDefaultWalk, kDefaultWalk, kDefaultWalk};
+uint32_t g_creep_percent[input::kPorts] = {kDefaultCreep, kDefaultCreep, kDefaultCreep, kDefaultCreep};
 
 namespace {
 
@@ -102,6 +104,7 @@ constexpr ActionInfo kInfo[kActions] = {
     {"reload", "Reload", 'R'},              {"zoom", "Camera zoom", kMouse3},
     {"ability", "Abilities", 'Q'},          {"cycle", "Cycle equipped", kTab},
     {"vote", "Vote", 'V'},                  {"radio", "Radio mode", 'T'},
+    {"walk", "Walk", kLShift},   {"creep", "Creep", kLAlt},
     {"pause", "Pause", kEnter},             {"quit", "Quit", kBackspace},
 };
 
@@ -408,6 +411,9 @@ void Load(const void* table) {
         if (!player) continue;
         LoadKeys((*player)["keys"].as_table(), g_keys[p]);
         LoadMouse(*player, p);
+        // the pair keeps its order and gap, whatever the file says
+        g_creep_percent[p] = std::clamp((*player)["creep_percent"].value_or(g_creep_percent[p]), kTiltMin, kTiltMax - kTiltGap);
+        g_walk_percent[p] = std::clamp((*player)["walk_percent"].value_or(g_walk_percent[p]), g_creep_percent[p] + kTiltGap, kTiltMax);
         gamepad::g_invert_aim[p] = (*player)["invert_aim"].value_or(gamepad::g_invert_aim[p]);
         gamepad::g_vibration[p] = (*player)["vibration"].value_or(gamepad::g_vibration[p]);
         gamepad::g_vibration_percent[p] =
@@ -425,6 +431,8 @@ void Save(void* table) {
         player->insert_or_assign("invert_aim", gamepad::g_invert_aim[p]);
         player->insert_or_assign("vibration", gamepad::g_vibration[p]);
         player->insert_or_assign("vibration_percent", int64_t(gamepad::g_vibration_percent[p]));
+        player->insert_or_assign("creep_percent", int64_t(g_creep_percent[p]));
+        player->insert_or_assign("walk_percent", int64_t(g_walk_percent[p]));
         player->insert_or_assign("keys", SaveKeys(g_keys[p]));
         player->erase("multiplayer");
     }
@@ -471,8 +479,10 @@ void Pad(int port, input::Pad& pad) {
     for (int a = 0; a < kActions; a++)
         if (const int b = Drives(scheme, a); b >= 0 && down(Action(a))) held[b] = true;
     if (int16_t x, y; MoveStick(port, x, y)) {
-        (southpaw ? pad.rx : pad.lx) = x;
-        (southpaw ? pad.ry : pad.ly) = y;
+        // a held modifier shortens the tilt, the direction as the keys gave it
+        const double tilt = down(kCreep) ? g_creep_percent[port] / 100.0 : down(kWalk) ? g_walk_percent[port] / 100.0 : 1.0;
+        (southpaw ? pad.rx : pad.lx) = int16_t(std::lround(x * tilt));
+        (southpaw ? pad.ry : pad.ly) = int16_t(std::lround(y * tilt));
     }
     if (down(kLookUp) || down(kLookDown) || down(kLookLeft) || down(kLookRight)) {
         (southpaw ? pad.lx : pad.rx) = Axis(down(kLookLeft), down(kLookRight));
