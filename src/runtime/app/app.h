@@ -72,6 +72,9 @@ struct Settings {
     uint32_t system_link_port = 3074;  // the UDP port system link binds, read as the network starts
     // the console's language (XC_LANGUAGE), by its name in kLanguages; the title reads it once at boot
     std::string language = "english";
+    // the language of the settings menu and its prompts (by name in kLanguages, as far as it has text for), live; apart
+    // from the game's; a file without it gets the game's
+    std::string ui_language = "english";
     // the mods in ModsDir, the first winning where two replace the same file; read at launch (MountMods)
     std::vector<ModEntry> mods;
 };

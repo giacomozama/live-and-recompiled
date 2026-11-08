@@ -260,10 +260,10 @@ void PollRebind() {
 
 #include "ui_text.inc"
 
-// the overlay's language: the settings' (the menu's Language combo changes it at once)
+// the overlay's language: the settings' ui_language (the menu's UI combo changes it at once), apart from the game's
 int Column() {
     static const char* const kKeys[] = {"english", "german", "french", "spanish", "italian", "japanese"};
-    const std::string& language = app::Get().language;
+    const std::string& language = app::Get().ui_language;
     for (int i = 0; i < 6; i++)
         if (language == kKeys[i]) return i;
     return 0;
@@ -1058,14 +1058,18 @@ void Draw(double fps) {
             if (tab("General")) {
                 ImGui::SeparatorText(T("Language"));
                 {
-                    // the languages the game has text for (aid/text), in XC_LANGUAGE order
+                    // the languages the game has text for (aid/text), in XC_LANGUAGE order; the menu has the same six
                     static const char* const kKeys[] = {"english", "japanese", "german", "french", "spanish", "italian"};
                     constexpr int kCount = int(std::size(kKeys));
-                    int lang = 0;
-                    for (int i = 0; i < kCount; i++)
-                        if (s.language == kKeys[i]) lang = i;
-                    if (ImGui::Combo(Beside("Text"), &lang, "English\0日本語\0Deutsch\0Français\0Español\0Italiano\0"))
-                        s.language = kKeys[lang];
+                    constexpr const char* kNames = "English\0日本語\0Deutsch\0Français\0Español\0Italiano\0";
+                    auto pick = [&](const char* label, std::string& setting) {
+                        int lang = 0;
+                        for (int i = 0; i < kCount; i++)
+                            if (setting == kKeys[i]) lang = i;
+                        if (ImGui::Combo(Beside(label), &lang, kNames)) setting = kKeys[lang];
+                    };
+                    pick("UI", s.ui_language);
+                    pick("Game text", s.language);
                     Hint("Text only, requires restart. Voices stay in English.");
                 }
                 ImGui::SeparatorText(T("Appearance"));

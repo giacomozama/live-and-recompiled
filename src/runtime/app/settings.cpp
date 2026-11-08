@@ -94,6 +94,7 @@ void Load() {
     s.join_ip = t["join_ip"].value_or(s.join_ip);
     s.system_link_port = t["system_link_port"].value_or(s.system_link_port);
     s.language = t["language"].value_or(s.language);
+    s.ui_language = t["ui_language"].value_or(s.language);
     if (const toml::array* mods = t["mods"].as_array()) {
         s.mods.clear();
         for (const toml::node& n : *mods)
@@ -161,6 +162,7 @@ toml::table Table() {
                   {"join_ip", s.join_ip},
                   {"system_link_port", int64_t(s.system_link_port)},
                   {"language", s.language},
+                  {"ui_language", s.ui_language},
                   {"auto_controllers", input::AutoAssign()}};
     toml::array mods;
     for (const ModEntry& m : s.mods) mods.push_back(toml::table{{"name", m.name}, {"enabled", m.enabled}});

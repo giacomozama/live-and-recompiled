@@ -44,7 +44,8 @@ constexpr Line kLines[] = {
 
     // general
     {"Language", "Sprache", "Langue", "Idioma", "Lingua", "言語"},
-    {"Text", "Text", "Texte", "Texto", "Testo", "テキスト"},
+    {"UI", "UI", "UI", "UI", "UI", "UI"},
+    {"Game text", "Spieltext", "Texte du jeu", "Texto del juego", "Testo di gioco", "ゲームのテキスト"},
     {"Text only, requires restart. Voices stay in English.",
      "Nur der Text, Neustart nötig. Die Stimmen bleiben englisch.",
      "Texte uniquement, nécessite un redémarrage. Les voix restent en anglais.",
