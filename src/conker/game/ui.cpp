@@ -1207,6 +1207,31 @@ void Draw(double fps) {
                 ImGui::SeparatorText(T("Fur"));
                 Check("Fur shading", &fur::g_shading);
                 Hint("Makes fur look more voluminous and improves its shading.", true);
+                Check("Super fur", &fur::g_strands);
+                Hint("Fine, tapered strands in tufts, lit as hair.", true);
+                if (fur::g_strands) {
+                    static int look = fur::kCoat;
+                    const std::string looks = Items({fur::kLookNames[0], fur::kLookNames[1], fur::kLookNames[2]});
+                    ImGui::Combo(Beside("Fur type"), &look, looks.c_str());
+                    Hint("Each kind of fur has its own settings: Coat is Conker, the squirrels and most others.", true);
+                    fur::Look& l = fur::g_looks[look];
+                    const fur::Look& d = fur::kLookDefaults[look];
+                    ImGui::PushID(look);  // each look's sliders their own widgets, so a drag doesn't carry over
+                    Slider("Strands", &l.strands, 8, 64, d.strands);
+                    Slider("Tufts", &l.tufts, 1, 16, d.tufts);
+                    Slider("Tufting %", &l.tufting, 0, 100, d.tufting);
+                    Slider("Length %", &l.length, 20, 100, d.length);
+                    Slider("Bare skin fill %", &l.fill, 0, 100, d.fill);
+                    Slider("Droop %", &l.droop, 0, 200, d.droop);
+                    Slider("Thickness %", &l.thickness, 30, 100, d.thickness);
+                    Slider("Taper %", &l.taper, 20, 150, d.taper);
+                    Slider("Root shade %", &l.root_shade, 0, 100, d.root_shade);
+                    Slider("Tuft shade %", &l.gap_shade, 0, 100, d.gap_shade);
+                    Slider("Sheen %", &l.sheen, 0, 200, d.sheen);
+                    Slider("Back glow %", &l.back_glow, 0, 200, d.back_glow);
+                    ImGui::PopID();
+                    Slider("Extra shells", &fur::g_extra_shells, 0, 4, fur::kExtraShells);
+                }
                 Check("Full distant fur", &fur::g_distant);
                 Hint("Keeps fur on far-away characters.", true);
 

@@ -1010,6 +1010,12 @@ int64_t d3d::MsSincePresent() {
            at;
 }
 
+void d3d::SetVertexConstant(uint32_t reg, const std::array<float, 4>& v) {
+    std::lock_guard<std::recursive_mutex> lock(g_lock);
+    Walk(Dev(kDevPush));
+    if (reg < 192) g_state.vsc.set(reg, v);
+}
+
 bool d3d::LoadingScreenWanted() {
     using clock = std::chrono::steady_clock;
     static const bool always = std::getenv("XBE_LOADING_SCREEN") != nullptr;

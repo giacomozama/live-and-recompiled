@@ -4266,15 +4266,16 @@ void VulkanBackend::IssueGeometry(const Assembled& a) {
 bool VulkanBackend::DrawBetweenShells(const State& s, const Assembled& a, uint32_t shading, const Bindings& b,
                                       VkPipeline pso, VkPipeline zpso) {
     const ProgramShading& ps = g_program_shading[shading - 1];
-    if (ps.between <= 0) return false;
+    const int between = ps.between_live ? int(*ps.between_live) : ps.between;
+    if (between <= 0) return false;
     float from = ShadingBefore(shading), to = s.vsc[size_t(ps.top)][0];
     if (from < 0 || to <= from) return false;
     BindGeometry(a);
     Bindings eb = b;
-    for (int j = 1; j <= ps.between; j++) {
+    for (int j = 1; j <= between; j++) {
         Alloc vc = Upload(sizeof(s.vsc.v));
         std::memcpy(vc.cpu, s.vsc.data(), sizeof(s.vsc.v));
-        float x = from + (to - from) * float(j) / float(ps.between + 1);
+        float x = from + (to - from) * float(j) / float(between + 1);
         std::memcpy(vc.cpu + size_t(ps.top) * sizeof(s.vsc[0]), &x, sizeof(x));
         eb.cb[0] = {vc.buf, vc.off, sizeof(s.vsc.v)};
         PushRaw(eb);

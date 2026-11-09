@@ -1040,8 +1040,13 @@ std::string PixelHlsl(const PixelKey& k) {
     if (k.shading && *Shading(k.shading).coords) s += std::string(Shading(k.shading).coords) + "\n";
     std::string body;
     std::string pre;
-    if (k.shading && *Shading(k.shading).pre)
-        pre = F("#define PS_TWO_SIDED %d\n", k.two_sided ? 1 : 0) + Shading(k.shading).pre + "\n#undef PS_TWO_SIDED\n";
+    if (k.shading && *Shading(k.shading).pre) {
+        pre = F("#define PS_TWO_SIDED %d\n#define PS_PROGRAMMABLE %d\n", k.two_sided ? 1 : 0, k.programmable ? 1 : 0);
+        for (int i = 0; i < 4; i++) pre += F("#define STAGE%d_MODE %u\n", i, (k.tex_modes >> (i * 5)) & 0x1F);
+        pre += Shading(k.shading).pre;
+        pre += "\n#undef PS_TWO_SIDED\n#undef PS_PROGRAMMABLE\n";
+        for (int i = 0; i < 4; i++) pre += F("#undef STAGE%d_MODE\n", i);
+    }
     if (k.programmable) {
         for (int i = 0; i < 4; i++) {
             body += TexFetch(k, i);

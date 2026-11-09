@@ -51,7 +51,7 @@ struct PixelKey {
 // before the final combiner, and may change r0 (t0..t3, v0, v1, i.x0, i.x1 and xc are there too). xc.x is 1 over the largest x the frame and the one before it set in vertex
 // constant top (hardware order) for the draw's run of the entry's draws, 0 before one did: a draw whose x is 0
 // starts the next run, and runs pair up with last frame's by their order. xc.y is the seconds the renderer has run, as of the frame's
-// start, for shading that moves. between more draws go before each draw
+// start, for shading that moves. xc.z is 1 when the pixel shader samples stage 3 (texsize fills for a bound texture on a stage that's off too). between more draws go before each draw
 // whose x in top is above the one before it in its run, with x stepped evenly from there to the draw's, the rest of
 // its state the same: more shells for the fur. soft spreads a greater (or equal) alpha
 // test's edge over a pixel: for alpha blended draws, whose cut out edges then blend in instead of stepping. fill, when
@@ -69,7 +69,7 @@ struct PixelKey {
 // in fainter leaves the depth behind it; with top set, only the draws whose x there is above 0 (the shells, not the
 // skin under them). also lists more text the translation must contain as well as match, for an entry that takes only
 // one shape of a program; without, text it must not contain, for an entry that leaves one shape out. pre runs in the pixel shader before the combiner stages, after the textures are fetched (before
-// the fixed function's stages, which fetch as they go), and may change v0 and v1; PS_TWO_SIDED is 1 there when the back faces take the back colors. plain: the shading reads
+// the fixed function's stages, which fetch as they go), and may change v0 and v1; PS_TWO_SIDED is 1 there when the back faces take the back colors, PS_PROGRAMMABLE when the draw has a pixel shader and so t0..t3 for the stages in use, STAGE0_MODE..STAGE3_MODE as for ps. plain: the shading reads
 // no constants of its own (no clock, fill or top), so a draw in the state of the one before may reuse its pipeline.
 // screen, when set, copies the draw's render target just before each of its draws, what the draw blends over, for its
 // shaders to read as Texture2D xscreen (t5) with SamplerState xscreen_smp (s5), linear and clamped, at the pixel's
@@ -102,6 +102,11 @@ struct ProgramShading {
     bool screen = false;
     const char* post = "";
     const char* coords = "";
+    const uint32_t* between_live = nullptr;  // when set, read on each draw in place of between
+    // when set, top's w is the draw's shell of this many, x growing in proportion to w + 1 at a rate of its model
+    // piece's own, as pieces of different lengths take turns in one loop over the shells (a bunny's body and tail): xc.x
+    // and between's steps go by that instead of the run's largest x and the draw before's, so each piece reaches 1
+    int top_layers = 0;
 };
 inline std::vector<ProgramShading> g_program_shading;  // filled before the title boots, unchanged after
 

@@ -1,4 +1,5 @@
 #pragma once
+#include <array>
 #include <mutex>
 #include <utility>
 
@@ -55,6 +56,11 @@ void HudScopeEnd();
 std::pair<uint32_t, uint8_t> HudScopeNow();
 // a line in the frame capture, in order with the draws (the HUD trace)
 void HudNote(const char* text);
+
+// One vertex program constant (hardware order, D3D register + 96) for the draws the title pushes next, as
+// SetVertexShaderConstant would: the commands pushed before are read first. For a game's own data handed to its
+// shading hooks in a register no program of the title reads. Game thread
+void SetVertexConstant(uint32_t reg, const std::array<float, 4>& v);
 
 // Whether a title's loading screen, about to be drawn into the front buffer, should be drawn. Each one shown is a
 // Present the loader waits on, and those drawn unshown still cost the GPU their whole picture in the first frame

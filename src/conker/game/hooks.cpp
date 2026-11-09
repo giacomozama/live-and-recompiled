@@ -303,6 +303,15 @@ void ConkerFurAlphaTest(X86Context& ctx, uint8_t* base) {
     X86_PUSH32(0x80358u);
     sub_00537990(ctx, base);
     ctx.ecx = ecx, ctx.edx = edx, ctx.eax = eax;
+    fur::TagShells(ctx.ebx);  // ebx the player, as since 0x802F5
+}
+
+// An object's fur shells (0x78460, ebx the object, as 0x81FC0 took it in edi): who is drawn, before the shells' state
+// and push buffer. The player's are tagged in ConkerFurAlphaTest
+// [[hook]] at 0x78460, after the shell count
+void ConkerFurTag(X86Context& ctx, uint8_t* base) {
+    (void)base;
+    fur::TagShells(ctx.ebx);
 }
 
 // [[hook]] at 0x8210C, xmm0 the object's distance from the player and xmm3 R

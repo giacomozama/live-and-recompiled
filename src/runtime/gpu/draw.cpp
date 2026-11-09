@@ -257,6 +257,7 @@ struct ShadingTop {
     std::vector<float> frame, last;
     float x = 0;          // the latest draw's top
     float before = -1;    // the top of the draw before it in its run, -1 when it began one
+    int layer = -1, layer_before = -1;  // ProgramShading::top_layers: the latest draw's shell and the shell before it
 };
 std::vector<ShadingTop> g_shading_tops;
 float g_shading_clock = 0;  // xc.y: seconds from the first frame's end to this frame's start
@@ -269,12 +270,24 @@ float g_replay_clock = 0;
 void FillShadingConstants(const State& s, uint32_t shading, DrawConstants& c) {
     const ProgramShading& ps = g_program_shading[shading - 1];
     c.xc[1] = g_shading_clock;
+    c.xc[2] = s.ps && ((s.rs[kRsPsTextureModes] >> 15) & 0x1F) ? 1.0f : 0.0f;
     if (ps.fill) ps.fill(c.xs);
     int top = ps.top;
     if (top < 0 || top >= int(s.vsc.size())) return;
     if (g_shading_tops.size() < g_program_shading.size()) g_shading_tops.resize(g_program_shading.size());
     ShadingTop& t = g_shading_tops[shading - 1];
     float x = s.vsc[size_t(top)][0];
+    if (ps.top_layers) {
+        const float w = s.vsc[size_t(top)][3];
+        const int layer = x > 0 ? int(w) : -1;
+        if (layer != t.layer) {
+            t.layer_before = layer > t.layer ? t.layer : -1;
+            t.layer = layer;
+        }
+        t.before = x > 0 ? x * float(t.layer_before + 1) / (w + 1) : -1;
+        c.xc[0] = x > 0 ? (w + 1) / (float(ps.top_layers) * x) : 0;
+        return;
+    }
     bool begins = t.frame.empty() || x <= 0;
     t.before = begins ? -1 : t.x;
     t.x = x;
@@ -313,6 +326,7 @@ void ShadingReplay(bool begin, float t) {
         top.frame.clear();
         top.x = 0;
         top.before = -1;
+        top.layer = top.layer_before = -1;
     }
     g_shading_clock = g_shading_clock_before + (g_shading_clock - g_shading_clock_before) * t;
 }
