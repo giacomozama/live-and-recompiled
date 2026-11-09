@@ -531,12 +531,22 @@ bool ReadGameFile(const std::string& xbox_path, std::vector<uint8_t>& out) {
 
 // exports
 
+// XBE_TRACE_OPENS=1: each file the title opens, by its own path (and the level then, for a game that keeps one)
+static void TraceOpen(const char* how, const std::string& name) {
+    static const bool on = [] {
+        const char* e = std::getenv("XBE_TRACE_OPENS");
+        return e && *e && *e != '0';
+    }();
+    if (on) LOGR("files: %s %s", how, name.c_str());
+}
+
 KERNEL_EXPORT(190, NtCreateFile, 9) {
     loadtrace::Scope trace(loadtrace::kOpen, loadtrace::kOpenMain);
     uint32_t handle_out = a[0], access = a[1], attrs = a[2], iosb = a[3], disposition = a[7], options = a[8];
     (void)access;
     uint32_t root;
     std::string name = ObjectName(attrs, &root);
+    TraceOpen("create", name);
     Target t = Resolve(name, root);
     if (t.mod || t.mod_dir) return OpenMod(t, name, handle_out, iosb, disposition, options);
     if (t.disc) return OpenOnDisc(t.entry, t.cd, name, handle_out, iosb, disposition, options);
@@ -645,6 +655,7 @@ KERNEL_EXPORT(202, NtOpenFile, 6) {
     uint32_t handle_out = a[0], attrs = a[2], iosb = a[3], options = a[5];
     uint32_t root;
     std::string name = ObjectName(attrs, &root);
+    TraceOpen("open", name);
     Target t = Resolve(name, root);
     if (t.mod || t.mod_dir) return OpenMod(t, name, handle_out, iosb, 1, options);
     if (t.disc) return OpenOnDisc(t.entry, t.cd, name, handle_out, iosb, 1, options);
@@ -794,6 +805,26 @@ static uint32_t Transfer(const Args& a, bool write, uint32_t pages) {
     static const bool trace_xwb = std::getenv("XBE_TRACE_DSOUND") != nullptr;
     if (trace_xwb && !write && !pages && f->xbox.size() > 4 && f->xbox.compare(f->xbox.size() - 4, 4, ".xwb") == 0)
         LOGR("xwb read %s %llX %X -> %08X", f->xbox.c_str(), (unsigned long long)pos, n, buf);
+    // XBE_TRACE_OPENS: a package's first read too (.rbm, or its copy on the hard disk), with the code addresses on the
+    // guest stack, to find who loads it
+    static const bool trace_rbm = [] {
+        const char* e = std::getenv("XBE_TRACE_OPENS");
+        return e && *e && *e != '0';
+    }();
+    const bool package = (f->xbox.size() > 4 && f->xbox.compare(f->xbox.size() - 4, 4, ".rbm") == 0) ||
+                         f->xbox.find("\\package\\") != std::string::npos;  // the hard disk's copies, Z:\package\...
+    if (trace_rbm && !write && package && pos == 0) {
+        X86Context& ctx = CurrentContext();
+        char calls[160] = "";
+        int used = 0, found = 0;
+        for (uint32_t i = 0; i < 64 && found < 10 && used < int(sizeof(calls)) - 12; i++) {
+            const uint32_t v = R32(ctx.esp + 4 * i);
+            if (v < 0x11000 || v >= 0x48D000) continue;
+            used += snprintf(calls + used, sizeof(calls) - size_t(used), " %06X", v);
+            found++;
+        }
+        LOGR("files: read %s at %llX, %X bytes |%s", f->xbox.c_str(), (unsigned long long)pos, n, calls);
+    }
     if (write && n < len) return Finish(*f, 0xC000007F, n, event, apc, apc_ctx, iosb);  // disk full
     if (!write && len && !n) return Finish(*f, kEndOfFile, 0, event, apc, apc_ctx, iosb);
     if (!write && f->async) return Defer(f, kSuccess, n, event, apc, apc_ctx, iosb);

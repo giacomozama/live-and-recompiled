@@ -116,6 +116,10 @@ constexpr const char* kC85V9Match = "mac_mul(((c[181]).xxxx), ((i.v9).xxxx))";
 // the weasels' (Heist and elsewhere): the body's program, shells offset by c94.x times the length in v5; a fur map on
 // stage 2 (64x128, white over the furry pieces), the masks on 3
 constexpr const char* kC94Match = "mac_mul(((c[190]).xxxx), ((i.v5).xxxx))";
+// the Tediz Demolisher's in multiplayer (its character select model, characters::g_menu_models; F3 capture 003050,
+// 2026-11-10): the skinned position (R10) moved along the normal (R2) by c85.x alone, no length per vertex, so the coat
+// is even; the mask on stage 2, 8 of 16 shells. Per-pixel lighting took its draws before (one of its lit shapes)
+constexpr const char* kTediMatch = "(mac_mul(((c[181]).xxxx), ((R2).xyzz)) + ((R10).xyzz))";
 const bool kAlways = true;
 // fur::TagShells' types for the chipmunks (ChipmunkTypes)
 // from F3 captures 2026-11-09: the female bartender 398, Berri 114, the little girl 124, the two Sneekers (one each
@@ -426,6 +430,7 @@ void fur::Init() {
                              head_vs = std::string("#define FUR_NORMAL R6\n#define FUR_TOP c[186].x\n#define FUR_LENGTH i.v9.x\n") + kStrandVs,
                              c90_vs = std::string("#define FUR_NORMAL R2\n#define FUR_TOP c[186].x\n#define FUR_LENGTH i.v5.x\n") + kStrandVs,
                              c85v9_vs = std::string("#define FUR_NORMAL R6\n#define FUR_TOP c[181].x\n#define FUR_LENGTH i.v9.x\n") + kStrandVs,
+                             tedi_vs = std::string("#define FUR_NORMAL R2\n#define FUR_TOP c[181].x\n#define FUR_LENGTH 1.0\n") + kStrandVs,
                              c94_vs = std::string("#define FUR_MAP_STRANDS 1\n#define FUR_NORMAL R2\n#define FUR_TOP c[190].x\n#define FUR_LENGTH i.v5.x\n") + kStrandVs,
                              c94_pre = std::string("#define FUR_MAP_STRANDS 1\n") + kStrandPre + "\n#undef FUR_MAP_STRANDS\n";
     const auto strands = [&](const char* match, const std::string& vs, int top, const char* without, const char* pre = kStrandPre) {
@@ -439,6 +444,7 @@ void fur::Init() {
     strands(kC90Match, c90_vs, 90 + 96, nullptr);  // Berri's, the officer's head and the soldiers' pieces
     strands(kC94Match, c94_vs, 94 + 96, nullptr, c94_pre.c_str());
     strands(kC85V9Match, c85v9_vs, 85 + 96, nullptr);
+    strands(kTediMatch, tedi_vs, 85 + 96, nullptr);
     gpu::g_program_shading.push_back({.match = kMatch, .on = &g_shading, .vs = kVs, .ps = kPs, .top = 85 + 96,
                                       .between = 1, .soft = true, .depth_alpha = depth_alpha, .without = skip});
     gpu::g_program_shading.push_back({.match = kMatch, .on = &kAlways, .vs = "    o.x0 = 0;\n    o.x1 = 0;",
@@ -451,6 +457,8 @@ void fur::Init() {
                                       .top = 85 + 96, .depth_alpha = depth_alpha});
     gpu::g_program_shading.push_back({.match = kC94Match, .on = &kAlways, .vs = "    o.x0 = 0;\n    o.x1 = 0;",
                                       .top = 94 + 96, .depth_alpha = depth_alpha});
+    gpu::g_program_shading.push_back({.match = kTediMatch, .on = &kAlways, .vs = "    o.x0 = 0;\n    o.x1 = 0;",
+                                      .top = 85 + 96, .depth_alpha = depth_alpha});
 }
 
 void fur::TagShells(uint32_t object) {

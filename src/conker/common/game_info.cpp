@@ -95,6 +95,7 @@ const app::GameInfo app::kGame = {
                 {"fur_strand_extra_shells", nullptr, &fur::g_extra_shells},
                 {"fur_distant", &fur::g_distant, nullptr},  // distant fur keeps all its shells (hooks.cpp)
                 {"character_max_lod", &characters::g_max_lod, nullptr},  // players keep their full model (hooks.cpp)
+                {"character_menu_models", &characters::g_menu_models, nullptr},  // the classes' character select models (hooks.cpp)
                 {"dynamic_water", &water::g_dynamic, nullptr},  // flowing, rippling water (src/conker/common/water.cpp)
                 {"per_pixel_lighting", &lighting::g_per_pixel, nullptr},  // lit per pixel (src/conker/common/lighting.cpp)
                 {"floor_depth", &reflection::g_floor_depth, nullptr},  // floors over reflections blur by their own depth (reflection.cpp)

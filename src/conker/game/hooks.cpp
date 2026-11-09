@@ -336,6 +336,150 @@ void ConkerCharacterLod(X86Context& ctx, uint8_t* base) {
     if (characters::g_max_lod) ctx.ebx = 0;
 }
 
+// The multiplayer classes' models, by id: four a class, registered by the frontend as it lists the classes (0x234840,
+// names at 0x6A58F0): "Multi\<class>" the full one in a match, then "MultiFrontend\<class>" character select's,
+// "MultiLOD\<class>" and "MultiLOD2\<class>", e.g. the WWII grunt's 0x1C5..0x1C8. A player's list ([player+0x50C])
+// holds the full, middle and far ones. Character select's is finer for the squirrels, the only one with fur on the
+// body and head (the match's only on the tail or hair), and for some Tediz (the Future ones, the WWII grunt).
+// characters::g_menu_models draws a class's character select model in a match for its full one, either side's, the
+// WWII classes' and the Future ones'.
+bool characters::g_menu_models = true;
+
+// a model's name, "" without one
+static std::string ModelName(uint32_t id) {
+    std::string out;
+    if (id >= 0x205) return out;
+    const uint32_t name = kernel::R32(0x6A58F0 + 4 * id);
+    if (name < 0x10000) return out;
+    for (uint32_t i = 0; i < 80; i++) {
+        const char c = kernel::G<char>(name + i);
+        if (!c) break;
+        out += c;
+    }
+    return out;
+}
+
+// a class's full model (a squirrel's or a Tedi's), the one after it character select's
+static bool HasMenuModel(uint32_t full) {
+    return ModelName(full).rfind("Multi\\Combat", 0) == 0 && ModelName(full + 1).rfind("MultiFrontend\\", 0) == 0;
+}
+
+// the menu models asked for since the latest level change. Game thread
+static std::vector<uint32_t> g_menu_requested;
+
+// A match's level load takes a handle on each package it needs (0x63680, esi the handle, its name at +0xC: the
+// level's, and its era's six classes of each side, aid\zpackage\Characters\Multi\<class>\default.rbm), then queues its
+// load (0x5E5A0) on the loader the level load drains before players spawn. A class's character select model is in
+// a package of its own (Characters\MultiFrontend\<class>), loaded by character select alone and released at each
+// level change (0x863E0 releases the frontend's nodes, [0x84722C]): in a match it was gone, and a model whose package
+// isn't in loads as an empty stand-in (0x99EF0's 0x75DB48), which the joint hits (0x2D06B0) read through, a crash.
+// So as the match takes a class's package, its character select model is asked for as the frontend asks
+// for a model (0x99CF0, eax the model: a node on the frontend's list, 0x99AD0, its load queued with 0x5E5A0), which
+// the next level change releases with the rest of that list
+X86_EXTERN_FUNC(sub_00099CF0);
+
+// [[hook]] at 0x636AF, esi the handle, its resource found or made
+void ConkerMenuPackages(X86Context& ctx, uint8_t* base) {
+    if (!characters::g_menu_models) return;
+    char name[160];
+    uint32_t n = 0;
+    for (; n + 1 < sizeof(name); n++) {
+        const char c = kernel::G<char>(ctx.esi + 0xC + n);
+        if (!c) break;
+        name[n] = c;
+    }
+    name[n] = 0;
+    static const char kPackage[] = "\\zpackage\\Characters\\Multi\\Combat";
+    const char* at = strstr(name, kPackage);
+    if (!at) return;
+    const char* cls = at + sizeof("\\zpackage\\Characters\\Multi\\") - 1;
+    const char* end = strchr(cls, '\\');
+    const std::string want = "MultiFrontend\\" + std::string(cls, end ? size_t(end - cls) : strlen(cls));
+    uint32_t model = 0;
+    for (uint32_t id = 1; id < 0x205 && !model; id++)
+        if (ModelName(id) == want && HasMenuModel(id - 1)) model = id;
+    if (!model || std::find(g_menu_requested.begin(), g_menu_requested.end(), model) != g_menu_requested.end()) return;
+    const X86Context saved = ctx;
+    ctx.eax = model;
+    X86_PUSH32(0x636AFu);
+    sub_00099CF0(ctx, base);
+    ctx = saved;
+    g_menu_requested.push_back(model);
+    LOGI("models: level %u loads %s (%u) too", kernel::R32(0x7FA1F8), want.c_str(), model);
+}
+
+// [[hook]] at 0x8643D, the end of 0x863E0, the frontend's nodes released: those asked for with them
+void ConkerMenuReset(X86Context& ctx, uint8_t* base) {
+    (void)ctx, (void)base;
+    g_menu_requested.clear();
+}
+
+// A player's setup (0x2B3260..) makes a copy of each of its models' scene for the player ([player+0x4C4 + 4i],
+// 0x3ED030's size, 0x2AF0E0, 0x865C0), then its animation controller from the first model's "ndSkeleton" node
+// (0x36A60, [player+0x3C4], [player+0x3C8] its handle), and hands that to every model's skeleton (0x2B3510, ebx the
+// handle). The animations take only on a controller made on the class's own full model: a menu model first in the
+// list stood in its bind pose, as did the class's middle one (2026-11-09). So the list stays the game's, and once
+// the controller is handed out the menu model takes slot 0: its instance (0x86440, eax the model, edi the type), a
+// copy of its scene for the player, and the same controller handed to it. The full model's copy stays: the
+// controller was made on it
+X86_EXTERN_FUNC(sub_00086440);
+X86_EXTERN_FUNC(sub_003ED030);
+X86_EXTERN_FUNC(sub_002AF0E0);
+X86_EXTERN_FUNC(sub_000865C0);
+X86_EXTERN_FUNC(sub_002B3510);
+// [[hook]] at 0x2B3368, after 0x2B3510; ebp the player
+void ConkerMenuSkeleton(X86Context& ctx, uint8_t* base) {
+    if (!characters::g_menu_models) return;
+    const uint32_t player = ctx.ebp, list = kernel::R32(player + 0x50C);
+    if (list < 0x10000 || kernel::R32(player + 0x4B0) == 0) return;
+    const uint32_t full = kernel::R32(list), model = full + 1, type = kernel::R32(player + 0x68);
+    if (!HasMenuModel(full)) return;
+    if (std::find(g_menu_requested.begin(), g_menu_requested.end(), model) == g_menu_requested.end()) {
+        LOGI("models: %s keeps its match model: its character select one isn't loaded", ModelName(full).c_str());
+        return;
+    }
+    const X86Context saved = ctx;
+    ctx.eax = model, ctx.edi = type;
+    X86_PUSH32(0x2B3368u);
+    sub_00086440(ctx, base);
+    const uint32_t inst = ctx.eax, data = inst >= 0x10000 ? kernel::R32(inst + 0x24) : 0;
+    const uint32_t scene = data >= 0x10000 ? kernel::R32(data + 0x8) : 0;
+    if (scene < 0x10000) {
+        ctx = saved;
+        LOGR("models: %s has no instance (%08X), the match model kept", ModelName(model).c_str(), inst);
+        return;
+    }
+    ctx.ecx = scene;
+    X86_PUSH32(0x2B3368u);
+    sub_003ED030(ctx, base);
+    const uint32_t size = ctx.eax;
+    X86_PUSH32(0xFFFFFFFFu);
+    X86_PUSH32(0x4B9u);
+    X86_PUSH32(0x606AA8u);
+    X86_PUSH32(size);
+    X86_PUSH32(0x2B3368u);
+    sub_002AF0E0(ctx, base);
+    ctx.esp += 16;
+    const uint32_t copy = ctx.eax;
+    if (copy < 0x10000) {
+        ctx = saved;
+        LOGR("models: no memory for %s's scene (%u bytes), the match model kept", ModelName(model).c_str(), size);
+        return;
+    }
+    X86_PUSH32(copy);
+    X86_PUSH32(scene);
+    X86_PUSH32(0x2B3368u);
+    sub_000865C0(ctx, base);
+    ctx.esp += 8;
+    kernel::W32(player + 0x4B0, inst);
+    kernel::W32(player + 0x4C4, copy);
+    ctx.ecx = player, ctx.ebx = kernel::R32(player + 0x3C8);
+    X86_PUSH32(0x2B3368u);
+    sub_002B3510(ctx, base);
+    ctx = saved;
+    LOGI("models: player %08X draws %s (%u)", player, ModelName(model).c_str(), model);
+}
+
 // 0x1310D0 paces a player's refresh in 0x7F96B's branch (the arg the player, esi its pacing: the frame last seen, the
 // share built up): each frame its share grows by 0x978D0's, 1 when its size on screen ([player+0x67C]) isn't known
 // yet, else that size / 100 (halved in split screen), and a whole share runs it, at most 4 players a frame (the

@@ -1238,6 +1238,9 @@ void Draw(double fps) {
                 ImGui::SeparatorText(T("Characters"));
                 Check("Force max character LoD", &characters::g_max_lod);
                 Hint("Characters keep their full model and smooth animation however far away.", true);
+                Check("Detailed multiplayer characters", &characters::g_menu_models);
+                Hint("Multiplayer classes use their more detailed character select models in matches; squirrels get "
+                     "fur on the body. Takes effect from the next match.", true);
 
                 ImGui::SeparatorText(T("Grass"));
                 Check("Wind on distant grass", &grass::g_wind);
