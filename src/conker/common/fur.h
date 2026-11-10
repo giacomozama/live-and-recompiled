@@ -35,6 +35,10 @@ struct Look {
     // (Berri's face in the Heist suit). The weasels' hands and feet and the chipmunks' clothes are other meshes, drawn
     // without shells, which this can't reach
     uint32_t fill;
+    // a hair look's (HairOf): the direction its strands are combed in, degrees in the mask's coordinates
+    uint32_t comb = 90;
+    uint32_t sway = 0;  // a hair look's: % how far it sways in the air, its tips most, and each strand wavers
+    uint32_t motion = 100;  // a hair look's: % how far it trails behind the character's movement and swings back
     bool operator==(const Look&) const = default;
 };
 // A model's look starts from its kind's: the coat (Conker, the squirrels, grey ones too, and most others); the
@@ -65,7 +69,15 @@ ModelLook* FindModelLook(uint32_t type);
 ModelLook* ModelLookOf(uint32_t type);
 // a model's defaults: its kind's look (kCoat, kWeasel, kChipmunk), and whether it keeps the game's own fur
 int KindOf(uint32_t type);
-inline const Look& DefaultLook(uint32_t type) { return kLookDefaults[KindOf(type)]; }
+// A model's hair, where it has a piece of hair drawn with the fur's shells (fur.cpp kHairPieces: Van Helsing's), a
+// look of its own under HairOf(model), listed beside the model: long fine strands combed one way and lit along it.
+// For a hair look strands are across a tile, tufts the strand pieces along one (fewer, longer), tufting how far a
+// strand runs along the comb from root to tip, comb its direction; gap shade unused
+inline constexpr uint32_t kHairBit = 0x10000;
+inline constexpr uint32_t HairOf(uint32_t model) { return kHairBit | model; }
+inline constexpr bool IsHair(uint32_t type) { return type != ~0u && (type & kHairBit); }
+inline constexpr Look kHairLook = {96, 2, 60, 30, 40, 80, 5, 0, 100, 50, 100, 0, 90, 40, 100};
+inline const Look& DefaultLook(uint32_t type) { return IsHair(type) ? kHairLook : kLookDefaults[KindOf(type)]; }
 bool GameFurOf(uint32_t type);
 // the model whose look a model takes: a multiplayer class's models share one (Multi\, MultiFrontend\, MultiLOD\,
 // MultiLOD2\, MainFrontend\), its full model's id; Conker's (all but Van Helsing's), 0; any other model its own. Any thread
@@ -99,6 +111,10 @@ extern bool g_distant;
 // the vertex constant kTagRegister, which no program of the game reads, for the shaders to pick a look by. F3
 // captures list it with the constants that change (= c-94). Game thread
 inline constexpr uint32_t kTagRegister = 2;  // hardware order: D3D c-94
+// Beside the tag, for a model with hair (HairOf): how far the hair trails behind its movement, in the view's space
+// (x right, y up, z toward the eye), a fraction of the hair's length; w 1 when set. A spring per character, driven by
+// its position [object+0x78], swung back past rest as it stops (TagShells)
+inline constexpr uint32_t kMotionRegister = 3;  // hardware order: D3D c-93
 void TagShells(uint32_t object);
 
 // hands the renderer the shading; after the settings load, before boot

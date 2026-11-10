@@ -1253,7 +1253,25 @@ void Draw(double fps) {
                         ImGui::PushID(int(model));  // each model's sliders their own widgets, so a drag doesn't carry over
                         Check("Game's own fur", &own->game);
                         Hint("This model keeps the game's fur, with super fur on.", true);
-                        if (!own->game) {
+                        if (!own->game && fur::IsHair(model)) {
+                            Slider("Strands", &l.strands, 8, 128, d.strands);
+                            Slider("Strand pieces", &l.tufts, 1, 16, d.tufts);
+                            Hint("Fewer pieces make longer strands.", true);
+                            Slider("Comb direction", &l.comb, 0, 359, d.comb);
+                            Slider("Comb lean %", &l.tufting, 0, 200, d.tufting);
+                            Hint("How far a strand runs along the comb from root to tip.", true);
+                            Slider("Sway %", &l.sway, 0, 200, d.sway);
+                            Hint("How much the hair moves in the air.", true);
+                            Slider("Follows motion %", &l.motion, 0, 200, d.motion);
+                            Hint("How far the hair trails behind when the character moves, and swings back as it stops.", true);
+                            Slider("Length %", &l.length, 20, 100, d.length);
+                            Slider("Droop %", &l.droop, 0, 200, d.droop);
+                            Slider("Thickness %", &l.thickness, 30, 100, d.thickness);
+                            Slider("Taper %", &l.taper, 20, 150, d.taper);
+                            Slider("Root shade %", &l.root_shade, 0, int(fur::kMaxShade), d.root_shade);
+                            Slider("Sheen %", &l.sheen, 0, 200, d.sheen);
+                            Slider("Back glow %", &l.back_glow, 0, 200, d.back_glow);
+                        } else if (!own->game) {
                             Slider("Strands", &l.strands, 8, 64, d.strands);
                             Slider("Tufts", &l.tufts, 1, 16, d.tufts);
                             Slider("Tufting %", &l.tufting, 0, 100, d.tufting);

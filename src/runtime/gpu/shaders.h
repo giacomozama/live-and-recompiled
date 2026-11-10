@@ -131,6 +131,7 @@ struct ProgramWatch {
     bool spread = false;     // vertices spread over the draw rather than its first
     uint32_t vertices = 16;  // at most
     const char* also = "";
+    const bool* on = nullptr;  // when set, the watch looks only while it holds (render thread)
 };
 inline std::vector<ProgramWatch> g_program_watch;  // filled before the title boots, unchanged after
 
@@ -175,8 +176,8 @@ std::string VertexProgramHlsl(const std::vector<uint32_t>& program, uint16_t reg
                               uint32_t shading = 0);
 // the g_program_shading entries a program matches, bit i for entry i + 1 (the first 64), whether they are on or not
 uint64_t MatchProgramShading(const std::vector<uint32_t>& program);
-// the g_program_watch entry a program matches, 1 based, 0 none
-uint32_t MatchProgramWatch(const std::vector<uint32_t>& program);
+// the g_program_watch entries a program matches, bit i for entry i (the first 64)
+uint64_t MatchProgramWatch(const std::vector<uint32_t>& program);
 // where a vertex program's clip w comes from: the constant register (hardware order) a dp4 or dph into oPos.w reads,
 // kPosWInput when it is moved from an input (vertices already on the screen), kPosWUnknown otherwise
 constexpr int kPosWInput = -1;
