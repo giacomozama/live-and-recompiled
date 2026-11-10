@@ -67,7 +67,8 @@ void Apply(const std::string& s, Pad& p) {
 
 thread_local bool t_presence = false;
 
-Pad Poll(int port) {
+// the script's pad before the title's own mapping (app::kGame.pad), as the real input's Raw
+Pad Raw(int port) {
     static const std::vector<Press> script = LoadScript();
     static Press live{-1, "", 0};
     Pad p;
@@ -86,6 +87,11 @@ Pad Poll(int port) {
             if (t >= s.at && t <= s.at + s.len) Apply(s.buttons, p);
         if (live.at >= 0 && t >= live.at && t <= live.at + live.len) Apply(live.buttons, p);
     }
+    return p;
+}
+
+Pad Poll(int port) {
+    Pad p = Raw(port);
     if (app::kGame.pad) app::kGame.pad(port, p);
     return p;
 }

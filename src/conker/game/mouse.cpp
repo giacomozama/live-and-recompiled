@@ -31,6 +31,7 @@
 // On the headless harness there is no window and no mouse, so everything but the option globals compiles out.
 #include "common/mouse.h"
 
+#include "common/menus.h"
 #include "cpu/x86_ops.h"
 
 #include <cstring>
