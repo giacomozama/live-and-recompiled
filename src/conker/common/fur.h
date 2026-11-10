@@ -18,6 +18,7 @@ extern bool g_shading;
 // masks, fine, tapered and gathered in tufts, drooping, and lit as hair. Read on each draw. Each model has a look of
 // its own (ModelLook), read on each draw too.
 extern bool g_strands;
+inline constexpr uint32_t kMaxShade = 20;
 struct Look {
     uint32_t strands;     // strands across one tile of the mask's coordinates
     uint32_t tufts;       // tufts across a tile
@@ -25,8 +26,8 @@ struct Look {
     uint32_t droop;       // % of the fur's length its tips hang down by
     uint32_t thickness;   // % of a strand's cell its root's radius takes
     uint32_t taper;       // % 100 narrows evenly to a point; lower keeps the strand wide to its tip
-    uint32_t root_shade;  // % taken off at the roots
-    uint32_t gap_shade;   // % taken off in the crevices between tufts
+    uint32_t root_shade;  // % taken off at the roots (at most kMaxShade)
+    uint32_t gap_shade;   // % taken off in the crevices between tufts (at most kMaxShade)
     uint32_t sheen;       // % the highlights along the strands
     uint32_t back_glow;   // % the tips glowing with the light behind them
     uint32_t length;      // % of the game's shells the strands reach; where a fur map is under half, shorter still
@@ -42,9 +43,9 @@ struct Look {
 // untufted, unhanging velvet
 enum : int { kCoat, kWeasel, kChipmunk, kLooks };
 inline constexpr Look kLookDefaults[kLooks] = {
-    {20, 5, 70, 60, 75, 70, 45, 35, 50, 50, 100, 0},
-    {20, 5, 70, 60, 75, 70, 45, 35, 50, 50, 100, 0},
-    {36, 6, 20, 0, 70, 90, 25, 10, 30, 70, 70, 0},
+    {20, 5, 70, 60, 75, 70, 5, 5, 50, 50, 100, 0},
+    {20, 5, 70, 60, 75, 70, 5, 5, 50, 50, 100, 0},
+    {36, 6, 20, 0, 70, 90, 5, 5, 30, 70, 70, 0},
 };
 
 // Each model's look: by the type TagShells tags its shells with ([object+0x68], the model's id; its name at

@@ -442,8 +442,8 @@ void PutLook(float (*xs)[4], int k, const fur::Look& l) {
     a[3] = pc(l.taper);
     b[0] = float(l.strands);
     b[1] = float(l.tufts);
-    b[2] = pc(l.root_shade);
-    b[3] = pc(l.gap_shade);
+    b[2] = pc(std::min(l.root_shade, fur::kMaxShade));
+    b[3] = pc(std::min(l.gap_shade, fur::kMaxShade));
     c[0] = pc(l.sheen);
     c[1] = pc(l.back_glow);
     c[2] = pc(l.length);
@@ -745,6 +745,8 @@ void fur::Load(const void* table) {
         if (!own) break;
         own->game = (*m)["game"].value_or(own->game);
         for (const LookKey& k : kLookKeys) own->look.*k.field = (*m)[k.key].value_or(own->look.*k.field);
+        own->look.root_shade = std::min(own->look.root_shade, kMaxShade);
+        own->look.gap_shade = std::min(own->look.gap_shade, kMaxShade);
     }
 }
 

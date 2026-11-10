@@ -1261,8 +1261,8 @@ void Draw(double fps) {
                             Slider("Droop %", &l.droop, 0, 200, d.droop);
                             Slider("Thickness %", &l.thickness, 30, 100, d.thickness);
                             Slider("Taper %", &l.taper, 20, 150, d.taper);
-                            Slider("Root shade %", &l.root_shade, 0, 100, d.root_shade);
-                            Slider("Tuft shade %", &l.gap_shade, 0, 100, d.gap_shade);
+                            Slider("Root shade %", &l.root_shade, 0, int(fur::kMaxShade), d.root_shade);
+                            Slider("Tuft shade %", &l.gap_shade, 0, int(fur::kMaxShade), d.gap_shade);
                             Slider("Sheen %", &l.sheen, 0, 200, d.sheen);
                             Slider("Back glow %", &l.back_glow, 0, 200, d.back_glow);
                         }
