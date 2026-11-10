@@ -654,7 +654,7 @@ void Frame() {
     g_version++;
 }
 
-void Fill(float (*xs)[4]) {
+void Fill(float (*xs)[4], const float*) {
     xs[0][0] = g_cx - kExtent / 2;
     xs[0][1] = g_cz - kExtent / 2;
     xs[0][2] = 1 / kExtent;

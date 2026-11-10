@@ -1,6 +1,8 @@
 #pragma once
 
 #include <cstdint>
+#include <string>
+#include <vector>
 
 // Fur shells (src/conker/common/fur.cpp): the vertex programs that draw a character's fur as shells pushed out along the
 // normal, one draw per shell, get the renderer's gpu::ProgramShading; with fur_shading off too, for the depth only
@@ -13,8 +15,8 @@ namespace fur {
 extern bool g_shading;
 
 // settings.toml fur_strands, shown as Super fur: the shells' strands drawn procedurally rather than from the game's
-// masks, fine, tapered and gathered in tufts, drooping, and lit as hair. Read on each draw. Each kind of fur has a look
-// of its own (kLookNames, numbers fur_strand_* for the coat, fur_weasel_*, fur_chipmunk_*), read on each draw too.
+// masks, fine, tapered and gathered in tufts, drooping, and lit as hair. Read on each draw. Each model has a look of
+// its own (ModelLook), read on each draw too.
 extern bool g_strands;
 struct Look {
     uint32_t strands;     // strands across one tile of the mask's coordinates
@@ -32,18 +34,55 @@ struct Look {
     // (Berri's face in the Heist suit). The weasels' hands and feet and the chipmunks' clothes are other meshes, drawn
     // without shells, which this can't reach
     uint32_t fill;
+    bool operator==(const Look&) const = default;
 };
+// A model's look starts from its kind's: the coat (Conker, the squirrels, grey ones too, and most others); the
+// weasels' (their program, with a fur map where the coat is); the chipmunks' (Berri, the female bartender, the
+// warboss's little girl, the SHC Sneeker; their programs the grey squirrels', told apart by TagShells): short, dense,
+// untufted, unhanging velvet
 enum : int { kCoat, kWeasel, kChipmunk, kLooks };
-inline constexpr const char* kLookNames[kLooks] = {"Coat", "Weasels", "Chipmunks"};
-// the coat: Conker, the squirrels (grey ones too) and most others; the weasels' program, with a fur map where the coat
-// is; the chipmunks (Berri, the female bartender, the warboss's little girl, the SHC Sneeker; their programs the grey
-// squirrels', told apart by TagShells): short, dense, untufted, unhanging velvet
 inline constexpr Look kLookDefaults[kLooks] = {
     {20, 5, 70, 60, 75, 70, 45, 35, 50, 50, 100, 0},
     {20, 5, 70, 60, 75, 70, 45, 35, 50, 50, 100, 0},
     {36, 6, 20, 0, 70, 90, 25, 10, 30, 70, 70, 0},
 };
-extern Look g_looks[kLooks];
+
+// Each model's look: by the type TagShells tags its shells with ([object+0x68], the model's id; its name at
+// 0x6A58F0). settings.toml [fur_models.<type>], the Look's keys, and game = the game's own fur for it; only those
+// changed from their defaults (DefaultLook, GameFurOf) are saved. The renderer reads them per draw; a model without
+// one is drawn with its defaults. kModelLooks at most; a type of kNoModel is a free slot (Conker is 0). The F1 menu changes them live
+inline constexpr uint32_t kNoModel = ~0u;
+struct ModelLook {
+    uint32_t type = kNoModel;
+    bool game = false;  // drawn as the game draws it, super fur or not
+    Look look{};
+};
+inline constexpr int kModelLooks = 64;
+extern ModelLook g_model_looks[kModelLooks];
+ModelLook* FindModelLook(uint32_t type);
+// the model's look, made from its defaults if it had none; null when the slots are full. Not the render thread
+ModelLook* ModelLookOf(uint32_t type);
+// a model's defaults: its kind's look (kCoat, kWeasel, kChipmunk), and whether it keeps the game's own fur
+int KindOf(uint32_t type);
+inline const Look& DefaultLook(uint32_t type) { return kLookDefaults[KindOf(type)]; }
+bool GameFurOf(uint32_t type);
+// the model whose look a model takes: a multiplayer class's models share one (Multi\, MultiFrontend\, MultiLOD\,
+// MultiLOD2\, MainFrontend\), its full model's id; any other model its own. Any thread
+uint32_t Canonical(uint32_t type);
+// the types whose shells super fur drew, this session or before (settings.toml fur_seen), oldest first
+std::vector<uint32_t> SeenModels();
+// the furry models the game's model table has now (fur.cpp kFurryModels, from a soak test survey; multiplayer's
+// squirrels by name).
+// XBE_FUR_SURVEY=1 logs each model's first draw with super fur, its type and name, to add to them. UI thread
+std::vector<uint32_t> KnownModels();
+// the game's image is in memory: the model table can be read (app::GameInfo::loaded)
+void ImageLoaded();
+// the model's name in the game's model table and its type, "Berri (114)"; a multiplayer class's, "CombatSquirrelMultiGrunt (multiplayer)", "Model (469)" when the table has none
+std::string ModelName(uint32_t type);
+// the [fur_models] table of settings.toml (a toml::table)
+void Load(const void* table);
+void Save(void* table);
+
 inline constexpr uint32_t kExtraShells = 2;
 extern uint32_t g_extra_shells;  // shells added between each two of the game's, for every look
 

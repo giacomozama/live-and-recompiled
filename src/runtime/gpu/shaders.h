@@ -90,7 +90,9 @@ struct ProgramShading {
     int top = -1;
     int between = 0;
     bool soft = false;
-    void (*fill)(float (*xs)[4]) = nullptr;
+    // reg: the draw's vertex constant fill_register (hardware order), null when that is -1
+    void (*fill)(float (*xs)[4], const float* reg) = nullptr;
+    int fill_register = -1;
     const char* tess = "";
     ShadingField (*field)() = nullptr;
     const char* functions = "";

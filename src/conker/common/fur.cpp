@@ -1,17 +1,27 @@
 #include "common/fur.h"
 
+#include <algorithm>
+#include <cctype>
+#include <cstring>
+#include <atomic>
+#include <chrono>
 #include <cstdlib>
 #include <iterator>
 #include <string>
 #include <vector>
 
+#if __has_include(<toml++/toml.hpp>)
+#include <toml++/toml.hpp>
+#endif
+
+#include "core/log.h"
 #include "gpu/shaders.h"
 #include "kernel/kernel.h"
 #include "xdk/d3d8.h"
 
 bool fur::g_shading = false;
 bool fur::g_strands = false;
-fur::Look fur::g_looks[fur::kLooks] = {fur::kLookDefaults[0], fur::kLookDefaults[1], fur::kLookDefaults[2]};
+fur::ModelLook fur::g_model_looks[fur::kModelLooks];
 uint32_t fur::g_extra_shells = fur::kExtraShells;
 
 namespace {
@@ -388,32 +398,81 @@ std::vector<float> ChipmunkTypes() {
     return out;
 }
 
-void FillStrands(float (*xs)[4]) {
-    const auto pc = [](uint32_t v) { return float(v) / 100.0f; };
-    for (int k = 0; k < fur::kLooks; k++) {
-        const fur::Look& l = fur::g_looks[k];
-        float* a = xs[3 * k];
-        float* b = xs[3 * k + 1];
-        float* c = xs[3 * k + 2];
-        a[0] = pc(l.droop);
-        a[1] = pc(l.tufting);
-        a[2] = pc(l.thickness) * 1.15f;  // a cell's corner to its middle, some jitter out
-        a[3] = pc(l.taper);
-        b[0] = float(l.strands);
-        b[1] = float(l.tufts);
-        b[2] = pc(l.root_shade);
-        b[3] = pc(l.gap_shade);
-        c[0] = pc(l.sheen);
-        c[1] = pc(l.back_glow);
-        c[2] = pc(l.length);
-        c[3] = pc(l.fill);
+// the types super fur's draws were tagged with since boot (SeenModels), and whether drawn by the weasels' program
+// (FUR_MAP_STRANDS, whatever the type: the Weasels look). Render thread writes, the F1 menu reads
+constexpr int kSeenMax = 128;
+std::atomic<uint32_t> g_seen[kSeenMax];
+std::atomic<bool> g_seen_weasel[kSeenMax];
+std::atomic<bool> g_seen_drawn[kSeenMax];  // drawn this session, not only remembered from the settings
+std::atomic<int> g_seen_count{0};
+
+// XBE_FUR_SURVEY=1: each model's first draw with super fur this session logged, its type and name, to fill
+// kFurryModels from
+bool Survey() {
+    static const bool on = [] {
+        const char* e = std::getenv("XBE_FUR_SURVEY");
+        return e && *e && *e != '0';
+    }();
+    return on;
+}
+
+void See(uint32_t type, bool weasel, bool drawn) {
+    int n = std::min(g_seen_count.load(std::memory_order_acquire), kSeenMax), i = 0;
+    while (i < n && g_seen[i].load(std::memory_order_relaxed) != type) i++;
+    if (i == n) {
+        if (n >= kSeenMax) return;
+        g_seen[n].store(type, std::memory_order_relaxed);
+        g_seen_weasel[n].store(false, std::memory_order_relaxed);
+        g_seen_drawn[n].store(false, std::memory_order_relaxed);
+        g_seen_count.store(n + 1, std::memory_order_release);
     }
+    if (weasel) g_seen_weasel[i].store(true, std::memory_order_relaxed);
+    if (drawn && !g_seen_drawn[i].exchange(true, std::memory_order_relaxed) && Survey())
+        LOGR("fur survey: model %u \"%s\"%s", type, fur::ModelName(type).c_str(), weasel ? ", the weasels' program" : "");
+}
+
+void PutLook(float (*xs)[4], int k, const fur::Look& l) {
+    const auto pc = [](uint32_t v) { return float(v) / 100.0f; };
+    float* a = xs[3 * k];
+    float* b = xs[3 * k + 1];
+    float* c = xs[3 * k + 2];
+    a[0] = pc(l.droop);
+    a[1] = pc(l.tufting);
+    a[2] = pc(l.thickness) * 1.15f;  // a cell's corner to its middle, some jitter out
+    a[3] = pc(l.taper);
+    b[0] = float(l.strands);
+    b[1] = float(l.tufts);
+    b[2] = pc(l.root_shade);
+    b[3] = pc(l.gap_shade);
+    c[0] = pc(l.sheen);
+    c[1] = pc(l.back_glow);
+    c[2] = pc(l.length);
+    c[3] = pc(l.fill);
+}
+
+// each draw's: the three kinds' default looks and the types that pick them, or, for a model with a look of its own
+// (the type in the draw's tag, fur::kTagRegister), that look in all three places, so whichever the shader picks is the
+// model's, and the game's own fur for it alone when it asks for that
+void Fill(float (*xs)[4], const float* tag, bool weasel) {
+    for (int k = 0; k < fur::kLooks; k++) PutLook(xs, k, fur::kLookDefaults[k]);
     static const std::vector<float> chipmunks = ChipmunkTypes();
     for (int i = 0; i < 8; i++) xs[12 + i / 4][i % 4] = i < int(chipmunks.size()) ? chipmunks[size_t(i)] : -1.0f;
     for (int i = 0; i < 4; i++) xs[14][i] = i < int(std::size(kWeaselTypes)) ? float(kWeaselTypes[i]) : -1.0f;
     for (int i = 0; i < 4; i++) xs[9][i] = i < int(std::size(kConsoleTypes)) ? float(kConsoleTypes[i]) : -1.0f;
     xs[10][0] = 1.0f / float(1 + fur::g_extra_shells);
+    if (!tag || tag[3] != 1.0f || tag[0] < 0) return;
+    const uint32_t type = uint32_t(tag[0]);
+    See(type, weasel, true);
+    if (const fur::ModelLook* m = fur::FindModelLook(fur::Canonical(type))) {  // its class's, in multiplayer
+        const fur::ModelLook own = *m;  // the menu may change it meanwhile: one copy, whole or not
+        for (int k = 0; k < fur::kLooks; k++) PutLook(xs, k, own.look);
+        for (int i = 0; i < 4; i++) xs[9][i] = -1.0f;
+        if (own.game) xs[9][0] = float(type);
+    }
 }
+
+void FillStrands(float (*xs)[4], const float* tag) { Fill(xs, tag, false); }
+void FillWeaselStrands(float (*xs)[4], const float* tag) { Fill(xs, tag, true); }
 
 float DepthAlpha() {
     const char* e = std::getenv("XBE_FUR_DEPTH_ALPHA");
@@ -434,8 +493,10 @@ void fur::Init() {
                              c94_vs = std::string("#define FUR_MAP_STRANDS 1\n#define FUR_NORMAL R2\n#define FUR_TOP c[190].x\n#define FUR_LENGTH i.v5.x\n") + kStrandVs,
                              c94_pre = std::string("#define FUR_MAP_STRANDS 1\n") + kStrandPre + "\n#undef FUR_MAP_STRANDS\n";
     const auto strands = [&](const char* match, const std::string& vs, int top, const char* without, const char* pre = kStrandPre) {
+        const bool weasel = pre != kStrandPre;  // the weasels' program
         gpu::g_program_shading.push_back({.match = match, .on = &g_strands, .vs = vs.c_str(), .ps = kStrandPs, .top = top,
-                                          .soft = true, .fill = FillStrands, .functions = kStrandFunctions,
+                                          .soft = true, .fill = weasel ? FillWeaselStrands : FillStrands,
+                                          .fill_register = int(kTagRegister), .functions = kStrandFunctions,
                                           .depth_alpha = depth_alpha, .without = without, .pre = pre,
                                           .between_live = &g_extra_shells, .top_layers = 16});
     };
@@ -460,6 +521,262 @@ void fur::Init() {
     gpu::g_program_shading.push_back({.match = kTediMatch, .on = &kAlways, .vs = "    o.x0 = 0;\n    o.x1 = 0;",
                                       .top = 85 + 96, .depth_alpha = depth_alpha});
 }
+
+fur::ModelLook* fur::FindModelLook(uint32_t type) {
+    if (type == kNoModel) return nullptr;
+    for (ModelLook& m : g_model_looks)
+        if (m.type == type) return &m;
+    return nullptr;
+}
+
+int fur::KindOf(uint32_t type) {
+    const int n = std::min(g_seen_count.load(std::memory_order_acquire), kSeenMax);
+    for (int i = 0; i < n; i++)
+        if (g_seen[i].load(std::memory_order_relaxed) == type && g_seen_weasel[i].load(std::memory_order_relaxed))
+            return kWeasel;
+    if (std::find(std::begin(kWeaselTypes), std::end(kWeaselTypes), type) != std::end(kWeaselTypes)) return kWeasel;
+    static const std::vector<float> chipmunks = ChipmunkTypes();
+    const uint32_t group = Canonical(type);  // a multiplayer class's: the Sneekers' chipmunk types are two of its models
+    for (float c : chipmunks)
+        if (uint32_t(c) == type || Canonical(uint32_t(c)) == group) return kChipmunk;
+    return kCoat;
+}
+
+bool fur::GameFurOf(uint32_t type) {
+    return std::find(std::begin(kConsoleTypes), std::end(kConsoleTypes), type) != std::end(kConsoleTypes);
+}
+
+fur::ModelLook* fur::ModelLookOf(uint32_t type) {
+    if (type == kNoModel) return nullptr;
+    if (ModelLook* m = FindModelLook(type)) return m;
+    for (ModelLook& m : g_model_looks)
+        if (m.type == kNoModel) {
+            m.look = DefaultLook(type);
+            m.game = GameFurOf(type);
+            std::atomic_thread_fence(std::memory_order_release);  // the look whole before the renderer finds it
+            m.type = type;
+            return &m;
+        }
+    return nullptr;
+}
+
+std::vector<uint32_t> fur::SeenModels() {
+    std::vector<uint32_t> out;
+    const int n = std::min(g_seen_count.load(std::memory_order_acquire), kSeenMax);
+    for (int i = 0; i < n; i++) out.push_back(g_seen[i].load(std::memory_order_relaxed));
+    return out;
+}
+
+namespace {
+
+// the story's furry models by id (the game's model table, 0x6A58F0): those the soak test (LT + RT + Black on the main
+// menu, every level back to back) drew with super fur under XBE_FUR_SURVEY, 2026-11-10, and a few it loaded but
+// didn't show, kin of those it did (marked). Multiplayer's by kFurryPrefixes, named as their packages load: every
+// squirrel class at each of its four models, and the Tediz Demolisher's character select models (type 469 drawn)
+constexpr uint32_t kFurryModels[] = {
+    0,    // Conker
+    7,    // QueenBee
+    13,   // Haystack
+    16,   // RockMonster
+    17,   // WeaselMinion1, the weasels' program
+    20,   // WeaselMinion2, the weasels' program
+    34,   // RatBrown
+    59,   // Weasel (not drawn)
+    69,   // TerminatorHaystack
+    88,   // CombatSquirrel
+    91,   // CombatSquirrelrodent
+    109,  // BeeKing
+    114,  // Berri
+    124,  // WarBossDoll
+    130,  // EnvironmentSuit
+    134,  // WeaselSuit (not drawn in the soak; the Heist's weasel in F3 captures)
+    135,  // CombatGeneral
+    145,  // RockMonsterBabe
+    150,  // ConkerMatrix
+    151,  // BeriMatrix
+    152,  // WeaselSwat
+    153,  // WeaselScientist (not drawn)
+    154,  // ConkerBat
+    162,  // BatBoss
+    164,  // BatBossStoker
+    167,  // ConkerTied (not drawn)
+    179,  // RatBrownStitched (not drawn)
+    181,  // Barman
+    183,  // WeaselBass (not drawn)
+    184,  // WeaselClarinet
+    185,  // WeaselDrum (not drawn)
+    273,  // ConkerWar
+    276,  // ConkerHelsing
+    299,  // MainFrontend\CombatSquirrelMultiWWIISharpshooter
+    321,  // CombatSquirrelShot
+    398,  // BerriBarmaid
+};
+constexpr const char* kFurryNames[] = {
+    "MultiFrontend\\CombatTedizMultiDemolisher", "MultiFrontend\\CombatTedizMultiWWIIDemolisher",
+};
+constexpr const char* kFurryPrefixes[] = {
+    "Multi\\CombatSquirrel", "MultiFrontend\\CombatSquirrel", "MultiLOD\\CombatSquirrel", "MultiLOD2\\CombatSquirrel",
+};
+
+std::atomic<bool> g_image{false};  // the game's image is in memory, its model table with it (fur::ImageLoaded)
+
+// the table's name, "" when it has none
+std::string TableName(uint32_t type) {
+    std::string out;
+    if (type >= 0x205 || !g_image.load(std::memory_order_acquire)) return out;
+    const uint32_t name = kernel::R32(0x6A58F0 + 4 * type);
+    if (name < 0x10000) return out;
+    for (uint32_t i = 0; i < 80; i++) {
+        const char c = kernel::G<char>(name + i);
+        if (!c) break;
+        out += c;
+    }
+    return out;
+}
+
+// a multiplayer class's models (Multi\, MultiFrontend\, MultiLOD\, MultiLOD2\ and the frontend's MainFrontend\
+// copies, which spell some classes in another case): its name after the folder, lowercase; "" for any other model
+std::string ClassOf(const std::string& name) {
+    static const char* const kFolders[] = {"Multi\\", "MultiFrontend\\", "MultiLOD\\", "MultiLOD2\\", "MainFrontend\\"};
+    for (const char* f : kFolders)
+        if (name.rfind(f, 0) == 0) {
+            std::string c = name.substr(strlen(f));
+            if (c.rfind("Combat", 0) != 0) return "";
+            for (char& ch : c) ch = char(std::tolower(uint8_t(ch)));
+            return c;
+        }
+    return "";
+}
+
+// each table entry's Canonical + 1, 0 until worked out (once its name is in). Any thread
+constexpr uint32_t kTable = 0x205;
+std::atomic<uint32_t> g_canonical[kTable];
+
+}  // namespace
+
+uint32_t fur::Canonical(uint32_t type) {
+    if (type >= kTable) return type;
+    if (const uint32_t c = g_canonical[type].load(std::memory_order_relaxed)) return c - 1;
+    const std::string name = TableName(type);
+    if (name.empty()) return type;  // not named yet: asked again later
+    const std::string cls = ClassOf(name);
+    uint32_t best = type;
+    bool full = name.rfind("Multi\\", 0) == 0;
+    if (!cls.empty()) {
+        for (uint32_t i = 0; i < kTable && !full; i++) {
+            const std::string other = TableName(i);
+            if (i == type || ClassOf(other) != cls) continue;
+            if (other.rfind("Multi\\", 0) == 0) best = i, full = true;  // the class's full model, when it has one
+            else best = std::min(best, i);
+        }
+    }
+    // a class's full model not named yet (named as packages are registered): asked again later, or its models
+    // could settle on different ones
+    if (cls.empty() || full) g_canonical[type].store(best + 1, std::memory_order_relaxed);
+    return best;
+}
+
+void fur::ImageLoaded() { g_image.store(true, std::memory_order_release); }
+
+std::vector<uint32_t> fur::KnownModels() {
+    // the table again every two seconds at most: multiplayer's names come in as their packages are registered
+    static std::vector<uint32_t> known;
+    static std::chrono::steady_clock::time_point at{};
+    const auto now = std::chrono::steady_clock::now();
+    if (now - at < std::chrono::seconds(2) && !known.empty()) return known;
+    at = now;
+    known.clear();
+    for (uint32_t type = 0; type < 0x205; type++) {
+        const std::string name = TableName(type);
+        if (name.empty()) continue;
+        const bool listed = std::find(std::begin(kFurryModels), std::end(kFurryModels), type) != std::end(kFurryModels) ||
+                            std::any_of(std::begin(kFurryNames), std::end(kFurryNames), [&](const char* n) { return name == n; }) ||
+                            std::any_of(std::begin(kFurryPrefixes), std::end(kFurryPrefixes),
+                                        [&](const char* p) { return name.rfind(p, 0) == 0; });
+        const uint32_t group = Canonical(type);
+        if (listed && std::find(known.begin(), known.end(), group) == known.end()) known.push_back(group);
+    }
+    return known;
+}
+
+std::string fur::ModelName(uint32_t type) {
+    const std::string name = TableName(type);
+    if (!ClassOf(name).empty()) return name.substr(name.find('\\') + 1) + " (multiplayer)";
+    return (name.empty() ? "Model" : name) + " (" + std::to_string(type) + ")";
+}
+
+#if __has_include(<toml++/toml.hpp>)
+
+namespace {
+
+// a Look's settings keys, as fur_strand_* without the prefix
+struct LookKey {
+    const char* key;
+    uint32_t fur::Look::*field;
+};
+constexpr LookKey kLookKeys[] = {
+    {"strands", &fur::Look::strands},       {"tufts", &fur::Look::tufts},
+    {"tufting", &fur::Look::tufting},       {"droop", &fur::Look::droop},
+    {"thickness", &fur::Look::thickness},   {"taper", &fur::Look::taper},
+    {"root_shade", &fur::Look::root_shade}, {"gap_shade", &fur::Look::gap_shade},
+    {"sheen", &fur::Look::sheen},           {"back_glow", &fur::Look::back_glow},
+    {"length", &fur::Look::length},         {"fill", &fur::Look::fill},
+};
+
+}  // namespace
+
+// [fur_models.<type>]: a model's look; keys left out keep its defaults
+void fur::Load(const void* table) {
+    const toml::table& t = *static_cast<const toml::table*>(table);
+    if (const toml::array* seen = t["fur_seen"].as_array())
+        for (const auto& v : *seen)
+            if (const auto type = v.value<int64_t>(); type && *type >= 0 && *type < 0x10000) See(uint32_t(*type), false, false);
+    if (const toml::array* seen = t["fur_seen_weasel"].as_array())
+        for (const auto& v : *seen)
+            if (const auto type = v.value<int64_t>(); type && *type >= 0 && *type < 0x10000) See(uint32_t(*type), true, false);
+    const toml::table* models = t["fur_models"].as_table();
+    if (!models) return;
+    for (const auto& [key, node] : *models) {
+        const toml::table* m = node.as_table();
+        char* end = nullptr;
+        const unsigned long type = std::strtoul(std::string(key.str()).c_str(), &end, 10);
+        if (!m || end == nullptr || *end || type >= 0x10000 || key.str().empty()) continue;
+        ModelLook* own = ModelLookOf(uint32_t(type));
+        if (!own) break;
+        own->game = (*m)["game"].value_or(own->game);
+        for (const LookKey& k : kLookKeys) own->look.*k.field = (*m)[k.key].value_or(own->look.*k.field);
+    }
+}
+
+void fur::Save(void* table) {
+    toml::table& t = *static_cast<toml::table*>(table);
+    toml::table models;
+    for (const ModelLook& m : g_model_looks) {
+        if (m.type == fur::kNoModel || (m.look == DefaultLook(m.type) && m.game == GameFurOf(m.type))) continue;
+        toml::table one;
+        one.insert_or_assign("game", m.game);
+        for (const LookKey& k : kLookKeys) one.insert_or_assign(k.key, int64_t(m.look.*k.field));
+        models.insert_or_assign(std::to_string(m.type), std::move(one));
+    }
+    t.insert_or_assign("fur_models", std::move(models));
+    // the models super fur has drawn, remembered for the F1 menu's list
+    toml::array seen, weasel;
+    const int n = std::min(g_seen_count.load(std::memory_order_acquire), kSeenMax);
+    for (int i = 0; i < n; i++) {
+        const uint32_t type = g_seen[i].load(std::memory_order_relaxed);
+        seen.push_back(int64_t(type));
+        if (g_seen_weasel[i].load(std::memory_order_relaxed)) weasel.push_back(int64_t(type));
+    }
+    t.insert_or_assign("fur_seen", std::move(seen));
+    t.insert_or_assign("fur_seen_weasel", std::move(weasel));
+}
+
+#else  // no toml++ (the headless harness): the defaults only
+
+void fur::Load(const void*) {}
+void fur::Save(void*) {}
+
+#endif
 
 void fur::TagShells(uint32_t object) {
     if (!object) return;

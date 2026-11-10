@@ -427,8 +427,51 @@ X86_EXTERN_FUNC(sub_003ED030);
 X86_EXTERN_FUNC(sub_002AF0E0);
 X86_EXTERN_FUNC(sub_000865C0);
 X86_EXTERN_FUNC(sub_002B3510);
+// XBE_FUR_SURVEY=1 (with fur.cpp's, each furry model's first draw): each level's models, logged at its first player's
+// setup, after the level's packages are in. A model is in when its data is in the registry by name, as 0x99EF0 finds
+// it: characters\<name> made by 0x5E4E0 (eax 0: into the game's own buffer; cdecl 3, "characters" 0x5F04F4, the
+// name), looked up by 0x61ED0 (eax the name, the registry 0x84D458 pushed, popped by it). For the soak test (LT + RT
+// + Black on the main menu: every level back to back)
+X86_EXTERN_FUNC(sub_0005E4E0);
+X86_EXTERN_FUNC(sub_00061ED0);
+static void SurveyLevelModels(X86Context& ctx, uint8_t* base) {
+    static const bool on = [] {
+        const char* e = std::getenv("XBE_FUR_SURVEY");
+        return e && *e && *e != '0';
+    }();
+    static uint32_t last = ~0u;
+    const uint32_t level = kernel::R32(0x7FA1F8);
+    if (!on || level == last) return;
+    last = level;
+    const X86Context saved = ctx;
+    std::string line;
+    int count = 0;
+    for (uint32_t id = 0; id < 0x205; id++) {
+        const uint32_t name = kernel::R32(0x6A58F0 + 4 * id);
+        if (name < 0x10000) continue;
+        ctx.eax = 0;
+        X86_PUSH32(name);
+        X86_PUSH32(0x5F04F4u);
+        X86_PUSH32(3u);
+        X86_PUSH32(0x2B3368u);
+        sub_0005E4E0(ctx, base);
+        ctx.esp += 12;
+        const uint32_t key = ctx.eax;
+        if (key < 0x10000) continue;
+        X86_PUSH32(0x84D458u);
+        ctx.eax = key;
+        X86_PUSH32(0x2B3368u);
+        sub_00061ED0(ctx, base);
+        if (!ctx.eax) continue;
+        line += (count++ ? ", " : "") + std::to_string(id) + " " + ModelName(id);
+    }
+    ctx = saved;
+    LOGR("fur survey: level %u has %d models: %s", level, count, line.c_str());
+}
+
 // [[hook]] at 0x2B3368, after 0x2B3510; ebp the player
 void ConkerMenuSkeleton(X86Context& ctx, uint8_t* base) {
+    SurveyLevelModels(ctx, base);
     if (!characters::g_menu_models) return;
     const uint32_t player = ctx.ebp, list = kernel::R32(player + 0x50C);
     if (list < 0x10000 || kernel::R32(player + 0x4B0) == 0) return;

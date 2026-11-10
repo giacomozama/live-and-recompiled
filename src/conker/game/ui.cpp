@@ -1210,26 +1210,64 @@ void Draw(double fps) {
                 Check("Super fur", &fur::g_strands);
                 Hint("Fine, tapered strands in tufts, lit as hair.", true);
                 if (fur::g_strands) {
-                    static int look = fur::kCoat;
-                    const std::string looks = Items({fur::kLookNames[0], fur::kLookNames[1], fur::kLookNames[2]});
-                    ImGui::Combo(Beside("Fur type"), &look, looks.c_str());
-                    Hint("Each kind of fur has its own settings: Coat is Conker, the squirrels and most others.", true);
-                    fur::Look& l = fur::g_looks[look];
-                    const fur::Look& d = fur::kLookDefaults[look];
-                    ImGui::PushID(look);  // each look's sliders their own widgets, so a drag doesn't carry over
-                    Slider("Strands", &l.strands, 8, 64, d.strands);
-                    Slider("Tufts", &l.tufts, 1, 16, d.tufts);
-                    Slider("Tufting %", &l.tufting, 0, 100, d.tufting);
-                    Slider("Length %", &l.length, 20, 100, d.length);
-                    Slider("Bare skin fill %", &l.fill, 0, 100, d.fill);
-                    Slider("Droop %", &l.droop, 0, 200, d.droop);
-                    Slider("Thickness %", &l.thickness, 30, 100, d.thickness);
-                    Slider("Taper %", &l.taper, 20, 150, d.taper);
-                    Slider("Root shade %", &l.root_shade, 0, 100, d.root_shade);
-                    Slider("Tuft shade %", &l.gap_shade, 0, 100, d.gap_shade);
-                    Slider("Sheen %", &l.sheen, 0, 200, d.sheen);
-                    Slider("Back glow %", &l.back_glow, 0, 200, d.back_glow);
-                    ImGui::PopID();
+                    // the model whose look the sliders change: the furry models the game's table names, those
+                    // super fur has drawn, and those with a look saved
+                    static uint32_t model = fur::kNoModel;
+                    std::vector<uint32_t> models = fur::KnownModels();
+                    const auto add = [&](uint32_t type) {
+                        if (type != fur::kNoModel && std::find(models.begin(), models.end(), type) == models.end())
+                            models.push_back(type);
+                    };
+                    for (uint32_t type : fur::SeenModels()) add(fur::Canonical(type));  // a multiplayer class once
+                    for (const fur::ModelLook& m : fur::g_model_looks) add(m.type);
+                    std::vector<std::pair<std::string, uint32_t>> named;
+                    for (uint32_t type : models) named.emplace_back(fur::ModelName(type), type);
+                    std::sort(named.begin(), named.end());
+                    if (std::none_of(named.begin(), named.end(), [](const auto& n) { return n.second == model; }))
+                        model = named.empty() ? fur::kNoModel : named.front().second;
+                    const auto changed = [](uint32_t type) {
+                        const fur::ModelLook* m = fur::FindModelLook(type);
+                        return m && (m->look != fur::DefaultLook(type) || m->game != fur::GameFurOf(type));
+                    };
+                    const auto label = [&](const std::string& name, uint32_t type) {
+                        return name + (changed(type) ? " *" : "") + "##" + std::to_string(type);
+                    };
+                    if (named.empty()) {
+                        Hint("The game's models show up here once it has started.");
+                    } else {
+                        std::string current;
+                        for (const auto& [name, type] : named)
+                            if (type == model) current = label(name, type);
+                        if (ImGui::BeginCombo(Beside("Model"), current.c_str())) {
+                            for (const auto& [name, type] : named)
+                                if (ImGui::Selectable(label(name, type).c_str(), type == model)) model = type;
+                            ImGui::EndCombo();
+                        }
+                        Hint("Each model has its own settings; those changed are marked *. Multiplayer models are "
+                             "listed once the game has loaded them.", true);
+                    }
+                    if (fur::ModelLook* own = fur::ModelLookOf(model)) {
+                        const fur::Look& d = fur::DefaultLook(model);
+                        fur::Look& l = own->look;
+                        ImGui::PushID(int(model));  // each model's sliders their own widgets, so a drag doesn't carry over
+                        Check("Game's own fur", &own->game);
+                        Hint("This model keeps the game's fur, with super fur on.", true);
+                        if (!own->game) {
+                            Slider("Strands", &l.strands, 8, 64, d.strands);
+                            Slider("Tufts", &l.tufts, 1, 16, d.tufts);
+                            Slider("Tufting %", &l.tufting, 0, 100, d.tufting);
+                            Slider("Length %", &l.length, 20, 100, d.length);
+                            Slider("Bare skin fill %", &l.fill, 0, 100, d.fill);
+                            Slider("Droop %", &l.droop, 0, 200, d.droop);
+                            Slider("Thickness %", &l.thickness, 30, 100, d.thickness);
+                            Slider("Taper %", &l.taper, 20, 150, d.taper);
+                            Slider("Root shade %", &l.root_shade, 0, 100, d.root_shade);
+                            Slider("Tuft shade %", &l.gap_shade, 0, 100, d.gap_shade);
+                            Slider("Sheen %", &l.sheen, 0, 200, d.sheen);
+                            Slider("Back glow %", &l.back_glow, 0, 200, d.back_glow);
+                        }
+                        ImGui::PopID();
+                    }
                     Slider("Extra shells", &fur::g_extra_shells, 0, 4, fur::kExtraShells);
                 }
                 Check("Full distant fur", &fur::g_distant);

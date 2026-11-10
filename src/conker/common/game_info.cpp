@@ -29,6 +29,17 @@ void Init() {
     reflection::Init();
 }
 
+// the settings file's tables: each player's ([playerN]) and the models' fur looks ([fur_models])
+void LoadTables(const void* table) {
+    keyboard::Load(table);
+    fur::Load(table);
+}
+
+void SaveTables(void* table) {
+    keyboard::Save(table);
+    fur::Save(table);
+}
+
 }  // namespace
 
 // what the runtime asks of the game; strings must be set, hooks may stay null
@@ -55,43 +66,7 @@ const app::GameInfo app::kGame = {
                 {"grass_max_lod", &grass::g_max_lod, nullptr},  // distant grass keeps all its blades (hooks.cpp)
                 {"grass_fade", &grass::g_fade, nullptr},  // distant grass fades out, else solid however far (hooks.cpp)
                 {"fur_shading", &fur::g_shading, nullptr},  // lit, soft edged fur shells (src/conker/common/fur.cpp)
-                {"fur_strands", &fur::g_strands, nullptr},  // super fur: procedural strands, and each look's numbers (fur.cpp)
-                {"fur_strand_count", nullptr, &fur::g_looks[fur::kCoat].strands},
-                {"fur_strand_tufts", nullptr, &fur::g_looks[fur::kCoat].tufts},
-                {"fur_strand_tufting", nullptr, &fur::g_looks[fur::kCoat].tufting},
-                {"fur_strand_droop", nullptr, &fur::g_looks[fur::kCoat].droop},
-                {"fur_strand_thickness", nullptr, &fur::g_looks[fur::kCoat].thickness},
-                {"fur_strand_taper", nullptr, &fur::g_looks[fur::kCoat].taper},
-                {"fur_strand_root_shade", nullptr, &fur::g_looks[fur::kCoat].root_shade},
-                {"fur_strand_gap_shade", nullptr, &fur::g_looks[fur::kCoat].gap_shade},
-                {"fur_strand_sheen", nullptr, &fur::g_looks[fur::kCoat].sheen},
-                {"fur_strand_back_glow", nullptr, &fur::g_looks[fur::kCoat].back_glow},
-                {"fur_strand_length", nullptr, &fur::g_looks[fur::kCoat].length},
-                {"fur_strand_fill", nullptr, &fur::g_looks[fur::kCoat].fill},
-                {"fur_weasel_strands", nullptr, &fur::g_looks[fur::kWeasel].strands},
-                {"fur_weasel_tufts", nullptr, &fur::g_looks[fur::kWeasel].tufts},
-                {"fur_weasel_tufting", nullptr, &fur::g_looks[fur::kWeasel].tufting},
-                {"fur_weasel_droop", nullptr, &fur::g_looks[fur::kWeasel].droop},
-                {"fur_weasel_thickness", nullptr, &fur::g_looks[fur::kWeasel].thickness},
-                {"fur_weasel_taper", nullptr, &fur::g_looks[fur::kWeasel].taper},
-                {"fur_weasel_root_shade", nullptr, &fur::g_looks[fur::kWeasel].root_shade},
-                {"fur_weasel_gap_shade", nullptr, &fur::g_looks[fur::kWeasel].gap_shade},
-                {"fur_weasel_sheen", nullptr, &fur::g_looks[fur::kWeasel].sheen},
-                {"fur_weasel_back_glow", nullptr, &fur::g_looks[fur::kWeasel].back_glow},
-                {"fur_weasel_length", nullptr, &fur::g_looks[fur::kWeasel].length},
-                {"fur_weasel_fill", nullptr, &fur::g_looks[fur::kWeasel].fill},
-                {"fur_chipmunk_strands", nullptr, &fur::g_looks[fur::kChipmunk].strands},
-                {"fur_chipmunk_tufts", nullptr, &fur::g_looks[fur::kChipmunk].tufts},
-                {"fur_chipmunk_tufting", nullptr, &fur::g_looks[fur::kChipmunk].tufting},
-                {"fur_chipmunk_droop", nullptr, &fur::g_looks[fur::kChipmunk].droop},
-                {"fur_chipmunk_thickness", nullptr, &fur::g_looks[fur::kChipmunk].thickness},
-                {"fur_chipmunk_taper", nullptr, &fur::g_looks[fur::kChipmunk].taper},
-                {"fur_chipmunk_root_shade", nullptr, &fur::g_looks[fur::kChipmunk].root_shade},
-                {"fur_chipmunk_gap_shade", nullptr, &fur::g_looks[fur::kChipmunk].gap_shade},
-                {"fur_chipmunk_sheen", nullptr, &fur::g_looks[fur::kChipmunk].sheen},
-                {"fur_chipmunk_back_glow", nullptr, &fur::g_looks[fur::kChipmunk].back_glow},
-                {"fur_chipmunk_length", nullptr, &fur::g_looks[fur::kChipmunk].length},
-                {"fur_chipmunk_fill", nullptr, &fur::g_looks[fur::kChipmunk].fill},
+                {"fur_strands", &fur::g_strands, nullptr},  // super fur: procedural strands; each model's look in [fur_models] (fur.cpp)
                 {"fur_strand_extra_shells", nullptr, &fur::g_extra_shells},
                 {"fur_distant", &fur::g_distant, nullptr},  // distant fur keeps all its shells (hooks.cpp)
                 {"character_max_lod", &characters::g_max_lod, nullptr},  // players keep their full model (hooks.cpp)
@@ -104,11 +79,11 @@ const app::GameInfo app::kGame = {
                 {"attract_video", &menus::g_attract, nullptr},  // the idle menu's attract video (menus.cpp)
                 {"keyboard_prompts", &prompts::g_on, nullptr}},  // button icons drawn as keys on kb+mouse (prompts.cpp)
     // the [playerN] tables: each player's keyboard bindings, mouse look, invert aim and vibration
-    // (src/conker/game/keyboard.cpp, mouse.cpp, hooks.cpp)
-    .load = keyboard::Load,
-    .save = keyboard::Save,               // writes them
+    // (src/conker/game/keyboard.cpp, mouse.cpp, hooks.cpp); [fur_models]: each model's super fur look (fur.cpp)
+    .load = LoadTables,
+    .save = SaveTables,                   // writes them
     .init = Init,                         // after the settings load: the fps cap, fur and waves
-    .loaded = nullptr,                    // image in memory, before its entry point runs
+    .loaded = fur::ImageLoaded,           // image in memory, before its entry point runs
     .window = nullptr,                    // the game window is up
     .message = ui::Message,               // window messages first; true takes one
     .ui = ui::Draw,                       // ImGui drawing each frame
