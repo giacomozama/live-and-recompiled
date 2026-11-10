@@ -37,7 +37,7 @@ bool gamepad::g_vibration[input::kPorts] = {true, true, true, true};
 uint32_t gamepad::g_vibration_percent[input::kPorts] = {100, 100, 100, 100};
 
 namespace {
-// each player's invert as 0x4D1F0 last left it (*edi), the profile's in a match
+// each player's invert as 0x4D1F0 last left it (*edi, zero inverts, as at 0x84B140), the profile's in a match
 std::atomic<bool> g_game_invert[input::kPorts];
 }  // namespace
 
@@ -65,7 +65,7 @@ X86_FUNC(sub_0004D1F0) {
     __imp__sub_0004D1F0(ctx, base);
     if (player < uint32_t(input::kPorts)) {
         keyboard::SetScheme(int(player), int(kernel::R32(scheme)));
-        g_game_invert[player].store(base[invert] != 0, std::memory_order_relaxed);
+        g_game_invert[player].store(base[invert] == 0, std::memory_order_relaxed);
     }
 }
 
