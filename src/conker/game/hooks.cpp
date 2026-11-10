@@ -12,8 +12,12 @@
 #include <atomic>
 #include <chrono>
 #include <cstring>
+#include <mutex>
+#include <string>
+#include <unordered_map>
 
 #include "xdk/hle.h"
+#include "kernel/memory.h"
 #include "cpu/x86_ops.h"
 #include "core/diag.h"
 #include "core/input.h"
@@ -688,4 +692,133 @@ X86_FUNC(sub_00352320) {
     base[profile + 0x1439] = 1;
     base[profile + 0x143B] = 1;
     base[profile + 0x143D] = 1;
+}
+
+// XBE_TRACE_FILTER: where XACT's DLS2 cutoffs come from (a muffled music stream in BrontoThroat asked for 100 Hz).
+// 0x551846 (esi an XACT track, [esi+4] its voice) builds the track's DSFILTERDESC: cutoff in Hz = [esi+0x22] (set by
+// the sequence's events, 0x554E61, maybe ramped by 0x55526D) + [esi+0x2A] (runtime parameter curves, 0x5515FB),
+// clamped to 0..8192, Hz through 0x550B94 (4096 log2(2 sin(pi Hz / 48000)), 0 above 8000); resonance [esi+0x24] +
+// [esi+0x2C]. 0x55152C (eax the curve's variable mapping, edx the variable's value) maps a variable through a curve
+// of up to five points. 0x54BE03 (esi a ramp, when called from the list at 0x54BD99) steps a variable ramp: step [esi+0x1C] of [esi+0x26], value step *
+// [esi+0x28] + [esi+0x2C], name [esi+0x18]. Each logs when what it saw changes.
+namespace {
+bool TraceFilter() {
+    static const bool on = std::getenv("XBE_TRACE_FILTER") != nullptr;
+    return on;
+}
+std::mutex g_filter_mu;
+float GuestF32(const uint8_t* base, uint32_t va) {
+    float f;
+    std::memcpy(&f, base + va, 4);
+    return f;
+}
+// a guest pointer whose next 32 bytes are committed (XACT's sounds live high in user space, at 0x7FFAxxxx)
+bool GuestRam(uint32_t va) { return va >= 0x10000 && mem::IsCommitted(va) && mem::IsCommitted(va + 31); }
+std::string GuestName(const uint8_t* base, uint32_t va) {
+    if (!GuestRam(va)) return "-";
+    std::string s;
+    for (uint32_t i = 0; i < 16 && base[va + i]; i++)
+        s += base[va + i] >= 32 && base[va + i] < 127 ? char(base[va + i]) : '?';
+    return s;
+}
+}  // namespace
+
+X86_EXTERN_FUNC(__imp__sub_00551846);
+X86_FUNC(sub_00551846) {
+    if (TraceFilter() && GuestRam(ctx.esi)) {
+        const uint32_t t = ctx.esi;
+        int16_t w[8];
+        std::memcpy(w, base + t + 0x20, sizeof w);
+        std::string key(reinterpret_cast<const char*>(w), sizeof w);
+        std::lock_guard<std::mutex> lock(g_filter_mu);
+        static std::unordered_map<uint32_t, std::string> seen;
+        if (seen[t] != key) {
+            seen[t] = key;
+            const uint32_t from = kernel::R32(ctx.esp);
+            // edx the sound: its curves' variables, 0x18 bytes each from [sound+0x14], [sound+0x18] of them, the
+            // name at +8 and the number of curves at +3
+            std::string rpcs;
+            const uint32_t snd = ctx.edx, table = GuestRam(snd) ? kernel::R32(snd + 0x14) : 0;
+            const uint32_t n = table ? std::min<uint32_t>(kernel::R32(snd + 0x18), 8) : 0;
+            for (uint32_t i = 0; i < n && GuestRam(table + i * 0x18); i++)
+                rpcs += " '" + GuestName(base, table + i * 0x18 + 8) + "'x" + std::to_string(base[table + i * 0x18 + 3]);
+            // a sequence event (0x554E61, its instance at the caller's [ebp+0xC], its data at [instance+0x14]): the
+            // data's first 16 bytes, type at +0, flags at +5, count +6, values +8/+0xA, duration +0xC
+            std::string ev;
+            if (from == 0x554E9D) {
+                const uint32_t inst = kernel::R32(ctx.ebp + 0xC), data = GuestRam(inst) ? kernel::R32(inst + 0x14) : 0;
+                if (GuestRam(data)) {
+                    char b[96];
+                    int k = std::snprintf(b, sizeof b, " event %08X step %u:", data, kernel::R16(inst + 0xA));
+                    for (int i = 0; i < 16 && k < int(sizeof b) - 4; i++)
+                        k += std::snprintf(b + k, sizeof b - k, " %02X", base[data + i]);
+                    ev = b;
+                }
+            }
+            LOGR("xactfilter: track %08X voice %08X sound %08X from %08X arg %u cutoff %d+%d res %d+%d (vol %d pitch "
+                 "%d, +20..2E %d %d %d %d %d %d %d %d) curves%s%s",
+                 t, kernel::R32(t + 4), snd, from, kernel::R32(ctx.esp + 4), w[1], w[5], w[2], w[6], w[0],
+                 int16_t(kernel::R16(t + 0x1E)), w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7],
+                 rpcs.empty() ? " none" : rpcs.c_str(), ev.c_str());
+        }
+    }
+    __imp__sub_00551846(ctx, base);
+}
+
+X86_EXTERN_FUNC(__imp__sub_0055152C);
+X86_FUNC(sub_0055152C) {
+    if (TraceFilter() && GuestRam(ctx.eax) && GuestRam(kernel::R32(ctx.esp + 4))) {
+        const uint32_t m = ctx.eax, curve = kernel::R32(ctx.esp + 4);
+        int16_t pts[10];
+        std::memcpy(pts, base + curve, sizeof pts);
+        char b[256];
+        std::snprintf(b, sizeof b, "map %08X value %u (x %g + %g) curve %08X: kind %u target %u, %u=%d %u=%d %u=%d %u=%d",
+                      m, ctx.edx, GuestF32(base, m + 8), GuestF32(base, m + 0xC), curve, uint16_t(pts[0]),
+                      uint16_t(pts[1]), uint16_t(pts[2]), pts[3], uint16_t(pts[4]), pts[5], uint16_t(pts[6]), pts[7],
+                      uint16_t(pts[8]), pts[9]);
+        std::lock_guard<std::mutex> lock(g_filter_mu);
+        static std::unordered_map<uint32_t, std::string> seen;
+        if (seen[curve] != b) {
+            seen[curve] = b;
+            LOGR("xactrpc: %s from %08X track index %u", b, kernel::R32(ctx.esp), kernel::R32(ctx.esp + 8));
+        }
+    }
+    __imp__sub_0055152C(ctx, base);
+}
+
+X86_EXTERN_FUNC(__imp__sub_0054BE03);
+X86_FUNC(sub_0054BE03) {
+    // only the ramp list's stepper (0x54BD99); 0x54C6B7 calls it with something else in esi
+    if (TraceFilter() && kernel::R32(ctx.esp) == 0x54BD9E && GuestRam(ctx.esi)) {
+        const uint32_t r = ctx.esi, step = kernel::R32(r + 0x1C), count = kernel::R16(r + 0x26);
+        if (step == 0 || step >= count) {
+            std::lock_guard<std::mutex> lock(g_filter_mu);
+            LOGR("xactramp: %08X '%s' kind %u cue %08X step %u of %u: %g a step from %g (now %g)", r,
+                 GuestName(base, kernel::R32(r + 0x18)).c_str(), kernel::R16(r + 0x20), kernel::R32(r + 0x30), step,
+                 count, GuestF32(base, r + 0x28), GuestF32(base, r + 0x2C),
+                 float(step) * GuestF32(base, r + 0x28) + GuestF32(base, r + 0x2C));
+        }
+    }
+    __imp__sub_0054BE03(ctx, base);
+}
+
+// 0x55144B (esi the sound, args: the variable, its value): a cue's variable set (0x55041E, from a sequence's ramp at
+// 0x54BE6A or the title); the name at [variable+0x14], logged when the value changes
+X86_EXTERN_FUNC(__imp__sub_0055144B);
+X86_FUNC(sub_0055144B) {
+    const uint32_t var = kernel::R32(ctx.esp + 4);
+    if (TraceFilter() && GuestRam(var)) {
+        const std::string name = GuestName(base, kernel::R32(var + 0x14));
+        const uint32_t value = kernel::R32(ctx.esp + 8);
+        std::lock_guard<std::mutex> lock(g_filter_mu);
+        static std::unordered_map<std::string, uint32_t> seen;
+        const std::string key = std::to_string(ctx.esi) + name;
+        auto it = seen.find(key);
+        if (it == seen.end() || it->second != value) {
+            seen[key] = value;
+            LOGR("xactvar: sound %08X '%s' = %u (%08X, default %08X) from %08X", ctx.esi, name.c_str(), value, value,
+                 kernel::R32(var + 0xC), kernel::R32(ctx.esp));
+        }
+    }
+    __imp__sub_0055144B(ctx, base);
 }

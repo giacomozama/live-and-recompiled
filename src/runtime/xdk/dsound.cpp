@@ -651,12 +651,16 @@ void StepMods(Voice& v) {
     v.mod_pitch = pitch;
     v.mod_fc = fc;
 }
-// whether the VP runs the voice's DLS2 low-pass: on a 3D voice mode 1 (DLS2 and I3DL2), on a 2D one mode 1, or mode 3
-// too when it is mono (0x4CAAD4's modes, xemu's vp.c)
+// whether the VP runs the voice's DLS2 low-pass: on a 3D voice mode 1 (DLS2 and I3DL2), on a 2D mono one mode 1 or 3
+// (0x4CAAD4's modes, xemu's vp.c). Not on a 2D stereo voice, though xemu's table runs mode 1 there too: Conker's
+// BrontoThroat music (a 2ch stream) gets a sequence event that adds 100 Hz to a track cutoff that starts at 0 (XACT
+// 0x554E61, relative by flag 0x10), so XACT hands the library a 100 Hz DLS2 filter (0x550B94: 4096 log2(2 sin(pi Hz /
+// 48000)) = -25623), and the library writes it to the voice as it is (0x4CAAD4, FCA again when the voice is set up,
+// 0x4CAF7D). The console plays that music clear, so its VP can't be low-passing stereo voices so.
 bool Dls2(const Voice& v) {
     if (!app::Get().voice_filters) return false;
     if (v.flags & 0x200010) return v.fmode == 1;
-    return v.channels == 2 ? v.fmode == 1 : (v.fmode & 1) != 0;
+    return v.channels == 1 && (v.fmode & 1) != 0;
 }
 
 // the sinc kernel's taps for a frame t (0..1) past the one playing: a Blackman windowed sinc over the window, low-pass
@@ -898,11 +902,20 @@ void Describe(uint32_t obj, const Voice& v) {
                       v.min_dist, v.max_dist, v.mode, v.curve.size());
         d3 = b;
     }
-    LOGR("dsound:  %08X %uch %uHz%s out %08X vol %d headroom %d%s bins%s 3d %s att %d%s pan %.2f level %d", obj,
+    // XACT's DLS2 filter: mode, cutoff (4.12 octaves) and damping as set, and the corner the SVF's coefficient gives at
+    // 48 kHz (f = 2 sin(pi Fc / 48000)) with the envelopes' and LFOs' cutoff modulation; "off" when the VP skips it
+    std::string flt;
+    if (v.fmode) {
+        const float f = std::clamp(std::exp2((float(int16_t(v.fc)) + v.mod_fc) / 4096.0f), 0.003906f, 1.0f);
+        std::snprintf(b, sizeof b, " filter %u fc %d%+d q %u = %.0f Hz%s", v.fmode, int(int16_t(v.fc)), int(v.mod_fc),
+                      v.fq, 48000.0 / 3.14159265 * std::asin(f / 2), Dls2(v) ? "" : " off");
+        flt = b;
+    }
+    LOGR("dsound:  %08X %uch %uHz%s out %08X vol %d headroom %d%s bins%s 3d %s att %d%s pan %.2f level %d%s", obj,
          v.channels, uint32_t(std::lround(Rate(v))), v.mixin ? " mixin" : "", v.out, mb(v.volume), mb(v.headroom),
          v.nbins ? "" : " default", bins.c_str(), v.calc3d ? "calc" : v.is3d ? "ds" : "no",
          v.calc3d ? mb(Att3d(v.t3d, 0)) : 0, d3.c_str(),
-         v.pan3d, mb(float(std::sqrt(v.recent))));
+         v.pan3d, mb(float(std::sqrt(v.recent))), flt.c_str());
 }
 
 void Render(float* out, uint32_t frames) {
