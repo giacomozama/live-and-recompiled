@@ -399,6 +399,14 @@ at = 0x636AF   # a package taken by the level load: a class's, its character sel
 call = "ConkerMenuPackages"
 
 [[hook]]
+at = 0x801A2   # a player's see-through pieces: the Tediz Poisoner's character select helmet drawn solid
+call = "ConkerSolidHelmet"
+
+[[hook]]
+at = 0x801B7   # after them
+call = "ConkerSolidHelmetEnd"
+
+[[hook]]
 at = 0x8643D   # a level change, its frontend packages released: those asked for with them (characters::g_menu_models)
 call = "ConkerMenuReset"
 

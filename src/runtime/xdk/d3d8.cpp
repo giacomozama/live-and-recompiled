@@ -1016,6 +1016,16 @@ void d3d::SetVertexConstant(uint32_t reg, const std::array<float, 4>& v) {
     if (reg < 192) g_state.vsc.set(reg, v);
 }
 
+namespace {
+bool g_opaque = false;  // d3d::OpaqueDraws
+}  // namespace
+
+void d3d::OpaqueDraws(bool on) {
+    std::lock_guard<std::recursive_mutex> lock(g_lock);
+    Walk(Dev(kDevPush));
+    g_opaque = on;
+}
+
 bool d3d::LoadingScreenWanted() {
     using clock = std::chrono::steady_clock;
     static const bool always = std::getenv("XBE_LOADING_SCREEN") != nullptr;
@@ -1761,6 +1771,23 @@ void BackendDraw(uint32_t prim, uint32_t start, uint32_t count, const uint8_t* i
     struct Untag {
         ~Untag() { gpu::interp::g_draw_tag = {}; }
     } untag;
+    // OpaqueDraws: blending off and depth written for this draw, the title's states back after it
+    struct Opaque {
+        uint32_t blend = 0, zwrite = 0;
+        bool on = false;
+        Opaque() {
+            if (!g_opaque) return;
+            on = true;
+            blend = g_state.simple[gpu::kMBlendEnable >> 2], zwrite = g_state.simple[gpu::kMZWriteEnable >> 2];
+            g_state.simple.set(gpu::kMBlendEnable >> 2, 0u);
+            g_state.simple.set(gpu::kMZWriteEnable >> 2, 1u);
+        }
+        ~Opaque() {
+            if (!on) return;
+            g_state.simple.set(gpu::kMBlendEnable >> 2, blend);
+            g_state.simple.set(gpu::kMZWriteEnable >> 2, zwrite);
+        }
+    } opaque;
     if (!g_chip_program) {
         g_backend->Draw(g_state, prim, start, count, indices);
         return;

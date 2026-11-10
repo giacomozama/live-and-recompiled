@@ -1215,7 +1215,8 @@ void Draw(double fps) {
                     static uint32_t model = fur::kNoModel;
                     std::vector<uint32_t> models = fur::KnownModels();
                     const auto add = [&](uint32_t type) {
-                        if (type != fur::kNoModel && std::find(models.begin(), models.end(), type) == models.end())
+                        if (type != fur::kNoModel && !fur::Furless(type) &&
+                            std::find(models.begin(), models.end(), type) == models.end())
                             models.push_back(type);
                     };
                     for (uint32_t type : fur::SeenModels()) add(fur::Canonical(type));  // a multiplayer class once

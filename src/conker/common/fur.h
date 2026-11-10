@@ -68,14 +68,17 @@ int KindOf(uint32_t type);
 inline const Look& DefaultLook(uint32_t type) { return kLookDefaults[KindOf(type)]; }
 bool GameFurOf(uint32_t type);
 // the model whose look a model takes: a multiplayer class's models share one (Multi\, MultiFrontend\, MultiLOD\,
-// MultiLOD2\, MainFrontend\), its full model's id; any other model its own. Any thread
+// MultiLOD2\, MainFrontend\), its full model's id; Conker's (all but Van Helsing's), 0; any other model its own. Any thread
 uint32_t Canonical(uint32_t type);
 // the types whose shells super fur drew, this session or before (settings.toml fur_seen), oldest first
 std::vector<uint32_t> SeenModels();
 // the furry models the game's model table has now (fur.cpp kFurryModels, from a soak test survey; multiplayer's
-// squirrels by name).
+// squirrels and furry Tediz by name).
 // XBE_FUR_SURVEY=1 logs each model's first draw with super fur, its type and name, to add to them. UI thread
 std::vector<uint32_t> KnownModels();
+// a model super fur has no business with, listed or not: the WWII Tediz classes but the grunt, which have no fur (a
+// shell drawn under their tag, or a look saved for them, came from another model)
+bool Furless(uint32_t type);
 // the game's image is in memory: the model table can be read (app::GameInfo::loaded)
 void ImageLoaded();
 // the model's name in the game's model table and its type, "Berri (114)"; a multiplayer class's, "CombatSquirrelMultiGrunt (multiplayer)", "Model (469)" when the table has none

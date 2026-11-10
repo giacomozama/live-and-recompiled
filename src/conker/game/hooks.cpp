@@ -469,9 +469,13 @@ static void SurveyLevelModels(X86Context& ctx, uint8_t* base) {
     LOGR("fur survey: level %u has %d models: %s", level, count, line.c_str());
 }
 
+// the players drawn with a character select model, and that model. Game thread
+static std::unordered_map<uint32_t, uint32_t> g_menu_drawn;
+
 // [[hook]] at 0x2B3368, after 0x2B3510; ebp the player
 void ConkerMenuSkeleton(X86Context& ctx, uint8_t* base) {
     SurveyLevelModels(ctx, base);
+    g_menu_drawn.erase(ctx.ebp);
     if (!characters::g_menu_models) return;
     const uint32_t player = ctx.ebp, list = kernel::R32(player + 0x50C);
     if (list < 0x10000 || kernel::R32(player + 0x4B0) == 0) return;
@@ -487,7 +491,7 @@ void ConkerMenuSkeleton(X86Context& ctx, uint8_t* base) {
     sub_00086440(ctx, base);
     const uint32_t inst = ctx.eax, data = inst >= 0x10000 ? kernel::R32(inst + 0x24) : 0;
     const uint32_t scene = data >= 0x10000 ? kernel::R32(data + 0x8) : 0;
-    if (scene < 0x10000) {
+    if (inst == 0x75DB48 || scene < 0x10000) {
         ctx = saved;
         LOGR("models: %s has no instance (%08X), the match model kept", ModelName(model).c_str(), inst);
         return;
@@ -520,7 +524,37 @@ void ConkerMenuSkeleton(X86Context& ctx, uint8_t* base) {
     X86_PUSH32(0x2B3368u);
     sub_002B3510(ctx, base);
     ctx = saved;
-    LOGI("models: player %08X draws %s (%u)", player, ModelName(model).c_str(), model);
+    g_menu_drawn[player] = model;
+    LOGI("models: player %08X draws %s (%u), instance %08X, scene %08X", player, ModelName(model).c_str(), model, inst,
+         scene);
+}
+
+// A player's draw (0x7FB00, ebx the player) draws its model's scene twice through [0x81BD70]: its solid pieces
+// (0x8004D, pass 1), then its see-through ones with no depth written (0x801AE, pass 2). The Tediz Poisoner's
+// character select models, both eras', have the helmet see-through, its alpha the texture's (F3 capture 190904,
+// draws 1413-1414): drawn in a match for the class's full model (characters::g_menu_models), their pass 2 is drawn
+// solid (d3d::OpaqueDraws); the helmet is all that pass has
+static bool OpaqueHelmet(uint32_t player) {
+    const auto it = g_menu_drawn.find(player);
+    if (it == g_menu_drawn.end() || kernel::R32(player + 0x3A8) != 0) return false;
+    static std::unordered_map<uint32_t, bool> poisoner;  // by model
+    const auto p = poisoner.find(it->second);
+    if (p != poisoner.end()) return p->second;
+    const std::string name = ModelName(it->second);
+    return poisoner[it->second] = name == "MultiFrontend\\CombatTedizMultiPoisoner" ||
+                                  name == "MultiFrontend\\CombatTedizMultiWWIIPoisoner";
+}
+
+// [[hook]] at 0x801A2, before pass 2; ebx the player
+void ConkerSolidHelmet(X86Context& ctx, uint8_t* base) {
+    (void)base;
+    if (OpaqueHelmet(ctx.ebx)) d3d::OpaqueDraws(true);
+}
+
+// [[hook]] at 0x801B7, after pass 2
+void ConkerSolidHelmetEnd(X86Context& ctx, uint8_t* base) {
+    (void)ctx, (void)base;
+    d3d::OpaqueDraws(false);
 }
 
 // 0x1310D0 paces a player's refresh in 0x7F96B's branch (the arg the player, esi its pacing: the frame last seen, the

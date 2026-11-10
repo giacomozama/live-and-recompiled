@@ -572,7 +572,7 @@ namespace {
 // the story's furry models by id (the game's model table, 0x6A58F0): those the soak test (LT + RT + Black on the main
 // menu, every level back to back) drew with super fur under XBE_FUR_SURVEY, 2026-11-10, and a few it loaded but
 // didn't show, kin of those it did (marked). Multiplayer's by kFurryPrefixes, named as their packages load: every
-// squirrel class at each of its four models, and the Tediz Demolisher's character select models (type 469 drawn)
+// squirrel class and the furry Tediz ones (FurryTedi) at each of their four models, one entry a class (fur::Canonical)
 constexpr uint32_t kFurryModels[] = {
     0,    // Conker
     7,    // QueenBee
@@ -611,12 +611,21 @@ constexpr uint32_t kFurryModels[] = {
     321,  // CombatSquirrelShot
     398,  // BerriBarmaid
 };
-constexpr const char* kFurryNames[] = {
-    "MultiFrontend\\CombatTedizMultiDemolisher", "MultiFrontend\\CombatTedizMultiWWIIDemolisher",
-};
 constexpr const char* kFurryPrefixes[] = {
     "Multi\\CombatSquirrel", "MultiFrontend\\CombatSquirrel", "MultiLOD\\CombatSquirrel", "MultiLOD2\\CombatSquirrel",
 };
+// the furry Tediz classes, at each of their four models: the WWII grunt and every Future one (CombatTedizMulti<X>,
+// not WWII); the other WWII Tediz have no fur
+bool FurryTedi(const std::string& name) {
+    static const char* const kFolders[] = {"Multi\\", "MultiFrontend\\", "MultiLOD\\", "MultiLOD2\\"};
+    for (const char* f : kFolders) {
+        const std::string head = std::string(f) + "CombatTedizMulti";
+        if (name.rfind(head, 0) != 0) continue;
+        const std::string cls = name.substr(head.size());
+        return !cls.empty() && (cls == "WWIIGrunt" || cls.rfind("WWII", 0) != 0);
+    }
+    return false;
+}
 
 std::atomic<bool> g_image{false};  // the game's image is in memory, its model table with it (fur::ImageLoaded)
 
@@ -654,7 +663,11 @@ std::atomic<uint32_t> g_canonical[kTable];
 
 }  // namespace
 
+// Conker's models that share his look, Conker's own (0): all but Van Helsing's (276)
+constexpr uint32_t kConkers[] = {150 /* ConkerMatrix */, 154 /* ConkerBat */, 167 /* ConkerTied */, 273 /* ConkerWar */};
+
 uint32_t fur::Canonical(uint32_t type) {
+    if (std::find(std::begin(kConkers), std::end(kConkers), type) != std::end(kConkers)) return 0;
     if (type >= kTable) return type;
     if (const uint32_t c = g_canonical[type].load(std::memory_order_relaxed)) return c - 1;
     const std::string name = TableName(type);
@@ -690,16 +703,22 @@ std::vector<uint32_t> fur::KnownModels() {
         const std::string name = TableName(type);
         if (name.empty()) continue;
         const bool listed = std::find(std::begin(kFurryModels), std::end(kFurryModels), type) != std::end(kFurryModels) ||
-                            std::any_of(std::begin(kFurryNames), std::end(kFurryNames), [&](const char* n) { return name == n; }) ||
                             std::any_of(std::begin(kFurryPrefixes), std::end(kFurryPrefixes),
-                                        [&](const char* p) { return name.rfind(p, 0) == 0; });
+                                        [&](const char* p) { return name.rfind(p, 0) == 0; }) ||
+                            FurryTedi(name);
         const uint32_t group = Canonical(type);
         if (listed && std::find(known.begin(), known.end(), group) == known.end()) known.push_back(group);
     }
     return known;
 }
 
+bool fur::Furless(uint32_t type) {
+    const std::string name = TableName(type);
+    return ClassOf(name).rfind("combattedizmulti", 0) == 0 && !FurryTedi(name);
+}
+
 std::string fur::ModelName(uint32_t type) {
+    if (type == 0) return "Conker (all but Van Helsing)";
     const std::string name = TableName(type);
     if (!ClassOf(name).empty()) return name.substr(name.find('\\') + 1) + " (multiplayer)";
     return (name.empty() ? "Model" : name) + " (" + std::to_string(type) + ")";

@@ -62,6 +62,10 @@ void HudNote(const char* text);
 // shading hooks in a register no program of the title reads. Game thread
 void SetVertexConstant(uint32_t reg, const std::array<float, 4>& v);
 
+// The draws the title pushes next, until a false, are drawn solid: no blending, depth written (a model's piece the
+// title draws see-through, wanted opaque). The commands pushed before are read first. Game thread
+void OpaqueDraws(bool on);
+
 // Whether a title's loading screen, about to be drawn into the front buffer, should be drawn. Each one shown is a
 // Present the loader waits on, and those drawn unshown still cost the GPU their whole picture in the first frame
 // after, so none is: the first ask since the last Swap fades the picture to black, later ones keep the window black,
