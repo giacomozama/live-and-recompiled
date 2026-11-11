@@ -35,6 +35,9 @@ struct Look {
     // (Berri's face in the Heist suit). The weasels' hands and feet and the chipmunks' clothes are other meshes, drawn
     // without shells, which this can't reach
     uint32_t fill;
+    // % the strands' color before their highlights, against what the game's grey masks leave of the skin under them
+    // (some 70 to 90 % of it): above 100 to bring the coat up to the skin's tone
+    uint32_t tone = 100;
     bool operator==(const Look&) const = default;
 };
 // A model's look starts from its kind's: the coat (Conker, the squirrels, grey ones too, and most others); the
@@ -77,7 +80,8 @@ inline constexpr uint32_t HairOf(uint32_t model) { return kHairBit | model; }
 inline constexpr bool IsHair(uint32_t type) { return type != ~0u && (type & kHairBit); }
 // models with defaults of their own rather than their kind's, by type (the model table's id), tuned one by one; the
 // renderer draws them with these wherever the menu has no look for them, whatever program draws them. Keys as Look:
-// strands, tufts, tufting, droop, thickness, taper, root shade, tuft shade, sheen, back glow, length, fill
+// strands, tufts, tufting, droop, thickness, taper, root shade, tuft shade, sheen, back glow, length, fill, tone (100
+// when left out)
 struct ModelDefault {
     uint32_t type;
     Look look;

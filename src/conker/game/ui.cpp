@@ -1277,6 +1277,7 @@ void Draw(double fps) {
                             cell("Sheen %", &l.sheen, 0u, 200u, d.sheen);
                             cell("Back glow %", &l.back_glow, 0u, 200u, d.back_glow);
                             cell("Bare skin fill %", &l.fill, 0u, 100u, d.fill);
+                            cell("Fur brightness %", &l.tone, 50u, 200u, d.tone);
                             ImGui::EndTable();
                         }
                         ImGui::PopID();

@@ -168,18 +168,21 @@ constexpr HairPiece kHairPieces[] = {{276, 0.3f}};
 // register their normal ends in and the constants of their length, FUR_* below.
 //
 // Each kind of fur its own look (fur::Look), three float4 of xs each, FurLook picks one into furA..furC: furA droop,
-// tufting, thickness, taper; furB strands, tufts across a tile, root shade, gap shade; furC sheen, glow, length, fill.
+// tufting, thickness, taper; furB strands, tufts across a tile, root shade, gap shade; furC sheen, glow, length, fill;
+// furT the tone, from xs[15] (one float a kind).
 // The weasels' program is FUR_MAP_STRANDS; the chipmunks share their programs with the grey squirrels and are told
 // apart by who the game draws (fur::TagShells), their types in xs[12] and xs[13]; the weasels drawn by other
 // programs (the Heist's) by theirs in xs[14]; those left the game's own fur by theirs in xs[9]; a hair piece left the
 // game's own fur (fur::HairOf) by xs[11]
 constexpr const char* kStrandFunctions = R"(
 static float4 furA, furB, furC;
+static float furT;   // tone, xs[15] by kind
 static bool furOff;  // the game's own fur: its masks, color and light (the types in xs[9])
 void FurLook(int k) {
     furA = xs[3 * k];
     furB = xs[3 * k + 1];
     furC = xs[3 * k + 2];
+    furT = xs[15][k];
 }
 int FurLookOf() {
 #ifdef FUR_MAP_STRANDS
@@ -394,7 +397,7 @@ constexpr const char* kStrandPs = R"({
         float3 albedo = r0.rgb;
         float3 hue = albedo / max(max(albedo.r, max(albedo.g, albedo.b)), 1e-3);
         r0.rgb = pow(max(albedo, 1e-4), lerp(1.3, 1, ao)) * lerp(trans, 1, deep * 0.6) * ao;
-        r0.rgb *= (1 + (furSeed - 0.5) * 0.18) * (1 - 0.15 * furAcross * furAcross);
+        r0.rgb *= (1 + (furSeed - 0.5) * 0.18) * (1 - 0.15 * furAcross * furAcross) * furT;
         float tips = h * sqrt(furAlong);
         float nv = 1 - saturate(dot(n, e)), rim = nv * nv * nv;
         float behind = pow(saturate(0.5 - 0.5 * dot(l, e)), 2) * (1 - 0.6 * saturate(nl));
@@ -473,6 +476,7 @@ void PutLook(float (*xs)[4], int k, const fur::Look& l) {
     c[1] = pc(l.back_glow);
     c[2] = pc(l.length);
     c[3] = pc(l.fill);
+    xs[15][k] = pc(l.tone);  // the kinds' tones side by side, no fourth float4 each
 }
 
 // the shells between each two of the game's for the model in the draw's tag: its look's, and none on the game's own
@@ -821,6 +825,7 @@ constexpr LookKey kLookKeys[] = {
     {"root_shade", &fur::Look::root_shade}, {"gap_shade", &fur::Look::gap_shade},
     {"sheen", &fur::Look::sheen},           {"back_glow", &fur::Look::back_glow},
     {"length", &fur::Look::length},         {"fill", &fur::Look::fill},
+    {"tone", &fur::Look::tone},
 };
 
 }  // namespace
