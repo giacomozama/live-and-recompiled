@@ -131,6 +131,8 @@ inline std::vector<ProgramShading> g_program_shading;  // filled before the titl
 // host depth (0..1, as the depth buffer holds it), last frame's composite's, 0 throughout once two frames had none
 void NoteDepthOfField(const PixelKey& k, const float (*pc)[4], uint32_t dst_blend);
 ShadingField FocusField();
+// a depth of field composite in one of the last two frames
+bool DepthOfFieldLately();
 
 // A game's look at the draws of a vertex program of the title's, on the render thread: seen gets each draw whose
 // program's translation contains match (and also, when set), before the draw is made (one in the state of the draw before too), with the

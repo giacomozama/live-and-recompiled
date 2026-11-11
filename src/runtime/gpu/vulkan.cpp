@@ -404,11 +404,18 @@ void stencilbit(O i) { if (((stencilat(int2(i.p.xy)) >> opts.x) & 1) == 0) disca
 )";
 
 // a D24S8 depth buffer as the console's memory holds it, read through a 32 bit color format:
-// R G B A take the bytes order picks
+// R G B A take the bytes order picks.
+// fur.x 1: the frame (t2) holds fur's mark in its alpha (ProgramShading::unsharpened), and a pixel fur mostly covers
+// takes fur's depth for the depth of field: the strands at its edge and the shells between write none (the depth
+// pass leaves what they cover faintly to what's behind), so the composite blurred them by the background's, sharp
+// fur fading into a blurred background and blurred fur left sharp at its edge over a sharp one. Fur's depth there is
+// the nearest of the covered pixels around that wrote theirs, the skin and the dense shells near it: rings out to 8
+// console pixels (fur.z host pixels each), the first ring with one nearer. fur.y: frame pixels per depth pixel
 const char* kDepthBytesHlsl = R"(
-cbuffer B : register(b1) { float4 order; };
+cbuffer B : register(b1) { float4 order; float4 fur; };
 Texture2D<float> img : register(t0);
 Texture2D<uint> sten : register(t1);
+Texture2D mark : register(t2);
 struct O { float4 p : SV_Position; float2 uv : TEXCOORD0; };
 O vs(uint id : SV_VertexID) {
     O o;
@@ -416,13 +423,32 @@ O vs(uint id : SV_VertexID) {
     o.p = float4(o.uv * float2(2, -2) + float2(-1, 1), 0, 1);
     return o;
 }
-float depthbyte(O i, uint k) {
-    uint z = (uint)round(saturate(img.Load(int3(i.p.xy, 0))) * 16777215.0);
-    uint d = z << 8 | (sten.Load(int3(i.p.xy, 0)) & 255);
-    return ((d >> (k * 8)) & 255) / 255.0;
+bool furred(int2 p) { return mark.Load(int3(int2(p * fur.y), 0)).a >= 0.5; }
+float depthof(int2 p) {
+    float own = saturate(img.Load(int3(p, 0)));
+    if (fur.x == 0 || !furred(p)) return own;
+    uint2 size;
+    img.GetDimensions(size.x, size.y);
+    [loop] for (int ring = 1; ring <= 8; ring++) {
+        float best = own;
+        [unroll] for (int t = 0; t < 8; t++) {
+            float ang = (t + (ring & 1) * 0.5) * 0.7853982;
+            int2 q = clamp(p + int2(round(float2(cos(ang), sin(ang)) * ring * fur.z)), 0, int2(size) - 1);
+            float z = saturate(img.Load(int3(q, 0)));
+            if (z < best && furred(q)) best = z;
+        }
+        if (best < own) return best;
+    }
+    return own;
+}
+uint depthword(O i) {
+    uint z = (uint)round(depthof(int2(i.p.xy)) * 16777215.0);
+    return z << 8 | (sten.Load(int3(i.p.xy, 0)) & 255);
 }
 float4 psmain(O i) : SV_Target {
-    return float4(depthbyte(i, (uint)order.x), depthbyte(i, (uint)order.y), depthbyte(i, (uint)order.z), depthbyte(i, (uint)order.w));
+    uint d = depthword(i);
+    return float4(((d >> ((uint)order.x * 8)) & 255) / 255.0, ((d >> ((uint)order.y * 8)) & 255) / 255.0,
+                  ((d >> ((uint)order.z * 8)) & 255) / 255.0, ((d >> ((uint)order.w * 8)) & 255) / 255.0);
 }
 )";
 
@@ -1011,7 +1037,7 @@ private:
     void Blit(VkImageView src, const float uvrect[4], const BlitOptions& o);
     void DrawFullScreen(VkPipeline pso, const Alloc& cb, std::array<VkImageView, 4> views);
     Image* Feedback(Target& t);
-    Image* DepthBytes(Target& z, uint32_t format);
+    Image* DepthBytes(Target& z, uint32_t format, Target* furred);
     void Pass(const char* hlsl, const char* entry, VkFormat rtv, Image& target, uint32_t w, uint32_t h,
               const VkImageView src[3], const float* p, float blend, uint32_t floats = 8);
     VkPipeline EnsurePassPipeline(const char* hlsl, const char* entry, VkFormat rtv, float blend);
@@ -1453,6 +1479,7 @@ private:
     std::unordered_map<uint64_t, int> pos_w_;
     uint64_t presents_ = 0;
     uint64_t draw_serial_ = 0;  // draws so far, Target::fb_draw
+    uint64_t fur_marked_ = ~0ull;  // the frame_ a draw last marked fur in its target's alpha (ProgramShading::unsharpened)
     State sprite_;              // a fixed function point sprite's state as the console draws it (SpriteStage)
     double fps_ = 0;
     // frame generation (app::Settings::frame_generation): the frame's pictures (Keep, Between), its own last, and a
@@ -3010,8 +3037,9 @@ void VulkanBackend::Pass(const char* hlsl, const char* entry, VkFormat rtv, Imag
     bound_rt_ = bound_ds_ = nullptr;
 }
 
-// the depth target's bytes as color, drawn again each time a draw reads them; null when there is no memory for it
-Image* VulkanBackend::DepthBytes(Target& z, uint32_t format) {
+// the depth target's bytes as color, drawn again each time a draw reads them; null when there is no memory for it.
+// furred, when set, is the frame with fur's mark in its alpha, for fur to lend its depth (kDepthBytesHlsl)
+Image* VulkanBackend::DepthBytes(Target& z, uint32_t format, Target* furred) {
     if (!z.zb) {
         z.zb = NewImage({.w = z.w, .h = z.h,
                          .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
@@ -3022,9 +3050,17 @@ Image* VulkanBackend::DepthBytes(Target& z, uint32_t format) {
     if (cap_) fprintf(cap_, "%04u depth bytes %08X format %X\n", cap_i_++, z.data, format);
     ResolveSamples(z);
     Transition(*z.res, kRead);
-    const VkImageView src[3] = {z.res->depth_view, z.res->stencil_view, VK_NULL_HANDLE};
+    VkImageView src[3] = {z.res->depth_view, z.res->stencil_view, VK_NULL_HANDLE};
     float p[8] = {};
     DepthByteOrder(format, p);
+    if (furred && furred->res && furred != &z && z.w && z.gw) {
+        ResolveSamples(*furred);
+        Transition(*furred->res, kRead);
+        src[2] = furred->res->view;
+        p[4] = 1;
+        p[5] = float(furred->w) / float(z.w);
+        p[6] = std::max(float(z.w) / float(z.gw), 1.0f);
+    }
     Pass(kDepthBytesHlsl, "psmain", kBgra, *z.zb, z.w, z.h, src, p, -1);
     Transition(*z.zb, kRead);
     // the bytes as the draw reads them, at the target's own size (alpha kept: the 32 bit BMP holds it)
@@ -3551,7 +3587,9 @@ Image* VulkanBackend::BindTexture(const State& s, int stage, DrawTextures& stage
             info.kind = kTex2D;
             info.flags |= uint8_t(kTexDepthBytes | DepthByteLayout(d.format) << kTexDepthLayoutShift);
             if (!((stages.sampled >> stage) & 1)) return nullptr;
-            if (Image* r = DepthBytes(zit->second, d.format)) {
+            // fur marked the frame this frame (ProgramShading::unsharpened): it lends its depth to its edge
+            Target* furred = fur_marked_ == frame_ ? FindTarget(s.rt, false) : nullptr;
+            if (Image* r = DepthBytes(zit->second, d.format, furred)) {
                 stages.view[stage] = r->view;
                 return r;
             }
@@ -4897,8 +4935,12 @@ void VulkanBackend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t
     // does a g_surface_depth surface's, which the title draws without
     VkPipeline zpso = VK_NULL_HANDLE;
     const ProgramShading* zps = sh.shading ? &g_program_shading[sh.shading - 1] : nullptr;
-    // ProgramShading::unsharpened: what the draw covers marked in the target's alpha for FSR to leave soft
-    if (zps && zps->unsharpened && k.has_rt && (k.wmask & 7) && app::Get().fsr) k.wmask |= 8 | kWmaskAlphaMax;
+    // ProgramShading::unsharpened: what the draw covers marked in the target's alpha for FSR to leave soft, and for
+    // the depth of field to blur by fur's depth (DepthBytes)
+    if (zps && zps->unsharpened && k.has_rt && (k.wmask & 7) && (app::Get().fsr || DepthOfFieldLately())) {
+        k.wmask |= 8 | kWmaskAlphaMax;
+        fur_marked_ = frame_;
+    }
     float zalpha = 0;
     int surface = -1;  // g_surface_depth's answer for the draw, -1 not asked
     if (zps && zps->depth_alpha > 0 && k.blend && k.zen && k.zwrite &&

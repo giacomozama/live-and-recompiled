@@ -314,6 +314,7 @@ constexpr uint32_t kFocusBins = 256;
 float g_focus[kFocusBins];
 uint64_t g_focus_version = 1;
 int g_focus_idle = 2;  // frames ended since a composite last filled g_focus
+int g_dof_idle = 2;    // frames ended since a composite was drawn, table or none
 }  // namespace
 
 void EndShadingFrame() {
@@ -322,6 +323,7 @@ void EndShadingFrame() {
     g_shading_clock = std::chrono::duration<float>(std::chrono::steady_clock::now() - start).count();
     for (const ProgramWatch& w : g_program_watch)
         if (w.frame) w.frame();
+    if (g_dof_idle < 2) g_dof_idle++;
     if (g_focus_idle < 2 && ++g_focus_idle == 2) {  // no depth of field lately: nothing blurs
         std::fill(std::begin(g_focus), std::end(g_focus), 0.0f);
         g_focus_version++;
@@ -453,6 +455,7 @@ struct Combiners {
 void NoteDepthOfField(const PixelKey& k, const float (*pc)[4], uint32_t dst_blend) {
     if (!k.programmable || dst_blend != 0x303 || !(k.tex[0].flags & kTexDepthBytes) || (k.tex_modes & 0x1F) != 1)
         return;
+    g_dof_idle = 0;
     float order[4];
     DepthLayoutOrder(k.tex[0].flags >> kTexDepthLayoutShift, order);
     // the alpha at a depth, with what the CPU doesn't know (the other stages, the vertex colors, fog) at 0 and then at
@@ -516,6 +519,7 @@ void NoteDepthOfField(const PixelKey& k, const float (*pc)[4], uint32_t dst_blen
 }
 
 ShadingField FocusField() { return {g_focus, kFocusBins, 1, g_focus_version}; }
+bool DepthOfFieldLately() { return g_dof_idle < 2; }
 
 void ShadingReplay(bool begin, float t) {
     if (!begin) {
