@@ -89,6 +89,8 @@ inline constexpr ModelDefault kModelDefaults[] = {
     {184, {24, 5, 30, 120, 65, 35, 0, 0, 50, 50, 100, 40}},  // WeaselClarinet
     {185, {24, 5, 30, 120, 65, 35, 0, 0, 50, 50, 100, 40}},  // WeaselDrum
     {88, {32, 10, 70, 100, 75, 120, 2, 2, 50, 50, 100, 0}},  // CombatSquirrel, and CombatSquirrelShot (fur.cpp kSharedLooks)
+    {7, {16, 16, 100, 100, 75, 110, 0, 0, 50, 80, 100, 0}},    // QueenBee
+    {109, {16, 12, 80, 100, 75, 110, 0, 0, 100, 50, 100, 100}},  // BeeKing
 };
 inline const ModelDefault* FindModelDefault(uint32_t type) {
     for (const ModelDefault& d : kModelDefaults)
