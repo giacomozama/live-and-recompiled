@@ -583,6 +583,44 @@ void ConkerWeaponWalkSpeed(X86Context& ctx, uint8_t* base) {
     if (display::GameRate() > 30 && kernel::R32(0x7FA20C) == 1) ctx.xmm[0].f[0] *= 2.0f;
 }
 
+// 0x2EBAD0 (esi the character) moves an airborne character up and down in fixed substeps: as many as the time scale
+// [0x7FDB8C] (the slow motion factor times ticks / 2) times 10, truncated (0x2EBB32), each taking [+0xD4] x 0.1 off the
+// vertical speed [+0xD0] and adding the speed x 0.05 to y [+0x7C]. Heist's slow motion dive across the bank hall
+// runs at a factor of 0.2: the console's frame, two ticks, has the scale 0x3E4CCC00 (0.1999998), one substep. At 60 a
+// frame of one tick has 0x3DCCCC00 (0.0999999), no substep, so Conker hung at his take-off height through the slow
+// part (deathwatch captures 133807, 133825) and rose and fell all at once when the dive sped up again, and flew on
+// into the wall. Out of slow motion it's 10 a console frame, 5 a tick, so the loss was only in slow motion and the
+// ramps. Above 30 each console frame gets the console's count (the scale of two ticks, times 10, truncated). An even
+// count is split evenly over its ticks. An odd one (the dive's 1) would leave a tick without a substep, and Conker shook
+// a pixel up and down each frame, so it runs as twice as many half substeps instead, a tick each: half the speed's
+// loss, half the speed into y. A pair of those adds a quarter of a substep's own drop, 0.25 x 0.05 x [+0xD4] x 0.1,
+// more to y than the console's one; y takes that off first, so two ticks end where the console's frame does.
+// [[hook]] before 0x2EBB36: eax the substeps, xmm3 the speed's loss a substep, xmm4 0.05 (the speed's share into y)
+void ConkerAirSubsteps(X86Context& ctx, uint8_t* base) {
+    if (display::GameRate() <= 30) return;
+    const uint32_t ticks = std::clamp(kernel::R32(0x7FA20C), 1u, 60u);
+    float scale;
+    std::memcpy(&scale, base + 0x7FDB8C, 4);
+    const int32_t per = int32_t(scale * 2.0f / float(ticks) * 10.0f);  // a console frame's substeps (x2 exact at 1 tick)
+    if (per <= 0) {
+        ctx.eax = 0;
+        return;
+    }
+    if (per % 2 == 0) {
+        ctx.eax = uint32_t(per / 2) * ticks;
+        return;
+    }
+    const uint32_t halves = uint32_t(per) * ticks;
+    const uint32_t at = ctx.esi + 0x7C;
+    float y;
+    std::memcpy(&y, base + at, 4);
+    y -= float(halves) * 0.125f * ctx.xmm[4].f[0] * ctx.xmm[3].f[0];
+    std::memcpy(base + at, &y, 4);
+    ctx.xmm[3].f[0] *= 0.5f;
+    ctx.xmm[4].f[0] *= 0.5f;
+    ctx.eax = halves;
+}
+
 // 0x2D9FD0 (edi the player): eases the signed word [player+0x1D4] toward [player+0x1D6] once a frame, by a twelfth
 // of the gap and one more, never past it. The target comes from the ground Conker stands on (0x2D5340: the material
 // [player+0x298] & 0x1F in the table at 0x59D820, against [player+0x110]): on BarnOutside's thatched roof it drops
