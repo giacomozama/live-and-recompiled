@@ -442,13 +442,21 @@ constexpr const char* kStrandPre = R"(
         FurPick(FUR_HAIRY);
         float2 fuv = three ? tc3.xy : tc2.xy;
         float fdu = max(length(ddx(fuv)), length(ddy(fuv)));  // outside the branch: derivatives need the whole quad
+        // blurred away by the depth of field (last frame's, gpu::FocusField, at the pixel's own depth: over 90% the
+        // blurred copy; the game's far blur stops near 0.91 on some depths, its near one goes to 1) where the skin lies
+        // behind, facing the eye (a silhouette's fringe shows over what is beyond it, which may be sharp): the strands
+        // are lost in the blur, so the coat's distant look takes their place, worked out without them, and the shells
+        // between the game's (their tag's y -1) add nothing to it
+        bool hazy = xfield.SampleLevel(xfield_smp, float2(saturate(i.pos.z), 0.5), 0) > 0.9 &&
+                    dot(normalize(i.x0.xyz), normalize(-i.x1.xyz)) > 0.5;
+        if (hazy) fdu = 1e3;
         if ((two || three) && i.x0.w > 0 && !furOff) {
 #if STAGE3_MODE == 1
             if (three) t2.b = lerp(t2.b, 1, furC.w);  // bare skin filled in as far as the look asks, the game's alpha too
 #endif
             float reach = furC.z * (three ? saturate(t2.b * 2) : 1);
             furH = i.x0.w / max(reach, 1e-3);
-            furCover = furH < 1 ? FurStrands(fuv, furH, fdu, furAlong, furGap, furSeed, furAcross) : 0;
+            furCover = furH < 1 && !(hazy && c[2].y == -1) ? FurStrands(fuv, furH, fdu, furAlong, furGap, furSeed, furAcross) : 0;
             float4 strands = float4((float3)lerp(0.70, 0.91, saturate(furH)), furCover);
 #if STAGE3_MODE == 1
             if (three) t3 = strands; else
@@ -464,11 +472,13 @@ constexpr const char* kStrandPre = R"(
 // edge; two highlights as hair has (Scheuermann's shifted Kajiya-Kay), the first toward the root in the light's color,
 // the second toward the tip, wider and in the fur's; and a light behind the fur coming through its edge, the thin
 // tips strongest, in the light's strength and the fur's hue, not its lit color, which is dim on that side. All of
-// them are the key light's, so the blob shadows take them too.
+// them are the key light's, so the blob shadows take them too. The depth pass (DEPTH_PASS) works out only the alpha:
+// the light is no use to a pass that writes no color, and each shell's depth pass covers as much of a close-up.
 constexpr const char* kStrandPs = R"({
     float h = saturate(furH);
     // a pixel no strand covers fails the alpha test (10 or more) whatever its color: most of an outer shell's
     [branch] if (furCover * 255 >= 1) {
+#if !DEPTH_PASS
     float shade = 1;  // the key light the blob shadows leave
     {
         float4 p = float4(i.x1.xyz, 1);
@@ -482,9 +492,12 @@ constexpr const char* kStrandPs = R"({
         shade = lit * lit;
         r0.rgb *= 1 - (1 - shade) * i.x1.w;
     }
+#endif
     if (h > 0 && furOff) {
         r0.a = 1 - pow(saturate(1 - r0.a), furJoin);  // the shells added between the game's: together as its one
-    } else if (h > 0) {
+    }
+#if !DEPTH_PASS
+    else if (h > 0) {
         float3 n = normalize(i.x0.xyz), e = normalize(-i.x1.xyz), l = normalize(-c[179].xyz);
         float nl = dot(n, l), wrap = saturate(nl * 0.5 + 0.5);
         float thick = min((1 - h) / max(wrap, 0.4), 1.5);
@@ -506,6 +519,7 @@ constexpr const char* kStrandPs = R"({
         r0.rgb += shade * albedo * tips * furC.y * 0.4 * rim * wrap;
         r0.rgb += shade * tips * wrap * furC.x * c[180].xyz * (0.22 * first + 0.3 * hue * second);
     }
+#endif
     }
 })";
 
@@ -765,9 +779,11 @@ void fur::Init() {
         gpu::g_program_shading.push_back({.match = match, .on = &g_strands, .vs = vs.c_str(), .ps = kStrandPs, .top = top,
                                           .between = int(kExtraShells), .soft = true,
                                           .fill = weasel ? FillWeaselStrands : FillStrands,
-                                          .fill_register = int(kTagRegister), .functions = kStrandFunctions,
-                                          .depth_alpha = depth_alpha, .without = without, .pre = pre,
-                                          .between_of = hairy ? HairyStrandsBetween : StrandsBetween, .top_layers = 16});
+                                          .fill_register = int(kTagRegister), .field = gpu::FocusField,
+                                          .functions = kStrandFunctions, .depth_alpha = depth_alpha,
+                                          .without = without, .pre = pre,
+                                          .between_of = hairy ? HairyStrandsBetween : StrandsBetween, .top_layers = 16,
+                                          .between_mark = int(kTagRegister)});
     };
     gpu::g_program_watch.push_back({.match = kMatch, .seen = SeenHair, .regs = 1 << 1, .spread = true, .vertices = 1024,
                                     .on = &g_hair_watch});

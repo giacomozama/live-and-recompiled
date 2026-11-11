@@ -163,7 +163,8 @@ extern bool g_distant;
 // Who the fur shells drawn next belong to (src/conker/game/hooks.cpp, the object path 0x78460 and the player's
 // 0x80358; players are objects too): its type [object+0x68], the byte at [object+0xA1], the level [0x7FA1F8], in
 // the vertex constant kTagRegister, which no program of the game reads, for the shaders to pick a look by. F3
-// captures list it with the constants that change (= c-94). Game thread
+// captures list it with the constants that change (= c-94). Game thread. The shells super fur adds between the game's
+// read -1 for its y (ProgramShading::between_mark)
 inline constexpr uint32_t kTagRegister = 2;  // hardware order: D3D c-94
 // Beside the tag, for a model with hair (HairOf), in this register and the four after: how far the hair trails behind
 // its movement, five springs stiffer or looser (xyz, the view's space: x right, y up, z toward the eye, a fraction of

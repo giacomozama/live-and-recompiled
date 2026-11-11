@@ -1083,8 +1083,7 @@ private:
     bool ReuseRun(const State& s);
     void BindGeometry(const Assembled& a);
     void IssueGeometry(const Assembled& a);
-    bool DrawBetweenShells(const State& s, const Assembled& a, uint32_t shading, const Bindings& b, VkPipeline pso,
-                           VkPipeline zpso);
+    bool DrawBetweenShells(const State& s, const Assembled& a, uint32_t shading, const Bindings& b);
     void UploadVertexBuffers(const Assembled& a);
     // visibility tests
     bool EnsureQueries();
@@ -4261,10 +4260,11 @@ void VulkanBackend::IssueGeometry(const Assembled& a) {
 }
 
 // ProgramShading::between: the shells between the draw before in the run and this one, its geometry bound and drawn
-// with vertex constants of their own, each followed by its depth pass when there is one (zpso, then pso bound back),
-// then the draw's own bindings pushed back; false, nothing done, without any
-bool VulkanBackend::DrawBetweenShells(const State& s, const Assembled& a, uint32_t shading, const Bindings& b,
-                                      VkPipeline pso, VkPipeline zpso) {
+// with vertex constants of their own, then the draw's own bindings pushed back; false, nothing done, without any.
+// They take no depth pass (zpso): the draws either side write theirs, a shell apart at most from where these would,
+// and the shells go up from the skin, each in front of the one before, so no depth of theirs holds a later one back.
+// In a close-up each pass covers much of the screen, the depth passes as much as the colors
+bool VulkanBackend::DrawBetweenShells(const State& s, const Assembled& a, uint32_t shading, const Bindings& b) {
     const ProgramShading& ps = g_program_shading[shading - 1];
     int between = ps.between_live ? int(*ps.between_live) : ps.between;
     if (ps.between_of) {
@@ -4284,14 +4284,13 @@ bool VulkanBackend::DrawBetweenShells(const State& s, const Assembled& a, uint32
         std::memcpy(vc.cpu, s.vsc.data(), sizeof(s.vsc.v));
         float x = from + (to - from) * float(j) / float(between + 1);
         std::memcpy(vc.cpu + size_t(ps.top) * sizeof(s.vsc[0]), &x, sizeof(x));
+        if (ps.between_mark >= 0 && ps.between_mark < int(s.vsc.size())) {
+            const float mark = -1;
+            std::memcpy(vc.cpu + size_t(ps.between_mark) * sizeof(s.vsc[0]) + sizeof(float), &mark, sizeof(mark));
+        }
         eb.cb[0] = {vc.buf, vc.off, sizeof(s.vsc.v)};
         PushRaw(eb);
         IssueGeometry(a);
-        if (zpso) {
-            vkCmdBindPipeline(cmd_, VK_PIPELINE_BIND_POINT_GRAPHICS, zpso);
-            IssueGeometry(a);
-            vkCmdBindPipeline(cmd_, VK_PIPELINE_BIND_POINT_GRAPHICS, pso);
-        }
     }
     PushRaw(b);  // drawn_.b still holds it
     return true;
@@ -4919,6 +4918,7 @@ void VulkanBackend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t
     Bindings b;
     UploadConstants(s, sh, k, stages, size, c, b);
     g_perf.d_consts += PerfLap(lap);
+    if (!sh.shading && k.blend && (pk.tex[0].flags & kTexDepthBytes)) NoteDepthOfField(pk, c.pc, k.dst);
 
     if (cap_) {
         // XBE_CAPTURE_VERTS=N: each draw's inputs for its first N vertices (2 unless set), to read a whole mesh
@@ -4993,7 +4993,7 @@ void VulkanBackend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t
     SetBlendFactorStencilRef(s);
 
     // geometry, counted while the title runs a visibility test; a shading's shells between go first, uncounted
-    bool bound = sh.shading && DrawBetweenShells(s, a, sh.shading, b, pso, zpso);
+    bool bound = sh.shading && DrawBetweenShells(s, a, sh.shading, b);
     uint32_t query = BeginCountedDraw(s);
     if (bound)
         IssueGeometry(a);

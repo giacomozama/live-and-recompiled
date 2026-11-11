@@ -1038,6 +1038,8 @@ std::string PixelHlsl(const PixelKey& k) {
     s += k.two_sided ? "    float4 v0 = front ? i.d0 : i.b0, v1 = front ? i.d1 : i.b1;\n" : "    float4 v0 = i.d0, v1 = i.d1;\n";
     s += "    if (misc.w == 0) v1 = float4(0, 0, 0, 1);\n";
     s += "    float4 fogin = float4(fogcolor.rgb, saturate(i.fogamt));\n";
+    // DEPTH_PASS is 1 in depth_alpha's (and a g_surface_depth surface's) depth pass, 0 otherwise, for all its hooks
+    if (k.shading) s += F("#define DEPTH_PASS %d\n", k.depth_pass ? 1 : 0);
     if (k.shading && *Shading(k.shading).coords) s += std::string(Shading(k.shading).coords) + "\n";
     std::string body;
     std::string pre;
@@ -1139,7 +1141,7 @@ std::string PixelHlsl(const PixelKey& k) {
         body += "float4 outc = float4(lerp(fogin.rgb, cur.rgb, fogin.a), cur.a);\n";
     }
     if (k.shading && *Shading(k.shading).post)
-        body += F("#define DEPTH_PASS %d\n", k.depth_pass ? 1 : 0) + Shading(k.shading).post + "\n#undef DEPTH_PASS\n";
+        body += std::string(Shading(k.shading).post) + "\n";
     body += soft ? "outc.a = softalphatest(outc.a);\n" : "alphatest(outc.a);\n";
     if (k.depth_pass) body += F("if (outc.a < %g) discard;\n", std::bit_cast<float>(k.depth_pass));
     body += Hooks().Output() + "return outc;\n}\n";

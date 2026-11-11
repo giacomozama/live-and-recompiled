@@ -74,7 +74,8 @@ struct PixelKey {
 // screen, when set, copies the draw's render target just before each of its draws, what the draw blends over, for its
 // shaders to read as Texture2D xscreen (t5) with SamplerState xscreen_smp (s5), linear and clamped, at the pixel's
 // SV_Position over the copy's size. post runs in the pixel shader after the final combiner, before the alpha test, and
-// may change outc; DEPTH_PASS is 1 there in depth_alpha's (and a g_surface_depth surface's) depth pass, 0 otherwise.
+// may change outc. DEPTH_PASS is 1 in all the pixel shader's hooks (coords, pre, ps, post) in depth_alpha's (and a
+// g_surface_depth surface's) depth pass, 0 otherwise: what only colors may be left out there.
 // coords runs in the pixel shader before the textures are fetched and may change tc0..tc3, which every stage then
 // reads by, whatever its kind; what it declares outside braces the later hooks see.
 struct ShadingField {
@@ -112,8 +113,20 @@ struct ProgramShading {
     // piece's own, as pieces of different lengths take turns in one loop over the shells (a bunny's body and tail): xc.x
     // and between's steps go by that instead of the run's largest x and the draw before's, so each piece reaches 1
     int top_layers = 0;
+    // when 0 or more, a vertex constant (hardware order) whose y the shells between set to -1 in their copies, for
+    // the shaders to tell them from the draw's own
+    int between_mark = -1;
 };
 inline std::vector<ProgramShading> g_program_shading;  // filled before the title boots, unchanged after
+
+// The title's depth of field: a composite over the frame whose stage 0 reads the depth buffer's bytes (DepthSpread's
+// draw), blending its blurred copy in by its alpha (the blend's destination factor INV_SRC_ALPHA). NoteDepthOfField
+// works that alpha out on the CPU from the draw's combiners for each top byte of the depth, the least over the byte's
+// span and its neighbours', so no depth reads blurrier than it is; nothing when the alpha hangs on anything but the
+// depth and constants. FocusField hands the table to a g_program_shading entry's field: 256 x 1, read at u = the
+// host depth (0..1, as the depth buffer holds it), last frame's composite's, 0 throughout once two frames had none
+void NoteDepthOfField(const PixelKey& k, const float (*pc)[4], uint32_t dst_blend);
+ShadingField FocusField();
 
 // A game's look at the draws of a vertex program of the title's, on the render thread: seen gets each draw whose
 // program's translation contains match (and also, when set), before the draw is made (one in the state of the draw before too), with the

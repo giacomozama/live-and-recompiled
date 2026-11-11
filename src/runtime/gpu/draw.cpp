@@ -13,6 +13,7 @@
 #include "gpu/dxgi_formats.h"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <bit>
 #include <chrono>
@@ -307,17 +308,214 @@ float ShadingBefore(uint32_t shading) {
     return shading - 1 < g_shading_tops.size() ? g_shading_tops[shading - 1].before : -1;
 }
 
+namespace {
+// NoteDepthOfField's table, FocusField's
+constexpr uint32_t kFocusBins = 256;
+float g_focus[kFocusBins];
+uint64_t g_focus_version = 1;
+int g_focus_idle = 2;  // frames ended since a composite last filled g_focus
+}  // namespace
+
 void EndShadingFrame() {
     static const auto start = std::chrono::steady_clock::now();
     g_shading_clock_before = g_shading_clock;
     g_shading_clock = std::chrono::duration<float>(std::chrono::steady_clock::now() - start).count();
     for (const ProgramWatch& w : g_program_watch)
         if (w.frame) w.frame();
+    if (g_focus_idle < 2 && ++g_focus_idle == 2) {  // no depth of field lately: nothing blurs
+        std::fill(std::begin(g_focus), std::end(g_focus), 0.0f);
+        g_focus_version++;
+    }
     for (ShadingTop& t : g_shading_tops) {
         t.last.swap(t.frame);
         t.frame.clear();
     }
 }
+
+namespace {
+
+// The register combiners on the CPU, as shaders.cpp's Ps writes them in HLSL, for the alpha a draw outputs: the
+// inputs t (stages 0..3), v0, v1 and fog given
+using C4 = std::array<float, 4>;
+struct Combiners {
+    const PixelKey& k;
+    const float (*pc)[4];
+    C4 t[4], v0, v1, fog, r0{}, r1{};
+
+    C4 Var(uint32_t reg, int stage) const {
+        const uint32_t flags = k.count >> 8;
+        auto c = [&](int i) { return C4{pc[i][0], pc[i][1], pc[i][2], pc[i][3]}; };
+        switch (reg) {
+            case 1: return c(stage == 8 ? 16 : (flags & 0x10) ? stage * 2 : 0);
+            case 2: return c(stage == 8 ? 17 : (flags & 0x100) ? stage * 2 + 1 : 1);
+            case 3: return fog;
+            case 4: return v0;
+            case 5: return v1;
+            case 8: case 9: case 10: case 11: return t[reg - 8];
+            case 12: return r0;
+            case 13: return r1;
+            default: return {};  // zero; the final combiner's sum and product only its rgb reads
+        }
+    }
+    C4* Dest(uint32_t reg) {
+        switch (reg) {
+            case 4: return &v0;
+            case 5: return &v1;
+            case 8: case 9: case 10: case 11: return &t[reg - 8];
+            case 12: return &r0;
+            case 13: return &r1;
+            default: return nullptr;
+        }
+    }
+    // an input's channels (rgb, or the alpha half's one in [0]), mapped
+    C4 Input(uint32_t v, bool alpha, int stage) const {
+        const C4 r = Var(v & 0xF, stage);
+        const bool chan = v & 0x10;
+        C4 o{};
+        for (int i = 0; i < 3; i++) o[i] = alpha ? (chan ? r[3] : r[2]) : (chan ? r[3] : r[i]);
+        for (float& x : o) {
+            switch (v & 0xE0) {
+                case 0x00: x = std::max(x, 0.0f); break;
+                case 0x20: x = 1 - std::clamp(x, 0.0f, 1.0f); break;
+                case 0x40: x = 2 * std::max(x, 0.0f) - 1; break;
+                case 0x60: x = -2 * std::max(x, 0.0f) + 1; break;
+                case 0x80: x = std::max(x, 0.0f) - 0.5f; break;
+                case 0xA0: x = -std::max(x, 0.0f) + 0.5f; break;
+                case 0xC0: break;
+                default: x = -x; break;
+            }
+        }
+        return o;
+    }
+    static float Map(float v, uint32_t m) {
+        switch (m) {
+            case 0x08: return v - 0.5f;
+            case 0x10: return v * 2;
+            case 0x18: return (v - 0.5f) * 2;
+            case 0x20: return v * 4;
+            case 0x30: return v / 2;
+            default: return v;
+        }
+    }
+    struct Out {
+        C4 ab, cd, ms;
+        uint32_t ab_dst, cd_dst, sum_dst, fl;
+    };
+    Out Half(uint32_t inputs, uint32_t output, bool alpha, int stage) const {
+        const C4 A = Input(inputs >> 24, alpha, stage), B = Input((inputs >> 16) & 0xFF, alpha, stage),
+                 C = Input((inputs >> 8) & 0xFF, alpha, stage), D = Input(inputs & 0xFF, alpha, stage);
+        Out o{{}, {}, {}, (output >> 4) & 0xF, output & 0xF, (output >> 8) & 0xF, output >> 12};
+        const int n = alpha ? 1 : 3;
+        const uint32_t map = o.fl & 0x38;
+        float abd = 0, cdd = 0;
+        for (int i = 0; i < n; i++) abd += A[i] * B[i], cdd += C[i] * D[i];
+        const bool mux_r0 = ((k.count >> 8) & 1) ? r0[3] >= 0.5f : (uint32_t(std::max(r0[3], 0.0f) * 255) & 1) == 1;
+        for (int i = 0; i < n; i++) {
+            const float ab = (o.fl & 2) ? abd : A[i] * B[i], cd = (o.fl & 1) ? cdd : C[i] * D[i];
+            o.ab[i] = std::clamp(Map(ab, map), -1.0f, 1.0f);
+            o.cd[i] = std::clamp(Map(cd, map), -1.0f, 1.0f);
+            o.ms[i] = std::clamp(Map((o.fl & 4) ? (mux_r0 ? cd : ab) : ab + cd, map), -1.0f, 1.0f);
+        }
+        return o;
+    }
+    void Write(const Out& o, bool alpha) {
+        auto put = [&](uint32_t dst, const C4& v) {
+            if (C4* r = Dest(dst)) {
+                if (alpha) (*r)[3] = v[0];
+                else for (int i = 0; i < 3; i++) (*r)[i] = v[i];
+            }
+        };
+        put(o.ab_dst, o.ab);
+        if (!alpha && (o.fl & 0x80))
+            if (C4* r = Dest(o.ab_dst)) (*r)[3] = o.ab[2];
+        put(o.cd_dst, o.cd);
+        if (!alpha && (o.fl & 0x40))
+            if (C4* r = Dest(o.cd_dst)) (*r)[3] = o.cd[2];
+        put(o.sum_dst, o.ms);
+    }
+    float Alpha() {
+        r0 = {0, 0, 0, (k.tex_modes & 0x1F) ? t[0][3] : 1};
+        r1 = {};
+        const uint32_t n = std::min<uint32_t>(k.count & 0xFF, 8);
+        for (uint32_t st = 0; st < n; st++) {
+            const Out c = Half(k.rgb_in[st], k.rgb_out[st], false, int(st));
+            const Out a = Half(k.a_in[st], k.a_out[st], true, int(st));
+            Write(c, false);
+            Write(a, true);
+        }
+        if (k.final_abcd || k.final_efg) return std::max(Input((k.final_efg >> 8) & 0xFF, true, 8)[0], 0.0f);
+        return r0[3];
+    }
+};
+
+}  // namespace
+
+void NoteDepthOfField(const PixelKey& k, const float (*pc)[4], uint32_t dst_blend) {
+    if (!k.programmable || dst_blend != 0x303 || !(k.tex[0].flags & kTexDepthBytes) || (k.tex_modes & 0x1F) != 1)
+        return;
+    float order[4];
+    DepthLayoutOrder(k.tex[0].flags >> kTexDepthLayoutShift, order);
+    // the alpha at a depth, with what the CPU doesn't know (the other stages, the vertex colors, fog) at 0 and then at
+    // 1: unequal, the alpha isn't the depth's alone
+    auto blur = [&](uint32_t z24, bool& depth_only) {
+        const uint32_t d = z24 << 8;  // the stencil byte, unknown, 0
+        float out[2];
+        for (int pass = 0; pass < 2; pass++) {
+            const float u = float(pass);
+            Combiners cb{k, pc, {}, {u, u, u, u}, {u, u, u, u}, {u, u, u, u}};
+            for (int c = 0; c < 4; c++) cb.t[0][c] = float((d >> (uint32_t(order[c]) * 8)) & 255) / 255;
+            for (int i = 1; i < 4; i++) cb.t[i] = {u, u, u, u};
+            out[pass] = std::min(cb.Alpha(), 1.0f);
+        }
+        depth_only &= std::fabs(out[0] - out[1]) < 1e-3f;
+        return out[0];
+    };
+    float bins[kFocusBins];
+    bool depth_only = true;
+    for (uint32_t i = 0; i < kFocusBins && depth_only; i++) {
+        float least = 1;
+        for (uint32_t m = 0; m <= 256; m += 32)  // the middle byte across its range: the lower bytes count for little
+            least = std::min(least, blur(i << 16 | std::min(m, 255u) << 8 | 0x80, depth_only));
+        bins[i] = least;
+    }
+    // XBE_FOCUS_TRACE=1: each new table, as the host depths whose pixels blur over 90% (what super fur takes as
+    // blurred away) and the least blur in the table, or why a composite gave none
+    static const bool trace = [] {
+        const char* e = std::getenv("XBE_FOCUS_TRACE");
+        return e && *e && *e != '0';
+    }();
+    if (!depth_only) {
+        static int told = 0;
+        if (trace && told++ < 4) LOGR("focus: a depth of field composite whose alpha hangs on more than the depth, no table");
+        return;
+    }
+    g_focus_idle = 0;
+    bool same = true;
+    for (uint32_t i = 0; i < kFocusBins; i++) {
+        const float v = std::min({bins[i], bins[i ? i - 1 : 0], bins[std::min(i + 1, kFocusBins - 1)]});
+        same &= g_focus[i] == v;
+        g_focus[i] = v;
+    }
+    if (!same) g_focus_version++;
+    if (trace && !same) {
+        std::string spans;
+        float least = 1;
+        for (uint32_t i = 0; i < kFocusBins; i++) {
+            least = std::min(least, g_focus[i]);
+            if (g_focus[i] > 0.9f && (i == 0 || g_focus[i - 1] <= 0.9f)) {
+                uint32_t j = i;
+                while (j + 1 < kFocusBins && g_focus[j + 1] > 0.9f) j++;
+                char span[48];
+                snprintf(span, sizeof(span), " %.3f..%.3f", i / 256.0f, (j + 1) / 256.0f);
+                spans += span;
+            }
+        }
+        LOGR("focus: table %llu, blurred away at depths%s, least blur %.2f", (unsigned long long)g_focus_version,
+             spans.empty() ? " none" : spans.c_str(), least);
+    }
+}
+
+ShadingField FocusField() { return {g_focus, kFocusBins, 1, g_focus_version}; }
 
 void ShadingReplay(bool begin, float t) {
     if (!begin) {
