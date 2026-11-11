@@ -1254,12 +1254,11 @@ void Draw(double fps) {
                         ImGui::PushID(int(model));  // each model's sliders their own widgets, so a drag doesn't carry over
                         Check("Game's own fur", &own->game);
                         if (fur::IsHair(model))
-                            Hint("The hair keeps the game's fur, with super fur on; otherwise it takes the model's look.", true);
+                            Hint("The hair keeps the game's fur, with super fur on; otherwise it has a look of its own.", true);
                         else
                             Hint("This model keeps the game's fur, with super fur on.", true);
                         // the look in two columns, a pair to a row: each slider in the next cell
-                        if (!own->game && !fur::IsHair(model) &&
-                            ImGui::BeginTable("##look", 2, ImGuiTableFlags_SizingStretchSame)) {
+                        if (!own->game && ImGui::BeginTable("##look", 2, ImGuiTableFlags_SizingStretchSame)) {
                             const auto cell = [](auto&&... args) {
                                 ImGui::TableNextColumn();
                                 Slider(args...);

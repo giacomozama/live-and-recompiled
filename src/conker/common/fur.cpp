@@ -178,12 +178,14 @@ constexpr HairPiece kHairPieces[] = {{276, 0.3f}};
 constexpr const char* kStrandFunctions = R"(
 static float4 furA, furB, furC;
 static float furT;   // tone, xs[15] by kind
+static float furJoin;  // the shells between and the game's as its one, for the game's own fur: xs[10].x, a hair's y
 static bool furOff;  // the game's own fur: its masks, color and light (the types in xs[9])
 void FurLook(int k) {
     furA = xs[3 * k];
     furB = xs[3 * k + 1];
     furC = xs[3 * k + 2];
     furT = xs[15][k];
+    furJoin = xs[10].x;
 }
 int FurLookOf() {
 #ifdef FUR_MAP_STRANDS
@@ -198,12 +200,14 @@ int FurLookOf() {
 }
 // hairy: the program a model's hair is drawn by (the body's, kMatch); its other programs' pieces may have the same
 // offset per layer (Van Helsing's body and head, by Berri's). The hair keeps the game's own fur when its look asks
-// (xs[11]: x the least xc.x of the hair piece, which the shell's offset per layer sets; z 1 when it asks)
+// (xs[11]: x the least xc.x of the hair piece, which the shell's offset per layer sets; z 1 when it asks), or takes
+// a look of its own (z 2), put in a slot the model's draws don't pick (w)
 void FurPick(bool hairy) {
     int k = FurLookOf();
-    if (hairy && xs[11].z > 0 && xc.x > xs[11].x) k = -1;
+    if (hairy && xs[11].z > 0 && xc.x > xs[11].x) k = xs[11].z > 1.5 ? int(xs[11].w) : -1;
     furOff = k < 0;
     FurLook(max(k, 0));
+    furJoin = hairy && xs[11].z > 0 && xc.x > xs[11].x ? xs[10].y : xs[10].x;
 }
 float2 FurHash(float2 p) {
     float3 a = frac(p.xyx * float3(0.1031, 0.1030, 0.0973));
@@ -383,7 +387,7 @@ constexpr const char* kStrandPs = R"({
         r0.rgb *= 1 - (1 - shade) * i.x1.w;
     }
     if (h > 0 && furOff) {
-        r0.a = 1 - pow(saturate(1 - r0.a), xs[10].x);  // the shells added between the game's: together as its one
+        r0.a = 1 - pow(saturate(1 - r0.a), furJoin);  // the shells added between the game's: together as its one
     } else if (h > 0) {
         float3 n = normalize(i.x0.xyz), e = normalize(-i.x1.xyz), l = normalize(-c[179].xyz);
         float nl = dot(n, l), wrap = saturate(nl * 0.5 + 0.5);
@@ -489,7 +493,32 @@ uint32_t TaggedShells(const float* tag) {
     return fur::GameFurOf(type) ? 0 : fur::DefaultShells(fur::Canonical(type));
 }
 
-int StrandsBetween(const float* tag) { return int(TaggedShells(tag)); }
+// a hair piece's (kHairPieces) shells between when it has a look of its own: none on the game's fur, else its look's;
+// -1 without one, the model's then
+int HairShells(uint32_t type) {
+    for (const HairPiece& hp : kHairPieces) {
+        if (fur::Canonical(type) != hp.model) continue;
+        const fur::ModelLook* hair = fur::FindModelLook(fur::HairOf(hp.model));
+        return !hair ? -1 : hair->game ? 0 : int(hair->shells);
+    }
+    return -1;
+}
+
+int StrandsBetween(const float* tag, const float*) { return int(TaggedShells(tag)); }
+
+// the body's program, which draws the hair pieces (FurPick's hairy): a draw is the hair's when its shells' offset per
+// layer (top: x the offset so far, w the layer) is under the piece's most, as xc.x over xs[11].x in the shaders
+int HairyStrandsBetween(const float* tag, const float* top) {
+    if (tag && tag[3] == 1.0f && tag[0] >= 0 && top && top[0] > 0) {
+        const uint32_t type = uint32_t(tag[0]);
+        for (const HairPiece& hp : kHairPieces)
+            if (fur::Canonical(type) == hp.model && top[0] / (top[3] + 1) < hp.most) {
+                const int n = HairShells(type);
+                if (n >= 0) return n;
+            }
+    }
+    return int(TaggedShells(tag));
+}
 
 // each draw's: the three kinds' default looks and the types that pick them, or, for a model with a look of its own
 // (the type in the draw's tag, fur::kTagRegister), that look in all three places, so whichever the shader picks is the
@@ -501,24 +530,39 @@ void Fill(float (*xs)[4], const float* tag, bool weasel) {
     for (int i = 0; i < 4; i++) xs[14][i] = i < int(std::size(kWeaselTypes)) ? float(kWeaselTypes[i]) : -1.0f;
     for (int i = 0; i < 4; i++) xs[9][i] = i < int(std::size(kConsoleTypes)) ? float(kConsoleTypes[i]) : -1.0f;
     xs[10][0] = 1.0f / float(1 + TaggedShells(tag));  // the shells between (StrandsBetween) and the game's as its one
+    xs[10][1] = xs[10][0];  // a hair piece's (HairyStrandsBetween), FurPick's
+    if (tag && tag[3] == 1.0f && tag[0] >= 0)
+        if (const int n = HairShells(uint32_t(tag[0])); n >= 0) xs[10][1] = 1.0f / float(1 + n);
     for (int i = 0; i < 4; i++) xs[11][i] = 0;
     if (!tag || tag[3] != 1.0f || tag[0] < 0) return;
     const uint32_t type = uint32_t(tag[0]);
     See(type, weasel, true);
     if (const fur::ModelDefault* d = fur::FindModelDefault(fur::Canonical(type)))  // defaults of its own (fur.h)
         for (int k = 0; k < fur::kLooks; k++) PutLook(xs, k, d->look);
-    for (const HairPiece& hp : kHairPieces) {
-        if (fur::Canonical(type) != hp.model) continue;
-        const fur::ModelLook* hair = fur::FindModelLook(fur::HairOf(hp.model));
-        if (!hair || !hair->game) continue;
-        xs[11][0] = 1.0f / (16.0f * hp.most);  // xc.x is (layer + 1) / (16 offset), 1 / (16 the piece's offset per layer)
-        xs[11][2] = 1.0f;
-    }
     if (const fur::ModelLook* m = fur::FindModelLook(fur::Canonical(type))) {  // its class's, in multiplayer
         const fur::ModelLook own = *m;  // the menu may change it meanwhile: one copy, whole or not
         for (int k = 0; k < fur::kLooks; k++) PutLook(xs, k, own.look);
         for (int i = 0; i < 4; i++) xs[9][i] = -1.0f;
         if (own.game) xs[9][0] = float(type);
+    }
+    // a hair piece with a look of its own (once the menu has made one): the game's fur, or its look in a slot the
+    // model's draws don't pick (FurLookOf's: the weasels' program or type 1, a chipmunk 2, else 0); without, the model's
+    for (const HairPiece& hp : kHairPieces) {
+        if (fur::Canonical(type) != hp.model) continue;
+        const fur::ModelLook* found = fur::FindModelLook(fur::HairOf(hp.model));
+        if (!found) continue;
+        const fur::ModelLook hair = *found;
+        xs[11][0] = 1.0f / (16.0f * hp.most);  // xc.x is (layer + 1) / (16 offset), 1 / (16 the piece's offset per layer)
+        if (hair.game) {
+            xs[11][2] = 1.0f;
+            continue;
+        }
+        const bool weasel_type = std::find(std::begin(kWeaselTypes), std::end(kWeaselTypes), type) != std::end(kWeaselTypes);
+        const int k = weasel || weasel_type ? 1 : std::find(chipmunks.begin(), chipmunks.end(), float(type)) != chipmunks.end() ? 2 : 0;
+        const int slot = (k + 1) % fur::kLooks;
+        PutLook(xs, slot, hair.look);
+        xs[11][2] = 2.0f;
+        xs[11][3] = float(slot);
     }
 }
 
@@ -545,15 +589,15 @@ void fur::Init() {
                              c94_pre = std::string("#define FUR_MAP_STRANDS 1\n") + kStrandPre + "\n#undef FUR_MAP_STRANDS\n",
                              body_pre = std::string("#define FUR_HAIRY 1\n") + kStrandPre + "\n#undef FUR_HAIRY\n";
     const auto strands = [&](const char* match, const std::string& vs, int top, const char* without, const char* pre = kStrandPre,
-                             bool weasel = false) {  // the weasels' program
+                             bool weasel = false, bool hairy = false) {  // the weasels' program, the hair pieces' program
         gpu::g_program_shading.push_back({.match = match, .on = &g_strands, .vs = vs.c_str(), .ps = kStrandPs, .top = top,
                                           .between = int(kExtraShells), .soft = true,
                                           .fill = weasel ? FillWeaselStrands : FillStrands,
                                           .fill_register = int(kTagRegister), .functions = kStrandFunctions,
                                           .depth_alpha = depth_alpha, .without = without, .pre = pre,
-                                          .between_of = StrandsBetween, .top_layers = 16});
+                                          .between_of = hairy ? HairyStrandsBetween : StrandsBetween, .top_layers = 16});
     };
-    strands(kMatch, body_vs, 85 + 96, nullptr, body_pre.c_str());  // the girl's shape too (the officer's): the patches were fur_shading's
+    strands(kMatch, body_vs, 85 + 96, nullptr, body_pre.c_str(), false, true);  // the girl's shape too (the officer's): the patches were fur_shading's
     strands(kHeadMatch, head_vs, 90 + 96, nullptr);
     strands(kC90Match, c90_vs, 90 + 96, nullptr);  // Berri's, the officer's head and the soldiers' pieces
     strands(kC94Match, c94_vs, 94 + 96, nullptr, c94_pre.c_str(), true);
@@ -608,6 +652,8 @@ fur::ModelLook* fur::ModelLookOf(uint32_t type) {
             m.look = DefaultLook(type);
             m.game = GameFurOf(type);
             m.shells = DefaultShells(type);
+            if (IsHair(type))  // the hair starts as the model looks now, which it took until it had a look of its own
+                if (const ModelLook* model = FindModelLook(type & ~kHairBit)) m.look = model->look, m.shells = model->shells;
             std::atomic_thread_fence(std::memory_order_release);  // the look whole before the renderer finds it
             m.type = type;
             return &m;
@@ -846,7 +892,9 @@ void fur::Load(const void* table) {
         const toml::table* m = node.as_table();
         char* end = nullptr;
         const unsigned long type = std::strtoul(std::string(key.str()).c_str(), &end, 10);
-        if (!m || end == nullptr || *end || type >= 0x10000 || key.str().empty()) continue;
+        if (!m || end == nullptr || *end || type >= 0x10000 && !IsHair(uint32_t(type)) || type >= 2 * kHairBit ||
+            key.str().empty())
+            continue;
         ModelLook* own = ModelLookOf(uint32_t(type));
         if (!own) break;
         own->game = (*m)["game"].value_or(own->game);

@@ -73,8 +73,9 @@ ModelLook* ModelLookOf(uint32_t type);
 // a model's defaults: its kind's look (kCoat, kWeasel, kChipmunk), and whether it keeps the game's own fur
 int KindOf(uint32_t type);
 // A model's hair, where it has a piece of hair drawn with the fur's shells (fur.cpp kHairPieces: Van Helsing's), is
-// listed beside the model under HairOf(model), its look's game alone used: the hair keeps the game's own fur while the
-// rest of the model has super fur. Otherwise the hair takes the model's look
+// listed beside the model under HairOf(model): the hair keeps the game's own fur, or takes a look of its own, while
+// the rest of the model has its own. Its draws are told from the model's others by their shells' offset per layer,
+// for its look and extra shells; until the menu makes it a look it takes the model's
 inline constexpr uint32_t kHairBit = 0x10000;
 inline constexpr uint32_t HairOf(uint32_t model) { return kHairBit | model; }
 inline constexpr bool IsHair(uint32_t type) { return type != ~0u && (type & kHairBit); }
@@ -111,10 +112,12 @@ inline const ModelDefault* FindModelDefault(uint32_t type) {
     return nullptr;
 }
 inline const Look& DefaultLook(uint32_t type) {
+    if (IsHair(type)) return DefaultLook(type & ~kHairBit);  // a hair's, its model's
     if (const ModelDefault* d = FindModelDefault(type)) return d->look;
     return kLookDefaults[KindOf(type & ~kHairBit)];
 }
 inline uint32_t DefaultShells(uint32_t type) {
+    if (IsHair(type)) return DefaultShells(type & ~kHairBit);  // a hair's, its model's
     if (const ModelDefault* d = FindModelDefault(type)) return d->shells;
     return kExtraShells;
 }

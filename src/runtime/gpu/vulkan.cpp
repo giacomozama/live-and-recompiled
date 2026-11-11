@@ -4269,7 +4269,9 @@ bool VulkanBackend::DrawBetweenShells(const State& s, const Assembled& a, uint32
     int between = ps.between_live ? int(*ps.between_live) : ps.between;
     if (ps.between_of) {
         const bool reg = ps.fill_register >= 0 && ps.fill_register < int(s.vsc.size());
-        const int n = ps.between_of(reg ? s.vsc[size_t(ps.fill_register)].data() : nullptr);
+        const bool top = ps.top >= 0 && ps.top < int(s.vsc.size());
+        const int n = ps.between_of(reg ? s.vsc[size_t(ps.fill_register)].data() : nullptr,
+                                    top ? s.vsc[size_t(ps.top)].data() : nullptr);
         if (n >= 0) between = n;
     }
     if (between <= 0) return false;
