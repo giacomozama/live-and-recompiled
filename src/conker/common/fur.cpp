@@ -5,8 +5,6 @@
 #include <cstring>
 #include <atomic>
 #include <chrono>
-#include <cmath>
-#include <array>
 #include <cstdlib>
 #include <iterator>
 #include <string>
@@ -145,6 +143,15 @@ constexpr uint32_t kWeaselTypes[] = {134};
 // drawn as the game draws them, super fur or not (furOff): the female bartender and the little girl. Strands on their
 // soft fur maps looked bad (2026-11-09); Berri and the Sneekers keep the chipmunks' look
 constexpr uint32_t kConsoleTypes[] = {398, 124};
+// the models with a piece of hair among their shells (fur::HairOf), told from their other pieces drawn by the same
+// program by the shell's offset per layer (c85.x over its layer + 1), at most most on the hair: Van Helsing's (276,
+// F3 capture 192613: the hair 0.179, by the body's program; his tail, the same program and tag, 0.596; body and head
+// by Berri's)
+struct HairPiece {
+    uint32_t model;
+    float most;
+};
+constexpr HairPiece kHairPieces[] = {{276, 0.3f}};
 
 // fur_strands, shown as Super fur. The game's masks (a 64x64 DXT3 per shell, which alpha is a stack of some 55 fat round pegs to a tile, and
 // which grey climbs from 0.70 at the roots to 0.91 at the tips) can't be thinner or longer than they were drawn, and
@@ -163,12 +170,11 @@ constexpr uint32_t kConsoleTypes[] = {398, 124};
 // tufting, thickness, taper; furB strands, tufts across a tile, root shade, gap shade; furC sheen, glow, length, fill.
 // The weasels' program is FUR_MAP_STRANDS; the chipmunks share their programs with the grey squirrels and are told
 // apart by who the game draws (fur::TagShells), their types in xs[12] and xs[13]; the weasels drawn by other
-// programs (the Heist's) by theirs in xs[14]; those left the game's own fur by theirs in xs[9]
+// programs (the Heist's) by theirs in xs[14]; those left the game's own fur by theirs in xs[9]; a hair piece left the
+// game's own fur (fur::HairOf) by xs[11]
 constexpr const char* kStrandFunctions = R"(
 static float4 furA, furB, furC;
-static bool furOff;   // the game's own fur: its masks, color and light (the types in xs[9])
-static bool furHair;  // a model's piece of hair (fur::HairOf): its look in place 1, combed strands
-static float2 furComb;  // the hair's comb, a unit direction in the mask's coordinates
+static bool furOff;  // the game's own fur: its masks, color and light (the types in xs[9])
 void FurLook(int k) {
     furA = xs[3 * k];
     furB = xs[3 * k + 1];
@@ -185,15 +191,12 @@ int FurLookOf() {
     return off ? -1 : weasel ? 1 : chipmunk ? 2 : 0;
 #endif
 }
-// hairy: the program the model's hair is drawn by (the body's, kMatch); its other programs' pieces may have the same
-// offset per layer (Van Helsing's body and head, by Berri's)
+// hairy: the program a model's hair is drawn by (the body's, kMatch); its other programs' pieces may have the same
+// offset per layer (Van Helsing's body and head, by Berri's). The hair keeps the game's own fur when its look asks
+// (xs[11]: x the least xc.x of the hair piece, which the shell's offset per layer sets; z 1 when it asks)
 void FurPick(bool hairy) {
     int k = FurLookOf();
-    // the model's hair (xs[11]: x the least xc.x of a hair piece, which the shell's offset per layer sets; y the comb's
-    // angle; z 1 when the model has hair)
-    furHair = hairy && k >= 0 && xs[11].z > 0 && xc.x > xs[11].x;
-    furComb = float2(cos(xs[11].y), sin(xs[11].y));
-    if (furHair) k = 1;
+    if (hairy && xs[11].z > 0 && xc.x > xs[11].x) k = -1;
     furOff = k < 0;
     FurLook(max(k, 0));
 }
@@ -264,87 +267,6 @@ float FurStrands(float2 uv, float h, float du, out float along, out float gap, o
     seed = lerp(seed, 0.5, even);
     return lerp(cover, far, toward);
 }
-// Hair: strands combed one way (furComb), lying along the surface rather than standing out of it. Across the comb
-// they are furB.x a tile on a jittered grid; along it each strand is a piece furB.y a tile long, its pieces staggered
-// column by column, and it runs on along the comb as it rises (furA.y of a tile from root to tip), so a shell shows
-// each strand as a streak where the one under it showed it further back. Tapered to the tip and at a piece's two ends.
-// gap is a streak along the strand, light or dark, for the lighting. Strands finer than the screen resolves merge
-// into locks of two and four, each as thick for its width, two such sizes blended, over a solid underlayer that thins
-// toward the tips (FurHair)
-float FurHairAt(float2 q, float h, float n, float blur, out float along, out float gap, out float seed, out float across) {
-    along = 1;
-    seed = 0.5;
-    across = 0;
-    gap = 0.5;
-    float sx = q.x * n, sb = floor(sx), cover = 0;
-    [unroll] for (int x = -1; x <= 1; x++) {
-        float id = sb + x;
-        float2 r = FurHash(float2(id, n + 3.7));
-        float sy = q.y * furB.y + r.y, seg = floor(sy), f = sy - seg;
-        float2 k = FurHash(float2(id, seg) + 9.1 + n);
-        float len = lerp(0.7, 1, k.x);
-        if (h >= len) continue;
-        float t = h / len;
-        float ends = smoothstep(0, 0.12, f) * smoothstep(1, 0.88, f);
-        float rad = 0.5 * furA.z * lerp(0.75, 1.25, k.y) * pow(1 - t, furA.w) * ends;
-        // each strand swings across the comb on its own, its tip most, straight: the whole strand at once (a wave
-        // along it, its phase down the strand, curled a straight bob, and the more the more pieces)
-        float waver = 0.12 * xs[11].w * t * sin(xc.y * (1.3 + 0.8 * r.y) + id * 1.7);
-        float d = abs(sx - id - 0.5 - 0.5 * (r.x - 0.5) - waver);
-        float c = saturate((rad - d) / blur + 0.5);
-        if (c > cover) {
-            cover = c;
-            along = t;
-            seed = k.y;
-            across = saturate(d / max(rad, 1e-3));
-            // value noise along the strand, a streak every third of a piece or so
-            float w = sy * 3, i0 = floor(w), u = w - i0;
-            float a0 = FurHash(float2(id, i0) + 5.3).x, a1 = FurHash(float2(id, i0 + 1) + 5.3).x;
-            gap = lerp(a0, a1, u * u * (3 - 2 * u));
-        }
-    }
-    return cover;
-}
-float FurHair(float2 uv, float h, float du, out float along, out float gap, out float seed, out float across) {
-    float2 side = float2(-furComb.y, furComb.x);
-    float2 q = float2(dot(uv, side), dot(uv, furComb) - furA.y * h);
-    // the size at which a strand is about half a pixel across, and the next coarser: locks of four at most, which
-    // past that blur into the shells' sheen (coarser locks read as painted stripes from afar)
-    float level = clamp(log2(max(du * furB.x, 1e-6) / 0.35), 0, 2), l0 = min(floor(level), 1), mix = level - l0;
-    float n0 = furB.x * exp2(-l0), n1 = n0 * 0.5;
-    float a0, g0, s0, c0, a1, g1, s1, c1;
-    float v0 = FurHairAt(q, h, n0, max(du * n0, 1e-3), a0, g0, s0, c0);
-    float v1 = mix > 0.01 ? FurHairAt(q, h, n1, max(du * n1, 1e-3), a1, g1, s1, c1) : v0;
-    if (mix <= 0.01) {
-        a1 = a0, g1 = g0, s1 = s0, c1 = c0;
-    }
-    bool second = mix > 0.5;
-    along = second ? a1 : a0;
-    gap = second ? g1 : g0;
-    seed = second ? s1 : s0;
-    across = second ? c1 : c0;
-    // strands the screen can't tell apart lose what tells them apart: their shade, streaks and round edges go to
-    // the average as they shrink below a pixel or two, or they would shimmer and stripe
-    float even = saturate(du * (second ? n1 : n0) * 2 - 0.4);
-    seed = lerp(seed, 0.5, even);
-    gap = lerp(gap, 0.5, even);
-    across = lerp(across, 0.5, even);
-    float cover = lerp(v0, v1, mix);
-    // under the strands drawn, the many more no shell can show: the gaps between them are hair too, solid low down and
-    // thinning toward the tips, in the strands' average shade with a finer streak of its own. Through bare gaps the
-    // shells below and the head showed, each strand outlined dark
-    float fine = FurHash(float2(floor(q.x * n0 * 3), floor(q.y * furB.y * 2 + 0.5))).x - 0.5;
-    float under = 1 - smoothstep(0.45, 0.9, h + 0.12 * fine);
-    if (under > cover) {
-        float lay = saturate((under - cover) * 4);
-        seed = lerp(seed, 0.5, lay);
-        across = lerp(across, 0.3, lay);
-        gap = lerp(gap, 0.5 + 0.6 * fine, lay);
-        along = lerp(along, saturate(h), lay);
-        cover = under;
-    }
-    return cover;
-}
 )";
 
 // As kVs, and the shell hangs: its position moves along the surface, toward the view's down (the camera seldom rolls),
@@ -378,49 +300,8 @@ constexpr const char* kStrandVs = R"(
             float3 hang = (g - n * dot(g, n)) * FUR_TOP * len * hh * furA.x;
             v.xy += hang.xy;  // across the view only: each shell keeps the game's depth, in front of the one under it
         }
-        // hair (fur::HairOf) sways: its shells drift across the surface, the outer ones the most, in two slow waves
-        // whose phase runs over the mask's coordinates (fixed on the head, unlike the view), and a little up and down it
-        bool sways = hh > 0 && furHair && xs[11].w > 0 && !furOff;
-        if (sways) {
-            float3 g = float3(0, -1, 0), down = g - n * dot(g, n), side = cross(n, g);
-            side = dot(side, side) > 1e-4 ? normalize(side) : float3(1, 0, 0);
-            float ph = dot(o.tc2.xy, float2(6.3, 4.1)), tm = xc.y;
-            float a = 0.7 * sin(tm * 1.3 + ph) + 0.3 * sin(tm * 2.3 + 1.9 * ph), b = sin(tm * 0.9 + 1.3 * ph);
-            float3 move = (side * a + down * 0.35 * b) * FUR_TOP * len * hh * hh * 2 * xs[11].w;
-            v.xy += move.xy;  // across the view only, as the hang
-        }
-        // hair trails behind the character's movement (fur::kMotionRegister, a spring on the CPU): each strand a
-        // straight rod from the crown, the whole piece moving with its shells, more the further down the hair a vertex
-        // is in the model's bind pose (xs[15]: the hair's top and bottom there, learned from its draws), never into the
-        // head (what would go in slides along it instead), the ends lifting a little as they swing out. The shells
-        // lean a little further on top. Across the view only, as the hang: each layer keeps its depth over the one under
-        bool trails = furHair && c[3].w == 1 && !furOff;
-#ifdef FUR_POS
-        // the hair's skin, drawn with no offset (xc.x 0), as the tail's: its vertices within the hair's extent in the
-        // bind pose (xs[15] up and down, xs[10].yzw across)
-        if (FUR_HAIRY && xc.x == 0 && c[3].w == 1 && xs[11].z > 0 && xs[15].z > 0 && !furOff) {
-            float3 p = FUR_POS.xyz;
-            float margin = 0.05 * (xs[15].x - xs[15].y);
-            trails = p.y >= xs[15].y - margin && p.y <= xs[15].x + margin && length(p.xz - xs[10].yz) <= xs[10].w;
-        }
-#endif
-        if (trails) {
-            float3 m = c[3].xyz, rod = 0;
-#ifdef FUR_POS
-            if (xs[15].z > 0) {
-                float span = max(xs[15].x - xs[15].y, 1);
-                float down = saturate((xs[15].x - FUR_POS.y) / span), reach = span * FUR_POS_SCALE;
-                rod = m * down * reach * 0.35;
-                rod -= n * min(dot(rod, n), 0);
-                rod.y += 0.5 * dot(m, m) * 0.35 * 0.35 * down * reach;
-            }
-#endif
-            float3 lean = (m - n * dot(m, n)) * FUR_TOP * len * hh * sqrt(hh);
-            v.xy += rod.xy + lean.xy;
-            sways = true;
-        }
         float pw = -v.z;
-        if ((hangs || grow > 0 || sways) && pw > 1e-3) {
+        if ((hangs || grow > 0) && pw > 1e-3) {
             float px = (c[99].x * v.x + c[99].z * v.z + c[99].w) / pw * c[58].x + c[59].x;
             float py = (c[100].y * v.y + c[100].z * v.z + c[100].w) / pw * c[58].y + c[59].y;
             if (grow > 0) {
@@ -447,7 +328,6 @@ constexpr const char* kStrandPre = R"(
     float furAlong = 1, furGap = 0, furSeed = 0.5, furAcross = 0, furCover = 1, furH = i.x0.w;
     FurLook(0);
     furOff = false;
-    furHair = false;
 #if PS_PROGRAMMABLE && STAGE2_MODE == 1
     {
         bool two = texsize[2].x == 64, three = false;
@@ -463,9 +343,7 @@ constexpr const char* kStrandPre = R"(
 #endif
             float reach = furC.z * (three ? saturate(t2.b * 2) : 1);
             furH = i.x0.w / max(reach, 1e-3);
-            furCover = furH >= 1 ? 0
-                     : furHair ? FurHair(fuv, furH, fdu, furAlong, furGap, furSeed, furAcross)
-                               : FurStrands(fuv, furH, fdu, furAlong, furGap, furSeed, furAcross);
+            furCover = furH < 1 ? FurStrands(fuv, furH, fdu, furAlong, furGap, furSeed, furAcross) : 0;
             float4 strands = float4((float3)lerp(0.70, 0.91, saturate(furH)), furCover);
 #if STAGE3_MODE == 1
             if (three) t3 = strands; else
@@ -505,34 +383,14 @@ constexpr const char* kStrandPs = R"({
         float3 trans = lerp(exp(-float3(0.14, 0.22, 0.32) * thick), 1, 0.4);
         float3 g = float3(0, -1, 0), t = normalize(n + 2 * h * furA.x * (g - n * dot(g, n)));
         float3 hv = normalize(l + e);
-        // hair lies on the head as it hangs: its strands along the surface toward the view's down (from the smooth
-        // normal: the direction the mask's coordinates run, worked out on the screen, is the triangle's, and lit the
-        // hair in facets), the highlights across them, sharper, the second (through the strand and back, in its
-        // color) the stronger. Where the surface faces up or down the hanging way is lost: the fur's
-        float3 ht = g - n * dot(g, n);
-        bool combed = furHair && dot(ht, ht) > 1e-4;
-        if (combed) t = normalize(ht);
-        // each strand's highlights a little up or down it: glints rather than one band
-        float shift = combed ? (furSeed - 0.5) * 0.2 : 0;
-        float s1 = dot(normalize(t + (shift - 0.1) * n), hv), s2 = dot(normalize(t + (shift + 0.14) * n), hv);
-        float first = pow(saturate(1 - s1 * s1), combed ? 90 : 60), second = pow(saturate(1 - s2 * s2), combed ? 22 : 14);
-        if (combed) {
-            first *= 1.6;
-            second *= 1.8;
-        }
+        float s1 = dot(normalize(t - 0.1 * n), hv), s2 = dot(normalize(t + 0.14 * n), hv);
+        float first = pow(saturate(1 - s1 * s1), 60), second = pow(saturate(1 - s2 * s2), 14);
         float deep = saturate(max(1.7 * h, furAlong * furAlong));
-        float ao = lerp(1 - furB.z, 1, deep) * (1 - (combed ? 0 : furB.w) * furGap * furGap * saturate(1 - 1.5 * h));
+        float ao = lerp(1 - furB.z, 1, deep) * (1 - furB.w * furGap * furGap * saturate(1 - 1.5 * h));
         float3 albedo = r0.rgb;
         float3 hue = albedo / max(max(albedo.r, max(albedo.g, albedo.b)), 1e-3);
         r0.rgb = pow(max(albedo, 1e-4), lerp(1.3, 1, ao)) * lerp(trans, 1, deep * 0.6) * ao;
-        if (combed) {
-            // hair: strands apart in shade, streaked along their length (furGap), rounder (darker at their edges)
-            r0.rgb *= (1 + (furSeed - 0.5) * 0.16) * lerp(0.88, 1.08, furGap) * (1 - 0.12 * furAcross * furAcross);
-            first *= lerp(0.55, 1.3, furGap);
-            second *= lerp(0.75, 1.15, furGap);
-        } else {
-            r0.rgb *= (1 + (furSeed - 0.5) * 0.18) * (1 - 0.15 * furAcross * furAcross);
-        }
+        r0.rgb *= (1 + (furSeed - 0.5) * 0.18) * (1 - 0.15 * furAcross * furAcross);
         float tips = h * sqrt(furAlong);
         float nv = 1 - saturate(dot(n, e)), rim = nv * nv * nv;
         float behind = pow(saturate(0.5 - 0.5 * dot(l, e)), 2) * (1 - 0.6 * saturate(nl));
@@ -542,16 +400,6 @@ constexpr const char* kStrandPs = R"({
     }
     }
 })";
-
-// the models with a piece of hair among their shells (fur::HairOf), told from their other pieces drawn by the same
-// program by the shell's offset per layer (c85.x over its layer + 1), at most most on the hair: Van Helsing's (276,
-// F3 capture 192613: the hair 0.179, by the body's program; his tail, the same program and tag, 0.596; body and head
-// by Berri's)
-struct HairPiece {
-    uint32_t model;
-    float most;
-};
-constexpr HairPiece kHairPieces[] = {{276, 0.3f}};
 
 // the object types ([object+0x68]) drawn with the chipmunks' look: Berri, the female bartender, the warboss's little
 // girl and multiplayer's SHC Sneeker. XBE_FUR_CHIPMUNK (types, comma separated, 0x for hex) in their place, to try
@@ -604,40 +452,6 @@ void See(uint32_t type, bool weasel, bool drawn) {
         LOGR("fur survey: model %u \"%s\"%s", type, fur::ModelName(type).c_str(), weasel ? ", the weasels' program" : "");
 }
 
-// each hair piece's top and bottom in its model's bind pose (the program's position input, v1 in kMatch's), the
-// highest and lowest of its vertices seen in its shells' draws: where its strands start and how far down they hang.
-// Render thread, as Fill
-struct HairSpan {
-    uint32_t model = 0;
-    float top = -1e30f, bottom = 1e30f;
-    float x0 = 1e30f, x1 = -1e30f, z0 = 1e30f, z1 = -1e30f;  // its extent across, for its skin's vertices (xs[10])
-};
-HairSpan g_hair_spans[std::size(kHairPieces)];
-bool g_hair_watch = false;  // a hair piece drawn (Fill) whose span isn't settled yet
-bool HairTrace();
-int g_hair_draws[std::size(kHairPieces)] = {};
-
-void SeenHair(const gpu::WatchedDraw& d) {
-    const float* tag = d.c[fur::kTagRegister].data();
-    const float* top = d.c[85 + 96].data();
-    if (tag[3] != 1.0f || tag[0] < 0 || !d.v[1] || top[0] <= 0) return;  // untagged, or the skin (no offset)
-    const uint32_t model = fur::Canonical(uint32_t(tag[0]));
-    for (size_t i = 0; i < std::size(kHairPieces); i++) {
-        if (kHairPieces[i].model != model || top[0] / (top[3] + 1) > kHairPieces[i].most) continue;
-        HairSpan& h = g_hair_spans[i];
-        h.model = model;
-        for (uint32_t k = 0; k < d.vertices; k++) {
-            h.top = std::max(h.top, d.v[1][k][1]);
-            h.bottom = std::min(h.bottom, d.v[1][k][1]);
-            h.x0 = std::min(h.x0, d.v[1][k][0]), h.x1 = std::max(h.x1, d.v[1][k][0]);
-            h.z0 = std::min(h.z0, d.v[1][k][2]), h.z1 = std::max(h.z1, d.v[1][k][2]);
-        }
-        if (g_hair_draws[i] == 0 && HairTrace())
-            LOGR("hair: model %u spans %.0f..%.0f of %u vertices", model, h.bottom, h.top, d.vertices);
-        g_hair_draws[i]++;
-    }
-}
-
 void PutLook(float (*xs)[4], int k, const fur::Look& l) {
     const auto pc = [](uint32_t v) { return float(v) / 100.0f; };
     float* a = xs[3 * k];
@@ -667,36 +481,20 @@ void Fill(float (*xs)[4], const float* tag, bool weasel) {
     for (int i = 0; i < 4; i++) xs[14][i] = i < int(std::size(kWeaselTypes)) ? float(kWeaselTypes[i]) : -1.0f;
     for (int i = 0; i < 4; i++) xs[9][i] = i < int(std::size(kConsoleTypes)) ? float(kConsoleTypes[i]) : -1.0f;
     xs[10][0] = 1.0f / float(1 + fur::g_extra_shells);
-    xs[10][1] = xs[10][2] = xs[10][3] = 0;
-    for (int i = 0; i < 4; i++) xs[11][i] = xs[15][i] = 0;
+    for (int i = 0; i < 4; i++) xs[11][i] = 0;
     if (!tag || tag[3] != 1.0f || tag[0] < 0) return;
     const uint32_t type = uint32_t(tag[0]);
     See(type, weasel, true);
     for (const HairPiece& hp : kHairPieces) {
         if (fur::Canonical(type) != hp.model) continue;
-        fur::Look hair = fur::kHairLook;
-        if (const fur::ModelLook* m = fur::FindModelLook(fur::HairOf(hp.model))) hair = m->look;
-        PutLook(xs, 1, hair);
+        const fur::ModelLook* hair = fur::FindModelLook(fur::HairOf(hp.model));
+        if (!hair || !hair->game) continue;
         xs[11][0] = 1.0f / (16.0f * hp.most);  // xc.x is (layer + 1) / (16 offset), 1 / (16 the piece's offset per layer)
-        xs[11][1] = float(hair.comb % 360) * 3.14159265f / 180.0f;
         xs[11][2] = 1.0f;
-        xs[11][3] = float(hair.sway) / 100.0f;
-        const size_t i = size_t(&hp - kHairPieces);
-        const HairSpan& h = g_hair_spans[i];
-        if (h.model == hp.model && h.top > h.bottom) {
-            xs[15][0] = h.top, xs[15][1] = h.bottom, xs[15][2] = 1;
-            // the circle across that holds it, a little wider
-            const float dx = 0.5f * (h.x1 - h.x0), dz = 0.5f * (h.z1 - h.z0);
-            xs[10][1] = 0.5f * (h.x0 + h.x1), xs[10][2] = 0.5f * (h.z0 + h.z1);
-            xs[10][3] = 1.05f * std::sqrt(dx * dx + dz * dz);
-        }
-        // its draws read whole (up to 1024 vertices each) until a few frames' worth have settled its span
-        g_hair_watch = g_hair_draws[i] < 64;
     }
     if (const fur::ModelLook* m = fur::FindModelLook(fur::Canonical(type))) {  // its class's, in multiplayer
         const fur::ModelLook own = *m;  // the menu may change it meanwhile: one copy, whole or not
-        for (int k = 0; k < fur::kLooks; k++)
-            if (k != 1 || xs[11][2] == 0) PutLook(xs, k, own.look);  // place 1 the hair's, where it has one
+        for (int k = 0; k < fur::kLooks; k++) PutLook(xs, k, own.look);
         for (int i = 0; i < 4; i++) xs[9][i] = -1.0f;
         if (own.game) xs[9][0] = float(type);
     }
@@ -716,16 +514,14 @@ void fur::Init() {
     const float depth_alpha = DepthAlpha();
     const char* all = std::getenv("XBE_FUR_SHADE_ALL");
     const char* skip = all && *all && *all != '0' ? nullptr : kGirlSkip;
-    static const std::string body_vs = std::string("#define FUR_HAIRY 1\n#define FUR_POS i.v1\n"
-                                                            "#define FUR_POS_SCALE (length(c[clamp(mac_arl(i.v2.x) + 108, 0, 191)].xyz) * c[178].x)\n"
-                                                            "#define FUR_NORMAL R2\n#define FUR_TOP c[181].x\n#define FUR_LENGTH i.v5.x\n") + kStrandVs,
-                             body_pre = std::string("#define FUR_HAIRY 1\n") + kStrandPre + "\n#undef FUR_HAIRY\n",
+    static const std::string body_vs = std::string("#define FUR_HAIRY 1\n#define FUR_NORMAL R2\n#define FUR_TOP c[181].x\n#define FUR_LENGTH i.v5.x\n") + kStrandVs,
                              head_vs = std::string("#define FUR_NORMAL R6\n#define FUR_TOP c[186].x\n#define FUR_LENGTH i.v9.x\n") + kStrandVs,
                              c90_vs = std::string("#define FUR_NORMAL R2\n#define FUR_TOP c[186].x\n#define FUR_LENGTH i.v5.x\n") + kStrandVs,
                              c85v9_vs = std::string("#define FUR_NORMAL R6\n#define FUR_TOP c[181].x\n#define FUR_LENGTH i.v9.x\n") + kStrandVs,
                              tedi_vs = std::string("#define FUR_NORMAL R2\n#define FUR_TOP c[181].x\n#define FUR_LENGTH 1.0\n") + kStrandVs,
                              c94_vs = std::string("#define FUR_MAP_STRANDS 1\n#define FUR_NORMAL R2\n#define FUR_TOP c[190].x\n#define FUR_LENGTH i.v5.x\n") + kStrandVs,
-                             c94_pre = std::string("#define FUR_MAP_STRANDS 1\n") + kStrandPre + "\n#undef FUR_MAP_STRANDS\n";
+                             c94_pre = std::string("#define FUR_MAP_STRANDS 1\n") + kStrandPre + "\n#undef FUR_MAP_STRANDS\n",
+                             body_pre = std::string("#define FUR_HAIRY 1\n") + kStrandPre + "\n#undef FUR_HAIRY\n";
     const auto strands = [&](const char* match, const std::string& vs, int top, const char* without, const char* pre = kStrandPre,
                              bool weasel = false) {  // the weasels' program
         gpu::g_program_shading.push_back({.match = match, .on = &g_strands, .vs = vs.c_str(), .ps = kStrandPs, .top = top,
@@ -734,8 +530,6 @@ void fur::Init() {
                                           .depth_alpha = depth_alpha, .without = without, .pre = pre,
                                           .between_live = &g_extra_shells, .top_layers = 16});
     };
-    gpu::g_program_watch.push_back({.match = kMatch, .seen = SeenHair, .regs = 1 << 1, .spread = true, .vertices = 1024,
-                                    .on = &g_hair_watch});
     strands(kMatch, body_vs, 85 + 96, nullptr, body_pre.c_str());  // the girl's shape too (the officer's): the patches were fur_shading's
     strands(kHeadMatch, head_vs, 90 + 96, nullptr);
     strands(kC90Match, c90_vs, 90 + 96, nullptr);  // Berri's, the officer's head and the soldiers' pieces
@@ -982,8 +776,6 @@ constexpr LookKey kLookKeys[] = {
     {"root_shade", &fur::Look::root_shade}, {"gap_shade", &fur::Look::gap_shade},
     {"sheen", &fur::Look::sheen},           {"back_glow", &fur::Look::back_glow},
     {"length", &fur::Look::length},         {"fill", &fur::Look::fill},
-    {"comb", &fur::Look::comb},             {"sway", &fur::Look::sway},
-    {"motion", &fur::Look::motion},
 };
 
 }  // namespace
@@ -1003,7 +795,7 @@ void fur::Load(const void* table) {
         const toml::table* m = node.as_table();
         char* end = nullptr;
         const unsigned long type = std::strtoul(std::string(key.str()).c_str(), &end, 10);
-        if (!m || end == nullptr || *end || (type & ~kHairBit) >= 0x10000 || key.str().empty()) continue;
+        if (!m || end == nullptr || *end || type >= 0x10000 || key.str().empty()) continue;
         ModelLook* own = ModelLookOf(uint32_t(type));
         if (!own) break;
         own->game = (*m)["game"].value_or(own->game);
@@ -1043,119 +835,10 @@ void fur::Save(void*) {}
 
 #endif
 
-namespace {
-
-// A character's hair, trailing behind it: a damped spring per object, its rest pulled back against the object's
-// velocity (smoothed: the game may move it every other frame drawn), so it streams back while running, lags as a
-// jump starts and swings past rest as it stops. In world units of the hair's length, y up
-struct HairMotion {
-    uint32_t object = 0;
-    float pos[3] = {}, vel[3] = {}, off[3] = {}, offv[3] = {};
-    std::chrono::steady_clock::time_point at{};
-};
-HairMotion g_hair_motion[8];
-unsigned g_hair_next = 0;
-
-constexpr float kHairFull = 250.0f;  // units a second at which the hair streams back its whole length (a run)
-constexpr float kHairMost = 1.3f;     // the most it trails, of its length
-constexpr float kHairSpring = 90.0f;  // per second squared: about 1.5 swings a second
-constexpr float kHairDamp = 6.5f;     // per second: one or two swings past rest before it settles
-constexpr float kHairSmooth = 0.06f;  // seconds the velocity is smoothed over
-
-float GuestF32(uint32_t va) {
-    const uint32_t v = kernel::R32(va);
-    float f;
-    std::memcpy(&f, &v, 4);
-    return f;
-}
-
-bool HairTrace() {
-    static const bool on = [] {
-        const char* e = std::getenv("XBE_HAIR_TRACE");
-        return e && *e && *e != '0';
-    }();
-    return on;
-}
-
-void Clamp(float* v, float most) {
-    const float l = std::sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
-    if (l > most)
-        for (int i = 0; i < 3; i++) v[i] *= most / l;
-}
-
-// the object's hair this frame in the view's space, or w 0 when it has none
-std::array<float, 4> HairTrail(uint32_t object, uint32_t type) {
-    bool hair = false;
-    for (const HairPiece& hp : kHairPieces) hair |= fur::Canonical(type) == hp.model;
-    if (!hair) return {0, 0, 0, 0};
-    fur::Look look = fur::kHairLook;
-    if (const fur::ModelLook* m = fur::FindModelLook(fur::HairOf(fur::Canonical(type)))) look = m->look;
-    const float strength = float(look.motion) / 100.0f;
-    if (strength <= 0) return {0, 0, 0, 0};
-
-    HairMotion* h = nullptr;
-    for (HairMotion& m : g_hair_motion)
-        if (m.object == object) h = &m;
-    const auto now = std::chrono::steady_clock::now();
-    const float p[3] = {GuestF32(object + 0x78), GuestF32(object + 0x7C), GuestF32(object + 0x80)};
-    bool fresh = !h;
-    if (!h) {
-        h = &g_hair_motion[g_hair_next++ % std::size(g_hair_motion)];
-        h->object = object;
-    }
-    float dt = std::chrono::duration<float>(now - h->at).count();
-    float raw[3];
-    for (int i = 0; i < 3; i++) raw[i] = dt > 0 ? (p[i] - h->pos[i]) / dt : 0;
-    const float speed = std::sqrt(raw[0] * raw[0] + raw[1] * raw[1] + raw[2] * raw[2]);
-    if (fresh || dt > 0.25f || speed > 4000.0f) {  // new, unseen a while, or put somewhere else (a respawn)
-        for (int i = 0; i < 3; i++) h->pos[i] = p[i], h->vel[i] = h->off[i] = h->offv[i] = 0;
-        h->at = now;
-    } else if (dt >= 0.002f) {  // the first of the frame's draws (another pass or viewport draws it again)
-        const float keep = std::exp(-dt / kHairSmooth);
-        for (int i = 0; i < 3; i++) h->vel[i] = h->vel[i] * keep + raw[i] * (1 - keep);
-        float rest[3];
-        for (int i = 0; i < 3; i++) rest[i] = -h->vel[i] / kHairFull * strength;
-        Clamp(rest, kHairMost * std::max(strength, 1.0f));
-        const int steps = std::min(int(std::ceil(dt * 240.0f)), 60);
-        const float s = dt / float(steps);
-        for (int n = 0; n < steps; n++)
-            for (int i = 0; i < 3; i++) {
-                h->offv[i] += (kHairSpring * (rest[i] - h->off[i]) - kHairDamp * h->offv[i]) * s;
-                h->off[i] += h->offv[i] * s;
-            }
-        Clamp(h->off, 1.6f * std::max(strength, 1.0f));
-        for (int i = 0; i < 3; i++) h->pos[i] = p[i];
-        h->at = now;
-    }
-
-    // into the view: the camera the draw goes through ([0x84B868], whose projection the player's draw copies at
-    // 0x7FDA9), its view at +0x10, row vectors
-    const uint32_t camera = kernel::R32(0x84B868);
-    if (!camera) return {0, 0, 0, 0};
-    float out[3];
-    for (int c = 0; c < 3; c++) {
-        out[c] = 0;
-        for (int r = 0; r < 3; r++) out[c] += h->off[r] * GuestF32(camera + 0x10 + uint32_t(r * 16 + c * 4));
-    }
-    if (HairTrace()) {
-        static std::chrono::steady_clock::time_point logged{};
-        if (now - logged > std::chrono::milliseconds(250)) {
-            logged = now;
-            LOGR("hair: object %08X at %.0f %.0f %.0f vel %.0f %.0f %.0f trail %.2f %.2f %.2f view %.2f %.2f %.2f", object,
-                 p[0], p[1], p[2], h->vel[0], h->vel[1], h->vel[2], h->off[0], h->off[1], h->off[2], out[0], out[1], out[2]);
-        }
-    }
-    return {out[0], out[1], out[2], 1.0f};
-}
-
-}  // namespace
-
 void fur::TagShells(uint32_t object) {
     if (!object) return;
-    const uint32_t id = kernel::R32(object + 0x68);
-    const float type = float(id);
+    const float type = float(kernel::R32(object + 0x68));
     const float byte = float(kernel::G<uint8_t>(object + 0xA1));
     const float level = float(kernel::R32(0x7FA1F8));
     d3d::SetVertexConstant(kTagRegister, {type, byte, level, 1.0f});
-    d3d::SetVertexConstant(kMotionRegister, HairTrail(object, id));
 }

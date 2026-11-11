@@ -195,7 +195,7 @@ void WatchDraw(const State& s, uint32_t start, uint32_t count, const uint8_t* in
     if (g_program_watch.empty() || !((s.vs_handle & 1) && s.vs && !s.vs->program.empty())) return;
     EnsureProgramHash(s);
     struct Match {
-        uint64_t watch = 0;  // the entries it matches, bit i for entry i
+        uint32_t watch = 0;
         std::string hlsl;
     };
     static std::unordered_map<uint64_t, Match> matched;  // as DrawShading's
@@ -204,26 +204,24 @@ void WatchDraw(const State& s, uint32_t start, uint32_t count, const uint8_t* in
         it->second.watch = MatchProgramWatch(s.vs->program);
         if (it->second.watch) it->second.hlsl = VertexProgramHlsl(s.vs->program, 0xFFFF);
     }
+    if (!it->second.watch) return;
+    const ProgramWatch& w = g_program_watch[it->second.watch - 1];
     static std::vector<float> in[16];  // kept: a watched draw allocating its own was a heap call per draw
-    for (uint64_t bits = it->second.watch; bits; bits &= bits - 1) {
-        const ProgramWatch& w = g_program_watch[size_t(std::countr_zero(bits))];
-        if (w.on && !*w.on) continue;
-        WatchedDraw d;
-        d.vertices = std::min(count, w.vertices);
-        for (int r = 0; r < 16; r++) {
-            if (!((w.regs >> r) & 1)) continue;
-            in[r].resize(size_t(d.vertices) * 4);
-            auto out = reinterpret_cast<float (*)[4]>(in[r].data());
-            bool read = w.spread ? ReadInputSpread(s, r, start, indices, count, d.vertices, out)
-                                 : ReadInput(s, r, start, indices, d.vertices, out);
-            if (read) d.v[r] = out;
-        }
-        d.tex_modes = s.ps ? s.rs[kRsPsTextureModes] : 0;
-        d.c = s.vsc.data();
-        d.program = s.vs->hash;
-        d.hlsl = &it->second.hlsl;
-        w.seen(d);
+    WatchedDraw d;
+    d.vertices = std::min(count, w.vertices);
+    for (int r = 0; r < 16; r++) {
+        if (!((w.regs >> r) & 1)) continue;
+        in[r].resize(size_t(d.vertices) * 4);
+        auto out = reinterpret_cast<float (*)[4]>(in[r].data());
+        bool read = w.spread ? ReadInputSpread(s, r, start, indices, count, d.vertices, out)
+                             : ReadInput(s, r, start, indices, d.vertices, out);
+        if (read) d.v[r] = out;
     }
+    d.tex_modes = s.ps ? s.rs[kRsPsTextureModes] : 0;
+    d.c = s.vsc.data();
+    d.program = s.vs->hash;
+    d.hlsl = &it->second.hlsl;
+    w.seen(d);
 }
 
 bool SurfaceDepth(const State& s, uint32_t start, uint32_t count, const uint8_t* indices) {
