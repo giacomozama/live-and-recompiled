@@ -783,7 +783,7 @@ void fur::Init() {
                                           .functions = kStrandFunctions, .depth_alpha = depth_alpha,
                                           .without = without, .pre = pre,
                                           .between_of = hairy ? HairyStrandsBetween : StrandsBetween, .top_layers = 16,
-                                          .between_mark = int(kTagRegister)});
+                                          .between_mark = int(kTagRegister), .unsharpened = true});
     };
     gpu::g_program_watch.push_back({.match = kMatch, .seen = SeenHair, .regs = 1 << 1, .spread = true, .vertices = 1024,
                                     .on = &g_hair_watch});
@@ -794,19 +794,20 @@ void fur::Init() {
     strands(kC85V9Match, c85v9_vs, 85 + 96, nullptr);
     strands(kTediMatch, tedi_vs, 85 + 96, nullptr);
     gpu::g_program_shading.push_back({.match = kMatch, .on = &g_shading, .vs = kVs, .ps = kPs, .top = 85 + 96,
-                                      .between = 1, .soft = true, .depth_alpha = depth_alpha, .without = skip});
+                                      .between = 1, .soft = true, .depth_alpha = depth_alpha, .without = skip,
+                                      .unsharpened = true});
     gpu::g_program_shading.push_back({.match = kMatch, .on = &kAlways, .vs = "    o.x0 = 0;\n    o.x1 = 0;",
-                                      .top = 85 + 96, .depth_alpha = depth_alpha});
+                                      .top = 85 + 96, .depth_alpha = depth_alpha, .unsharpened = true});
     gpu::g_program_shading.push_back({.match = kHeadMatch, .on = &kAlways, .vs = "    o.x0 = 0;\n    o.x1 = 0;",
-                                      .top = 90 + 96, .depth_alpha = depth_alpha});
+                                      .top = 90 + 96, .depth_alpha = depth_alpha, .unsharpened = true});
     gpu::g_program_shading.push_back({.match = kC90Match, .on = &kAlways, .vs = "    o.x0 = 0;\n    o.x1 = 0;",
-                                      .top = 90 + 96, .depth_alpha = depth_alpha});
+                                      .top = 90 + 96, .depth_alpha = depth_alpha, .unsharpened = true});
     gpu::g_program_shading.push_back({.match = kC85V9Match, .on = &kAlways, .vs = "    o.x0 = 0;\n    o.x1 = 0;",
-                                      .top = 85 + 96, .depth_alpha = depth_alpha});
+                                      .top = 85 + 96, .depth_alpha = depth_alpha, .unsharpened = true});
     gpu::g_program_shading.push_back({.match = kC94Match, .on = &kAlways, .vs = "    o.x0 = 0;\n    o.x1 = 0;",
-                                      .top = 94 + 96, .depth_alpha = depth_alpha});
+                                      .top = 94 + 96, .depth_alpha = depth_alpha, .unsharpened = true});
     gpu::g_program_shading.push_back({.match = kTediMatch, .on = &kAlways, .vs = "    o.x0 = 0;\n    o.x1 = 0;",
-                                      .top = 85 + 96, .depth_alpha = depth_alpha});
+                                      .top = 85 + 96, .depth_alpha = depth_alpha, .unsharpened = true});
 }
 
 fur::ModelLook* fur::FindModelLook(uint32_t type) {

@@ -193,6 +193,9 @@ std::vector<uint8_t> LatchCpuChanges(T& t) {
     return px;
 }
 
+// PsoKey::wmask: alpha written as the larger of the draw's and the target's, the color blended as the draw sets
+// (ProgramShading::unsharpened)
+constexpr uint32_t kWmaskAlphaMax = 0x10;
 struct PsoKey {
     uint64_t vs;
     uint64_t ps;
@@ -205,7 +208,7 @@ struct PsoKey {
     uint32_t src;
     uint32_t dst;
     uint32_t op;
-    uint32_t wmask;
+    uint32_t wmask;  // RGBA bits, and kWmaskAlphaMax
     uint32_t zen;
     uint32_t zwrite;
     uint32_t zfunc;

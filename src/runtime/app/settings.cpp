@@ -70,6 +70,7 @@ void Load() {
     s.fog = t["fog"].value_or(s.fog);
     s.fsr = t["fsr"].value_or(s.fsr);
     s.fsr_sharpness = std::min<uint32_t>(t["fsr_sharpness"].value_or(s.fsr_sharpness), 100);
+    s.fur_sharpness = std::min<uint32_t>(t["fur_sharpness"].value_or(s.fur_sharpness), 100);
     s.volume = std::min<uint32_t>(t["volume"].value_or(s.volume), 100);
     s.audio_device = t["audio_device"].value_or(s.audio_device);
     s.menu_sounds = t["menu_sounds"].value_or(s.menu_sounds);
@@ -138,6 +139,7 @@ toml::table Table() {
                   {"fog", s.fog},
                   {"fsr", s.fsr},
                   {"fsr_sharpness", int64_t(s.fsr_sharpness)},
+                  {"fur_sharpness", int64_t(s.fur_sharpness)},
                   {"volume", int64_t(s.volume)},
                   {"audio_device", s.audio_device},
                   {"menu_sounds", s.menu_sounds},

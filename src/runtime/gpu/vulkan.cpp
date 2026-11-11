@@ -3109,7 +3109,17 @@ VkPipeline VulkanBackend::CreateDrawPipeline(const PsoKey& k, const Spirv& vs, c
     ba.srcAlphaBlendFactor = Blend(k.src, true);
     ba.dstAlphaBlendFactor = Blend(k.dst, true);
     ba.alphaBlendOp = BlendOp(k.op);
-    ba.colorWriteMask = k.wmask;  // RGBA bits, as KeyBlend packs them
+    ba.colorWriteMask = k.wmask & 0xF;  // RGBA bits, as KeyBlend packs them
+    if (k.wmask & kWmaskAlphaMax) {
+        if (!k.blend) {
+            ba.blendEnable = VK_TRUE;
+            ba.srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
+            ba.dstColorBlendFactor = VK_BLEND_FACTOR_ZERO;
+            ba.colorBlendOp = VK_BLEND_OP_ADD;
+        }
+        ba.srcAlphaBlendFactor = ba.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE;  // MAX ignores them
+        ba.alphaBlendOp = VK_BLEND_OP_MAX;
+    }
     VkPipelineColorBlendStateCreateInfo cb{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
     cb.attachmentCount = k.has_rt ? 1 : 0;
     cb.pAttachments = &ba;
@@ -4887,6 +4897,8 @@ void VulkanBackend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t
     // does a g_surface_depth surface's, which the title draws without
     VkPipeline zpso = VK_NULL_HANDLE;
     const ProgramShading* zps = sh.shading ? &g_program_shading[sh.shading - 1] : nullptr;
+    // ProgramShading::unsharpened: what the draw covers marked in the target's alpha for FSR to leave soft
+    if (zps && zps->unsharpened && k.has_rt && (k.wmask & 7) && app::Get().fsr) k.wmask |= 8 | kWmaskAlphaMax;
     float zalpha = 0;
     int surface = -1;  // g_surface_depth's answer for the draw, -1 not asked
     if (zps && zps->depth_alpha > 0 && k.blend && k.zen && k.zwrite &&
@@ -5514,7 +5526,7 @@ void VulkanBackend::DrawFrame(Image* picture, uint32_t bi, bool fsr) {
                                       .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT});
             }
             if (fsr_easu_) {
-                float con[16] = {
+                float con[20] = {
                     float(picture->w) / float(out_w),
                     float(picture->h) / float(out_h),
                     0.5f * float(picture->w) / float(out_w) - 0.5f,
@@ -5533,10 +5545,12 @@ void VulkanBackend::DrawFrame(Image* picture, uint32_t bi, bool fsr) {
                     0.0f,
                     4.0f / float(picture->h),
                     float(out_w),
-                    float(out_h)
+                    float(out_h),
+
+                    float(set.fur_sharpness) / 100.0f, 0.0f, 0.0f, 0.0f
                 };
                 const VkImageView src_views[3] = {picture->Sampled(), VK_NULL_HANDLE, VK_NULL_HANDLE};
-                Pass(kFsrHlsl, "easu", kBgra, *fsr_easu_, out_w, out_h, src_views, con, -1, 16);
+                Pass(kFsrHlsl, "easu", kBgra, *fsr_easu_, out_w, out_h, src_views, con, -1, 20);
                 Transition(*fsr_easu_, kRead);
                 final_src = fsr_easu_->view;
             }
@@ -5557,11 +5571,12 @@ void VulkanBackend::DrawFrame(Image* picture, uint32_t bi, bool fsr) {
         SetScissor(0, 0, int32_t(bb_w_), int32_t(bb_h_));
         if (fsr) {
             float sharpness = float(set.fsr_sharpness) / 100.0f;
-            float p[4] = {
+            float p[8] = {
                 1.0f / float(out_w),
                 1.0f / float(out_h),
                 sharpness,
-                gamma_ ? 1.0f : 0.0f
+                gamma_ ? 1.0f : 0.0f,
+                float(set.fur_sharpness) / 100.0f, 0.0f, 0.0f, 0.0f
             };
             Alloc cb = Upload(kPassCbBytes);
             std::memcpy(cb.cpu, p, sizeof(p));

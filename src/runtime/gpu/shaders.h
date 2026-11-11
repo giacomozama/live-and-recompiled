@@ -116,6 +116,10 @@ struct ProgramShading {
     // when 0 or more, a vertex constant (hardware order) whose y the shells between set to -1 in their copies, for
     // the shaders to tell them from the draw's own
     int between_mark = -1;
+    // when set and FSR is on, its draws keep FSR's sharpening off where they cover (fur, soft by design): they write
+    // their output alpha into the target's alpha, the largest kept (kWmaskAlphaMax), the frame's otherwise 0 (the
+    // title clears it so and blends no draw by it), and EASU upscales those pixels plainly and RCAS leaves them be
+    bool unsharpened = false;
 };
 inline std::vector<ProgramShading> g_program_shading;  // filled before the title boots, unchanged after
 

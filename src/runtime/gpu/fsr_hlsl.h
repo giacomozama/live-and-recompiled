@@ -15,6 +15,7 @@ cbuffer B : register(b1) {
     float4 con1;
     float4 con2;
     float4 con3;
+    float4 con4;  // easu: x the share of FSR's sharpening fur takes (0..1)
 };
 
 Texture2D img : register(t0);
@@ -146,7 +147,9 @@ float4 easu(O i) : SV_Target {
     float3 min4 = min(min(fC, gC), min(jC, kC));
     float3 max4 = max(max(fC, gC), max(jC, kC));
     float3 rgb = min(max4, max(min4, aC / max(aW, 1e-5)));
-    return float4(rgb, 1.0);
+    // alpha marks what is soft by design (fur): upscaled plainly there, the mark carried on for RCAS
+    float4 plain = img.SampleLevel(ls, i.uv, 0);
+    return float4(lerp(rgb, plain.rgb, plain.a * (1.0 - con4.x)), plain.a);
 }
 
 // -----------------------------------------------------------------------------
@@ -158,11 +161,15 @@ float4 rcas(O i) : SV_Target {
     float sharpness = con0.z;
     float gamma_on = con0.w;
 
-    float3 b = img.SampleLevel(ls, i.uv + float2( 0, -1) * texel, 0).rgb;
-    float3 d = img.SampleLevel(ls, i.uv + float2(-1,  0) * texel, 0).rgb;
-    float3 e = img.SampleLevel(ls, i.uv, 0).rgb;
-    float3 f = img.SampleLevel(ls, i.uv + float2( 1,  0) * texel, 0).rgb;
-    float3 h = img.SampleLevel(ls, i.uv + float2( 0,  1) * texel, 0).rgb;
+    float4 b4 = img.SampleLevel(ls, i.uv + float2( 0, -1) * texel, 0);
+    float4 d4 = img.SampleLevel(ls, i.uv + float2(-1,  0) * texel, 0);
+    float4 e4 = img.SampleLevel(ls, i.uv, 0);
+    float4 f4 = img.SampleLevel(ls, i.uv + float2( 1,  0) * texel, 0);
+    float4 h4 = img.SampleLevel(ls, i.uv + float2( 0,  1) * texel, 0);
+    float3 b = b4.rgb, d = d4.rgb, e = e4.rgb, f = f4.rgb, h = h4.rgb;
+    // alpha marks what is soft by design (fur): no sharpening there, nor of what borders it, so it draws no halo
+    // (con1.x the share of it fur takes)
+    sharpness *= 1.0 - saturate(max(max(max(b4.a, d4.a), max(f4.a, h4.a)), e4.a)) * (1.0 - con1.x);
 
     float3 mn4 = min(min(b, d), min(f, h));
     float3 mx4 = max(max(b, d), max(f, h));

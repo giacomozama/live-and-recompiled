@@ -1157,6 +1157,8 @@ void Draw(double fps) {
                 Hint("AMD FidelityFX Super Resolution: edge-adaptive spatial upscaling & contrast-adaptive sharpening.", true);
                 if (s.fsr) {
                     Slider("FSR sharpness %", &s.fsr_sharpness, 0, 100, app::Settings{}.fsr_sharpness);
+                    Slider("Fur sharpness %", &s.fur_sharpness, 0, 100, app::Settings{}.fur_sharpness);
+                    Hint("How much of FSR's sharpening fur takes. 0 keeps it soft.", true);
                 }
                 constexpr uint32_t kRates[] = {30, 60, 120, 180, 240};
                 int rate = 0;
