@@ -68,7 +68,9 @@ constexpr const char* kVs = R"(    {
 // alpha is 60% of its reference at the roots, 80% at the tips, so they taper, with alpha stretched from there to 1 over
 // the reference to 1 so their middles blend as before. The skin pass under the fur only takes the blob shadows: the
 // program's sum at the pixel, each blob coming in across its radius about the plane it clips at, as per-pixel
-// lighting's do (a hard step there left a solid edge across a cheek), taking at most 40% of the key light's share
+// lighting's do (a hard step there left a solid edge across a cheek), out of the key light's share. Capped at 40% of
+// it, a character standing in another's shadow came out lit beside the game's own draws of her: Berri's eye in a
+// Don Weaso cutscene, its program shadowed, dark in a cheek super fur had lit
 constexpr const char* kPs = R"({
     float h = i.x0.w;
     float ref = ((int)misc.y == 4 || (int)misc.y == 6) ? misc.x / 255 : 0;
@@ -86,7 +88,7 @@ constexpr const char* kPs = R"({
             blobs += dot(above * st, 1 / max(dx * dx + dy * dy, 1e-6));
         }
         float lit = saturate(1 - 0.5 * blobs);  // the knee per-pixel lighting takes (lighting.cpp LightShadow)
-        r0.rgb *= 1 - 0.4 * (1 - lit * lit) * i.x1.w;
+        r0.rgb *= 1 - (1 - lit * lit) * i.x1.w;
     }
     if (h > 0) {
         float3 n = normalize(i.x0.xyz), e = normalize(-i.x1.xyz), l = normalize(-c[179].xyz);
@@ -358,11 +360,13 @@ constexpr const char* kStrandPre = R"(
 // saturated (the light that gets there has crossed the fur's own color); each strand a little different, darker at its
 // edge; two highlights as hair has (Scheuermann's shifted Kajiya-Kay), the first toward the root in the light's color,
 // the second toward the tip, wider and in the fur's; and a light behind the fur coming through its edge, the thin
-// tips strongest, in the light's strength and the fur's hue, not its lit color, which is dim on that side.
+// tips strongest, in the light's strength and the fur's hue, not its lit color, which is dim on that side. All of
+// them are the key light's, so the blob shadows take them too.
 constexpr const char* kStrandPs = R"({
     float h = saturate(furH);
     // a pixel no strand covers fails the alpha test (10 or more) whatever its color: most of an outer shell's
     [branch] if (furCover * 255 >= 1) {
+    float shade = 1;  // the key light the blob shadows leave
     {
         float4 p = float4(i.x1.xyz, 1);
         float sx = dot(p, c[159]), sy = dot(p, c[160]), sz = dot(p, c[161]), blobs = 0;
@@ -372,7 +376,8 @@ constexpr const char* kStrandPs = R"({
             blobs += dot(above * st, 1 / max(dx * dx + dy * dy, 1e-6));
         }
         float lit = saturate(1 - 0.5 * blobs);  // the knee per-pixel lighting takes (lighting.cpp LightShadow)
-        r0.rgb *= 1 - 0.4 * (1 - lit * lit) * i.x1.w;
+        shade = lit * lit;
+        r0.rgb *= 1 - (1 - shade) * i.x1.w;
     }
     if (h > 0 && furOff) {
         r0.a = 1 - pow(saturate(1 - r0.a), xs[10].x);  // the shells added between the game's: together as its one
@@ -394,9 +399,9 @@ constexpr const char* kStrandPs = R"({
         float tips = h * sqrt(furAlong);
         float nv = 1 - saturate(dot(n, e)), rim = nv * nv * nv;
         float behind = pow(saturate(0.5 - 0.5 * dot(l, e)), 2) * (1 - 0.6 * saturate(nl));
-        r0.rgb += hue * c[180].xyz * sqrt(h) * furC.y * behind * (0.25 + 1.5 * nv * nv);
-        r0.rgb += albedo * tips * furC.y * 0.4 * rim * wrap;
-        r0.rgb += tips * wrap * furC.x * c[180].xyz * (0.22 * first + 0.3 * hue * second);
+        r0.rgb += shade * hue * c[180].xyz * sqrt(h) * furC.y * behind * (0.25 + 1.5 * nv * nv);
+        r0.rgb += shade * albedo * tips * furC.y * 0.4 * rim * wrap;
+        r0.rgb += shade * tips * wrap * furC.x * c[180].xyz * (0.22 * first + 0.3 * hue * second);
     }
     }
 })";
