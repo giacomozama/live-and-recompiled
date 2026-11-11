@@ -314,12 +314,28 @@ void ConkerFurTag(X86Context& ctx, uint8_t* base) {
     fur::TagShells(ctx.ebx);
 }
 
+static bool FurDistant() {
+    static const char* env = std::getenv("XBE_FUR_DISTANT");
+    return env ? env[0] != '0' : fur::g_distant;
+}
+
 // [[hook]] at 0x8210C, xmm0 the object's distance from the player and xmm3 R
 void ConkerFurDistant(X86Context& ctx, uint8_t* base) {
     (void)base;
-    static const char* env = std::getenv("XBE_FUR_DISTANT");
-    if (!(env ? env[0] != '0' : fur::g_distant)) return;
+    if (!FurDistant()) return;
     ctx.xmm[0].f[0] = std::min(ctx.xmm[0].f[0], ctx.xmm[3].f[0] * 0.4f);
+}
+
+// Beach Bloodbath (level 4, outside multiplayer [0x76F0E0]) draws its CombatSquirrels (type 0x58) with at most 4
+// shells (esi, 16 elsewhere, then capped at 8) at half length ([esp+0xC], 0.5 for 1.0, multiplied into the length
+// scale at 0x82248), so a beach full of them ran on an Xbox: thin cheeks, no fur on the eyebrows, where the same model
+// in the bar (level 29) has its full coat. fur::g_distant gives them that back
+// [[hook]] at 0x82071, after that case; ebx the level, edx the type
+void ConkerFurBeach(X86Context& ctx, uint8_t* base) {
+    (void)base;
+    if (!FurDistant() || kernel::G<uint8_t>(0x76F0E0) || ctx.ebx != 4 || ctx.edx != 0x58) return;
+    ctx.esi = 0x10;
+    kernel::W32(ctx.esp + 0xC, 0x3F800000u);  // 1.0f
 }
 
 // 0x7F1E0 (edi the player in [0x84A5F8], 0x6D0 each, the viewport's index at [esp+0x28]) picks the model a player

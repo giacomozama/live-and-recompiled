@@ -378,6 +378,10 @@ at = 0x8210C   # fur shells: a distant object's count as at the near range's edg
 call = "ConkerFurDistant"
 
 [[hook]]
+at = 0x82071   # fur shells: Beach Bloodbath's soldiers' cut to 4 shells at half length undone (fur::g_distant)
+call = "ConkerFurBeach"
+
+[[hook]]
 at = 0x80358   # a player's fur shells: the alpha test the object path sets, not the draw before's;
                # who is drawn, for super fur's looks (fur::TagShells)
 call = "ConkerFurAlphaTest"
