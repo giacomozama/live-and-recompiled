@@ -93,6 +93,7 @@ inline constexpr ModelDefault kModelDefaults[] = {
     {109, {16, 12, 80, 100, 75, 110, 0, 0, 100, 50, 100, 100}},  // BeeKing
     {114, {24, 9, 100, 120, 70, 110, 0, 0, 60, 140, 100, 20}},   // Berri
     {398, {12, 7, 100, 200, 70, 110, 0, 0, 75, 140, 100, 20}},   // BerriBarmaid
+    {151, {24, 16, 100, 200, 100, 120, 0, 0, 30, 70, 100, 40}},  // BeriMatrix
 };
 inline const ModelDefault* FindModelDefault(uint32_t type) {
     for (const ModelDefault& d : kModelDefaults)
