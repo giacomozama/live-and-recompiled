@@ -1,6 +1,7 @@
 #include "common/fur.h"
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cstring>
 #include <atomic>
@@ -141,9 +142,9 @@ constexpr size_t kChipmunkCount = std::size(kChipmunkTypes);
 // the weasels drawn by programs other than theirs (kC94Match, FUR_MAP_STRANDS): the Heist's 134, Berri's program and
 // no fur map, its hands and feet of length 0
 constexpr uint32_t kWeaselTypes[] = {134};
-// drawn as the game draws them, super fur or not (furOff): the little girl. Strands on her soft fur map looked bad
-// (2026-11-09); the female bartender has a tuned look of her own now (fur.h kModelDefaults)
-constexpr uint32_t kConsoleTypes[] = {124};
+// drawn as the game draws them, super fur or not (furOff): none now. The little girl was, strands on her soft fur map
+// looking bad (2026-11-09), until her tuned look (fur.h kModelDefaults, its brightness up to her skin's)
+constexpr std::array<uint32_t, 0> kConsoleTypes{};
 // the models with a piece of hair among their shells (fur::HairOf), told from their other pieces drawn by the same
 // program by the shell's offset per layer (c85.x over its layer + 1), at most most on the hair: Van Helsing's (276,
 // F3 capture 192613: the hair 0.179, by the body's program; his tail, the same program and tag, 0.596; body and head
