@@ -105,6 +105,8 @@ struct ProgramShading {
     const char* post = "";
     const char* coords = "";
     const uint32_t* between_live = nullptr;  // when set, read on each draw in place of between
+    // when set, the draw's shells between from its fill_register (null when that is -1): -1 keeps between
+    int (*between_of)(const float* reg) = nullptr;
     // when set, top's w is the draw's shell of this many, x growing in proportion to w + 1 at a rate of its model
     // piece's own, as pieces of different lengths take turns in one loop over the shells (a bunny's body and tail): xc.x
     // and between's steps go by that instead of the run's largest x and the draw before's, so each piece reaches 1

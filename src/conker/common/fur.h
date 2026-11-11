@@ -53,10 +53,14 @@ inline constexpr Look kLookDefaults[kLooks] = {
 // changed from their defaults (DefaultLook, GameFurOf) are saved. The renderer reads them per draw; a model without
 // one is drawn with its defaults. kModelLooks at most; a type of kNoModel is a free slot (Conker is 0). The F1 menu changes them live
 inline constexpr uint32_t kNoModel = ~0u;
+// shells added between each two of the game's, a model's own (settings.toml [fur_models.<type>] shells)
+inline constexpr uint32_t kExtraShells = 1;
+inline constexpr uint32_t kMaxExtraShells = 4;
 struct ModelLook {
     uint32_t type = kNoModel;
-    bool game = false;  // drawn as the game draws it, super fur or not
+    bool game = false;  // drawn as the game draws it, super fur or not; no extra shells then
     Look look{};
+    uint32_t shells = kExtraShells;
 };
 inline constexpr int kModelLooks = 64;
 extern ModelLook g_model_looks[kModelLooks];
@@ -77,13 +81,14 @@ inline constexpr bool IsHair(uint32_t type) { return type != ~0u && (type & kHai
 struct ModelDefault {
     uint32_t type;
     Look look;
+    uint32_t shells = kExtraShells;  // extra shells, ModelLook's
 };
 inline constexpr ModelDefault kModelDefaults[] = {
     {59, {24, 5, 30, 120, 65, 35, 2, 2, 50, 50, 100, 40}},   // Weasel: every weasel model (fur.cpp kSharedLooks)
     {88, {32, 10, 70, 100, 75, 120, 2, 2, 50, 50, 100, 0}},  // CombatSquirrel, and CombatSquirrelShot (fur.cpp kSharedLooks)
     {91, {40, 12, 90, 130, 75, 85, 2, 0, 65, 50, 100, 0}},   // CombatSquirrelrodent
     {445, {36, 10, 60, 100, 70, 110, 2, 2, 70, 90, 100, 0}},     // multiplayer's WWII sharpshooter class
-    {13, {32, 12, 50, 50, 100, 150, 0, 0, 150, 150, 100, 50}},   // Haystack
+    {13, {32, 12, 50, 50, 100, 150, 0, 0, 150, 150, 100, 50}, 0},  // Haystack
     {69, {32, 6, 20, 100, 75, 45, 0, 0, 200, 150, 100, 100}},    // TerminatorHaystack
     {7, {16, 16, 100, 100, 75, 110, 0, 0, 50, 80, 100, 0}},    // QueenBee
     {109, {16, 12, 80, 100, 75, 110, 0, 0, 100, 50, 100, 100}},  // BeeKing
@@ -103,6 +108,10 @@ inline const ModelDefault* FindModelDefault(uint32_t type) {
 inline const Look& DefaultLook(uint32_t type) {
     if (const ModelDefault* d = FindModelDefault(type)) return d->look;
     return kLookDefaults[KindOf(type & ~kHairBit)];
+}
+inline uint32_t DefaultShells(uint32_t type) {
+    if (const ModelDefault* d = FindModelDefault(type)) return d->shells;
+    return kExtraShells;
 }
 bool GameFurOf(uint32_t type);
 // the model whose look a model takes: a multiplayer class's models share one (Multi\, MultiFrontend\, MultiLOD\,
@@ -125,9 +134,6 @@ std::string ModelName(uint32_t type);
 // the [fur_models] table of settings.toml (a toml::table)
 void Load(const void* table);
 void Save(void* table);
-
-inline constexpr uint32_t kExtraShells = 1;
-extern uint32_t g_extra_shells;  // shells added between each two of the game's, for every look
 
 // settings.toml fur_distant: a furry object past the near range keeps all its shells, instead of losing them with
 // distance as on the console until only the skin is left (src/conker/game/hooks.cpp). Read on each object.

@@ -4266,7 +4266,12 @@ void VulkanBackend::IssueGeometry(const Assembled& a) {
 bool VulkanBackend::DrawBetweenShells(const State& s, const Assembled& a, uint32_t shading, const Bindings& b,
                                       VkPipeline pso, VkPipeline zpso) {
     const ProgramShading& ps = g_program_shading[shading - 1];
-    const int between = ps.between_live ? int(*ps.between_live) : ps.between;
+    int between = ps.between_live ? int(*ps.between_live) : ps.between;
+    if (ps.between_of) {
+        const bool reg = ps.fill_register >= 0 && ps.fill_register < int(s.vsc.size());
+        const int n = ps.between_of(reg ? s.vsc[size_t(ps.fill_register)].data() : nullptr);
+        if (n >= 0) between = n;
+    }
     if (between <= 0) return false;
     float from = ShadingBefore(shading), to = s.vsc[size_t(ps.top)][0];
     if (from < 0 || to <= from) return false;

@@ -1228,7 +1228,8 @@ void Draw(double fps) {
                         model = named.empty() ? fur::kNoModel : named.front().second;
                     const auto changed = [](uint32_t type) {
                         const fur::ModelLook* m = fur::FindModelLook(type);
-                        return m && (m->look != fur::DefaultLook(type) || m->game != fur::GameFurOf(type));
+                        return m && (m->look != fur::DefaultLook(type) || m->game != fur::GameFurOf(type) ||
+                                     m->shells != fur::DefaultShells(type));
                     };
                     const auto label = [&](const std::string& name, uint32_t type) {
                         return name + (changed(type) ? " *" : "") + "##" + std::to_string(type);
@@ -1256,23 +1257,30 @@ void Draw(double fps) {
                             Hint("The hair keeps the game's fur, with super fur on; otherwise it takes the model's look.", true);
                         else
                             Hint("This model keeps the game's fur, with super fur on.", true);
-                        if (!own->game && !fur::IsHair(model)) {
-                            Slider("Strands", &l.strands, 8, 64, d.strands);
-                            Slider("Tufts", &l.tufts, 1, 16, d.tufts);
-                            Slider("Tufting %", &l.tufting, 0, 100, d.tufting);
-                            Slider("Length %", &l.length, 20, 100, d.length);
-                            Slider("Bare skin fill %", &l.fill, 0, 100, d.fill);
-                            Slider("Droop %", &l.droop, 0, 200, d.droop);
-                            Slider("Thickness %", &l.thickness, 30, 100, d.thickness);
-                            Slider("Taper %", &l.taper, 20, 150, d.taper);
-                            Slider("Root shade %", &l.root_shade, 0, int(fur::kMaxShade), d.root_shade);
-                            Slider("Tuft shade %", &l.gap_shade, 0, int(fur::kMaxShade), d.gap_shade);
-                            Slider("Sheen %", &l.sheen, 0, 200, d.sheen);
-                            Slider("Back glow %", &l.back_glow, 0, 200, d.back_glow);
+                        // the look in two columns, a pair to a row: each slider in the next cell
+                        if (!own->game && !fur::IsHair(model) &&
+                            ImGui::BeginTable("##look", 2, ImGuiTableFlags_SizingStretchSame)) {
+                            const auto cell = [](auto&&... args) {
+                                ImGui::TableNextColumn();
+                                Slider(args...);
+                            };
+                            cell("Extra shells", &own->shells, 0u, fur::kMaxExtraShells, fur::DefaultShells(model));
+                            cell("Length %", &l.length, 20u, 100u, d.length);
+                            cell("Strands", &l.strands, 8u, 64u, d.strands);
+                            cell("Tufts", &l.tufts, 1u, 16u, d.tufts);
+                            cell("Tufting %", &l.tufting, 0u, 100u, d.tufting);
+                            cell("Droop %", &l.droop, 0u, 200u, d.droop);
+                            cell("Thickness %", &l.thickness, 30u, 100u, d.thickness);
+                            cell("Taper %", &l.taper, 20u, 150u, d.taper);
+                            cell("Root shade %", &l.root_shade, 0u, fur::kMaxShade, d.root_shade);
+                            cell("Tuft shade %", &l.gap_shade, 0u, fur::kMaxShade, d.gap_shade);
+                            cell("Sheen %", &l.sheen, 0u, 200u, d.sheen);
+                            cell("Back glow %", &l.back_glow, 0u, 200u, d.back_glow);
+                            cell("Bare skin fill %", &l.fill, 0u, 100u, d.fill);
+                            ImGui::EndTable();
                         }
                         ImGui::PopID();
                     }
-                    Slider("Extra shells", &fur::g_extra_shells, 0, 4, fur::kExtraShells);
                 }
                 Check("Full distant fur", &fur::g_distant);
                 Hint("Keeps fur on far-away characters.", true);

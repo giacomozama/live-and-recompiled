@@ -67,7 +67,6 @@ const app::GameInfo app::kGame = {
                 {"grass_fade", &grass::g_fade, nullptr},  // distant grass fades out, else solid however far (hooks.cpp)
                 {"fur_shading", &fur::g_shading, nullptr},  // lit, soft edged fur shells (src/conker/common/fur.cpp)
                 {"fur_strands", &fur::g_strands, nullptr},  // super fur: procedural strands; each model's look in [fur_models] (fur.cpp)
-                {"fur_strand_extra_shells", nullptr, &fur::g_extra_shells},
                 {"fur_distant", &fur::g_distant, nullptr},  // distant fur keeps all its shells (hooks.cpp)
                 {"character_max_lod", &characters::g_max_lod, nullptr},  // players keep their full model (hooks.cpp)
                 {"character_menu_models", &characters::g_menu_models, nullptr},  // the classes' character select models (hooks.cpp)

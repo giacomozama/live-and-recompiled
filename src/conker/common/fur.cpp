@@ -22,7 +22,6 @@
 bool fur::g_shading = false;
 bool fur::g_strands = false;
 fur::ModelLook fur::g_model_looks[fur::kModelLooks];
-uint32_t fur::g_extra_shells = fur::kExtraShells;
 
 namespace {
 
@@ -476,6 +475,17 @@ void PutLook(float (*xs)[4], int k, const fur::Look& l) {
     c[3] = pc(l.fill);
 }
 
+// the shells between each two of the game's for the model in the draw's tag: its look's, and none on the game's own
+// fur (as its look asks, else by default, kConsoleTypes), drawn as the game draws it
+uint32_t TaggedShells(const float* tag) {
+    if (!tag || tag[3] != 1.0f || tag[0] < 0) return fur::kExtraShells;
+    const uint32_t type = uint32_t(tag[0]);
+    if (const fur::ModelLook* m = fur::FindModelLook(fur::Canonical(type))) return m->game ? 0 : m->shells;
+    return fur::GameFurOf(type) ? 0 : fur::DefaultShells(fur::Canonical(type));
+}
+
+int StrandsBetween(const float* tag) { return int(TaggedShells(tag)); }
+
 // each draw's: the three kinds' default looks and the types that pick them, or, for a model with a look of its own
 // (the type in the draw's tag, fur::kTagRegister), that look in all three places, so whichever the shader picks is the
 // model's, and the game's own fur for it alone when it asks for that
@@ -485,7 +495,7 @@ void Fill(float (*xs)[4], const float* tag, bool weasel) {
     for (int i = 0; i < 8; i++) xs[12 + i / 4][i % 4] = i < int(chipmunks.size()) ? chipmunks[size_t(i)] : -1.0f;
     for (int i = 0; i < 4; i++) xs[14][i] = i < int(std::size(kWeaselTypes)) ? float(kWeaselTypes[i]) : -1.0f;
     for (int i = 0; i < 4; i++) xs[9][i] = i < int(std::size(kConsoleTypes)) ? float(kConsoleTypes[i]) : -1.0f;
-    xs[10][0] = 1.0f / float(1 + fur::g_extra_shells);
+    xs[10][0] = 1.0f / float(1 + TaggedShells(tag));  // the shells between (StrandsBetween) and the game's as its one
     for (int i = 0; i < 4; i++) xs[11][i] = 0;
     if (!tag || tag[3] != 1.0f || tag[0] < 0) return;
     const uint32_t type = uint32_t(tag[0]);
@@ -532,10 +542,11 @@ void fur::Init() {
     const auto strands = [&](const char* match, const std::string& vs, int top, const char* without, const char* pre = kStrandPre,
                              bool weasel = false) {  // the weasels' program
         gpu::g_program_shading.push_back({.match = match, .on = &g_strands, .vs = vs.c_str(), .ps = kStrandPs, .top = top,
-                                          .soft = true, .fill = weasel ? FillWeaselStrands : FillStrands,
+                                          .between = int(kExtraShells), .soft = true,
+                                          .fill = weasel ? FillWeaselStrands : FillStrands,
                                           .fill_register = int(kTagRegister), .functions = kStrandFunctions,
                                           .depth_alpha = depth_alpha, .without = without, .pre = pre,
-                                          .between_live = &g_extra_shells, .top_layers = 16});
+                                          .between_of = StrandsBetween, .top_layers = 16});
     };
     strands(kMatch, body_vs, 85 + 96, nullptr, body_pre.c_str());  // the girl's shape too (the officer's): the patches were fur_shading's
     strands(kHeadMatch, head_vs, 90 + 96, nullptr);
@@ -591,6 +602,7 @@ fur::ModelLook* fur::ModelLookOf(uint32_t type) {
         if (m.type == kNoModel) {
             m.look = DefaultLook(type);
             m.game = GameFurOf(type);
+            m.shells = DefaultShells(type);
             std::atomic_thread_fence(std::memory_order_release);  // the look whole before the renderer finds it
             m.type = type;
             return &m;
@@ -832,6 +844,7 @@ void fur::Load(const void* table) {
         ModelLook* own = ModelLookOf(uint32_t(type));
         if (!own) break;
         own->game = (*m)["game"].value_or(own->game);
+        own->shells = std::min((*m)["shells"].value_or(own->shells), kMaxExtraShells);
         for (const LookKey& k : kLookKeys) own->look.*k.field = (*m)[k.key].value_or(own->look.*k.field);
         own->look.root_shade = std::min(own->look.root_shade, kMaxShade);
         own->look.gap_shade = std::min(own->look.gap_shade, kMaxShade);
@@ -842,9 +855,12 @@ void fur::Save(void* table) {
     toml::table& t = *static_cast<toml::table*>(table);
     toml::table models;
     for (const ModelLook& m : g_model_looks) {
-        if (m.type == fur::kNoModel || (m.look == DefaultLook(m.type) && m.game == GameFurOf(m.type))) continue;
+        if (m.type == fur::kNoModel ||
+            (m.look == DefaultLook(m.type) && m.game == GameFurOf(m.type) && m.shells == DefaultShells(m.type)))
+            continue;
         toml::table one;
         one.insert_or_assign("game", m.game);
+        one.insert_or_assign("shells", int64_t(m.shells));
         for (const LookKey& k : kLookKeys) one.insert_or_assign(k.key, int64_t(m.look.*k.field));
         models.insert_or_assign(std::to_string(m.type), std::move(one));
     }
