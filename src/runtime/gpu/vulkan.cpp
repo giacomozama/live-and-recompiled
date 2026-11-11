@@ -4914,10 +4914,15 @@ void VulkanBackend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t
     g_perf.d_consts += PerfLap(lap);
 
     if (cap_) {
+        // XBE_CAPTURE_VERTS=N: each draw's inputs for its first N vertices (2 unless set), to read a whole mesh
+        static const uint32_t cap_verts = [] {
+            const char* v = std::getenv("XBE_CAPTURE_VERTS");
+            return v && *v ? uint32_t(std::max(1, std::atoi(v))) : 2u;
+        }();
         CaptureDraw(s, prim, count, k, c, stages);
         fprintf(cap_, " pkey %016llX%s%s%s%s", (unsigned long long)sh.pkey, flat ? " screen" : "",
                 surface < 0 ? "" : surface ? " surface taken" : " surface refused", zpso ? " depth pass" : "",
-                DescribeInputs(s, start, indices, 2).c_str());
+                DescribeInputs(s, start, indices, std::min(cap_verts, std::max(count, 1u))).c_str());
         if (sh.shading) fprintf(cap_, " | shading %u%s", sh.shading, stages.screen ? " screen copy" : "");
         if (hud) {  // placed: Stretched, Left, Middle, Right, in Place
             fprintf(cap_, " | hud %c mode %u", hud_took_, interp::g_run_tag.hud_mode);
