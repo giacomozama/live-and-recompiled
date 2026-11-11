@@ -25,7 +25,7 @@ struct ModEntry {
 struct Settings {
     DisplayMode display_mode = DisplayMode::Borderless;
     uint32_t width = 0, height = 0;  // 0 is the desktop mode
-    uint32_t render_percent = 100;   // of the output height
+    uint32_t render_percent = 100;   // of the size the frame is shown at (RenderScale)
     uint32_t fps_cap = 60;           // 0 unlimited
     bool vsync = true;
     // pictures shown per frame the title presents: 1 (off), or 2 to 4, the ones between made from the frames around
@@ -113,7 +113,12 @@ struct Mode {
 };
 Mode Desktop();
 Mode Output();
-float RenderScale(uint32_t guest_height);
+// host pixels per console pixel across and down: the guest frame drawn at the size the window shows it (the output
+// letterboxed to FrameAspect) times render_percent, so a 4:3 frame shown 16:9 draws with more pixels across than down
+struct Scale {
+    float x, y;
+};
+Scale RenderScale(uint32_t guest_width, uint32_t guest_height);
 // the display shape the aspect setting asks for, width over height: with "auto" the output's own
 float Aspect();
 // the display is 3:2 or wider: the console reports a widescreen TV and the frame is shown 16:9, else 4:3 as on a 4:3 TV

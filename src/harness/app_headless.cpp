@@ -18,7 +18,7 @@ void Save() {}
 void ApplyDisplay() {}
 Mode Desktop() { return {1280, 720}; }
 Mode Output() { return Desktop(); }
-float RenderScale(uint32_t) { return 1.0f; }
+Scale RenderScale(uint32_t, uint32_t) { return {1, 1}; }
 float Aspect() { return 16.0f / 9.0f; }
 bool Widescreen() { return true; }
 float FrameAspect() { return kGame.aspect ? kGame.aspect(Aspect()) : 16.0f / 9.0f; }

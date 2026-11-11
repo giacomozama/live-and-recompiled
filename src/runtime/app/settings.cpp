@@ -229,9 +229,15 @@ float FrameAspect() {
     return Widescreen() ? 16.0f / 9.0f : 4.0f / 3.0f;
 }
 
-float RenderScale(uint32_t guest_height) {
-    float h = Output().height * (Get().render_percent / 100.0f);
-    return guest_height ? std::max(h / guest_height, 0.1f) : 1.0f;
+Scale RenderScale(uint32_t guest_width, uint32_t guest_height) {
+    Mode m = Output();
+    if (!guest_width || !guest_height || !m.width || !m.height) return {1, 1};
+    // the frame as gpu's DrawFrame shows it: the output at FrameAspect, letterboxed or pillarboxed
+    const float aspect = FrameAspect();
+    const float w = std::min(float(m.width), float(m.height) * aspect);
+    const float h = w / aspect;
+    const float k = Get().render_percent / 100.0f;
+    return {std::max(w * k / guest_width, 0.1f), std::max(h * k / guest_height, 0.1f)};
 }
 
 }  // namespace app

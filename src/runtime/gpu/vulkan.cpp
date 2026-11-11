@@ -1057,7 +1057,7 @@ private:
     VkPipeline CreateFullScreenPipeline(const Spirv& vs, const Spirv& ps, const FullScreenDesc& d) const;
     VkPipeline CreatePipeline(VkGraphicsPipelineCreateInfo& ci, const Spirv* const code[],
                               const VkShaderStageFlagBits stages[], uint32_t n) const;
-    float PointScale() const;  // host pixels per console pixel of the bound target
+    app::Scale PointScale() const;  // host pixels per console pixel of the bound target, across and down
     void UploadConstants(const State& s, const DrawShaders& sh, const PsoKey& k, const DrawTextures& stages,
                          GuestExtent size, DrawConstants& c, Bindings& b);
     void CaptureDraw(const State& s, uint32_t prim, uint32_t count, const PsoKey& k, const DrawConstants& c,
@@ -1071,7 +1071,7 @@ private:
     VkSampler EnsureSampler(const SamplerDesc& sd);
     VkSampler FindSampler(const SamplerDesc& sd);
     VkSampler MakeSampler(const SamplerDesc& sd);
-    void SetViewportScissor(const State& s, uint32_t gw);
+    void SetViewportScissor(const State& s, GuestExtent size);
     void SetBlendFactorStencilRef(const State& s);
     void DrawGeometry(const Assembled& a);
     // a run of fast draws (FastDraw) in one state, drawn as one: whether a draw's geometry can join it, its joining,
@@ -1137,7 +1137,7 @@ private:
     // pictures shown: a frame's own, and those frame generation adds
     void CountFps(uint32_t pictures);
     void ApplySettings();
-    void RemakeTargets(float scale, uint32_t samples);
+    void RemakeTargets(app::Scale scale, uint32_t samples);
     ImageRef Shrink(Image& src, VkImageView view, uint32_t w, uint32_t h, const ShrinkOptions& o = {});
     bool ReadBack(Image& im, uint32_t w, uint32_t h, std::vector<uint8_t>& out);
     void CapStep(const Surface& rt);
@@ -1393,7 +1393,7 @@ private:
     uint32_t guest_h_ = 480;
     uint32_t bb_w_ = 0;
     uint32_t bb_h_ = 0;
-    float scale_ = 1.0f;
+    app::Scale scale_{1, 1};  // host pixels per console pixel across and down (app::RenderScale)
     // surfaces locked without a wait: copies in flight, the newest finished one goes to guest memory
     struct Late {
         BufferRef rb[kFrames];
@@ -1569,7 +1569,8 @@ bool VulkanBackend::Init(uint32_t width, uint32_t height) {
     CreateBlitSamplers();
     if (!InitUi()) return false;
     LoadSettings();
-    LOGI("vulkan: %ux%u guest, %ux%u window, render scale %.3f, %ux msaa", width, height, bb_w_, bb_h_, scale_, msaa_);
+    LOGI("vulkan: %ux%u guest, %ux%u window, render scale %.3f x %.3f, %ux msaa", width, height, bb_w_, bb_h_, scale_.x,
+         scale_.y, msaa_);
     StartWarmUp();
     return true;
 }
@@ -2189,7 +2190,7 @@ bool VulkanBackend::InitUi() {
 }
 
 void VulkanBackend::LoadSettings() {
-    scale_ = app::RenderScale(guest_h_);
+    scale_ = app::RenderScale(guest_w_, guest_h_);
     msaa_ = WantSamples();
 }
 
@@ -2515,8 +2516,8 @@ void VulkanBackend::ReleaseTarget(std::unordered_map<uint64_t, Target>::iterator
 
 // the image of a new target at render scale, cleared
 bool VulkanBackend::CreateTargetResource(Target& t) {
-    t.w = std::max(1u, uint32_t(std::lround(t.gw * scale_)));
-    t.h = std::max(1u, uint32_t(std::lround(t.gh * scale_)));
+    t.w = std::max(1u, uint32_t(std::lround(t.gw * scale_.x)));
+    t.h = std::max(1u, uint32_t(std::lround(t.gh * scale_.y)));
     ImageSpec sp;
     sp.fmt = t.depth ? depth_fmt_ : t.fmt;
     sp.w = t.w;
@@ -3152,10 +3153,10 @@ VkPipeline VulkanBackend::CreateDrawPipeline(const PsoKey& k, const Spirv& vs, c
     return CreatePipeline(ci, code, stages, points && gs ? 3 : 2);
 }
 
-float VulkanBackend::PointScale() const {
+app::Scale VulkanBackend::PointScale() const {
     const Target* t = bound_rt_ ? bound_rt_ : bound_ds_;
-    if (!t || !t->gw) return 1;
-    return float(t->w) / float(t->gw);
+    if (!t || !t->gw || !t->gh) return {1, 1};
+    return {float(t->w) / float(t->gw), float(t->h) / float(t->gh)};
 }
 
 VkPipeline VulkanBackend::EnsurePipeline(const PsoKey& k, const DrawShaders& sh) {
@@ -3318,7 +3319,7 @@ Image* VulkanBackend::BindTargetTexture(const State& s, int stage, const Texture
     // the frame twice and stretches it back) lines up as drawn, half a texel per pass leaving the blur pixels off
     stages.exact[stage] = rt && (t.gw != rt->gw || t.gh != rt->gh);
     // a pass shrinking it averages each tap over a console texel, else upscaled taps skip texels and ghost
-    float k = float(t.w) / (t.gw * stages.k[stage]);
+    float k = std::max(float(t.w) / t.gw, float(t.h) / t.gh) / stages.k[stage];  // the denser axis
     if (!t.depth && k > kUpscaledMin && rt && rt != &t && (t.gw > rt->gw || t.gh > rt->gh)) {
         stages.wide[stage] = k;
         info.flags |= kTexWide;
@@ -3736,9 +3737,12 @@ void VulkanBackend::UploadConstants(const State& s, const DrawShaders& sh, const
         last_vc_ok_ = true;
     }
     FillSurfaceConstants(s, size, c);
-    // points: host pixels per console pixel, also keeps them off the far edge pull out of screen passes
+    // points: host pixels per console pixel; surf.w set also keeps them off the far edge pull out of screen passes
     if (k.topo == uint32_t(Topology::Points)) {
-        c.surf[3] = PointScale();
+        const app::Scale ps = PointScale();
+        c.surf[3] = 1;
+        c.ptpx[0] = ps.x;
+        c.ptpx[1] = ps.y;
         FillPointConstants(s, sh.prog, &s == &sprite_, c);
     }
     // the fog setting off: no fog constants, so every draw evaluates to unfogged, as with the title's fog off
@@ -3875,19 +3879,19 @@ void VulkanBackend::FillViewsAndSamplers(const State& s, const DrawTextures& sta
 }
 
 // viewport covers the target, the guest viewport is in the shader; scissor clips to it
-void VulkanBackend::SetViewportScissor(const State& s, uint32_t gw) {
+void VulkanBackend::SetViewportScissor(const State& s, GuestExtent size) {
     float W = float(bound_rt_ ? bound_rt_->w : bound_ds_->w);
     float H = float(bound_rt_ ? bound_rt_->h : bound_ds_->h);
-    float sc = W / gw;
+    float sc = W / size.w, scy = H / size.h;  // across and down: a target's scale differs by axis (app::RenderScale)
     int32_t x0 = int32_t(s.viewport.x * sc);
-    int32_t y0 = int32_t(s.viewport.y * sc);
+    int32_t y0 = int32_t(s.viewport.y * scy);
     int32_t x1 = int32_t((s.viewport.x + s.viewport.w) * sc);
-    int32_t y1 = int32_t((s.viewport.y + s.viewport.h) * sc);
+    int32_t y1 = int32_t((s.viewport.y + s.viewport.h) * scy);
     if (s.scissor_count) {
         x0 = std::max(x0, int32_t(s.scissors[0] * sc));
-        y0 = std::max(y0, int32_t(s.scissors[1] * sc));
+        y0 = std::max(y0, int32_t(s.scissors[1] * scy));
         x1 = std::min(x1, int32_t(s.scissors[2] * sc));
-        y1 = std::min(y1, int32_t(s.scissors[3] * sc));
+        y1 = std::min(y1, int32_t(s.scissors[3] * scy));
     }
     // g_hud_split's remap of a 2D draw: the target narrowed to its place, the scissor with it
     const float vx = hud_b_ * sc, vw = W * hud_a_;
@@ -4123,7 +4127,7 @@ bool VulkanBackend::ReuseRun(const State& s) {
         drawn_.b = b;
         drawn_.bound = true;
     }
-    SetViewportScissor(s, kept_.size.w);
+    SetViewportScissor(s, kept_.size);
     SetBlendFactorStencilRef(s);
     vkCmdBindVertexBuffers2(cmd_, 0, r.buffers, r.bufs, r.offs, r.sizes, r.strides);
     if (r.topo != drawn_.topo) {
@@ -4222,7 +4226,7 @@ bool VulkanBackend::ReuseDraw(const State& s) {
         drawn_.b = b;
         drawn_.bound = true;
     }
-    SetViewportScissor(s, r.kept.size.w);
+    SetViewportScissor(s, r.kept.size);
     SetBlendFactorStencilRef(s);
     const Geometry& g = r.g;
     if (g.buffers) vkCmdBindVertexBuffers2(cmd_, 0, g.buffers, g.bufs, g.offs, g.sizes, g.strides);
@@ -4989,7 +4993,7 @@ void VulkanBackend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t
         drawn_.pso = pso;
     }
     SetTextureViewsAndSamplers(s, a, stages, b);
-    SetViewportScissor(s, size.w);
+    SetViewportScissor(s, size);
     SetBlendFactorStencilRef(s);
 
     // geometry, counted while the title runs a visibility test; a shading's shells between go first, uncounted
@@ -5144,7 +5148,7 @@ bool VulkanBackend::FastDraw(const State& s, uint32_t prim, uint32_t start, uint
     }
     Bindings b = kept_.b;
     SetTextureViewsAndSamplers(s, a, stages, b, &kept_.filled);
-    SetViewportScissor(s, kept_.size.w);
+    SetViewportScissor(s, kept_.size);
     SetBlendFactorStencilRef(s);
     // in the state the draws before it set: its geometry joins theirs, drawn with them later (a ground drawn a quad at
     // a time is thousands of these)
@@ -5162,11 +5166,11 @@ bool VulkanBackend::FastDraw(const State& s, uint32_t prim, uint32_t start, uint
 
 // a guest rect scaled to the target and clamped to it, empty ones left out
 void PushScaledRect(const Target& t, int x0, int y0, int x1, int y1, std::vector<VkClearRect>& rs) {
-    float sc = float(t.w) / t.gw;
+    float sc = float(t.w) / t.gw, scy = float(t.h) / t.gh;
     int32_t l = std::clamp<int32_t>(int32_t(x0 * sc), 0, int32_t(t.w));
-    int32_t tp = std::clamp<int32_t>(int32_t(y0 * sc), 0, int32_t(t.h));
+    int32_t tp = std::clamp<int32_t>(int32_t(y0 * scy), 0, int32_t(t.h));
     int32_t r = std::clamp<int32_t>(int32_t(x1 * sc), 0, int32_t(t.w));
-    int32_t b = std::clamp<int32_t>(int32_t(y1 * sc), 0, int32_t(t.h));
+    int32_t b = std::clamp<int32_t>(int32_t(y1 * scy), 0, int32_t(t.h));
     if (r > l && b > tp) rs.push_back({{{l, tp}, {uint32_t(r - l), uint32_t(b - tp)}}, 0, 1});
 }
 
@@ -5233,8 +5237,8 @@ void VulkanBackend::CopyByDraw(const Target& src_t, Image& src, Target& dst_t, c
     WriteRes(dst_t, false);
     Transition(src, kRead);
     SetTargets(dst_t.res.get(), nullptr);
-    float src_scale = float(src_t.w) / src_t.gw;
-    float dst_scale = float(dst_t.w) / dst_t.gw;
+    float src_scale = float(src_t.w) / src_t.gw, src_scale_y = float(src_t.h) / src_t.gh;
+    float dst_scale = float(dst_t.w) / dst_t.gw, dst_scale_y = float(dst_t.h) / dst_t.gh;
     bool listed = l.count && l.src_rects;
     uint32_t n = listed ? l.count : 1;
     for (uint32_t i = 0; i < n; i++) {
@@ -5244,16 +5248,17 @@ void VulkanBackend::CopyByDraw(const Target& src_t, Image& src, Target& dst_t, c
         if (listed) r = ReadDrawnRect(l.src_rects, l.dst_points, i);
         if (r.x1 <= r.x0 || r.y1 <= r.y0) continue;
         float vx = r.dx * dst_scale;
-        float vy = r.dy * dst_scale;
+        float vy = r.dy * dst_scale_y;
         float vw = (r.x1 - r.x0) * dst_scale;
-        float vh = (r.y1 - r.y0) * dst_scale;
+        float vh = (r.y1 - r.y0) * dst_scale_y;
         int32_t right = std::min(int32_t(vx + vw), int32_t(dst_t.w));
         int32_t bottom = std::min(int32_t(vy + vh), int32_t(dst_t.h));
         if (right <= std::max(int32_t(vx), 0) || bottom <= std::max(int32_t(vy), 0)) continue;
         SetViewport(vx, vy, vw, vh);
         SetScissor(int32_t(vx), int32_t(vy), right, bottom);
         float uv[4] = {r.x0 / src_t.gw, r.y0 / src_t.gh, (r.x1 - r.x0) / src_t.gw, (r.y1 - r.y0) / src_t.gh};
-        uint32_t taps = uint32_t(std::ceil(std::max(src_scale / dst_scale, 1.0f) - kTapsSlack));
+        uint32_t taps =
+            uint32_t(std::ceil(std::max({src_scale / dst_scale, src_scale_y / dst_scale_y, 1.0f}) - kTapsSlack));
         Blit(src.Sampled(), uv, {.alpha = true, .taps = taps, .rtv = dst_t.fmt});
     }
     dst_t.drawn = true;
@@ -5266,7 +5271,7 @@ void VulkanBackend::CopyByRegion(const Target& src_t, Image& src, Target& dst_t,
     Transition(src, kSrc);
     Transition(*dst_t.res, kDst);
     Barrier();
-    float dst_scale = float(dst_t.w) / dst_t.gw;
+    float dst_scale = float(dst_t.w) / dst_t.gw, dst_scale_y = float(dst_t.h) / dst_t.gh;
     bool listed = l.count && l.src_rects;
     uint32_t n = listed ? l.count : 1;
     for (uint32_t i = 0; i < n; i++) {
@@ -5279,15 +5284,15 @@ void VulkanBackend::CopyByRegion(const Target& src_t, Image& src, Target& dst_t,
         if (listed) {
             GuestRect r = ReadGuestRect(l.src_rects, i);
             left = ScaleUnsigned(r.left, dst_scale);
-            top = ScaleUnsigned(r.top, dst_scale);
+            top = ScaleUnsigned(r.top, dst_scale_y);
             right = std::min(ScaleUnsigned(r.right, dst_scale), src_t.w);
-            bottom = std::min(ScaleUnsigned(r.bottom, dst_scale), src_t.h);
+            bottom = std::min(ScaleUnsigned(r.bottom, dst_scale_y), src_t.h);
             dx = left;
             dy = top;
             if (l.dst_points) {
                 GuestPoint p = ReadGuestPoint(l.dst_points, i);
                 dx = ScaleUnsigned(p.x, dst_scale);
-                dy = ScaleUnsigned(p.y, dst_scale);
+                dy = ScaleUnsigned(p.y, dst_scale_y);
             }
         }
         if (right <= left || bottom <= top || dx >= dst_t.w || dy >= dst_t.h) continue;
@@ -5937,7 +5942,7 @@ void VulkanBackend::Redisplay(bool blur) {
 
 // every target made again at the scale and samples, keeping its picture: a texture the title drew once (an
 // environment map) is read from its target for the rest of the level, and guest memory never had it
-void VulkanBackend::RemakeTargets(float scale, uint32_t samples) {
+void VulkanBackend::RemakeTargets(app::Scale scale, uint32_t samples) {
     std::unordered_map<uint64_t, Target> old;
     old.swap(targets_);
     bound_rt_ = bound_ds_ = nullptr;
@@ -5975,13 +5980,14 @@ void VulkanBackend::RemakeTargets(float scale, uint32_t samples) {
         targets_[key] = std::move(t);
     }
     bound_rt_ = bound_ds_ = nullptr;
-    LOGI("vulkan: %zu targets made again at render scale %.3f, %ux msaa", targets_.size(), scale_, msaa_);
+    LOGI("vulkan: %zu targets made again at render scale %.3f x %.3f, %ux msaa", targets_.size(), scale_.x, scale_.y,
+         msaa_);
 }
 
 void VulkanBackend::ApplySettings() {
-    float want = app::RenderScale(guest_h_);
+    app::Scale want = app::RenderScale(guest_w_, guest_h_);
     uint32_t samples = WantSamples();
-    if (std::fabs(want - scale_) > 1e-4f || samples != msaa_) {
+    if (std::fabs(want.x - scale_.x) > 1e-4f || std::fabs(want.y - scale_.y) > 1e-4f || samples != msaa_) {
         Flush();
         RemakeTargets(want, samples);
     }

@@ -64,6 +64,7 @@ const char* kCommonTail = R"(    float4 spread[4];
     float4 lt[56];
     float4 pts;
     float4 ptsk;
+    float4 ptpx;
 )";
 
 const ShaderHooks& Hooks() {
@@ -1177,8 +1178,8 @@ std::string PointHlsl() {
 void main(point VOut v[1], inout TriangleStream<VOut> strip) {
     float size = max(clamp(v[0].psize, pts.z, pts.w), 1);
     float2 half_size = size * v[0].pos.w / surf.xy;  // in clip units, the target spans 2 across surf.xy pixels
-    // a target is read half a host pixel back (surf.w host pixels per console pixel): left and top reach that far
-    float2 back = (0.5 - 1e-3) * 2 * v[0].pos.w / surf.xy / surf.w;
+    // a target is read half a host pixel back (ptpx.xy host pixels per console pixel): left and top reach that far
+    float2 back = (0.5 - 1e-3) * 2 * v[0].pos.w / surf.xy / ptpx.xy;
     for (int i = 0; i < 4; i++) {
         VOut o = v[0];
         o.pos.x += (i & 1) ? half_size.x : -half_size.x - back.x;

@@ -244,7 +244,7 @@ inline const ShaderHooks* g_shader_hooks = nullptr;
 
 // the constant buffer layout both stages share, register b1
 struct DrawConstants {
-    float surf[4];      // target width, height, 1 / depth scale, 0
+    float surf[4];      // target width, height, 1 / depth scale, 0 (1 for points)
     float fog[4];       // start, end, density, mode
     float fog_color[4];
     float misc[4];      // alpha ref, alpha func, shadow func, specular
@@ -266,6 +266,7 @@ struct DrawConstants {
     // points: fixed function size, viewport height when scaled by distance (else 0), smallest and largest size
     float pts[4];
     float ptsk[4];       // the distance scale's A, B, C, then 1 for point sprites
+    float ptpx[4];       // points: the target's host pixels per console pixel across and down
     float xc[4];         // a ProgramShading's, declared only in its shaders
     float xs[20][4];     // a ProgramShading's fill, declared only in its shaders
 };
