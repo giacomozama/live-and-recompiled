@@ -133,6 +133,10 @@ constexpr const char* kC94Match = "mac_mul(((c[190]).xxxx), ((i.v5).xxxx))";
 // 2026-11-10): the skinned position (R10) moved along the normal (R2) by c85.x alone, no length per vertex, so the coat
 // is even; the mask on stage 2, 8 of 16 shells. Per-pixel lighting took its draws before (one of its lit shapes)
 constexpr const char* kTediMatch = "(mac_mul(((c[181]).xxxx), ((R2).xyzz)) + ((R10).xyzz))";
+// the rim of Conker's crown in the intro (F3 capture 002902, 2026-11-12): a rigid model's program, its view space normal
+// normalized into R10 and moved along it by c18.x (c[114]) times the length in v3; 14 shells, the mask on stage 2. The
+// only draws of that program in every capture so far. Tagged fur::kCrown (FillCrownStrands), a look of its own
+constexpr const char* kRigidMatch = "mac_mul(((c[114]).xxxx), ((i.v3).xxxx))";
 const bool kAlways = true;
 // fur::TagShells' types for the chipmunks (ChipmunkTypes)
 // from F3 captures 2026-11-09: the female bartender 398, Berri 114, the little girl 124, the two Sneekers (one each
@@ -196,7 +200,7 @@ int FurLookOf() {
     float4 tag = c[2];  // fur::kTagRegister: type, its byte at 0xA1, level, 1 once tagged
     bool chipmunk = tag.w == 1 && (any(xs[12] == tag.x) || any(xs[13] == tag.x));
     bool weasel = tag.w == 1 && any(xs[14] == tag.x);
-    bool off = tag.w == 1 && any(xs[9] == tag.x);
+    bool off = (tag.w == 1 && any(xs[9] == tag.x)) || xs[10].z > 0;  // z: the draw's model asks, whatever c[2] holds
     return off ? -1 : weasel ? 1 : chipmunk ? 2 : 0;
 #endif
 }
@@ -705,6 +709,7 @@ void Fill(float (*xs)[4], const float* tag, bool weasel) {
     if (tag && tag[3] == 1.0f && tag[0] >= 0)
         if (const int n = HairShells(uint32_t(tag[0])); n >= 0) xs[10][1] = 1.0f / float(1 + n);
     for (int i = 0; i < 4; i++) xs[11][i] = xs[16][i] = xs[17][i] = 0;
+    xs[10][2] = 0;  // the draw's model keeps the game's own fur (FurLookOf), for a tag the shader doesn't see (kCrown)
     if (!tag || tag[3] != 1.0f || tag[0] < 0) return;
     const uint32_t type = uint32_t(tag[0]);
     See(type, weasel, true);
@@ -714,7 +719,7 @@ void Fill(float (*xs)[4], const float* tag, bool weasel) {
         const fur::ModelLook own = *m;  // the menu may change it meanwhile: one copy, whole or not
         for (int k = 0; k < fur::kLooks; k++) PutLook(xs, k, own.look);
         for (int i = 0; i < 4; i++) xs[9][i] = -1.0f;
-        if (own.game) xs[9][0] = float(type);
+        if (own.game) xs[9][0] = float(type), xs[10][2] = 1.0f;
     }
     // a hair piece with a look of its own (once the menu has made one): the game's fur, or its look in a slot the
     // model's draws don't pick (FurLookOf's: the weasels' program or type 1, a chipmunk 2, else 0); without, the model's
@@ -750,6 +755,10 @@ void Fill(float (*xs)[4], const float* tag, bool weasel) {
 }
 
 void FillStrands(float (*xs)[4], const float* tag) { Fill(xs, tag, false); }
+// the crown rim's (kRigidMatch): tagged fur::kCrown whatever the draw's tag register holds
+constexpr float kCrownTag[4] = {float(fur::kCrown), 0, 0, 1};
+void FillCrownStrands(float (*xs)[4], const float*) { Fill(xs, kCrownTag, false); }
+int CrownStrandsBetween(const float*, const float*) { return int(TaggedShells(kCrownTag)); }
 void FillWeaselStrands(float (*xs)[4], const float* tag) { Fill(xs, tag, true); }
 
 float DepthAlpha() {
@@ -771,18 +780,20 @@ void fur::Init() {
                              c90_vs = std::string("#define FUR_NORMAL R2\n#define FUR_TOP c[186].x\n#define FUR_LENGTH i.v5.x\n") + kStrandVs,
                              c85v9_vs = std::string("#define FUR_NORMAL R6\n#define FUR_TOP c[181].x\n#define FUR_LENGTH i.v9.x\n") + kStrandVs,
                              tedi_vs = std::string("#define FUR_NORMAL R2\n#define FUR_TOP c[181].x\n#define FUR_LENGTH 1.0\n") + kStrandVs,
+                             rigid_vs = std::string("#define FUR_NORMAL R10\n#define FUR_TOP c[114].x\n#define FUR_LENGTH i.v3.x\n") + kStrandVs,
                              c94_vs = std::string("#define FUR_MAP_STRANDS 1\n#define FUR_NORMAL R2\n#define FUR_TOP c[190].x\n#define FUR_LENGTH i.v5.x\n") + kStrandVs,
                              c94_pre = std::string("#define FUR_MAP_STRANDS 1\n") + kStrandPre + "\n#undef FUR_MAP_STRANDS\n",
                              body_pre = std::string("#define FUR_HAIRY 1\n") + kStrandPre + "\n#undef FUR_HAIRY\n";
     const auto strands = [&](const char* match, const std::string& vs, int top, const char* without, const char* pre = kStrandPre,
-                             bool weasel = false, bool hairy = false) {  // the weasels' program, the hair pieces' program
+                             bool weasel = false, bool hairy = false, bool crown = false) {  // the weasels' program, the hair pieces', the crown's
         gpu::g_program_shading.push_back({.match = match, .on = &g_strands, .vs = vs.c_str(), .ps = kStrandPs, .top = top,
                                           .between = int(kExtraShells), .soft = true,
-                                          .fill = weasel ? FillWeaselStrands : FillStrands,
+                                          .fill = crown ? FillCrownStrands : weasel ? FillWeaselStrands : FillStrands,
                                           .fill_register = int(kTagRegister), .field = gpu::FocusField,
                                           .functions = kStrandFunctions, .depth_alpha = depth_alpha,
                                           .without = without, .pre = pre,
-                                          .between_of = hairy ? HairyStrandsBetween : StrandsBetween, .top_layers = 16,
+                                          .between_of = crown ? CrownStrandsBetween : hairy ? HairyStrandsBetween : StrandsBetween,
+                                          .top_layers = 16,
                                           .between_mark = int(kTagRegister), .unsharpened = true});
     };
     gpu::g_program_watch.push_back({.match = kMatch, .seen = SeenHair, .regs = 1 << 1, .spread = true, .vertices = 1024,
@@ -793,6 +804,7 @@ void fur::Init() {
     strands(kC94Match, c94_vs, 94 + 96, nullptr, c94_pre.c_str(), true);
     strands(kC85V9Match, c85v9_vs, 85 + 96, nullptr);
     strands(kTediMatch, tedi_vs, 85 + 96, nullptr);
+    strands(kRigidMatch, rigid_vs, 18 + 96, nullptr, kStrandPre, false, false, true);
     gpu::g_program_shading.push_back({.match = kMatch, .on = &g_shading, .vs = kVs, .ps = kPs, .top = 85 + 96,
                                       .between = 1, .soft = true, .depth_alpha = depth_alpha, .without = skip,
                                       .unsharpened = true});
@@ -808,6 +820,8 @@ void fur::Init() {
                                       .top = 94 + 96, .depth_alpha = depth_alpha, .unsharpened = true});
     gpu::g_program_shading.push_back({.match = kTediMatch, .on = &kAlways, .vs = "    o.x0 = 0;\n    o.x1 = 0;",
                                       .top = 85 + 96, .depth_alpha = depth_alpha, .unsharpened = true});
+    gpu::g_program_shading.push_back({.match = kRigidMatch, .on = &kAlways, .vs = "    o.x0 = 0;\n    o.x1 = 0;",
+                                      .top = 18 + 96, .depth_alpha = depth_alpha, .unsharpened = true});
 }
 
 fur::ModelLook* fur::FindModelLook(uint32_t type) {
@@ -1028,6 +1042,7 @@ std::vector<uint32_t> fur::KnownModels() {
     }
     for (const HairPiece& hp : kHairPieces)
         if (std::find(known.begin(), known.end(), hp.model) != known.end()) known.push_back(HairOf(hp.model));
+    if (!known.empty()) known.push_back(kCrown);
     return known;
 }
 
@@ -1038,6 +1053,7 @@ bool fur::Furless(uint32_t type) {
 
 std::string fur::ModelName(uint32_t type) {
     if (type == 0) return "Conker (all but Van Helsing and the Heist)";
+    if (type == kCrown) return "Conker's crown rim (intro)";
     if (IsHair(type)) {
         const std::string name = TableName(type & ~kHairBit);
         return (name.empty() ? "Model" : name) + " hair (" + std::to_string(type & ~kHairBit) + ")";
@@ -1088,8 +1104,8 @@ void fur::Load(const void* table) {
         const toml::table* m = node.as_table();
         char* end = nullptr;
         const unsigned long type = std::strtoul(std::string(key.str()).c_str(), &end, 10);
-        if (!m || end == nullptr || *end || type >= 0x10000 && !IsHair(uint32_t(type)) || type >= 2 * kHairBit ||
-            key.str().empty())
+        if (!m || end == nullptr || *end ||
+            (type != kCrown && (type >= 0x10000 && !IsHair(uint32_t(type)) || type >= 2 * kHairBit)) || key.str().empty())
             continue;
         ModelLook* own = ModelLookOf(uint32_t(type));
         if (!own) break;

@@ -83,6 +83,10 @@ inline constexpr uint32_t kHairBit = 0x10000;
 inline constexpr uint32_t kHairSway = 40;  // a hair's sway by default
 inline constexpr uint32_t HairOf(uint32_t model) { return kHairBit | model; }
 inline constexpr bool IsHair(uint32_t type) { return type != ~0u && (type & kHairBit); }
+// Conker's crown rim in the intro, a look of its own: its shells' draws carry no tag of theirs (the game tags none
+// on that path; they'd take whichever model drew before), so its program's entry (fur.cpp kRigidMatch) tags them
+// with this, an id past the model table's and the hairs'
+inline constexpr uint32_t kCrown = 0x20000;
 // models with defaults of their own rather than their kind's, by type (the model table's id), tuned one by one; the
 // renderer draws them with these wherever the menu has no look for them, whatever program draws them. Keys as Look:
 // strands, tufts, tufting, droop, thickness, taper, root shade, tuft shade, sheen, back glow, length, fill, tone (100
@@ -112,6 +116,7 @@ inline constexpr ModelDefault kModelDefaults[] = {
     {181, {12, 12, 70, 110, 75, 110, 2, 2, 70, 50, 100, 100}},   // Barman
     {34, {48, 12, 60, 110, 75, 40, 0, 0, 15, 50, 100, 0}},       // RatBrown, and RatBrownStitched (kSharedLooks)
     {124, {48, 10, 30, 100, 70, 150, 0, 0, 70, 200, 100, 0, 150}},  // WarBossDoll
+    {kCrown, {32, 5, 60, 60, 75, 120, 0, 0, 50, 50, 100, 0}},  // the crown's rim: Conker's look to start from
     // ConkerHelsing's hair (HairOf(276)), a look of its own; then tone, sway, follows motion
     {HairOf(276), {64, 4, 0, 200, 75, 150, 5, 5, 200, 50, 100, 0, 100, 50, 30}},
 };
