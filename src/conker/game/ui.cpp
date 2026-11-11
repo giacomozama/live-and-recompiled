@@ -1257,6 +1257,13 @@ void Draw(double fps) {
                             Hint("The hair keeps the game's fur, with super fur on; otherwise it has a look of its own.", true);
                         else
                             Hint("This model keeps the game's fur, with super fur on.", true);
+                        if (fur::IsHair(model)) {  // its motion, whichever fur it has
+                            Slider("Sway %", &l.sway, 0u, 200u, d.sway);
+                            Hint("How much the hair moves in the air.", true);
+                            Slider("Follows motion %", &l.motion, 0u, 200u, d.motion);
+                            Hint("How far the hair trails behind when the character moves or turns, and swings back "
+                                 "as it stops.", true);
+                        }
                         // the look in two columns, a pair to a row: each slider in the next cell
                         if (!own->game && ImGui::BeginTable("##look", 2, ImGuiTableFlags_SizingStretchSame)) {
                             const auto cell = [](auto&&... args) {

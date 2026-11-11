@@ -38,6 +38,8 @@ struct Look {
     // % the strands' color before their highlights, against what the game's grey masks leave of the skin under them
     // (some 70 to 90 % of it): above 100 to bring the coat up to the skin's tone
     uint32_t tone = 100;
+    uint32_t sway = 0;      // a hair's (HairOf): % how far it sways in the air, its tips most
+    uint32_t motion = 100;  // a hair's: % how far it trails behind the character's movement and turns, and swings back
     bool operator==(const Look&) const = default;
 };
 // A model's look starts from its kind's: the coat (Conker, the squirrels, grey ones too, and most others); the
@@ -75,8 +77,10 @@ int KindOf(uint32_t type);
 // A model's hair, where it has a piece of hair drawn with the fur's shells (fur.cpp kHairPieces: Van Helsing's), is
 // listed beside the model under HairOf(model): the hair keeps the game's own fur, or takes a look of its own, while
 // the rest of the model has its own. Its draws are told from the model's others by their shells' offset per layer,
-// for its look and extra shells; until the menu makes it a look it takes the model's
+// for its look and extra shells; until the menu makes it a look it takes the model's. It moves whichever fur it has:
+// sways, and trails behind the character (kMotionRegister), by its sway and motion
 inline constexpr uint32_t kHairBit = 0x10000;
+inline constexpr uint32_t kHairSway = 40;  // a hair's sway by default
 inline constexpr uint32_t HairOf(uint32_t model) { return kHairBit | model; }
 inline constexpr bool IsHair(uint32_t type) { return type != ~0u && (type & kHairBit); }
 // models with defaults of their own rather than their kind's, by type (the model table's id), tuned one by one; the
@@ -111,8 +115,12 @@ inline const ModelDefault* FindModelDefault(uint32_t type) {
         if (d.type == type) return &d;
     return nullptr;
 }
-inline const Look& DefaultLook(uint32_t type) {
-    if (IsHair(type)) return DefaultLook(type & ~kHairBit);  // a hair's, its model's
+inline Look DefaultLook(uint32_t type) {
+    if (IsHair(type)) {  // a hair's, its model's, swaying
+        Look l = DefaultLook(type & ~kHairBit);
+        l.sway = kHairSway;
+        return l;
+    }
     if (const ModelDefault* d = FindModelDefault(type)) return d->look;
     return kLookDefaults[KindOf(type & ~kHairBit)];
 }
@@ -152,6 +160,11 @@ extern bool g_distant;
 // the vertex constant kTagRegister, which no program of the game reads, for the shaders to pick a look by. F3
 // captures list it with the constants that change (= c-94). Game thread
 inline constexpr uint32_t kTagRegister = 2;  // hardware order: D3D c-94
+// Beside the tag, for a model with hair (HairOf), in this register and the four after: how far the hair trails behind
+// its movement, five springs stiffer or looser (xyz, the view's space: x right, y up, z toward the eye, a fraction of
+// the hair's length), w 1 when set in the first, the turn behind the facing in the other four's w (radians, four
+// springs). Driven by the character's position [object+0x78] and facing [object+0x171] (TagShells)
+inline constexpr uint32_t kMotionRegister = 3;  // hardware order: D3D c-93 to c-89
 void TagShells(uint32_t object);
 
 // hands the renderer the shading; after the settings load, before boot

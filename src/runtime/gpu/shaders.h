@@ -55,7 +55,7 @@ struct PixelKey {
 // whose x in top is above the one before it in its run, with x stepped evenly from there to the draw's, the rest of
 // its state the same: more shells for the fur. soft spreads a greater (or equal) alpha
 // test's edge over a pixel: for alpha blended draws, whose cut out edges then blend in instead of stepping. fill, when
-// set, writes xs (16 float4, declared only in its shaders) for each of its draws. tess, when set and the GPU
+// set, writes xs (20 float4, declared only in its shaders) for each of its draws. tess, when set and the GPU
 // tessellates, draws the entry's triangles as patches (TessHlsl), each edge split in pieces some 6 console pixels long
 // on the screen, up to 16: the domain shader fills o with what the vertex shader handed on, interpolated across the
 // triangle, then runs tess, which sets o.pos (and anything else that is no straight blend of the corners'); p holds
@@ -134,6 +134,7 @@ struct ProgramWatch {
     bool spread = false;     // vertices spread over the draw rather than its first
     uint32_t vertices = 16;  // at most
     const char* also = "";
+    const bool* on = nullptr;  // when set, the watch looks only while it holds (render thread)
 };
 inline std::vector<ProgramWatch> g_program_watch;  // filled before the title boots, unchanged after
 
@@ -178,8 +179,8 @@ std::string VertexProgramHlsl(const std::vector<uint32_t>& program, uint16_t reg
                               uint32_t shading = 0);
 // the g_program_shading entries a program matches, bit i for entry i + 1 (the first 64), whether they are on or not
 uint64_t MatchProgramShading(const std::vector<uint32_t>& program);
-// the g_program_watch entry a program matches, 1 based, 0 none
-uint32_t MatchProgramWatch(const std::vector<uint32_t>& program);
+// the g_program_watch entries a program matches, bit i for entry i (the first 64): each sees the draw
+uint64_t MatchProgramWatch(const std::vector<uint32_t>& program);
 // where a vertex program's clip w comes from: the constant register (hardware order) a dp4 or dph into oPos.w reads,
 // kPosWInput when it is moved from an input (vertices already on the screen), kPosWUnknown otherwise
 constexpr int kPosWInput = -1;
@@ -253,7 +254,7 @@ struct DrawConstants {
     float pts[4];
     float ptsk[4];       // the distance scale's A, B, C, then 1 for point sprites
     float xc[4];         // a ProgramShading's, declared only in its shaders
-    float xs[16][4];     // a ProgramShading's fill, declared only in its shaders
+    float xs[20][4];     // a ProgramShading's fill, declared only in its shaders
 };
 
 }  // namespace gpu

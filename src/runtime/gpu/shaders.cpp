@@ -78,7 +78,7 @@ std::string Common(uint32_t shading = 0) {
     std::string s = kCommonHead;
     if (shading) s += "    float4 x0 : TEXCOORD5;\n    float4 x1 : TEXCOORD7;\n";
     s += kCommonMid + Hooks().Constants() + kCommonTail;
-    if (shading) s += "    float4 xc;\n    float4 xs[16];\n";
+    if (shading) s += "    float4 xc;\n    float4 xs[20];\n";
     s += "};\n";
     if (shading && Shading(shading).field) s += "Texture2D<float> xfield : register(t4);\nSamplerState xfield_smp : register(s4);\n";
     if (shading && Shading(shading).screen) s += "Texture2D xscreen : register(t5);\nSamplerState xscreen_smp : register(s5);\n";
@@ -794,14 +794,15 @@ uint64_t MatchProgramShading(const std::vector<uint32_t>& prog) {
     return m;
 }
 
-uint32_t MatchProgramWatch(const std::vector<uint32_t>& prog) {
+uint64_t MatchProgramWatch(const std::vector<uint32_t>& prog) {
     if (g_program_watch.empty()) return 0;
     std::string s = VertexProgramHlsl(prog, 0xFFFF);
-    for (size_t i = 0; i < g_program_watch.size(); i++) {
+    uint64_t bits = 0;
+    for (size_t i = 0; i < g_program_watch.size() && i < 64; i++) {
         const ProgramWatch& w = g_program_watch[i];
-        if (s.find(w.match) != std::string::npos && s.find(w.also) != std::string::npos) return uint32_t(i + 1);
+        if (s.find(w.match) != std::string::npos && s.find(w.also) != std::string::npos) bits |= uint64_t(1) << i;
     }
-    return 0;
+    return bits;
 }
 
 std::bitset<192> ProgramReads(const std::vector<uint32_t>& prog) {
