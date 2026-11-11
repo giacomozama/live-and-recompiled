@@ -95,6 +95,7 @@ struct ModelDefault {
 inline constexpr ModelDefault kModelDefaults[] = {
     {0, {32, 5, 60, 60, 75, 120, 0, 0, 50, 50, 100, 0}},     // Conker, all his models but Van Helsing's and the Heist's
     {150, {20, 7, 100, 140, 75, 70, 0, 0, 50, 50, 100, 0}},  // ConkerMatrix, the Heist's
+    {276, {32, 7, 60, 90, 75, 150, 0, 0, 50, 50, 100, 0, 120}},  // ConkerHelsing (his hair its own, below)
     {59, {24, 5, 30, 120, 65, 35, 2, 2, 50, 50, 100, 40}},   // Weasel: every weasel model (fur.cpp kSharedLooks)
     {88, {32, 10, 70, 100, 75, 120, 2, 2, 50, 50, 100, 0}},  // CombatSquirrel, and CombatSquirrelShot (fur.cpp kSharedLooks)
     {91, {40, 12, 90, 130, 75, 85, 2, 0, 65, 50, 100, 0}},   // CombatSquirrelrodent
