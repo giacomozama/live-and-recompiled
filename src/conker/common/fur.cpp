@@ -701,8 +701,9 @@ std::atomic<uint32_t> g_canonical[kTable];
 
 }  // namespace
 
-// Conker's models that share his look, Conker's own (0): all but Van Helsing's (276)
-constexpr uint32_t kConkers[] = {150 /* ConkerMatrix */, 154 /* ConkerBat */, 167 /* ConkerTied */, 273 /* ConkerWar */};
+// Conker's models that share his look, Conker's own (0): all but Van Helsing's (276), the environment suit too
+constexpr uint32_t kConkers[] = {130 /* EnvironmentSuit */, 150 /* ConkerMatrix */, 154 /* ConkerBat */,
+                                 167 /* ConkerTied */, 273 /* ConkerWar */};
 // other story models that share a look: the model, the one whose look it takes
 struct SharedLook {
     uint32_t model, takes;
@@ -711,6 +712,7 @@ struct SharedLook {
 constexpr uint32_t kWeaselLook = 59;
 constexpr SharedLook kSharedLooks[] = {
     {321 /* CombatSquirrelShot */, 88 /* CombatSquirrel */},
+    {179 /* RatBrownStitched */, 34 /* RatBrown */},
     {17 /* WeaselMinion1 */, kWeaselLook},
     {20 /* WeaselMinion2 */, kWeaselLook},
     {134 /* WeaselSuit */, kWeaselLook},

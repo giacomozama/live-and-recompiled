@@ -81,6 +81,10 @@ struct ModelDefault {
 inline constexpr ModelDefault kModelDefaults[] = {
     {59, {24, 5, 30, 120, 65, 35, 2, 2, 50, 50, 100, 40}},   // Weasel: every weasel model (fur.cpp kSharedLooks)
     {88, {32, 10, 70, 100, 75, 120, 2, 2, 50, 50, 100, 0}},  // CombatSquirrel, and CombatSquirrelShot (fur.cpp kSharedLooks)
+    {91, {40, 12, 90, 130, 75, 85, 2, 0, 65, 50, 100, 0}},   // CombatSquirrelrodent
+    {445, {36, 10, 60, 100, 70, 110, 2, 2, 70, 90, 100, 0}},     // multiplayer's WWII sharpshooter class
+    {13, {32, 12, 50, 50, 100, 150, 0, 0, 150, 150, 100, 50}},   // Haystack
+    {69, {32, 6, 20, 100, 75, 45, 0, 0, 200, 150, 100, 100}},    // TerminatorHaystack
     {7, {16, 16, 100, 100, 75, 110, 0, 0, 50, 80, 100, 0}},    // QueenBee
     {109, {16, 12, 80, 100, 75, 110, 0, 0, 100, 50, 100, 100}},  // BeeKing
     {114, {24, 9, 100, 120, 70, 110, 0, 0, 60, 140, 100, 20}},   // Berri
@@ -89,6 +93,7 @@ inline constexpr ModelDefault kModelDefaults[] = {
     {162, {16, 7, 60, 120, 75, 70, 4, 2, 30, 50, 100, 0}},       // BatBoss
     {164, {24, 16, 90, 120, 75, 110, 0, 0, 30, 50, 100, 0}},     // BatBossStoker
     {181, {12, 12, 70, 110, 75, 110, 2, 2, 70, 50, 100, 100}},   // Barman
+    {34, {48, 12, 60, 110, 75, 40, 0, 0, 15, 50, 100, 0}},       // RatBrown, and RatBrownStitched (kSharedLooks)
 };
 inline const ModelDefault* FindModelDefault(uint32_t type) {
     for (const ModelDefault& d : kModelDefaults)
