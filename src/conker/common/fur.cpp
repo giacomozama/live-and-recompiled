@@ -572,6 +572,7 @@ int fur::KindOf(uint32_t type) {
         if (g_seen[i].load(std::memory_order_relaxed) == type && g_seen_weasel[i].load(std::memory_order_relaxed))
             return kWeasel;
     if (std::find(std::begin(kWeaselTypes), std::end(kWeaselTypes), type) != std::end(kWeaselTypes)) return kWeasel;
+    if (Canonical(type) == 59) return kWeasel;  // the weasels' group (kWeaselLook), Weasel itself never drawn
     static const std::vector<float> chipmunks = ChipmunkTypes();
     const uint32_t group = Canonical(type);  // a multiplayer class's: the Sneekers' chipmunk types are two of its models
     for (float c : chipmunks)
@@ -706,7 +707,19 @@ constexpr uint32_t kConkers[] = {150 /* ConkerMatrix */, 154 /* ConkerBat */, 16
 struct SharedLook {
     uint32_t model, takes;
 };
-constexpr SharedLook kSharedLooks[] = {{321 /* CombatSquirrelShot */, 88 /* CombatSquirrel */}};
+// the weasels, every model of theirs one look under Weasel's (59, never drawn itself)
+constexpr uint32_t kWeaselLook = 59;
+constexpr SharedLook kSharedLooks[] = {
+    {321 /* CombatSquirrelShot */, 88 /* CombatSquirrel */},
+    {17 /* WeaselMinion1 */, kWeaselLook},
+    {20 /* WeaselMinion2 */, kWeaselLook},
+    {134 /* WeaselSuit */, kWeaselLook},
+    {152 /* WeaselSwat */, kWeaselLook},
+    {153 /* WeaselScientist */, kWeaselLook},
+    {183 /* WeaselBass */, kWeaselLook},
+    {184 /* WeaselClarinet */, kWeaselLook},
+    {185 /* WeaselDrum */, kWeaselLook},
+};
 
 uint32_t fur::Canonical(uint32_t type) {
     if (std::find(std::begin(kConkers), std::end(kConkers), type) != std::end(kConkers)) return 0;

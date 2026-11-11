@@ -79,15 +79,7 @@ struct ModelDefault {
     Look look;
 };
 inline constexpr ModelDefault kModelDefaults[] = {
-    {17, {24, 5, 30, 120, 65, 35, 0, 0, 50, 50, 100, 40}},   // WeaselMinion1
-    {20, {24, 5, 30, 120, 65, 35, 0, 0, 50, 50, 100, 40}},   // WeaselMinion2
-    {59, {24, 5, 30, 120, 65, 35, 0, 0, 50, 50, 100, 40}},   // Weasel
-    {134, {24, 5, 30, 120, 65, 35, 0, 0, 50, 50, 100, 40}},  // WeaselSuit
-    {152, {24, 5, 30, 120, 65, 35, 0, 0, 50, 50, 100, 40}},  // WeaselSwat
-    {153, {24, 5, 30, 120, 65, 35, 0, 0, 50, 50, 100, 40}},  // WeaselScientist
-    {183, {24, 5, 30, 120, 65, 35, 0, 0, 50, 50, 100, 40}},  // WeaselBass
-    {184, {24, 5, 30, 120, 65, 35, 0, 0, 50, 50, 100, 40}},  // WeaselClarinet
-    {185, {24, 5, 30, 120, 65, 35, 0, 0, 50, 50, 100, 40}},  // WeaselDrum
+    {59, {24, 5, 30, 120, 65, 35, 2, 2, 50, 50, 100, 40}},   // Weasel: every weasel model (fur.cpp kSharedLooks)
     {88, {32, 10, 70, 100, 75, 120, 2, 2, 50, 50, 100, 0}},  // CombatSquirrel, and CombatSquirrelShot (fur.cpp kSharedLooks)
     {7, {16, 16, 100, 100, 75, 110, 0, 0, 50, 80, 100, 0}},    // QueenBee
     {109, {16, 12, 80, 100, 75, 110, 0, 0, 100, 50, 100, 100}},  // BeeKing
