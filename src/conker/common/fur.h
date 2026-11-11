@@ -93,6 +93,8 @@ struct ModelDefault {
     uint32_t shells = kExtraShells;  // extra shells, ModelLook's
 };
 inline constexpr ModelDefault kModelDefaults[] = {
+    {0, {32, 5, 60, 60, 75, 120, 0, 0, 50, 50, 100, 0}},     // Conker, all his models but Van Helsing's and the Heist's
+    {150, {20, 7, 100, 140, 75, 70, 0, 0, 50, 50, 100, 0}},  // ConkerMatrix, the Heist's
     {59, {24, 5, 30, 120, 65, 35, 2, 2, 50, 50, 100, 40}},   // Weasel: every weasel model (fur.cpp kSharedLooks)
     {88, {32, 10, 70, 100, 75, 120, 2, 2, 50, 50, 100, 0}},  // CombatSquirrel, and CombatSquirrelShot (fur.cpp kSharedLooks)
     {91, {40, 12, 90, 130, 75, 85, 2, 0, 65, 50, 100, 0}},   // CombatSquirrelrodent
@@ -109,6 +111,8 @@ inline constexpr ModelDefault kModelDefaults[] = {
     {181, {12, 12, 70, 110, 75, 110, 2, 2, 70, 50, 100, 100}},   // Barman
     {34, {48, 12, 60, 110, 75, 40, 0, 0, 15, 50, 100, 0}},       // RatBrown, and RatBrownStitched (kSharedLooks)
     {124, {48, 10, 30, 100, 70, 150, 0, 0, 70, 200, 100, 0, 150}},  // WarBossDoll
+    // ConkerHelsing's hair (HairOf(276)), a look of its own; then tone, sway, follows motion
+    {HairOf(276), {64, 4, 0, 200, 75, 150, 5, 5, 200, 50, 100, 0, 100, 50, 30}},
 };
 inline const ModelDefault* FindModelDefault(uint32_t type) {
     for (const ModelDefault& d : kModelDefaults)
@@ -116,22 +120,22 @@ inline const ModelDefault* FindModelDefault(uint32_t type) {
     return nullptr;
 }
 inline Look DefaultLook(uint32_t type) {
-    if (IsHair(type)) {  // a hair's, its model's, swaying
+    if (const ModelDefault* d = FindModelDefault(type)) return d->look;
+    if (IsHair(type)) {  // a hair's without, its model's, swaying
         Look l = DefaultLook(type & ~kHairBit);
         l.sway = kHairSway;
         return l;
     }
-    if (const ModelDefault* d = FindModelDefault(type)) return d->look;
     return kLookDefaults[KindOf(type & ~kHairBit)];
 }
 inline uint32_t DefaultShells(uint32_t type) {
-    if (IsHair(type)) return DefaultShells(type & ~kHairBit);  // a hair's, its model's
     if (const ModelDefault* d = FindModelDefault(type)) return d->shells;
+    if (IsHair(type)) return DefaultShells(type & ~kHairBit);  // a hair's without, its model's
     return kExtraShells;
 }
 bool GameFurOf(uint32_t type);
 // the model whose look a model takes: a multiplayer class's models share one (Multi\, MultiFrontend\, MultiLOD\,
-// MultiLOD2\, MainFrontend\), its full model's id; Conker's (all but Van Helsing's), 0; a few story models another's
+// MultiLOD2\, MainFrontend\), its full model's id; Conker's (all but Van Helsing's and the Heist's), 0; a few story models another's
 // (fur.cpp kSharedLooks: CombatSquirrelShot CombatSquirrel's); any other model its own. Any thread
 uint32_t Canonical(uint32_t type);
 // the types whose shells super fur drew, this session or before (settings.toml fur_seen), oldest first

@@ -387,7 +387,7 @@ constexpr const char* kStrandVs = R"(
                 float3 fan = rl > 1e-4 ? float3(r.x, 0, r.y) / rl : 0;
                 fan = float3(dot(FUR_BONE(0).xyz, fan), dot(FUR_BONE(1).xyz, fan), dot(FUR_BONE(2).xyz, fan));
                 fan = dot(fan, fan) > 1e-8 ? normalize(fan) : 0;
-                float flare = max(lag, 0);
+                float flare = 0.25 * max(lag, 0);  // a fall's: a little, the trail across does the rest
                 rod += fan * flare * down * reach * 0.35;
                 // the turn: about the model's up through the middle of the hair, into the view by its bone
                 yaw *= down;
@@ -636,13 +636,27 @@ uint32_t TaggedShells(const float* tag) {
     return fur::GameFurOf(type) ? 0 : fur::DefaultShells(fur::Canonical(type));
 }
 
+// a hair piece's look of its own: the menu's, else its defaults' where it has some (fur.h kModelDefaults); none
+// otherwise, the model's then
+bool OwnHair(uint32_t model, fur::ModelLook& out) {
+    if (const fur::ModelLook* m = fur::FindModelLook(fur::HairOf(model))) {
+        out = *m;
+        return true;
+    }
+    if (const fur::ModelDefault* d = fur::FindModelDefault(fur::HairOf(model))) {
+        out = {fur::HairOf(model), false, d->look, d->shells};
+        return true;
+    }
+    return false;
+}
+
 // a hair piece's (kHairPieces) shells between when it has a look of its own: none on the game's fur, else its look's;
 // -1 without one, the model's then
 int HairShells(uint32_t type) {
     for (const HairPiece& hp : kHairPieces) {
         if (fur::Canonical(type) != hp.model) continue;
-        const fur::ModelLook* hair = fur::FindModelLook(fur::HairOf(hp.model));
-        return !hair ? -1 : hair->game ? 0 : int(hair->shells);
+        fur::ModelLook hair;
+        return !OwnHair(hp.model, hair) ? -1 : hair.game ? 0 : int(hair.shells);
     }
     return -1;
 }
@@ -706,9 +720,8 @@ void Fill(float (*xs)[4], const float* tag, bool weasel) {
         }
         // its draws read whole (up to 1024 vertices each) until a few frames' worth have settled its span
         g_hair_watch = g_hair_draws[i] < 64;
-        const fur::ModelLook* found = fur::FindModelLook(fur::HairOf(hp.model));
-        if (!found) continue;
-        const fur::ModelLook hair = *found;
+        fur::ModelLook hair;
+        if (!OwnHair(hp.model, hair)) continue;
         if (hair.game) {
             xs[11][2] = 1.0f;
             continue;
@@ -813,7 +826,7 @@ fur::ModelLook* fur::ModelLookOf(uint32_t type) {
             m.look = DefaultLook(type);
             m.game = GameFurOf(type);
             m.shells = DefaultShells(type);
-            if (IsHair(type))  // the hair starts as the model looks now, which it took until it had a look of its own
+            if (IsHair(type) && !FindModelDefault(type))  // the hair starts as the model looks now, which it took until it had a look of its own
                 if (const ModelLook* model = FindModelLook(type & ~kHairBit)) {
                     m.look = model->look, m.shells = model->shells;
                     m.look.sway = DefaultLook(type).sway, m.look.motion = DefaultLook(type).motion;  // the hair's own
@@ -928,9 +941,10 @@ std::atomic<uint32_t> g_canonical[kTable];
 
 }  // namespace
 
-// Conker's models that share his look, Conker's own (0): all but Van Helsing's (276), the environment suit too
-constexpr uint32_t kConkers[] = {130 /* EnvironmentSuit */, 150 /* ConkerMatrix */, 154 /* ConkerBat */,
-                                 167 /* ConkerTied */, 273 /* ConkerWar */};
+// Conker's models that share his look, Conker's own (0): all but Van Helsing's (276) and the Heist's (150,
+// ConkerMatrix), the environment suit too
+constexpr uint32_t kConkers[] = {130 /* EnvironmentSuit */, 154 /* ConkerBat */, 167 /* ConkerTied */,
+                                 273 /* ConkerWar */};
 // other story models that share a look: the model, the one whose look it takes
 struct SharedLook {
     uint32_t model, takes;
@@ -1006,7 +1020,7 @@ bool fur::Furless(uint32_t type) {
 }
 
 std::string fur::ModelName(uint32_t type) {
-    if (type == 0) return "Conker (all but Van Helsing)";
+    if (type == 0) return "Conker (all but Van Helsing and the Heist)";
     if (IsHair(type)) {
         const std::string name = TableName(type & ~kHairBit);
         return (name.empty() ? "Model" : name) + " hair (" + std::to_string(type & ~kHairBit) + ")";
@@ -1115,7 +1129,7 @@ struct HairSpring {
     float spring, damp, gain;
 };
 constexpr HairSpring kHairMove[5] = {
-    {90.0f, 6.5f, 1.0f}, {150.0f, 8.5f, 0.8f}, {55.0f, 4.0f, 1.2f}, {110.0f, 5.0f, 0.95f}, {70.0f, 7.5f, 1.1f}};
+    {90.0f, 3.2f, 1.0f}, {150.0f, 4.2f, 0.8f}, {55.0f, 2.0f, 1.2f}, {110.0f, 2.5f, 0.95f}, {70.0f, 3.8f, 1.1f}};
 constexpr HairSpring kHairTurn[4] = {{100.0f, 7.0f, 1.0f}, {60.0f, 4.5f, 1.25f}, {140.0f, 9.0f, 0.85f}, {80.0f, 5.0f, 1.1f}};
 constexpr int kMoves = int(std::size(kHairMove)), kTurns = int(std::size(kHairTurn));
 
@@ -1134,6 +1148,10 @@ constexpr float kHairMost = 1.3f;      // the most it trails, of its length
 constexpr float kHairSmooth = 0.06f;   // seconds the velocity is smoothed over
 constexpr float kHairTurnLag = 0.1f;   // the turn's rest: its rate times this, behind
 constexpr float kHairTurnMost = 0.6f;  // radians, the most the hair turns behind
+// the hair's momentum: as the character's speed changes, each spring is kicked the other way by this much of the
+// change (in hair lengths at kHairFull, times the spring's own rate), so as it stops the hair carries on forward and
+// swings back, dying away as the springs damp it; as it sets off the hair lags a little further
+constexpr float kHairCarry = 0.5f;
 
 float GuestF32(uint32_t va) {
     const uint32_t v = kernel::R32(va);
@@ -1182,7 +1200,17 @@ HairConstants HairTrail(uint32_t object, uint32_t type) {
         h->at = now;
     } else if (dt >= 0.002f) {  // the first of the frame's draws (another pass or viewport draws it again)
         const float keep = std::exp(-dt / kHairSmooth);
-        for (int i = 0; i < 3; i++) h->vel[i] = h->vel[i] * keep + raw[i] * (1 - keep);
+        float dv[3];
+        for (int i = 0; i < 3; i++) {
+            const float v = h->vel[i] * keep + raw[i] * (1 - keep);
+            dv[i] = v - h->vel[i];
+            h->vel[i] = v;
+        }
+        for (int k = 0; k < kMoves; k++) {
+            const HairSpring& sp = kHairMove[k];
+            const float kick = kHairCarry * strength * sp.gain * std::sqrt(sp.spring) / kHairFull;
+            for (int i = 0; i < 3; i++) h->offv[k][i] -= dv[i] * kick;
+        }
         const float turned = float(int8_t(uint8_t(facing - h->facing))) * (6.2831853f / 256.0f);
         h->spin = h->spin * keep + turned / dt * (1 - keep);
         float rest[3];
