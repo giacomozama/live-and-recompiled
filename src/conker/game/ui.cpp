@@ -1207,10 +1207,16 @@ void Draw(double fps) {
                      "in the game, leaving it off is recommended.", true);
 
                 ImGui::SeparatorText(T("Fur"));
-                Check("Fur shading", &fur::g_shading);
-                Hint("Makes fur look more voluminous and improves its shading.", true);
-                Check("Super fur", &fur::g_strands);
-                Hint("Fine, tapered strands in tufts, lit as hair.", true);
+                // one of the two at most, kept in settings.toml as fur_shading and fur_strands: super fur lights its
+                // strands its own way (and takes the draws first anyway)
+                int fur_look = fur::g_strands ? 2 : fur::g_shading ? 1 : 0;
+                if (ImGui::Combo(Beside("Fur shading"), &fur_look, Items({"None", "Simple", "Super"}).c_str())) {
+                    fur::g_shading = fur_look == 1;
+                    fur::g_strands = fur_look == 2;
+                }
+                if (fur::g_strands) fur::g_shading = false;
+                Hint("Simple makes fur look more voluminous and improves its shading. Super draws it as fine, tapered "
+                     "strands in tufts, lit as hair.");
                 if (fur::g_strands) {
                     // the model whose look the sliders change: the furry models the game's table names, those
                     // super fur has drawn, and those with a look saved
