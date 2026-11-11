@@ -103,6 +103,7 @@ inline constexpr ModelDefault kModelDefaults[] = {
     {164, {24, 16, 90, 120, 75, 110, 0, 0, 30, 50, 100, 0}},     // BatBossStoker
     {181, {12, 12, 70, 110, 75, 110, 2, 2, 70, 50, 100, 100}},   // Barman
     {34, {48, 12, 60, 110, 75, 40, 0, 0, 15, 50, 100, 0}},       // RatBrown, and RatBrownStitched (kSharedLooks)
+    {124, {48, 10, 30, 100, 70, 150, 0, 0, 70, 200, 100, 0, 150}},  // WarBossDoll
 };
 inline const ModelDefault* FindModelDefault(uint32_t type) {
     for (const ModelDefault& d : kModelDefaults)
