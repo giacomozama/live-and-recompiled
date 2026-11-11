@@ -71,10 +71,38 @@ int KindOf(uint32_t type);
 inline constexpr uint32_t kHairBit = 0x10000;
 inline constexpr uint32_t HairOf(uint32_t model) { return kHairBit | model; }
 inline constexpr bool IsHair(uint32_t type) { return type != ~0u && (type & kHairBit); }
-inline const Look& DefaultLook(uint32_t type) { return kLookDefaults[KindOf(type & ~kHairBit)]; }
+// models with defaults of their own rather than their kind's, by type (the model table's id), tuned one by one; the
+// renderer draws them with these wherever the menu has no look for them, whatever program draws them. Keys as Look:
+// strands, tufts, tufting, droop, thickness, taper, root shade, tuft shade, sheen, back glow, length, fill
+struct ModelDefault {
+    uint32_t type;
+    Look look;
+};
+inline constexpr ModelDefault kModelDefaults[] = {
+    {17, {24, 5, 30, 120, 65, 35, 0, 0, 50, 50, 100, 40}},   // WeaselMinion1
+    {20, {24, 5, 30, 120, 65, 35, 0, 0, 50, 50, 100, 40}},   // WeaselMinion2
+    {59, {24, 5, 30, 120, 65, 35, 0, 0, 50, 50, 100, 40}},   // Weasel
+    {134, {24, 5, 30, 120, 65, 35, 0, 0, 50, 50, 100, 40}},  // WeaselSuit
+    {152, {24, 5, 30, 120, 65, 35, 0, 0, 50, 50, 100, 40}},  // WeaselSwat
+    {153, {24, 5, 30, 120, 65, 35, 0, 0, 50, 50, 100, 40}},  // WeaselScientist
+    {183, {24, 5, 30, 120, 65, 35, 0, 0, 50, 50, 100, 40}},  // WeaselBass
+    {184, {24, 5, 30, 120, 65, 35, 0, 0, 50, 50, 100, 40}},  // WeaselClarinet
+    {185, {24, 5, 30, 120, 65, 35, 0, 0, 50, 50, 100, 40}},  // WeaselDrum
+    {88, {32, 10, 70, 100, 75, 120, 2, 2, 50, 50, 100, 0}},  // CombatSquirrel, and CombatSquirrelShot (fur.cpp kSharedLooks)
+};
+inline const ModelDefault* FindModelDefault(uint32_t type) {
+    for (const ModelDefault& d : kModelDefaults)
+        if (d.type == type) return &d;
+    return nullptr;
+}
+inline const Look& DefaultLook(uint32_t type) {
+    if (const ModelDefault* d = FindModelDefault(type)) return d->look;
+    return kLookDefaults[KindOf(type & ~kHairBit)];
+}
 bool GameFurOf(uint32_t type);
 // the model whose look a model takes: a multiplayer class's models share one (Multi\, MultiFrontend\, MultiLOD\,
-// MultiLOD2\, MainFrontend\), its full model's id; Conker's (all but Van Helsing's), 0; any other model its own. Any thread
+// MultiLOD2\, MainFrontend\), its full model's id; Conker's (all but Van Helsing's), 0; a few story models another's
+// (fur.cpp kSharedLooks: CombatSquirrelShot CombatSquirrel's); any other model its own. Any thread
 uint32_t Canonical(uint32_t type);
 // the types whose shells super fur drew, this session or before (settings.toml fur_seen), oldest first
 std::vector<uint32_t> SeenModels();
@@ -93,7 +121,7 @@ std::string ModelName(uint32_t type);
 void Load(const void* table);
 void Save(void* table);
 
-inline constexpr uint32_t kExtraShells = 2;
+inline constexpr uint32_t kExtraShells = 1;
 extern uint32_t g_extra_shells;  // shells added between each two of the game's, for every look
 
 // settings.toml fur_distant: a furry object past the near range keeps all its shells, instead of losing them with

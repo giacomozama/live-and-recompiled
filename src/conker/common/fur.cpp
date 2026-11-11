@@ -485,6 +485,8 @@ void Fill(float (*xs)[4], const float* tag, bool weasel) {
     if (!tag || tag[3] != 1.0f || tag[0] < 0) return;
     const uint32_t type = uint32_t(tag[0]);
     See(type, weasel, true);
+    if (const fur::ModelDefault* d = fur::FindModelDefault(fur::Canonical(type)))  // defaults of its own (fur.h)
+        for (int k = 0; k < fur::kLooks; k++) PutLook(xs, k, d->look);
     for (const HairPiece& hp : kHairPieces) {
         if (fur::Canonical(type) != hp.model) continue;
         const fur::ModelLook* hair = fur::FindModelLook(fur::HairOf(hp.model));
@@ -695,9 +697,16 @@ std::atomic<uint32_t> g_canonical[kTable];
 
 // Conker's models that share his look, Conker's own (0): all but Van Helsing's (276)
 constexpr uint32_t kConkers[] = {150 /* ConkerMatrix */, 154 /* ConkerBat */, 167 /* ConkerTied */, 273 /* ConkerWar */};
+// other story models that share a look: the model, the one whose look it takes
+struct SharedLook {
+    uint32_t model, takes;
+};
+constexpr SharedLook kSharedLooks[] = {{321 /* CombatSquirrelShot */, 88 /* CombatSquirrel */}};
 
 uint32_t fur::Canonical(uint32_t type) {
     if (std::find(std::begin(kConkers), std::end(kConkers), type) != std::end(kConkers)) return 0;
+    for (const SharedLook& s : kSharedLooks)
+        if (s.model == type) return s.takes;
     if (type >= kTable) return type;
     if (const uint32_t c = g_canonical[type].load(std::memory_order_relaxed)) return c - 1;
     const std::string name = TableName(type);
@@ -757,7 +766,11 @@ std::string fur::ModelName(uint32_t type) {
     }
     const std::string name = TableName(type);
     if (!ClassOf(name).empty()) return name.substr(name.find('\\') + 1) + " (multiplayer)";
-    return (name.empty() ? "Model" : name) + " (" + std::to_string(type) + ")";
+    std::string shared;  // the story models that take its look (kSharedLooks), named with it
+    for (const SharedLook& s : kSharedLooks)
+        if (s.takes == type)
+            if (const std::string other = TableName(s.model); !other.empty()) shared += ", " + other;
+    return (name.empty() ? "Model" : name) + shared + " (" + std::to_string(type) + ")";
 }
 
 #if __has_include(<toml++/toml.hpp>)
