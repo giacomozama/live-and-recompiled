@@ -1287,16 +1287,19 @@ void Draw(double fps) {
                      "in the game, leaving it off is recommended.", true);
 
                 ImGui::SeparatorText(T("Fur"));
-                // one of the two at most, kept in settings.toml as fur_shading and fur_strands: super fur lights its
-                // strands its own way (and takes the draws first anyway)
-                int fur_look = fur::g_strands ? 2 : fur::g_shading ? 1 : 0;
-                if (ImGui::Combo(Beside("Fur shading"), &fur_look, Items({"None", "Simple", "Super"}).c_str())) {
-                    fur::g_shading = fur_look == 1;
-                    fur::g_strands = fur_look == 2;
+                // kept in settings.toml as fur_strands (Super) and fur_shading (the legacy shading, Vanilla only): super
+                // fur lights its strands its own way (and takes the draws first anyway)
+                int fur_tech = fur::g_strands ? 1 : 0;
+                if (ImGui::Combo(Beside("Fur tech"), &fur_tech, Items({"Vanilla", "Super"}).c_str())) {
+                    fur::g_strands = fur_tech == 1;
+                    if (fur::g_strands) fur::g_shading = false;
                 }
                 if (fur::g_strands) fur::g_shading = false;
-                Hint("Simple makes fur look more voluminous and improves its shading. Super draws it as fine, tapered "
-                     "strands in tufts, lit as hair.");
+                Hint("Vanilla keeps the game's fur. Super draws it as fine, tapered strands in tufts, lit as hair.");
+                if (!fur::g_strands) {
+                    Check("Improved fur shading", &fur::g_shading);
+                    Hint("Makes fur look more voluminous and improves its shading.", true);
+                }
                 if (fur::g_strands) {
                     // the model whose look the sliders change: the furry models the game's table names, those
                     // super fur has drawn, and those with a look saved
@@ -1340,7 +1343,7 @@ void Draw(double fps) {
                         const fur::Look& d = fur::DefaultLook(model);
                         fur::Look& l = own->look;
                         ImGui::PushID(int(model));  // each model's sliders their own widgets, so a drag doesn't carry over
-                        Check("Game's own fur", &own->game);
+                        Check("Vanilla fur", &own->game);
                         if (fur::IsHair(model))
                             Hint("The hair keeps the game's fur, with super fur on; otherwise it has a look of its own.", true);
                         else

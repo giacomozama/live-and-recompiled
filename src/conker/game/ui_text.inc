@@ -204,21 +204,28 @@ constexpr Line kLines[] = {
      "lasciarlo disattivato.",
      "遠景のもやを消します。ゲームのほぼ全域で色が不自然になるため、オフのままを推奨します。"},
     {"Fur", "Fell", "Fourrure", "Pelaje", "Pelliccia", "毛皮"},
-    {"Fur shading", "Fell-Schattierung", "Ombrage de la fourrure", "Sombreado del pelaje",
-     "Ombreggiatura della pelliccia", "毛皮のシェーディング"},
-    {"Simple", "Einfach", "Simple", "Simple", "Semplice", "シンプル"},
+    {"Fur tech", "Fell-Technik", "Technologie de fourrure", "Tecnología de pelaje", "Tecnologia della pelliccia",
+     "毛皮の技術"},
+    {"Vanilla", "Original", "Original", "Original", "Originale", "オリジナル"},
     {"Super", "Super", "Super", "Súper", "Super", "スーパー"},
-    {"Simple makes fur look more voluminous and improves its shading. Super draws it as fine, tapered strands in "
-     "tufts, lit as hair.",
-     "Einfach lässt Fell voluminöser aussehen und verbessert seine Schattierung. Super zeichnet es als feine, spitz "
-     "zulaufende Haarsträhnen in Büscheln, beleuchtet wie Haar.",
-     "Simple donne plus de volume à la fourrure et améliore son ombrage. Super la dessine en fines mèches effilées "
-     "groupées en touffes, éclairées comme des cheveux.",
-     "Simple da más volumen al pelaje y mejora su sombreado. Súper lo dibuja como hebras finas y afiladas en "
-     "mechones, iluminadas como pelo.",
-     "Semplice rende la pelliccia più voluminosa e ne migliora l'ombreggiatura. Super la disegna come peli sottili e "
-     "affusolati raccolti in ciuffi, illuminati come capelli.",
-     "シンプルは毛皮にボリュームを出し、シェーディングを改善します。スーパーは毛皮を房になった細く先細りの毛として描き、髪のように照らします。"},
+    {"Vanilla keeps the game's fur. Super draws it as fine, tapered strands in tufts, lit as hair.",
+     "Original behält das Fell des Spiels. Super zeichnet es als feine, spitz zulaufende Haarsträhnen in Büscheln, "
+     "beleuchtet wie Haar.",
+     "Original garde la fourrure du jeu. Super la dessine en fines mèches effilées groupées en touffes, éclairées "
+     "comme des cheveux.",
+     "Original mantiene el pelaje del juego. Súper lo dibuja como hebras finas y afiladas en mechones, iluminadas "
+     "como pelo.",
+     "Originale mantiene la pelliccia del gioco. Super la disegna come peli sottili e affusolati raccolti in "
+     "ciuffi, illuminati come capelli.",
+     "オリジナルはゲーム本来の毛皮のままです。スーパーは毛皮を房になった細く先細りの毛として描き、髪のように照らします。"},
+    {"Improved fur shading", "Verbesserte Fell-Schattierung", "Ombrage de fourrure amélioré",
+     "Sombreado de pelaje mejorado", "Ombreggiatura della pelliccia migliorata", "毛皮のシェーディング改善"},
+    {"Makes fur look more voluminous and improves its shading.",
+     "Lässt Fell voluminöser aussehen und verbessert seine Schattierung.",
+     "Donne plus de volume à la fourrure et améliore son ombrage.",
+     "Da más volumen al pelaje y mejora su sombreado.",
+     "Rende la pelliccia più voluminosa e ne migliora l'ombreggiatura.",
+     "毛皮にボリュームを出し、シェーディングを改善します。"},
     {"Full distant fur", "Volles Fell in der Ferne", "Fourrure complète au loin", "Pelaje completo a distancia",
      "Pelliccia completa a distanza", "遠くでも毛皮を完全表示"},
     {"Keeps fur on far-away characters.", "Behält das Fell auch bei weit entfernten Figuren.",
