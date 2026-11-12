@@ -32,6 +32,10 @@ struct Settings {
     // white at hdr_paper_white nits
     bool hdr = false;
     uint32_t hdr_paper_white = 200;
+    // the 3D picture's highlights taken above paper white, under the 2D: how far down they start in % (0 off), and
+    // the nits white reaches
+    uint32_t hdr_highlights = 50;
+    uint32_t hdr_peak = 1000;
     // the display gamma the picture is shown for, in hundredths: 220 as it was drawn, higher darker in the midtones
     uint32_t gamma = 220;
     // the black level in % of white, -20 to 20: raised above 0, shadows taken down to black below it; white kept

@@ -61,6 +61,8 @@ void Load() {
     s.vsync = t["vsync"].value_or(s.vsync);
     s.hdr = t["hdr"].value_or(s.hdr);
     s.hdr_paper_white = std::clamp<uint32_t>(t["hdr_paper_white"].value_or(s.hdr_paper_white), 80, 500);
+    s.hdr_highlights = std::min<uint32_t>(t["hdr_highlights"].value_or(s.hdr_highlights), 100);
+    s.hdr_peak = std::clamp<uint32_t>(t["hdr_peak"].value_or(s.hdr_peak), 300, 4000);
     s.gamma = std::clamp<uint32_t>(t["gamma"].value_or(s.gamma), 180, 260);
     s.brightness = std::clamp<int32_t>(t["brightness"].value_or(s.brightness), -20, 20);
     s.aniso = t["anisotropic_filtering"].value_or(s.aniso);
@@ -136,6 +138,8 @@ toml::table Table() {
                   {"vsync", s.vsync},
                   {"hdr", s.hdr},
                   {"hdr_paper_white", int64_t(s.hdr_paper_white)},
+                  {"hdr_highlights", int64_t(s.hdr_highlights)},
+                  {"hdr_peak", int64_t(s.hdr_peak)},
                   {"gamma", int64_t(s.gamma)},
                   {"brightness", int64_t(s.brightness)},
                   {"anisotropic_filtering", int64_t(s.aniso)},

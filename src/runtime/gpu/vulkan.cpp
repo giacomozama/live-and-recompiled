@@ -156,10 +156,15 @@ float4 psmain(O i) : SV_Target {
 }
 )";
 
-// the frame as an SDR display shows it (gamma p.y, Rec.709) into HDR10: Rec.2020, PQ, white at p.x x 10000 nits
+// the frame as an SDR display shows it (gamma p.y, Rec.709) into HDR10: Rec.2020, PQ, white at p.x x 10000 nits.
+// encode: the game's picture (t0) under the overlay (t2, premultiplied over transparent, when q.y), its highlights
+// taken up to p.z x white above p.w where the mask (t1 when q.x, the picture's 3D, vp its viewport) has them.
+// mask: 1 where the finished picture (t0) is still the 3D picture as the 2D came to draw over it (t1), else 0
 const char* kHdrHlsl = R"(
-cbuffer B : register(b1) { float4 p; float4 unused; };
+cbuffer B : register(b1) { float4 p; float4 vp; float4 q; };
 Texture2D img : register(t0);
+Texture2D aux : register(t1);
+Texture2D ui : register(t2);
 SamplerState ls : register(s0);
 SamplerState ps : register(s1);
 struct O { float4 p : SV_Position; float2 uv : TEXCOORD0; };
@@ -175,13 +180,36 @@ float3 Pq(float3 y) {
     float3 ym = pow(saturate(y), m1);
     return pow((c1 + c2 * ym) / (1 + c3 * ym), m2);
 }
+float Hash(float2 v) { return frac(sin(dot(v, float2(12.9898, 78.233))) * 43758.5453); }
+// the brightest channel above the knee p.w bent up to p.z at white, as steep as below at the knee; the hue kept
+float3 Expand(float3 c) {
+    float x = max(c.r, max(c.g, c.b));
+    if (x <= p.w) return c;
+    float t = (x - p.w) / (1 - p.w);
+    return c * ((x + (p.z - 1) * t * t) / x);
+}
 float4 encode(O i) : SV_Target {
-    float3 c = img.Load(int3(int2(i.p.xy), 0)).rgb;
-    float3 lin = pow(saturate(c), p.y);
+    int2 px = int2(i.p.xy);
+    float3 g = img.Load(int3(px, 0)).rgb;
+    float4 u = q.y > 0 ? ui.Load(int3(px, 0)) : float4(0, 0, 0, 0);
+    float3 lin = pow(saturate(u.rgb + g * (1 - u.a)), p.y);
+    if (q.x > 0 && u.a < 1) {
+        float m = aux.SampleLevel(ls, (i.p.xy - vp.xy) * vp.zw, 0).r;
+        if (m > 0) {
+            // a step of triangular dither: the 8 bit picture's steps are stretched with its highlights
+            float d = (Hash(i.p.xy + q.z) + Hash(i.p.xy + q.z + 17.0) - 1) / 255.0;
+            float3 gl = pow(saturate(g + d), p.y);
+            lin += (Expand(gl) - pow(saturate(g), p.y)) * ((1 - u.a) * m);
+        }
+    }
     const float3x3 to2020 = {0.627404, 0.329283, 0.043313,
                              0.069097, 0.919540, 0.011362,
                              0.016391, 0.088013, 0.895595};
     return float4(Pq(mul(to2020, lin) * p.x), 1);
+}
+float4 mask(O i) : SV_Target {
+    int3 px = int3(int2(i.p.xy), 0);
+    return any(abs(img.Load(px).rgb - aux.Load(px).rgb) > 0.5 / 255.0) ? 0 : 1;
 }
 )";
 
@@ -1138,6 +1166,10 @@ private:
     // the effects over the 3D picture (kPostHlsl): once a frame, at the first screen space draw onto the frame-sized
     // target after a 3D one, else at Present
     bool PostWanted() const;
+    bool HdrExpand() const { return swap_hdr_ && app::Get().hdr_highlights > 0; }
+    void KeepHdr3d(Target& t);
+    void MakeHdrMask(Target& t, ImageRef& mask);
+    void SendHdrMetadata();
     bool ScreenSpaceDraw(const State& s, const Assembled& a);
     bool ReadsTarget(const State& s);
     void TrackPost(const State& s, bool flat);
@@ -1245,10 +1277,10 @@ private:
     void StartCapture();
     void ResizeSwap();
     void UploadGammaRamp();
-    void FinishFront(Target& t);
+    void FinishFront(Target& t, ImageRef* mask = nullptr);
     bool KeepPicture(const Surface& front, uint32_t slot);
     bool AcquireImage(uint32_t& bi, VkSemaphore acquired);
-    void DrawFrame(Image* picture, uint32_t bi, bool fsr = true);
+    void DrawFrame(Image* picture, uint32_t bi, bool fsr = true, Image* mask = nullptr);
     void BuildUi();
     void DrawUi();
     void QueuePresent(uint32_t bi);
@@ -1361,7 +1393,17 @@ private:
     bool swap_hdr_want_ = false;  // app::Settings::hdr as the swap chain was made
     bool swap_hdr_ = false;       // HDR10: DrawFrame draws into hdr_frame_, then encodes it into the swap chain image
     VkFormat ui_fmt_ = kBgra;     // the overlay pipeline's target format
-    ImageRef hdr_frame_;
+    ImageRef hdr_frame_;          // the game's picture, letterboxed, 8 bit
+    ImageRef hdr_ui_;             // the overlay over transparent (premultiplied), when it draws anything
+    // highlights (app::Settings::hdr_highlights): the 3D picture as the 2D came to draw over it (KeepHdr3d), taken
+    // from hdr_3d_rt_ this picture (0 none); each shown picture's mask of where it still is (MakeHdrMask), null for
+    // a picture without 3D
+    ImageRef hdr_3d_;
+    uint32_t hdr_3d_rt_ = 0;
+    ImageRef front_mask_, shown_mask_;
+    std::vector<ImageRef> gen_masks_;
+    bool hdr_metadata_ = false;  // VK_EXT_hdr_metadata
+    float hdr_meta_sent_ = 0;    // the peak it last told the swap chain, 0 none yet
     uint32_t swap_gen_ = 1;    // the frame generation it has images for
     bool swap_stale_ = false;  // out of date or suboptimal: made again before the next frame
     bool minimised_ = false;
@@ -1722,7 +1764,8 @@ VulkanBackend::~VulkanBackend() {
     late_.clear();
     cap_tex_.clear();
     bb_.clear();
-    hdr_frame_.reset();
+    for (ImageRef* im : {&hdr_frame_, &hdr_ui_, &hdr_3d_, &front_mask_, &shown_mask_}) im->reset();
+    gen_masks_.clear();
     dummy_2d_.reset();
     dummy_3d_.reset();
     dummy_cube_.reset();
@@ -1936,6 +1979,7 @@ bool VulkanBackend::PickDevice() {
         precise_ = f.features.occlusionQueryPrecise;
         demote_ = f13.shaderDemoteToHelperInvocation;
         custom_border_ = HasExtension(exts, VK_EXT_CUSTOM_BORDER_COLOR_EXTENSION_NAME);
+        hdr_metadata_ = HasExtension(exts, VK_EXT_HDR_METADATA_EXTENSION_NAME);
         dynamic_rendering_ext_ = HasExtension(exts, VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME);
         core13_ = core13;
         dev_api_ = api;
@@ -2053,6 +2097,7 @@ bool VulkanBackend::CreateDevice() {
     f.features.occlusionQueryPrecise = precise_;
     std::vector<const char*> exts = {VK_KHR_SWAPCHAIN_EXTENSION_NAME, VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME};
     if (custom_border_) exts.push_back(VK_EXT_CUSTOM_BORDER_COLOR_EXTENSION_NAME);
+    if (hdr_metadata_) exts.push_back(VK_EXT_HDR_METADATA_EXTENSION_NAME);
     // ImGui looks its functions up by the extension's names
     if (dynamic_rendering_ext_) exts.push_back(VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME);
     if (!core13_) {
@@ -2195,11 +2240,14 @@ bool VulkanBackend::CreateSwapChain() {
     swap_fmt_ = fmt.format;
     bb_w_ = ci.imageExtent.width;
     bb_h_ = ci.imageExtent.height;
-    if (hdr_frame_) Retire(std::move(hdr_frame_));
+    for (ImageRef* im : {&hdr_frame_, &hdr_ui_})
+        if (*im) Retire(std::exchange(*im, nullptr));
+    hdr_meta_sent_ = 0;
     if (swap_hdr_) {
-        hdr_frame_ = NewImage({.fmt = kBgra, .w = bb_w_, .h = bb_h_,
-                               .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT});
-        if (!hdr_frame_) swap_hdr_ = false;
+        for (ImageRef* im : {&hdr_frame_, &hdr_ui_})
+            *im = NewImage({.fmt = kBgra, .w = bb_w_, .h = bb_h_,
+                            .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT});
+        if (!hdr_frame_ || !hdr_ui_) swap_hdr_ = false;
     }
     // the overlay draws where the frame is drawn: the 8 bit picture HDR encodes from, else the swap chain image
     if (VkFormat ui = swap_hdr_ ? kBgra : swap_fmt_; ui != ui_fmt_) {
@@ -4625,7 +4673,7 @@ bool VulkanBackend::PostWanted() const {
     const app::Settings& set = app::Get();
     return set.smaa || set.film_grain || set.chromatic_aberration ||
            (set.ambient_occlusion && g_view_constants.viewport >= 0) ||
-           (set.motion_blur && g_view_constants.camera >= 0);
+           (set.motion_blur && g_view_constants.camera >= 0) || HdrExpand();
 }
 
 bool VulkanBackend::ScreenSpaceDraw(const State& s, const Assembled& a) {
@@ -5015,7 +5063,7 @@ void VulkanBackend::ApplyPost(Target& t) {
         blur = z && z->res && z->res->depth_view && z->w == t.w && z->h == t.h;
     }
     post_trace_.outcome = "drawn";
-    if (!grade && !smaa && !blur) return;
+    if (!grade && !smaa && !blur) return KeepHdr3d(t);
     post_trace_.outcome = "stopped: no SMAA textures";
     if (smaa && !EnsureSmaaTextures()) return;
     post_trace_.outcome = "stopped: no copy of the picture";
@@ -5086,6 +5134,66 @@ void VulkanBackend::ApplyPost(Target& t) {
     }
     if (grade) run(kPostHlsl, "grade", *t.res, {src});
     post_trace_.outcome = "drawn";
+    KeepHdr3d(t);
+}
+
+// HDR's highlights: the 3D picture, effects and all, as the 2D comes to draw over it
+void VulkanBackend::KeepHdr3d(Target& t) {
+    if (!HdrExpand()) return;
+    if (!hdr_3d_ || hdr_3d_->w != t.w || hdr_3d_->h != t.h || hdr_3d_->format != t.fmt) {
+        if (hdr_3d_) Retire(std::exchange(hdr_3d_, nullptr));
+        hdr_3d_ = NewImage({.fmt = t.fmt, .w = t.w, .h = t.h,
+                            .usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT});
+        if (!hdr_3d_) return;
+    }
+    ResolveSamples(t);
+    Transition(*t.res, kSrc);
+    Transition(*hdr_3d_, kDst);
+    Barrier();
+    VkImageCopy r{};
+    r.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    r.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    r.extent = {t.w, t.h, 1};
+    vkCmdCopyImage(cmd_, t.res->image, kSrc, hdr_3d_->image, kDst, 1, &r);
+    hdr_3d_rt_ = t.data;
+}
+
+// where the finished picture is still its 3D one, the highlights' mask; null when it has no 3D
+void VulkanBackend::MakeHdrMask(Target& t, ImageRef& mask) {
+    const bool have = HdrExpand() && hdr_3d_rt_ == t.data && hdr_3d_ && hdr_3d_->w == t.w && hdr_3d_->h == t.h;
+    if (!have) {
+        if (mask) Retire(std::exchange(mask, nullptr));
+        return;
+    }
+    if (!mask || mask->w != t.w || mask->h != t.h) {
+        if (mask) Retire(std::exchange(mask, nullptr));
+        mask = NewImage({.fmt = VK_FORMAT_R8_UNORM, .w = t.w, .h = t.h,
+                         .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT});
+        if (!mask) return;
+    }
+    Transition(*hdr_3d_, kRead);
+    const VkImageView views[3] = {t.res->Sampled(), hdr_3d_->view, VK_NULL_HANDLE};
+    const float p[8] = {};
+    Pass(kHdrHlsl, "mask", VK_FORMAT_R8_UNORM, *mask, t.w, t.h, views, p, -1);
+    Transition(*mask, kRead);
+}
+
+// the swap chain's mastering display and light levels: the peak the highlights reach, for the compositor's mapping
+void VulkanBackend::SendHdrMetadata() {
+    const app::Settings& set = app::Get();
+    const float peak = float(set.hdr_highlights ? std::max(set.hdr_peak, set.hdr_paper_white) : set.hdr_paper_white);
+    if (!hdr_metadata_ || !swap_hdr_ || peak == hdr_meta_sent_) return;
+    hdr_meta_sent_ = peak;
+    VkHdrMetadataEXT md{VK_STRUCTURE_TYPE_HDR_METADATA_EXT};
+    md.displayPrimaryRed = {0.708f, 0.292f};
+    md.displayPrimaryGreen = {0.170f, 0.797f};
+    md.displayPrimaryBlue = {0.131f, 0.046f};
+    md.whitePoint = {0.3127f, 0.3290f};
+    md.maxLuminance = peak;
+    md.minLuminance = 0.0f;
+    md.maxContentLightLevel = peak;
+    md.maxFrameAverageLightLevel = float(set.hdr_paper_white);
+    vkSetHdrMetadataEXT(dev_, 1, &swap_, &md);
 }
 
 void VulkanBackend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t count, const uint8_t* indices) {
@@ -5805,7 +5913,7 @@ void VulkanBackend::DrawUi() {
 
 // a picture of the frame, readable (null: none), into the swap chain image bi, the overlay over it; fsr false draws
 // it without FSR's upscaling and sharpening whatever the settings (the menu's blurred picture)
-void VulkanBackend::DrawFrame(Image* picture, uint32_t bi, bool fsr) {
+void VulkanBackend::DrawFrame(Image* picture, uint32_t bi, bool fsr, Image* mask) {
     const app::Settings& set = app::Get();
     fsr = fsr && set.fsr;
     // 16:9 when the console reports a widescreen display, else 4:3, or the shape a patched title draws
@@ -5894,29 +6002,55 @@ void VulkanBackend::DrawFrame(Image* picture, uint32_t bi, bool fsr) {
         }
     }
 
-    DrawUi();
-    if (swap_hdr_) {
-        // the SDR picture, overlay and all, into the HDR10 image: its white at the paper white setting
-        Transition(bb, kRead);
-        Image& out = *bb_[bi];
-        SetTargets(&out, nullptr);
-        bound_rt_ = bound_ds_ = nullptr;
-        EnsureRendering();
-        SetFullViewport(bb_w_, bb_h_);
-        Alloc cb = Upload(kPassCbBytes);
-        float p[8] = {float(set.hdr_paper_white) / 10000.0f, gamma};
-        std::memcpy(cb.cpu, p, sizeof(p));
-        DrawFullScreen(EnsurePassPipeline(kHdrHlsl, "encode", swap_fmt_, -1), cb,
-                       {bb.view, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE});
-        Transition(out, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
+    if (!swap_hdr_) {
+        DrawUi();
+        Transition(bb, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
         return;
     }
+    // HDR: the overlay on its own, so that its white stays at paper white over the highlights
+    bool ui = false;
+    {
+        std::lock_guard lock(app::UiLock());
+        const ImDrawData* d = ImGui::GetDrawData();
+        ui = d && d->TotalVtxCount > 0;
+    }
+    if (ui) {
+        SetTargets(hdr_ui_.get(), nullptr);
+        bound_rt_ = bound_ds_ = nullptr;
+        EnsureRendering();
+        VkClearAttachment none{VK_IMAGE_ASPECT_COLOR_BIT, 0};
+        none.clearValue.color = {{0, 0, 0, 0}};
+        vkCmdClearAttachments(cmd_, 1, &none, 1, &cr);
+        DrawUi();
+        Transition(*hdr_ui_, kRead);
+    }
+    // the picture into the HDR10 image: white at the paper white setting, highlights over the 3D as far as the peak
+    SendHdrMetadata();
+    const bool expand = mask && HdrExpand();
+    const float paper = float(set.hdr_paper_white);
+    Transition(bb, kRead);
+    if (expand) Transition(*mask, kRead);
+    Image& out = *bb_[bi];
+    SetTargets(&out, nullptr);
+    bound_rt_ = bound_ds_ = nullptr;
+    EnsureRendering();
+    SetFullViewport(bb_w_, bb_h_);
+    Alloc cb = Upload(kPassCbBytes);
+    const float p[12] = {paper / 10000.0f, gamma, std::max(float(set.hdr_peak) / paper, 1.0f),
+                         1.0f - 0.5f * float(set.hdr_highlights) / 100.0f,
+                         (w - vw) / 2, (h - vh) / 2, 1.0f / vw, 1.0f / vh,
+                         expand ? 1.0f : 0.0f, ui ? 1.0f : 0.0f, float(presents_ % 1024), 0.0f};
+    std::memcpy(cb.cpu, p, sizeof(p));
+    DrawFullScreen(EnsurePassPipeline(kHdrHlsl, "encode", swap_fmt_, -1), cb,
+                   {bb.view, expand ? mask->view : VK_NULL_HANDLE, ui ? hdr_ui_->view : VK_NULL_HANDLE,
+                    VK_NULL_HANDLE});
+    Transition(out, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
     Transition(bb, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
 }
 
 // the front buffer's picture done: the effects under the 2D, when no 2D came to draw them, samples resolved, readable;
 // the next picture's effects start afresh
-void VulkanBackend::FinishFront(Target& t) {
+void VulkanBackend::FinishFront(Target& t, ImageRef* mask) {
     if (!post_done_ && post_rt_ == t.data && PostWanted()) {
         post_trace_.applied = "at the front buffer";
         ApplyPost(t);
@@ -5927,6 +6061,8 @@ void VulkanBackend::FinishFront(Target& t) {
     occlusion_done_ = view_ok_ = many_views_ = false;
     ResolveSamples(t);
     Transition(*t.res, kRead);
+    if (mask) MakeHdrMask(t, *mask);
+    hdr_3d_rt_ = 0;
 }
 
 // XBE_POST_TRACE: the picture's effects, where they were drawn or why not, logged when that changes from the picture
@@ -5960,7 +6096,8 @@ void VulkanBackend::PostTraceEnd(const Target& front) {
 bool VulkanBackend::KeepPicture(const Surface& front, uint32_t slot) {
     Target* t = EnsureTarget(front, false);
     if (!t || slot >= gen_pics_.size()) return false;
-    FinishFront(*t);
+    gen_masks_.resize(gen_pics_.size());
+    FinishFront(*t, &gen_masks_[slot]);
     uint32_t w = t->res->w, h = t->res->h;
     ImageRef& keep = gen_pics_[slot];
     if (!keep || keep->w != w || keep->h != h) {
@@ -6140,12 +6277,15 @@ void VulkanBackend::Present(const Surface& front) {
     std::vector<VkImageView> pictures;
     std::vector<Image*> sources;
     std::vector<std::string> notes;
-    ImageRef last;
+    std::vector<Image*> masks;  // each source's highlights mask (MakeHdrMask), null without
+    ImageRef last, last_mask;
     if (!gen_pics_.empty() && (gen_taken_ >> (gen_pics_.size() - 1) & 1)) {
         for (size_t i = 0; i < gen_pics_.size(); i++) {
             if (!(gen_taken_ >> i & 1)) continue;
             pictures.push_back(gen_pics_[i]->view);
             sources.push_back(gen_pics_[i].get());
+            last_mask = i < gen_masks_.size() ? gen_masks_[i] : nullptr;
+            masks.push_back(last_mask.get());
             notes.push_back(i + 1 < gen_pics_.size() ? interp::Note(uint32_t(i)) : "the frame's own");
             last = gen_pics_[i];
         }
@@ -6155,17 +6295,21 @@ void VulkanBackend::Present(const Surface& front) {
     Target* t = EnsureTarget(front, false);
     if (pictures.empty() && t) {
         if (LatchCpuWrite(*t)) UploadTarget(*t, front);
-        FinishFront(*t);
+        FinishFront(*t, &front_mask_);
         pictures.push_back(t->res->view);
         sources.push_back(t->res.get());
+        masks.push_back(front_mask_.get());
+        last_mask = front_mask_;
         notes.push_back("the frame's own, alone");
         last = t->res;
     }
     // kept past a remade target or frame generation's pictures going, for Redisplay; the one before goes with this
     // frame's garbage, once the GPU is done with it
     if (shown_ != last) Retire(std::exchange(shown_, std::move(last)));
+    shown_mask_ = std::move(last_mask);
     post_rt_ = 0;
     post_done_ = false;
+    hdr_3d_rt_ = 0;
     occlusion_done_ = view_ok_ = many_views_ = false;
     if (t && interp::Recording()) RecordPictures(sources, notes, t->gw, t->gh);
     if (pictures.empty()) pictures.push_back(VK_NULL_HANDLE);
@@ -6186,7 +6330,7 @@ void VulkanBackend::Present(const Surface& front) {
         uint32_t bi = 0;
         if (!AcquireImage(bi, f.acquired[i])) break;
         BeginCommands(f.present[i]);
-        DrawFrame(i < sources.size() ? sources[i] : nullptr, bi);
+        DrawFrame(i < sources.size() ? sources[i] : nullptr, bi, true, i < masks.size() ? masks[i] : nullptr);
         Submit(false, f.acquired[i], present_sem_[bi]);
         held_.push_back({bi, now + std::chrono::duration_cast<std::chrono::steady_clock::duration>(
                                        std::chrono::duration<double>(gen_period_ * double(i) / double(pictures.size())))});
@@ -6266,7 +6410,7 @@ void VulkanBackend::Redisplay(bool blur) {
                 pic = menu_blur_[1].get();
             }
         }
-        DrawFrame(pic, bi, pic == shown_.get());
+        DrawFrame(pic, bi, pic == shown_.get(), shown_mask_.get());
         Submit(false, f.acquired[0], present_sem_[bi]);
         QueuePresent(bi);
         shown = 1;

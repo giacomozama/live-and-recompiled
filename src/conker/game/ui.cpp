@@ -1199,6 +1199,12 @@ void Draw(double fps) {
                     if (s.hdr) {
                         Slider("Paper white (nits)", &s.hdr_paper_white, 80, 500, app::Settings{}.hdr_paper_white);
                         Hint("How bright white is shown.", true);
+                        Slider("Highlights %", &s.hdr_highlights, 0, 100, app::Settings{}.hdr_highlights);
+                        Hint("Makes the brightest parts of the 3D picture brighter than white. The HUD and menus stay at paper white. 0 turns it off.", true);
+                        if (s.hdr_highlights) {
+                            Slider("Peak brightness (nits)", &s.hdr_peak, 300, 4000, app::Settings{}.hdr_peak);
+                            Hint("How bright the brightest highlights get. Set it to your display's peak.", true);
+                        }
                     }
                 }
                 Slider("Gamma", &s.gamma, 180, 260, app::Settings{}.gamma, 100);
