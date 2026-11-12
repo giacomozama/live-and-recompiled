@@ -571,6 +571,68 @@ const char* Beside(const char* label, float after = 0.0f, float wide = 0.0f) {
     id = std::string("##") + label;
     return id.c_str();
 }
+// a setting with a few short choices: segments side by side in one rounded track, the chosen one in the accent. Where
+// they would not fit the room beside the label it is a dropdown instead. Leading spaces in a name (which line up a
+// dropdown's numbers) are dropped
+bool Segmented(const char* label, int* v, std::initializer_list<const char*> items) {
+    const char* id = Beside(label);
+    const ImGuiStyle& st = ImGui::GetStyle();
+    std::vector<std::string> names;
+    std::vector<float> widths;
+    const float pad = st.FramePadding.x * 1.2f;
+    float total = 0.0f;
+    for (const char* item : items) {
+        const char* name = T(item);
+        while (*name == ' ') name++;
+        names.push_back(name);
+        widths.push_back(std::round(ImGui::CalcTextSize(name).x + pad * 2.0f));
+        total += widths.back();
+    }
+    const float room = std::floor(ImGui::GetContentRegionAvail().x);
+    if (total > room) return ImGui::Combo(id, v, Items(items).c_str());
+    // the row fills the room: each segment takes its share of what the names leave over, the last the rounding
+    {
+        const float extra = std::floor((room - total) / float(widths.size()));
+        for (float& w : widths) w += extra;
+        widths.back() += room - total - extra * float(widths.size());
+        total = room;
+    }
+
+    bool changed = false;
+    const float height = ImGui::GetFrameHeight(), round = st.FrameRounding;
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const ImVec2 lo = ImGui::GetCursorScreenPos(), hi(lo.x + total, lo.y + height);
+    dl->AddRectFilled(lo, hi, ImGui::GetColorU32(ImGuiCol_FrameBg), round);
+    ImGui::PushID(id);
+    float x = lo.x;
+    for (int i = 0; i < int(names.size()); i++) {
+        if (i) ImGui::SameLine(0.0f, 0.0f);
+        ImGui::PushID(i);
+        if (ImGui::InvisibleButton("##segment", ImVec2(widths[size_t(i)], height))) *v = i, changed = true;
+        const ImVec2 a(x, lo.y), b(x + widths[size_t(i)], hi.y);
+        const ImDrawFlags corners = names.size() == 1 ? ImDrawFlags_RoundCornersAll
+                                    : i == 0          ? ImDrawFlags_RoundCornersLeft
+                                    : i + 1 == int(names.size()) ? ImDrawFlags_RoundCornersRight
+                                                                 : ImDrawFlags_RoundCornersNone;
+        if (*v == i) dl->AddRectFilled(a, b, ImGui::GetColorU32(ImGuiCol_CheckMark, 0.80f), round, corners);
+        else if (ImGui::IsItemHovered()) dl->AddRectFilled(a, b, IM_COL32(255, 255, 255, 18), round, corners);
+        const ImVec2 size = ImGui::CalcTextSize(names[size_t(i)].c_str());
+        dl->AddText(ImVec2(std::round((a.x + b.x - size.x) * 0.5f), std::round((a.y + b.y - size.y) * 0.5f)),
+                    ImGui::GetColorU32(ImGuiCol_Text), names[size_t(i)].c_str());
+        if (i && g_decorations) {  // a line between this segment and the one before: dark, with a light one beside it
+            dl->AddLine(ImVec2(a.x + 0.5f, a.y + 1.0f), ImVec2(a.x + 0.5f, b.y - 1.0f), IM_COL32(0, 0, 0, int(120.0f * st.Alpha)));
+            dl->AddLine(ImVec2(a.x + 1.5f, a.y + 1.0f), ImVec2(a.x + 1.5f, b.y - 1.0f), IM_COL32(255, 255, 255, int(24.0f * st.Alpha)));
+        } else if (i) {
+            dl->AddLine(ImVec2(a.x + 0.5f, a.y + 1.0f), ImVec2(a.x + 0.5f, b.y - 1.0f), IM_COL32(255, 255, 255, int(40.0f * st.Alpha)));
+        }
+        x = b.x;
+        ImGui::PopID();
+    }
+    ImGui::PopID();
+    if (g_decorations) DrawFrame(dl, lo, hi, round, st.Alpha, 0, 0.0f, 120.0f);
+    return changed;
+}
+
 // where the last slider ended, to tell a checkbox that follows it
 struct SliderEnd { int frame = -1; float y = 0.0f; } g_slider_end;
 
@@ -1446,7 +1508,7 @@ void Draw(double fps) {
             if (tab("Graphics")) {
                 if (Section("Display")) {
                     int mode = int(s.display_mode);
-                    if (ImGui::Combo(Beside("Mode"), &mode, Items({"Fullscreen", "Borderless", "Windowed"}).c_str())) {
+                    if (Segmented("Mode", &mode, {"Fullscreen", "Borderless", "Windowed"})) {
                         s.display_mode = app::DisplayMode(mode);
                         app::ApplyDisplay();
                     }
@@ -1530,20 +1592,20 @@ void Draw(double fps) {
                     int rate = 0;
                     for (int i = 0; i < 5; i++)
                         if (kRates[i] == display::g_frame_rate) rate = i;
-                    if (ImGui::Combo(Beside("Frame rate"), &rate, Items({"30 (original)", " 60", " 120", " 180", " 240"}).c_str()))
+                    if (Segmented("Frame rate", &rate, {"30 (original)", " 60", " 120", " 180", " 240"}))
                         display::SetFrameRate(kRates[rate]);
 
                     constexpr uint32_t kAniso[] = {0, 2, 4, 8, 16};
                     int aniso = 0;
                     for (int i = 0; i < 5; i++)
                         if (kAniso[i] == s.aniso) aniso = i;
-                    if (ImGui::Combo(Beside("Anisotropic"), &aniso, Items({"Game default", " 2x", " 4x", " 8x", " 16x"}).c_str()))
+                    if (Segmented("Anisotropic", &aniso, {"Game default", " 2x", " 4x", " 8x", " 16x"}))
                         s.aniso = kAniso[aniso];
 
                     // one choice: no anti-aliasing, SMAA, or MSAA at a sample count (the two never run together)
                     constexpr uint32_t kAa[] = {0, 1, 2, 4, 8};  // 0 off, 1 SMAA, else MSAA samples
                     int aa = s.smaa ? 1 : s.msaa >= 8 ? 4 : s.msaa >= 4 ? 3 : s.msaa >= 2 ? 2 : 0;
-                    if (ImGui::Combo(Beside("Anti-aliasing"), &aa, Items({"Off", "SMAA", "MSAA 2x", "MSAA 4x", "MSAA 8x"}).c_str())) {
+                    if (Segmented("Anti-aliasing", &aa, {"Off", "SMAA", "MSAA 2x", "MSAA 4x", "MSAA 8x"})) {
                         s.smaa = aa == 1;
                         s.msaa = aa >= 2 ? kAa[aa] : 1;
                     }
@@ -1574,8 +1636,7 @@ void Draw(double fps) {
                         int size = 1;
                         for (int i = 0; i < 4; i++)
                             if (kSizes[i] == s.lightmap_size) size = i;
-                        if (ImGui::Combo(Beside("Baked shadow size"), &size,
-                                         Items({"256", " 512", " 1024", " 2048"}).c_str()))
+                        if (Segmented("Baked shadow size", &size, {"256", " 512", " 1024", " 2048"}))
                             s.lightmap_size = kSizes[size];
                         Hint("The largest a smoothed shadow texture gets. Larger is sharper but takes longer and uses "
                              "much more video memory.", true);
@@ -1590,7 +1651,7 @@ void Draw(double fps) {
                     // kept in settings.toml as fur_strands (Super) and fur_shading (the legacy shading, Vanilla only): super
                     // fur lights its strands its own way (and takes the draws first anyway)
                     int fur_tech = fur::g_strands ? 1 : 0;
-                    if (ImGui::Combo(Beside("Fur tech"), &fur_tech, Items({"Vanilla", "Super"}).c_str())) {
+                    if (Segmented("Fur tech", &fur_tech, {"Vanilla", "Super"})) {
                         fur::g_strands = fur_tech == 1;
                         if (fur::g_strands) fur::g_shading = false;
                     }
@@ -1784,7 +1845,7 @@ void Draw(double fps) {
                 }
                 {
                     int speakers = s.surround ? 1 : 0;
-                    if (ImGui::Combo(Beside("Speakers"), &speakers, Items({"Stereo", "5.1 surround"}).c_str())) s.surround = speakers == 1;
+                    if (Segmented("Speakers", &speakers, {"Stereo", "5.1 surround"})) s.surround = speakers == 1;
                     Hint("Stereo mixes for two speakers or headphones. 5.1 surround mixes for six speakers and "
                          "plays on as many as the output device has. Starts from the next launch.");
                 }
@@ -1802,7 +1863,7 @@ void Draw(double fps) {
                         ImGui::Dummy(ImVec2(0.0f, ImGui::GetStyle().ItemSpacing.y * 0.75f));
                         ImGui::BeginDisabled(s.surround);
                         int backs = s.stereo_full_backs ? 1 : 0;
-                        if (ImGui::Combo(Beside("Back speakers in stereo"), &backs, Items({"-3 dB", "Full level"}).c_str()))
+                        if (Segmented("Back speakers in stereo", &backs, {"-3 dB", "Full level"}))
                             s.stereo_full_backs = backs == 1;
                         Hint("How loud the back speakers' sounds are when folded into the left and right ones.");
                         Check("Subwoofer in stereo", &s.stereo_sub);
@@ -1811,7 +1872,7 @@ void Draw(double fps) {
                         Slider("Reverb %", &s.reverb, 0, 200, def.reverb);
                         Hint("The room echo in caves, halls and the like.");
                         int resampler = int(std::min<uint32_t>(s.resampler, 2));
-                        if (ImGui::Combo(Beside("Resampling"), &resampler, Items({"Linear", "Cubic", "Sinc"}).c_str()))
+                        if (Segmented("Resampling", &resampler, {"Linear", "Cubic", "Sinc"}))
                             s.resampler = uint32_t(resampler);
                         Hint("How sounds recorded at lower rates are played at 48 kHz. Cubic and Sinc are sharper than "
                              "Linear.");
