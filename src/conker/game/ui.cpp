@@ -344,9 +344,41 @@ void InsetOff() {
     g_inset_on = false;
 }
 
+// a section folds and unfolds: its rows are submitted while it is open or still closing, in a clip whose height follows
+// the animation (the rows' own height, measured as they are laid out), and fade in after it has started to open and out
+// before it closes
+struct {
+    bool active = false;      // a section's rows are being laid out: EndSection closes them
+    bool clipped = false;
+    bool faded = false;
+    float y0 = 0.0f, t = 1.0f, height = 0.0f;
+    ImGuiID height_id = 0;
+    float max_y = 0.0f;       // the layout's extent before the rows, which a part-open section keeps to its drawn part
+} g_sec;
+float g_clip_bottom = 3.4e38f;  // lines drawn between settings stay above this while a section is part open
+
+void EndSection() {
+    if (!g_sec.active) return;
+    g_sec.active = false;
+    ImGuiWindow* w = ImGui::GetCurrentWindow();
+    const float measured = ImGui::GetCursorScreenPos().y - g_sec.y0;
+    w->StateStorage.SetFloat(g_sec.height_id, measured);
+    if (g_sec.faded) ImGui::PopStyleVar();
+    if (g_sec.clipped) {
+        ImGui::PopClipRect();
+        g_clip_bottom = 3.4e38f;
+        const float e = g_sec.t * g_sec.t * (3.0f - 2.0f * g_sec.t);
+        // the layout goes on from the part that shows (a zero-height item adds the item spacing the rows' end has)
+        ImGui::SetCursorScreenPos(ImVec2(ImGui::GetCursorScreenPos().x, g_sec.y0 + measured * e - ImGui::GetStyle().ItemSpacing.y));
+        ImGui::Dummy(ImVec2(0.0f, 0.0f));
+        w->DC.CursorMaxPos.y = std::max(g_sec.max_y, ImGui::GetCursorScreenPos().y);
+    }
+}
+
 bool Section(const char* name) {
+    EndSection();
     const float pad = ImGui::GetStyle().ItemSpacing.y * 0.3f;  // air inside an open section, above its rows and below
-    if (g_section_open) ImGui::Dummy(ImVec2(0.0f, pad));
+    if (g_section_open) ImGui::Dummy(ImVec2(0.0f, pad * g_sec.t));
     // the header is rounded and sits in from the window's edges, by less than the rows under it
     const float margin = std::round(RowInset() * 0.5f);
     ImGuiWindow* w = ImGui::GetCurrentWindow();
@@ -358,10 +390,46 @@ bool Section(const char* name) {
     ImGui::PopStyleVar();
     ImGui::Unindent(margin);
     w->WorkRect.Max.x += margin;
-    if (open) InsetOn();
-    g_section_open = open;
+
+    const ImGuiID id = ImGui::GetID(name);
+    const ImGuiID t_id = ImHashStr("section_t", 0, id), h_id = ImHashStr("section_h", 0, id);
+    float t = w->StateStorage.GetFloat(t_id, -1.0f);
+    const float height = w->StateStorage.GetFloat(h_id, 0.0f);
+    const float target = open ? 1.0f : 0.0f;
+    if (t < 0.0f || height <= 0.0f) {
+        t = target;  // first sight, or never laid out open: no animation
+    } else {
+        const float step = ImGui::GetIO().DeltaTime / 0.13f;
+        t = t < target ? std::min(t + step, target) : std::max(t - step, target);
+    }
+    w->StateStorage.SetFloat(t_id, t);
+
+    g_sec = {};
+    g_sec.t = t;
+    g_sec.height_id = h_id;
+    g_sec.height = height;
+    g_section_open = t > 0.0f;
     g_first_row = true;
-    return open;
+    if (t <= 0.0f) {
+        InsetOff();
+        g_sec.t = 0.0f;
+        return false;
+    }
+    InsetOn();
+    g_sec.active = true;
+    g_sec.y0 = ImGui::GetCursorScreenPos().y;
+    g_sec.max_y = w->DC.CursorMaxPos.y;
+    if (t < 1.0f) {
+        const float e = t * t * (3.0f - 2.0f * t);
+        const float bottom = g_sec.y0 + height * e;
+        g_sec.clipped = true;
+        ImGui::PushClipRect(w->ClipRect.Min, ImVec2(w->ClipRect.Max.x, std::min(w->ClipRect.Max.y, bottom)), true);
+        g_clip_bottom = bottom;
+        const float a = std::clamp((t - 0.45f) / 0.55f, 0.0f, 1.0f);
+        g_sec.faded = true;
+        ImGui::PushStyleVar(ImGuiStyleVar_Alpha, ImGui::GetStyle().Alpha * a);
+    }
+    return true;
 }
 
 // a hint under the setting before it: smaller, dimmed and wrapped, lined up with a checkbox's label
@@ -409,7 +477,7 @@ void SettingGap() {
         const float right = w->Pos.x + w->Size.x - w->ScrollbarSizes.x;
         // past the child's own clip box sideways (it keeps half the padding), not up or down: a line scrolled out of
         // the page stays out of it
-        const float top = std::max(y - 1.0f, w->InnerClipRect.Min.y), bottom = std::min(y + 2.0f, w->InnerClipRect.Max.y);
+        const float top = std::max(y - 1.0f, w->InnerClipRect.Min.y), bottom = std::min({y + 2.0f, w->InnerClipRect.Max.y, g_clip_bottom});
         if (top < bottom) {
             w->DrawList->PushClipRect(ImVec2(w->Pos.x, top), ImVec2(right, bottom));
             w->DrawList->AddLine(ImVec2(w->Pos.x, y), ImVec2(right, y), ImGui::GetColorU32(ImGuiCol_Separator));
@@ -1234,6 +1302,7 @@ void Draw(double fps) {
                 return true;
             };
             auto end_tab = [] {
+                EndSection();
                 g_section_open = false;
                 g_first_row = true;
                 ImGui::Dummy(ImVec2(0.0f, ImGui::GetFontSize() * 1.5f));  // space below the last row when scrolled to the end
