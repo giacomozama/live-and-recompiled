@@ -102,26 +102,30 @@ struct ModelDefault {
     uint32_t shells = kExtraShells;  // extra shells, ModelLook's
 };
 inline constexpr ModelDefault kModelDefaults[] = {
-    {0, {32, 5, 60, 60, 75, 120, 0, 0, 50, 50, 100, 0}},     // Conker, all his models but Van Helsing's and the Heist's
-    {150, {20, 7, 100, 140, 75, 70, 0, 0, 50, 50, 100, 0}},  // ConkerMatrix, the Heist's
+    {0, {55, 7, 60, 60, 75, 120, 0, 8, 50, 150, 100, 0}},     // Conker, all his models but Van Helsing's and the Heist's
+    {150, {20, 7, 100, 140, 75, 70, 0, 0, 50, 50, 100, 0, 110}},  // ConkerMatrix, the Heist's
     {276, {32, 7, 60, 90, 75, 150, 0, 0, 50, 50, 100, 0, 120}},  // ConkerHelsing (his hair its own, below)
     {59, {24, 5, 30, 120, 65, 35, 2, 2, 50, 50, 100, 40}},   // Weasel: every weasel model (fur.cpp kSharedLooks)
-    {88, {32, 10, 70, 100, 75, 120, 2, 2, 50, 50, 100, 0}},  // CombatSquirrel, and CombatSquirrelShot (fur.cpp kSharedLooks)
+    {118, {20, 10, 100, 60, 75, 70, 5, 10, 50, 50, 100, 0}},  // a weasel of the weasels' program
+    {88, {32, 16, 0, 100, 75, 120, 20, 2, 50, 50, 100, 0}},  // CombatSquirrel, and CombatSquirrelShot (fur.cpp kSharedLooks)
     {91, {40, 12, 90, 130, 75, 85, 2, 0, 65, 50, 100, 0}},   // CombatSquirrelrodent
+    {135, {12, 12, 70, 110, 75, 110, 2, 2, 70, 50, 100, 100, 100, 0, 100, 30, 110}},  // CombatGeneral
     {445, {36, 10, 60, 100, 70, 110, 2, 2, 70, 90, 100, 0}},     // multiplayer's WWII sharpshooter class
-    {13, {32, 12, 50, 50, 100, 150, 0, 0, 150, 150, 100, 50}, 0},  // Haystack
-    {69, {32, 6, 20, 100, 75, 45, 0, 0, 200, 150, 100, 100}},    // TerminatorHaystack
+    {441, {20, 16, 20, 60, 75, 70, 5, 0, 50, 50, 100, 0, 100, 0, 100, 8, 100}},  // a multiplayer class
+    {461, {24, 15, 20, 200, 70, 90, 5, 20, 30, 70, 70, 0, 100, 0, 100, 30, 170}},  // a Sneeker (multiplayer)
+    {13, {64, 1, 0, 200, 100, 150, 0, 0, 150, 150, 100, 50, 100, 0, 100, 15, 100}, 0},  // Haystack
+    {69, {32, 4, 20, 100, 75, 60, 0, 0, 200, 150, 100, 100, 100, 0, 100, 15, 100}},  // TerminatorHaystack
     {7, {16, 16, 100, 100, 75, 110, 0, 0, 50, 80, 100, 0}},    // QueenBee
-    {109, {16, 12, 80, 100, 75, 110, 0, 0, 100, 50, 100, 100}},  // BeeKing
+    {109, {16, 12, 80, 100, 75, 110, 0, 0, 100, 50, 100, 100, 120}},  // BeeKing
     {114, {24, 16, 100, 200, 100, 120, 0, 0, 30, 70, 100, 10, 150}},  // Berri: BeriMatrix's look, fill 10
-    {398, {32, 16, 100, 200, 80, 100, 0, 0, 75, 140, 100, 20, 150}},  // BerriBarmaid
-    {151, {24, 16, 100, 200, 100, 120, 0, 0, 30, 70, 100, 40, 150}},  // BeriMatrix
+    {398, {64, 16, 0, 200, 80, 100, 0, 0, 75, 140, 100, 20, 120}},  // BerriBarmaid
+    {151, {64, 16, 0, 90, 100, 70, 0, 0, 30, 70, 100, 60, 150}},  // BeriMatrix
     {162, {16, 7, 60, 120, 75, 70, 4, 2, 30, 50, 100, 0}},       // BatBoss
-    {164, {24, 16, 90, 120, 75, 110, 0, 0, 30, 50, 100, 0}},     // BatBossStoker
-    {181, {12, 12, 70, 110, 75, 110, 2, 2, 70, 50, 100, 100}},   // Barman
+    {164, {24, 16, 90, 120, 75, 110, 20, 0, 30, 50, 100, 0}},     // BatBossStoker
+    {181, {12, 12, 70, 110, 75, 110, 2, 2, 70, 50, 100, 100, 100, 0, 100, 30, 110}},  // Barman
     {34, {48, 12, 60, 110, 75, 40, 0, 0, 15, 50, 100, 0}},       // RatBrown, and RatBrownStitched (kSharedLooks)
     {124, {48, 10, 30, 100, 70, 150, 0, 0, 70, 200, 100, 0, 150}},  // WarBossDoll
-    {kCrown, {32, 5, 60, 60, 75, 120, 0, 0, 50, 50, 100, 0}},  // the crown's rim: Conker's look to start from
+    {kCrown, {24, 16, 0, 20, 75, 50, 2, 2, 50, 50, 100, 0, 100, 0, 100, 15, 120}},  // the crown's rim
     // ConkerHelsing's hair (HairOf(276)), a look of its own; then tone, sway, follows motion
     {HairOf(276), {64, 4, 0, 200, 75, 150, 5, 5, 200, 50, 100, 0, 100, 50, 30}},
 };
