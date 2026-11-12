@@ -415,6 +415,14 @@ at = 0x805A6   # the draw's end: the match model back in slot 0
 call = "ConkerMenuEffectsEnd"
 
 [[hook]]
+at = 0x7F5AB   # a player's kind 8 pass (the helmet shine, 0x82730 on slot 0's model): the character select model swapped in (characters::g_menu_models)
+call = "ConkerMenuShine"
+
+[[hook]]
+at = 0x7F709   # the kind 8 pass's end: the match model back in slot 0
+call = "ConkerMenuShineEnd"
+
+[[hook]]
 at = 0x801A2   # a player's see-through pieces: the Tediz Poisoner's character select helmet drawn solid
 call = "ConkerSolidHelmet"
 

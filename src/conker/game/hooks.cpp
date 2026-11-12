@@ -708,12 +708,11 @@ static void SlotMatch(uint32_t player, const MenuDrawn& d) {
     kernel::W32(player + 0x4EC, d.match_skel);
 }
 
-// [[hook]] at 0x7FC6E, the effect flags set, before the model's own are read; ebx the player
-void ConkerMenuEffects(X86Context& ctx, uint8_t* base) {
-    (void)base;
-    const uint32_t player = ctx.ebx;
+// The character select model into slot 0 for one draw of the player (kind [ebp+0x18] of 0x7FB00's, 8 for the
+// shine pass): unless cloaked or shielded, its parts' bits mirrored first. True when swapped
+static bool SwapInMenu(X86Context& ctx, uint32_t player, uint32_t kind) {
     const auto it = g_menu_drawn.find(player);
-    if (it == g_menu_drawn.end() || kernel::G<uint8_t>(player + 0x3A8) != 0) return;
+    if (it == g_menu_drawn.end() || kernel::G<uint8_t>(player + 0x3A8) != 0) return false;
     const MenuDrawn& d = it->second;
     if (kernel::R32(player + 0x4B0) != d.match_inst || kernel::R32(player + 0x4C4) != d.match_copy) {
         static std::unordered_map<uint32_t, uint32_t> told;  // by player: the slot 0 instance last logged
@@ -723,25 +722,55 @@ void ConkerMenuEffects(X86Context& ctx, uint8_t* base) {
                  player, kernel::R32(player + 0x4B0), kernel::R32(player + 0x4C4), d.match_inst, d.match_copy,
                  ModelName(d.model).c_str());
         }
-        return;
+        return false;
     }
-    const bool effect = EffectOn(player, kernel::R32(ctx.ebp + 0x18), d.model);
-    TraceMenuEffects(ctx, player, effect);
-    if (effect) return;
+    const bool effect = EffectOn(player, kind, d.model);
+    if (kind != 8) TraceMenuEffects(ctx, player, effect);
+    if (effect) return false;
     MirrorParts(d);
     kernel::W32(player + 0x4B0, d.inst);
     kernel::W32(player + 0x4C4, d.copy);
     kernel::W32(player + 0x4EC, d.skel);
-    g_effect_player = player;
+    return true;
+}
+
+static void RestoreMatch(uint32_t& player) {
+    if (!player) return;
+    const auto it = g_menu_drawn.find(player);
+    if (it != g_menu_drawn.end()) SlotMatch(player, it->second);
+    player = 0;
+}
+
+// [[hook]] at 0x7FC6E, the effect flags set, before the model's own are read; ebx the player
+void ConkerMenuEffects(X86Context& ctx, uint8_t* base) {
+    (void)base;
+    if (SwapInMenu(ctx, ctx.ebx, kernel::R32(ctx.ebp + 0x18))) g_effect_player = ctx.ebx;
 }
 
 // [[hook]] at 0x805A6, the draw's end: the match model back in slot 0
 void ConkerMenuEffectsEnd(X86Context& ctx, uint8_t* base) {
     (void)ctx, (void)base;
-    if (!g_effect_player) return;
-    const auto it = g_menu_drawn.find(g_effect_player);
-    if (it != g_menu_drawn.end()) SlotMatch(g_effect_player, it->second);
-    g_effect_player = 0;
+    RestoreMatch(g_effect_player);
+}
+
+// 0x7F4D0 (edi the player, esi the viewport) draws a player's kind 8 pass on its own, outside 0x7FB00: from 0x7F5AB
+// it reads slot 0 ([player+0x4B0 + 4 lod], [player+0x4C4 + 4 lod]) and has 0x82730 draw that model's effect entries
+// with mode 8, the shine on the player's own squirrel helmet; every way through reaches 0x7F709 before its tail call.
+// With the match model there its helmet's shine flickered over the character select model's while moving
+// (2026-11-12), so the pass gets the character select model as the draw does. The player swapped, 0 for none
+static uint32_t g_shine_player = 0;
+
+// [[hook]] at 0x7F5AB, edi the player
+void ConkerMenuShine(X86Context& ctx, uint8_t* base) {
+    (void)base;
+    RestoreMatch(g_shine_player);
+    if (SwapInMenu(ctx, ctx.edi, 8)) g_shine_player = ctx.edi;
+}
+
+// [[hook]] at 0x7F709, the kind 8 pass's end
+void ConkerMenuShineEnd(X86Context& ctx, uint8_t* base) {
+    (void)ctx, (void)base;
+    RestoreMatch(g_shine_player);
 }
 
 // [[hook]] at 0x801A2, before pass 2; ebx the player
