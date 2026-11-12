@@ -38,6 +38,7 @@ DATA_LO, DATA_HI = 0x64F980, 0x881A80
 RDATA_LO, RDATA_HI = 0x561000, 0x64F980
 
 TIMING = {0x7FA20C, 0x7FA210, 0x7FA214, 0x7FA218, 0x7FA21C, 0x7FA250, 0x7FDB8C,
+          0x7FA24C,  # from the frame timer 0x2A7B60 (0x2A7E1B), scales motion (0x13EDB0)
           0x7FDD28}  # the time scale times 100, a word (0x2D37F4)
 ROOTS = set(TIMING)
 DERIVED = set()  # globals stored from timing values and constants alone (the player's step 0x7FDD28): timing too
