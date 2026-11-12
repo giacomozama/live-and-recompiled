@@ -297,6 +297,65 @@ float4 apply(O i) : SV_Target {
 }
 )";
 
+// camera motion blur over the 3D picture (ApplyPost, first of its effects): each pixel's view space position from the
+// depth (t1), as the occlusion's, taken by d0..d2 to where the camera of the frame before saw it, the pixel's way
+// across the screen since then; the picture (t0) averaged along it, scaled and held to a length. What lies near the
+// camera (the player's character the camera follows, a weapon held up to it) stays sharp and keeps out of the blur
+// around it: the camera's own motion says nothing of how it moves. b1: px the picture's 1 / size, the scale (the
+// shutter's share of the time between pictures over the frame's pictures), the longest way as a share of the height;
+// frame, vp, pr, pr2 as the occlusion's; d0..d2 the rows of view now to view before (row . (p, 1))
+const char* kMotionBlurHlsl = R"(
+cbuffer B : register(b1) { float4 px; float4 frame; float4 vp; float4 pr; float4 pr2; float4 d0; float4 d1; float4 d2; };
+Texture2D a : register(t0);
+Texture2D b : register(t1);
+SamplerState ls : register(s0);
+SamplerState ps : register(s1);
+struct O { float4 p : SV_Position; float2 uv : TEXCOORD0; };
+O vs(uint id : SV_VertexID) {
+    O o;
+    o.uv = float2((id << 1) & 2, id & 2);
+    o.p = float4(o.uv * float2(2, -2) + float2(-1, 1), 0, 1);
+    return o;
+}
+float ViewW(float d) { return frame.w / min(d - frame.z, -1e-7); }
+float3 ViewAt(float2 uv, float w) {
+    float z = -w;
+    float2 clip = (uv * frame.xy - vp.zw) * w / vp.xy;
+    return float3((clip.x - pr.y * z - pr.z) / pr.x, (clip.y - pr2.y * z - pr2.z) / pr2.x, z);
+}
+float2 UvOf(float3 v) {
+    float2 clip = float2(pr.x * v.x + pr.y * v.z + pr.z, pr2.x * v.y + pr2.y * v.z + pr2.z);
+    return (clip / -v.z * vp.xy + vp.zw) / frame.xy;
+}
+// none of the blur nearer than 150 units (a metre and a half), all of it past 400
+float Far(float w) { return saturate((w - 150) / 250); }
+float4 blur(O i) : SV_Target {
+    float2 uv = i.uv;
+    float4 c = a.SampleLevel(ps, uv, 0);
+    float w = ViewW(b.SampleLevel(ps, uv, 0).r);
+    float3 p = ViewAt(uv, w);
+    float3 q = float3(dot(d0.xyz, p) + d0.w, dot(d1.xyz, p) + d1.w, dot(d2.xyz, p) + d2.w);
+    if (q.z > -1) return c;  // behind the camera before
+    float2 way = (UvOf(q) - uv) * frame.xy * px.z * Far(w);  // guest pixels
+    float len = length(way), most = px.w * frame.y;
+    if (len < 0.5) return c;
+    if (len > most) way *= most / len;
+    float2 step = way / frame.xy;
+    // taps across the way, centred on the pixel, each pixel's own offset into them so the steps don't band
+    float jitter = frac(52.9829189 * frac(dot(i.p.xy, float2(0.06711056, 0.00583715))));
+    float4 sum = c;
+    float weights = 1;
+    const int kTaps = 16;
+    [unroll] for (int k = 0; k < kTaps; k++) {
+        float2 t = uv + step * ((k + jitter) / kTaps - 0.5);
+        float wt = Far(ViewW(b.SampleLevel(ps, t, 0).r));
+        sum += a.SampleLevel(ls, t, 0) * wt;
+        weights += wt;
+    }
+    return sum / weights;
+}
+)";
+
 // SMAA (gpu/smaa_hlsl.h) in its custom shading language mode, a source per pass (SmaaHlsl). No texture is handed to a
 // function: SMAA's texture arguments become unused uints and its sampling macros read the global of the argument's
 // name, which the pass declares.
@@ -1475,7 +1534,16 @@ private:
     std::string post_trace_key_;
     uint32_t post_trace_lines_ = 0;
     void PostTraceEnd(const Target& front);
-    ImageRef post_tmp_[4];
+    // the copy of the picture, SMAA's result when grade follows, its edges and weights, the motion blur's result when
+    // more follows
+    ImageRef post_tmp_[5];
+    // the motion blur's camera (g_view_constants.camera): its view (rows of view space's axes), the frame it came in
+    // (seen: any yet), and the one of the frame before; the picture's 3D draws went through more than one viewport (a
+    // split screen), which the blur leaves alone
+    std::array<float, 4> cam_[3]{}, cam_before_[3]{};
+    uint32_t cam_frame_ = 0, cam_before_frame_ = 0;
+    bool cam_seen_ = false, cam_before_seen_ = false, many_views_ = false;
+    bool MotionBlurWay(float d[12]) const;
     ImageRef smaa_area_, smaa_search_;  // SMAA's lookups (gpu/smaa_tex.h)
     std::unordered_map<uint64_t, int> pos_w_;
     uint64_t presents_ = 0;
@@ -4476,7 +4544,8 @@ void VulkanBackend::DeliverReports() {
 bool VulkanBackend::PostWanted() const {
     const app::Settings& set = app::Get();
     return set.smaa || set.film_grain || set.chromatic_aberration ||
-           (set.ambient_occlusion && g_view_constants.viewport >= 0);
+           (set.ambient_occlusion && g_view_constants.viewport >= 0) ||
+           (set.motion_blur && g_view_constants.camera >= 0);
 }
 
 bool VulkanBackend::ScreenSpaceDraw(const State& s, const Assembled& a) {
@@ -4707,6 +4776,22 @@ void VulkanBackend::TrackView(const State& s) {
     bool perspective = pr[0][0] != 0 && pr[1][1] != 0 && pr[2][3] != 0 && pr[3][0] == 0 && pr[3][1] == 0 &&
                        pr[3][2] == -1 && pr[3][3] == 0 && vp[0][0] != 0 && vp[0][1] != 0 && vp[0][2] != 0;
     if (!perspective) return;
+    if (view_ok_ && (vp[0] != view_vp_[0] || vp[1] != view_vp_[1])) many_views_ = true;
+    // the camera: a new frame's turns the one before's into the frame before's
+    if (vc.camera >= 0) {
+        const auto& tag = s.vsc[size_t(vc.camera + 3)];
+        if (tag[3] == 1.0f && tag[1] == 0.0f && tag[2] == 0.0f) {
+            const uint32_t frame = uint32_t(tag[0]);
+            if (!cam_seen_ || frame != cam_frame_) {
+                std::copy(cam_, cam_ + 3, cam_before_);
+                cam_before_frame_ = cam_frame_;
+                cam_before_seen_ = cam_seen_;
+            }
+            for (int i = 0; i < 3; i++) cam_[i] = s.vsc[size_t(vc.camera + i)];
+            cam_frame_ = frame;
+            cam_seen_ = true;
+        }
+    }
     std::copy(vp, vp + 2, view_vp_);
     std::copy(pr, pr + 4, view_pr_);
     post_surf_ = s.rt;
@@ -4799,21 +4884,66 @@ bool VulkanBackend::EnsureSmaaTextures() {
     return smaa_area_ && smaa_search_;
 }
 
-// the target's picture through SMAA and grade, each pass reading what the one before wrote and the last
-// writing the target
+// the motion blur's way for this picture: d, the rows taking view space now to the frame before's, false for none (the
+// camera still, cut to another place, no camera from the frame before, a split screen)
+bool VulkanBackend::MotionBlurWay(float d[12]) const {
+    if (!app::Get().motion_blur || g_view_constants.camera < 0 || !view_ok_ || many_views_ || !cam_seen_ ||
+        !cam_before_seen_ || ((cam_frame_ - cam_before_frame_) & 0xFFFFFF) != 1)
+        return false;
+    // view now's inverse: the rotation (and any scale) part's inverse, and the offset taken back through it
+    const auto& n = cam_;
+    const float a = n[0][0], b = n[0][1], c = n[0][2], e = n[1][0], f = n[1][1], g = n[1][2], h = n[2][0],
+                i = n[2][1], k = n[2][2];
+    const float det = a * (f * k - g * i) - b * (e * k - g * h) + c * (e * i - f * h);
+    if (!std::isfinite(det) || std::fabs(det) < 1e-12f) return false;
+    const float inv[3][3] = {{(f * k - g * i) / det, (c * i - b * k) / det, (b * g - c * f) / det},
+                             {(g * h - e * k) / det, (a * k - c * h) / det, (c * e - a * g) / det},
+                             {(e * i - f * h) / det, (b * h - a * i) / det, (a * f - b * e) / det}};
+    float inv_t[3];
+    for (int r = 0; r < 3; r++) inv_t[r] = -(inv[r][0] * n[0][3] + inv[r][1] * n[1][3] + inv[r][2] * n[2][3]);
+    // before . inverse(now)
+    float most = 0;
+    for (int r = 0; r < 3; r++) {
+        const auto& p = cam_before_[r];
+        for (int col = 0; col < 3; col++) {
+            d[r * 4 + col] = p[0] * inv[0][col] + p[1] * inv[1][col] + p[2] * inv[2][col];
+            most = std::max(most, std::fabs(d[r * 4 + col] - (r == col ? 1.0f : 0.0f)));
+        }
+        d[r * 4 + 3] = p[0] * inv_t[0] + p[1] * inv_t[1] + p[2] * inv_t[2] + p[3];
+        most = std::max(most, std::fabs(d[r * 4 + 3]) * 1e-3f);
+    }
+    if (!std::isfinite(most) || most < 1e-5f) return false;  // still
+    // a cut: turned more than 30 degrees, or moved more than 400 units (4 m), in a frame
+    const float turn_cos = (d[0] + d[5] + d[10] - 1) * 0.5f;
+    const float moved = std::sqrt(d[3] * d[3] + d[7] * d[7] + d[11] * d[11]);
+    return turn_cos > 0.866f && moved < 400.0f;
+}
+
+// the target's picture through the motion blur, SMAA and grade, each pass reading what the one before wrote and the
+// last writing the target
 void VulkanBackend::ApplyPost(Target& t) {
     if (!occlusion_done_) ApplyOcclusion();
     post_done_ = true;
     const app::Settings& set = app::Get();
     bool grade = set.film_grain || set.chromatic_aberration;
     bool smaa = set.smaa;
+    float way[12];
+    Target* z = nullptr;
+    bool blur = MotionBlurWay(way);
+    if (blur) {
+        z = FindTarget(post_zs_, true);
+        blur = z && z->res && z->res->depth_view && z->w == t.w && z->h == t.h;
+    }
     post_trace_.outcome = "drawn";
-    if (!grade && !smaa) return;
+    if (!grade && !smaa && !blur) return;
     post_trace_.outcome = "stopped: no SMAA textures";
     if (smaa && !EnsureSmaaTextures()) return;
     post_trace_.outcome = "stopped: no copy of the picture";
-    // the picture's copy, SMAA's result when grade follows, then its edges and blending weights
-    for (size_t i = 0; i < (smaa ? 4u : 1u); i++) {
+    // the picture's copy, SMAA's result when grade follows, then its edges and blending weights, the blur's result
+    // when more follows
+    for (size_t i = 0; i < 5; i++) {
+        const bool wanted = i == 0 || (i < 4 && smaa) || (i == 4 && blur && (smaa || grade));
+        if (!wanted) continue;
         ImageRef& im = post_tmp_[i];
         if (im && im->w == t.w && im->h == t.h && im->format == t.fmt) continue;
         if (im) Retire(im);
@@ -4846,6 +4976,24 @@ void VulkanBackend::ApplyPost(Target& t) {
         Pass(hlsl, entry, t.fmt, dst, t.w, t.h, views, p, -1);
     };
     Image* src = post_tmp_[0].get();
+    if (blur) {
+        if (cap_) fprintf(cap_, "     note motion blur over %08X by %08X\n", t.data, z->data);
+        ResolveSamples(*z);
+        const auto &s = view_vp_[0], &o = view_vp_[1], &x = view_pr_[0], &y = view_pr_[1], &zr = view_pr_[2];
+        const float scale = float(set.motion_blur) / 100.0f / float(std::max<uint32_t>(Pictures(), 1));
+        float bp[32] = {1.0f / t.w, 1.0f / t.h, scale, 0.06f,
+                        float(t.gw), float(t.gh), (o[2] - s[2] * zr[2]) / post_zscale_, s[2] * zr[3] / post_zscale_,
+                        s[0], s[1], o[0], o[1],
+                        x[0], x[2], x[3], 0,
+                        y[1], y[2], y[3], 0};
+        std::copy(way, way + 12, bp + 20);
+        Image& dst = (smaa || grade) ? *post_tmp_[4] : *t.res;
+        Transition(*src, kRead);
+        Transition(*z->res, kRead);
+        const VkImageView views[3] = {src->view, z->res->Sampled(), VK_NULL_HANDLE};
+        Pass(kMotionBlurHlsl, "blur", t.fmt, dst, t.w, t.h, views, bp, -1, 32);
+        src = &dst;
+    }
     if (smaa) {
         Image& dst = grade ? *post_tmp_[1] : *t.res;
         Image& edges = *post_tmp_[2];
@@ -5674,7 +5822,7 @@ void VulkanBackend::FinishFront(Target& t) {
     PostTraceEnd(t);
     post_rt_ = 0;
     post_done_ = false;
-    occlusion_done_ = view_ok_ = false;
+    occlusion_done_ = view_ok_ = many_views_ = false;
     ResolveSamples(t);
     Transition(*t.res, kRead);
 }
@@ -5916,7 +6064,7 @@ void VulkanBackend::Present(const Surface& front) {
     if (shown_ != last) Retire(std::exchange(shown_, std::move(last)));
     post_rt_ = 0;
     post_done_ = false;
-    occlusion_done_ = view_ok_ = false;
+    occlusion_done_ = view_ok_ = many_views_ = false;
     if (t && interp::Recording()) RecordPictures(sources, notes, t->gw, t->gh);
     if (pictures.empty()) pictures.push_back(VK_NULL_HANDLE);
     // the frame's pictures share out the time to the next frame, the first shown now; the time between frames is

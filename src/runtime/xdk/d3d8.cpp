@@ -1010,6 +1010,8 @@ int64_t d3d::MsSincePresent() {
            at;
 }
 
+uint32_t d3d::Presents() { return g_presents.load(std::memory_order_relaxed); }
+
 void d3d::SetVertexConstant(uint32_t reg, const std::array<float, 4>& v) {
     std::lock_guard<std::recursive_mutex> lock(g_lock);
     Walk(Dev(kDevPush));

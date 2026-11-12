@@ -177,9 +177,13 @@ inline SurfaceDepthHook g_surface_depth;  // set before the title boots, unchang
 // Where a game's vertex programs keep the view, for the ambient occlusion (app::Settings) to read the depth buffer as
 // view space positions: the viewport's scale and offset (screen = clip / w * scale + offset) in hardware registers
 // viewport and viewport + 1, the projection's four rows from projection, w = -z (the last row 0 0 -1 0). -1: none.
+// camera, for the motion blur: the camera's view (the level's space to view space) in camera to camera + 2, a row for
+// each of view space's x y z (view = row . (p, 1)), and camera + 3 = (the frame it was handed over in, 0, 0, 1), in
+// registers no program of the game reads, which the game sets as its draws go through a camera. -1: none
 struct ViewConstants {
     int viewport = -1;
     int projection = -1;
+    int camera = -1;
 };
 inline ViewConstants g_view_constants;  // set before the title boots, unchanged after
 

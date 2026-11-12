@@ -38,4 +38,12 @@ extern uint32_t g_fov;
 // each frame
 extern bool g_hud_split;
 
+// The camera the game's draws go through ([0x84B868], its view at +0x10) for the runtime's motion blur
+// (gpu::ViewConstants::camera): its view in the vertex constants kCameraRegister to kCameraRegister + 2, a row for each
+// of view space's axes, and the frame (d3d::Presents) in kCameraRegister + 3, which no program of the game reads (the
+// lowest it reads directly is c-38). Called as each model is drawn (tags.cpp); sets them when the camera or the frame
+// changed, only with app::Settings::motion_blur on. Game thread
+inline constexpr uint32_t kCameraRegister = 8;  // hardware order: D3D c-88 to c-85
+void SendCamera();
+
 }  // namespace display

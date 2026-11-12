@@ -3,6 +3,7 @@
 #include <deque>
 #include <string>
 
+#include "common/display.h"
 #include "gpu/shaders.h"
 
 bool lighting::g_per_pixel = true;
@@ -96,9 +97,9 @@ std::string Format(const char* fmt, int r, const char* s) {
 }  // namespace
 
 // The three groups' shapes go first: their programs read c[149] too. The view the shading undoes oPos by is the
-// ambient occlusion's too.
+// ambient occlusion's and the motion blur's too, the blur's camera handed over by display::SendCamera.
 void lighting::Init() {
-    gpu::g_view_constants = {.viewport = 58, .projection = 99};
+    gpu::g_view_constants = {.viewport = 58, .projection = 99, .camera = int(display::kCameraRegister)};
     struct Shape {
         int groups;
         bool key_in_d0;

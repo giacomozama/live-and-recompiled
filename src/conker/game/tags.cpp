@@ -14,6 +14,7 @@
 #include <cstdlib>
 
 #include "app/app.h"
+#include "common/display.h"
 #include "core/diag.h"
 #include "gpu/interp.h"
 #include "kernel/kernel.h"
@@ -33,6 +34,7 @@ bool Tagging() {
 
 // a node renderer fn(node, data), cdecl: what it pushes tagged with its node and the instance's data
 void Tagged(X86Context& ctx, uint8_t* base, X86Func* original) {
+    display::SendCamera();
     if (!Tagging()) {
         original(ctx, base);
         return;

@@ -67,6 +67,7 @@ void Load() {
     s.chromatic_aberration = t["chromatic_aberration"].value_or(s.chromatic_aberration);
     s.ambient_occlusion = t["ambient_occlusion"].value_or(s.ambient_occlusion);
     s.ambient_occlusion_radius = t["ambient_occlusion_radius"].value_or(s.ambient_occlusion_radius);
+    s.motion_blur = std::min<uint32_t>(t["motion_blur"].value_or(s.motion_blur), 100);
     s.fog = t["fog"].value_or(s.fog);
     s.fsr = t["fsr"].value_or(s.fsr);
     s.fsr_sharpness = std::min<uint32_t>(t["fsr_sharpness"].value_or(s.fsr_sharpness), 100);
@@ -136,6 +137,7 @@ toml::table Table() {
                   {"chromatic_aberration", int64_t(s.chromatic_aberration)},
                   {"ambient_occlusion", int64_t(s.ambient_occlusion)},
                   {"ambient_occlusion_radius", int64_t(s.ambient_occlusion_radius)},
+                  {"motion_blur", int64_t(s.motion_blur)},
                   {"fog", s.fog},
                   {"fsr", s.fsr},
                   {"fsr_sharpness", int64_t(s.fsr_sharpness)},

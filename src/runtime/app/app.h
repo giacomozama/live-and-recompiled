@@ -40,6 +40,9 @@ struct Settings {
     // ambient occlusion from the depth buffer, first: its strength in % (0 off) and its reach in the title's units
     uint32_t ambient_occlusion = 0;
     uint32_t ambient_occlusion_radius = 30;
+    // motion blur from the camera's turning and moving (the picture's depth through the camera's view now and a frame
+    // before, gpu::ViewConstants::camera): the blur's length as a % of the camera's motion between two pictures, 0 off
+    uint32_t motion_blur = 0;
     bool fog = true;                 // the title's distance fog; off draws every surface unfogged
     // AMD FidelityFX Super Resolution 1.0 (EASU spatial upscaling + RCAS contrast-adaptive sharpening)
     bool fsr = false;

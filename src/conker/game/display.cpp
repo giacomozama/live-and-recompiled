@@ -41,6 +41,7 @@
 #include "common/display.h"
 
 #include <algorithm>
+#include <array>
 #include <utility>
 #include <iterator>
 #include <vector>
@@ -127,6 +128,33 @@ std::atomic<float> g_camera_fov{50.0f};
 float CameraFov() { return g_camera_fov.load(std::memory_order_relaxed); }
 
 void Init() { SetFrameRate(g_frame_rate); }
+
+// the view at [camera+0x10] is 4x4, row vectors (as menus.cpp multiplies it): view space's axis c is column c, its
+// rows 0..2 the level's x y z and row 3 the offset
+void SendCamera() {
+    constexpr uint32_t kCamera = 0x84B868, kCameraView = 0x10;
+    if (!app::Get().motion_blur) return;
+    const uint32_t camera = kernel::R32(kCamera);
+    if (!camera) return;
+    std::array<std::array<float, 4>, 3> rows;
+    for (uint32_t c = 0; c < 3; c++)
+        for (uint32_t r = 0; r < 4; r++) {
+            const uint32_t bits = kernel::R32(camera + kCameraView + (r * 4 + c) * 4);
+            std::memcpy(&rows[c][r], &bits, 4);
+        }
+    static std::array<std::array<float, 4>, 3> sent{};
+    static uint32_t sent_frame = ~0u;
+    const uint32_t frame = d3d::Presents();
+    if (frame == sent_frame && rows == sent) return;
+    for (const auto& row : rows)
+        for (float v : row)
+            if (!std::isfinite(v)) return;
+    sent = rows;
+    sent_frame = frame;
+    for (uint32_t c = 0; c < 3; c++) d3d::SetVertexConstant(kCameraRegister + c, rows[c]);
+    // the frame as a float: whole up to 2^24, some 77 hours at 60
+    d3d::SetVertexConstant(kCameraRegister + 3, {float(frame & 0xFFFFFF), 0.0f, 0.0f, 1.0f});
+}
 
 float Aspect(float d) {
     static const float env = [] {

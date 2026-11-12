@@ -1208,6 +1208,8 @@ void Draw(double fps) {
                 if (s.ambient_occlusion)
                     Slider("Ambient occlusion reach", &s.ambient_occlusion_radius, 5, 200,
                            app::Settings{}.ambient_occlusion_radius);
+                Slider("Motion blur %", &s.motion_blur, 0, 100, app::Settings{}.motion_blur);
+                Hint("Blurs the picture as the camera turns and moves.");
                 end_tab();
             }
 

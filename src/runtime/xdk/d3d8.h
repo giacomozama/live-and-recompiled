@@ -75,5 +75,7 @@ bool LoadingScreenWanted();
 // milliseconds since the title last presented (steady clock); dsound shortens release envelopes the title waits on
 // with the picture stopped
 int64_t MsSincePresent();
+// the title's Swaps so far
+uint32_t Presents();
 
 }  // namespace d3d
