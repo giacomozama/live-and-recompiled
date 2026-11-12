@@ -62,6 +62,7 @@ bool g_fps_overlay = false;
 uint32_t g_accent = 4;  // orange
 bool g_fps_title = true;
 bool g_menu_resizable = false;
+bool g_decorations = true;
 
 namespace {
 
@@ -161,7 +162,7 @@ void Cues(bool opened_before, bool settings_changed) {
 }
 
 // a 1px black line around a rectangle, a 1px translucent one just inside it and a soft shadow outside, faded by `fade`
-void DrawFrame(ImDrawList* dl, ImVec2 lo, ImVec2 hi, float round, float fade, int rings = 16, float strength = 90.0f, float line = 255.0f) {
+void DrawFrame(ImDrawList* dl, ImVec2 lo, ImVec2 hi, float round, float fade, int rings = 16, float strength = 90.0f, float line = 255.0f, float inner = 24.0f) {
     // AddRect draws its line inside the rectangle it is given: the black one's rectangle is the rectangle grown by
     // a pixel, the white one's its own
     // a soft shadow outside the black line: rings a pixel wide, each fainter than the one inside it
@@ -173,7 +174,7 @@ void DrawFrame(ImDrawList* dl, ImVec2 lo, ImVec2 hi, float round, float fade, in
     }
     dl->AddRect(ImVec2(lo.x - 1.0f, lo.y - 1.0f), ImVec2(hi.x + 1.0f, hi.y + 1.0f),
                 IM_COL32(0, 0, 0, int(line * fade)), round + 1.0f, 0, 1.0f);
-    dl->AddRect(lo, hi, IM_COL32(255, 255, 255, int(24.0f * fade)), round, 0, 1.0f);
+    dl->AddRect(lo, hi, IM_COL32(255, 255, 255, int(inner * fade)), round, 0, 1.0f);
 }
 
 // the lower edge of DrawFrame's two lines (no shadow), up to where the corners turn into the sides: a header's, under
@@ -192,6 +193,7 @@ void DrawFrameBottom(ImDrawList* dl, ImVec2 lo, ImVec2 hi, float round, float fa
 
 // the current window's frame, on the foreground list (which the window's own clip box doesn't limit)
 void DrawWindowFrame(float fade) {
+    if (!g_decorations) return;
     const ImVec2 lo = ImGui::GetWindowPos(), hi(lo.x + ImGui::GetWindowWidth(), lo.y + ImGui::GetWindowHeight());
     DrawFrame(ImGui::GetForegroundDrawList(), lo, hi, ImGui::GetStyle().WindowRounding, fade);
 }
@@ -431,14 +433,16 @@ bool Section(const char* name) {
         ImVec4 bg = ImGui::GetStyle().Colors[ImGuiCol_WindowBg];  // a tiny bit brighter than the backdrop
         bg.x += (1.0f - bg.x) * 0.03f, bg.y += (1.0f - bg.y) * 0.03f, bg.z += (1.0f - bg.z) * 0.03f, bg.w = 1.0f;
         w->DrawList->AddRectFilled(at, ImVec2(std::round(w->WorkRect.Max.x), bottom), ImGui::GetColorU32(bg), ImGui::GetStyle().FrameRounding);
-        DrawFrame(w->DrawList, at, ImVec2(std::round(w->WorkRect.Max.x), bottom), ImGui::GetStyle().FrameRounding, ImGui::GetStyle().Alpha, 6, 30.0f, 120.0f);
+        if (g_decorations) DrawFrame(w->DrawList, at, ImVec2(std::round(w->WorkRect.Max.x), bottom), ImGui::GetStyle().FrameRounding, ImGui::GetStyle().Alpha, 6, 30.0f, 120.0f);
         g_card_l = at.x;
         g_card_r = w->WorkRect.Max.x;
     }
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 0.0f);  // its lines are the card's and its bottom edge's
     const bool open = ImGui::CollapsingHeader(T(name), ImGuiTreeNodeFlags_DefaultOpen);
+    ImGui::PopStyleVar();
     // open, the header keeps the card's black and translucent white lines along its bottom edge and round its lower corners, setting it off from the
     // rows (the rest of its outline is the card's own)
-    if (open || t > 0.0f) {
+    if (g_decorations && (open || t > 0.0f)) {
         const ImVec2 lo = ImGui::GetItemRectMin(), hi = ImGui::GetItemRectMax();
         DrawFrameBottom(w->DrawList, lo, hi, ImGui::GetStyle().FrameRounding, ImGui::GetStyle().Alpha, 120.0f);
     }
@@ -1124,6 +1128,14 @@ void Draw(double fps) {
     static bool last_title = !g_fps_title;
     static int last_look = -1;
     app::UiAccent(int(g_accent));
+    {
+        // the widgets' frames: the white line on the frame's edge and the dark one just outside it (the section cards'
+        // and the window's own lines, without the shadow)
+        ImGuiStyle& st = ImGui::GetStyle();
+        st.FrameBorderSize = g_decorations ? 1.0f : 0.0f;
+        st.Colors[ImGuiCol_Border] = ImVec4(1, 1, 1, 24.0f / 255.0f);
+        st.Colors[ImGuiCol_BorderShadow] = ImVec4(0, 0, 0, 120.0f / 255.0f);
+    }
     PadFrame(g_open.load(), g_quit.load());
     const bool open = g_open.load();
     const bool quit = g_quit.load();
@@ -1314,8 +1326,11 @@ void Draw(double fps) {
                 ImGui::PushStyleColor(ImGuiCol_NavCursor, ImVec4(0, 0, 0, 0));
                 ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0, 0, 0, 0));  // its label is drawn with the pills, once (below)
                 const std::string label = std::string(T(name)) + "##" + name;  // the English name is the ID
+                // roomier tabs: ImGui sizes a tab from the frame padding as it is begun
+                ImGui::PushStyleVarX(ImGuiStyleVar_FramePadding, ImGui::GetStyle().FramePadding.x * 1.4f);
                 const bool selected =
                     ImGui::BeginTabItem(label.c_str(), nullptr, target == mine ? ImGuiTabItemFlags_SetSelected : 0);
+                ImGui::PopStyleVar();
                 ImGui::PopStyleColor(2);
                 // ImGui picks the first item to hold the cursor from the first press of a direction, which then moves
                 // nothing: the open tab holds it from the start. Only while this window has the focus: with none (a
@@ -1422,6 +1437,8 @@ void Draw(double fps) {
                         }
                         Hint("The color of the selection and the sliders in this menu.");
                     }
+                    Check("Menu decorations", &g_decorations);
+                    Hint("A fine light and dark outline round the settings' sections, buttons, sliders and menus.", true);
                 }
                 end_tab();
             }
@@ -2002,6 +2019,11 @@ void Draw(double fps) {
                         if (i != shown) fill = danger ? ImVec4(kDanger.x, kDanger.y, kDanger.z, 0.16f) : ImVec4(1.0f, 1.0f, 1.0f, 0.07f);
                         dl->AddRectFilled(p.lo, p.hi, ImGui::GetColorU32(fill), (p.hi.y - p.lo.y) * 0.5f);  // a pill
                     }
+                    // every tab is outlined like the widgets, selected or not (the Close button's is its frame's own)
+                    if (g_decorations)
+                        // over the selected tab's bright fill the lines need more to show
+                        DrawFrame(dl, p.lo, p.hi, (p.hi.y - p.lo.y) * 0.5f, st.Alpha, 0, 0.0f, i == shown ? 200.0f : 120.0f,
+                                  i == shown ? 90.0f : 24.0f);
                     const ImVec2 size = ImGui::CalcTextSize(p.name);
                     dl->AddText(ImVec2(std::round((p.lo.x + p.hi.x - size.x) * 0.5f), std::round((p.lo.y + p.hi.y - size.y) * 0.5f)),
                                 ImGui::GetColorU32(i == kQuitTab && i != shown ? kDanger : st.Colors[ImGuiCol_Text]), p.name);
@@ -2174,6 +2196,7 @@ bool g_fps_overlay = false;
 uint32_t g_accent = 4;  // orange
 bool g_fps_title = true;
 bool g_menu_resizable = false;
+bool g_decorations = true;
 
 void Draw(double) {}
 

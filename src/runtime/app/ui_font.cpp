@@ -57,7 +57,7 @@ static void Colors(ImGuiStyle& st) {
     c[ImGuiCol_FrameBgActive] = grey(0.22f);
     c[ImGuiCol_TitleBg] = c[ImGuiCol_TitleBgActive] = c[ImGuiCol_TitleBgCollapsed] = c[ImGuiCol_WindowBg];
     c[ImGuiCol_MenuBarBg] = grey(0.11f);
-    c[ImGuiCol_ScrollbarBg] = ImVec4(0, 0, 0, 0);
+    c[ImGuiCol_ScrollbarBg] = ImVec4(0, 0, 0, 0.3f);
     c[ImGuiCol_ScrollbarGrab] = grey(0.28f);
     c[ImGuiCol_ScrollbarGrabHovered] = grey(0.38f);
     c[ImGuiCol_ScrollbarGrabActive] = grey(0.48f);
