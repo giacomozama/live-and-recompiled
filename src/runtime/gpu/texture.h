@@ -57,6 +57,14 @@ bool CopySurfaceMemory(const Surface& src, const Surface& dst, uint32_t count, u
 void MarkDirty(uint32_t resource);
 uint64_t DirtyEpoch(uint32_t data_va);
 
+// A level's baked lightmap (lightmap.cpp): w by h BGRA texels (rows w * 4 bytes) to scale times the size, each texel
+// averaged along the light's edges through it (a gaussian of along texels), so the steps of an aliased shadow edge
+// come out a straight line
+void SmoothLightmap(const std::vector<uint8_t>& px, uint32_t w, uint32_t h, uint32_t scale, float along,
+                    std::vector<uint8_t>& out);
+// DXT1, DXT3 or DXT5 blocks (rows of blocks, as DecodeLevel gives them) to w by h BGRA texels
+void DecodeBlocks(Host host, const uint8_t* blocks, uint32_t w, uint32_t h, std::vector<uint8_t>& out);
+
 // vertex declarations and pixel shader constant routing, both follow the XDK's definitions
 void ParseDeclaration(VertexShader& vs);
 // SetPixelShaderConstant: the stages of the current shader mapped to these registers take the values

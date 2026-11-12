@@ -1264,6 +1264,21 @@ void Draw(double fps) {
                 ImGui::SeparatorText(T("Lighting"));
                 Check("Per-pixel lighting", &lighting::g_per_pixel);
                 Hint("Smoother light and shadows on characters and objects.", true);
+                Check("Smooth baked shadows", &s.smooth_lightmaps);
+                Hint("Straightens the jagged edges of the levels' painted-on light and shadow.", true);
+                if (s.smooth_lightmaps) {
+                    Slider("Baked shadow smoothing", &s.lightmap_smoothing, 1, 10, app::Settings{}.lightmap_smoothing);
+                    Hint("How far along an edge the smoothing reaches. Higher is smoother and takes longer.", true);
+                    constexpr uint32_t kSizes[] = {256, 512, 1024, 2048};
+                    int size = 1;
+                    for (int i = 0; i < 4; i++)
+                        if (kSizes[i] == s.lightmap_size) size = i;
+                    if (ImGui::Combo(Beside("Baked shadow size"), &size,
+                                     Items({"256", " 512", " 1024", " 2048"}).c_str()))
+                        s.lightmap_size = kSizes[size];
+                    Hint("The largest a smoothed shadow texture gets. Larger is sharper but takes longer and uses "
+                         "much more video memory.", true);
+                }
                 bool no_fog = !s.fog;
                 if (Check("Disable fog", &no_fog)) s.fog = !no_fog;
                 Hint("Clears the haze over faraway scenery. Enabling this distorts colors pretty much everywhere "

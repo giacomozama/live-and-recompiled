@@ -41,6 +41,7 @@
 #include <filesystem>
 #include <functional>
 #include <memory>
+#include <condition_variable>
 #include <mutex>
 #include <thread>
 #include <type_traits>
@@ -788,7 +789,57 @@ struct Tex {
     uint64_t frame = 0;
     uint64_t palette = 0;  // hash of the colors a P8 texture was decoded with
     uint8_t sign = 0;      // channels uploaded offset by 128 (OffsetSigned)
+    // a level's lightmap (LightmapStage): its smoothed larger copy, made by the lightmap worker and bound in its
+    // place once there, dropped when the texture's bytes change
+    bool lightmap = false;
+    std::shared_ptr<struct LightmapJob> lm_job;
+    ImageRef lm;
+    uint32_t lm_levels = 1;
+    uint32_t lm_params = 0;  // LightmapParams lm or lm_job was made with
 };
+
+// one lightmap for the worker: level 0 as BGRA texels, or the DXT blocks it decodes first
+struct LightmapJob {
+    Host host = Host::BGRA8;
+    std::vector<uint8_t> px;
+    uint32_t w = 0, h = 0, scale = 1;
+    float along = 5;
+    std::vector<std::vector<uint8_t>> levels;  // w * scale by h * scale BGRA, then each box filtered down to 1
+    uint64_t bytes = 0;                        // in all the levels
+    std::atomic<bool> done{false};
+};
+
+// the settings a smoothed lightmap is made with, one number: a change makes them again
+uint32_t LightmapParams(const app::Settings& set) { return set.lightmap_smoothing << 16 | set.lightmap_size; }
+
+// the lightmap stage of a level draw: a combiner (or fixed function stage) that multiplies what is drawn so far by
+// the stage's texture, doubled, and nothing else: Conker's level push buffers (r0 * t1) * 2 into r0
+bool LightmapStage(const State& s, int stage) {
+    if (stage < 1) return false;
+    if (!s.ps) {
+        const auto& t = s.tss[size_t(stage)];
+        auto arg = [](uint32_t a) { return a & 0x3F; };  // D3DTA_TEXTURE 2, D3DTA_CURRENT 1, no modifiers
+        return t[kTssColorOp] == 5 && ((arg(t[kTssColorArg1]) == 2 && arg(t[kTssColorArg2]) == 1) ||
+                                       (arg(t[kTssColorArg1]) == 1 && arg(t[kTssColorArg2]) == 2));
+    }
+    auto m = [&](uint32_t method) { return s.simple[method >> 2]; };
+    const uint32_t mode = (s.rs[kRsPsTextureModes] >> (stage * 5)) & 0x1F;
+    if (mode != 1 && mode != 2) return false;  // PROJECT2D, PROJECT3D (which a 2D texture reads as 2D)
+    const uint32_t tex = 8u + uint32_t(stage), r0 = 0xC;
+    const uint32_t count = std::min(m(kMPsCombinerCount) & 0xFF, 8u);
+    for (uint32_t i = 0; i < count; i++) {
+        uint32_t in = m(kMPsRgbInputs + i * 4), out = m(kMPsRgbOutputs + i * 4);
+        // an rgb input read as it is: unsigned or signed identity (Conker's levels take the latter), the register
+        // number, or 0 for one that isn't
+        auto reg = [](uint32_t v) { uint32_t mod = v & 0xE0; return (v & 0x10) || (mod != 0x00 && mod != 0xC0) ? 0xFFu : v & 0xF; };
+        uint32_t a = reg(in >> 24), b = reg((in >> 16) & 0xFF), c = reg((in >> 8) & 0xFF), d = reg(in & 0xFF);
+        bool ab = (a == tex && (b == r0 || b == 8)) || (b == tex && (a == r0 || a == 8));
+        if (!ab || (c != 0 && d != 0)) continue;  // C * D zero
+        uint32_t ab_dst = (out >> 4) & 0xF, sum_dst = (out >> 8) & 0xF, fl = out >> 12;
+        if ((fl & 0x3F) == 0x10 && (ab_dst == r0 || sum_dst == r0)) return true;  // * 2, no dots or mux
+    }
+    return false;
+}
 
 // what a VkSampler is made from, hashed for the cache
 struct SamplerDesc {
@@ -831,6 +882,7 @@ struct DrawTextures {
     float k[4] = {1, 1, 1, 1};  // texels per render scale texel
     float wide[4] = {};         // host texels per console texel of a target read into a smaller one, 0 otherwise
     bool exact[4] = {};         // stage samples a target where it lies, without the half texel back
+    bool smooth[4] = {};        // stage samples a smoothed lightmap (Tex::lm): its levels are ours, filtered across
     VkImageView screen = VK_NULL_HANDLE;  // ProgramShading::screen's copy of the target, null without one
 };
 
@@ -1020,6 +1072,14 @@ SamplerDesc StageSampler(const State& s, int i, const DrawTextures& stages, bool
     sd.min_lod = float(t[kTssMaxMipLevel]);
     sd.max_lod = mip ? VK_LOD_CLAMP_NONE : sd.min_lod;
     Color(t[kTssBorderColor], sd.border);
+    if (stages.smooth[i]) {
+        // a smoothed lightmap's levels go from its larger size down: the title's own size is two levels in
+        sd.min = sd.mag = VK_FILTER_LINEAR;
+        sd.mip = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+        sd.bias = sd.min_lod = 0;
+        sd.max_lod = VK_LOD_CLAMP_NONE;
+        if (aniso > 1) sd.aniso = std::min<uint32_t>(aniso, 16);
+    }
     if (stages.info[i].shadow) {
         // the console tests texel OP r, Vulkan tests r OP texel
         static const uint8_t swap[8] = {0, 4, 2, 6, 1, 5, 3, 7};
@@ -1509,6 +1569,18 @@ private:
         std::atomic<bool> stop{false};
         std::thread thread;
     } warm_;
+    // the lightmap worker: smooths the lightmaps the draws bind (Tex::lm_job), one at a time, off the render thread
+    struct LightmapWorker {
+        std::mutex lock;
+        std::condition_variable wake;
+        std::deque<std::shared_ptr<LightmapJob>> queue;
+        bool stop = false;
+        std::thread thread;
+    } lmw_;
+    void QueueLightmap(Tex& tx, const TextureDesc& d, const FormatInfo& fi, const uint8_t* p, const uint32_t* colors);
+    void FinishLightmap(Tex& tx);
+    uint64_t lm_frame_ = ~0ull;  // the present lm_uploaded_ counts for
+    uint64_t lm_uploaded_ = 0;   // bytes of smoothed lightmaps uploaded since
     std::unordered_map<uint64_t, VkSampler> samplers_;
     VkSampler blit_[4] = {};  // linear at s0, point at s1 to s3, all clamped
     std::unordered_map<uint64_t, Target> targets_;
@@ -1761,6 +1833,13 @@ bool VulkanBackend::Init(uint32_t width, uint32_t height) {
 VulkanBackend::~VulkanBackend() {
     warm_.stop = true;
     if (warm_.thread.joinable()) warm_.thread.join();
+    {
+        std::lock_guard<std::mutex> g(lmw_.lock);
+        lmw_.stop = true;
+        lmw_.queue.clear();
+    }
+    lmw_.wake.notify_all();
+    if (lmw_.thread.joinable()) lmw_.thread.join();
     if (dev_) vkDeviceWaitIdle(dev_);
     if (ui_) ImGui_ImplVulkan_Shutdown();
     if (cap_) fclose(cap_);
@@ -3595,6 +3674,7 @@ Image* VulkanBackend::BindTargetTexture(const State& s, int stage, const Texture
 bool VulkanBackend::CreateTexture(Tex& tx, const TextureDesc& d, const FormatInfo& fi, uint64_t key) {
     g_perf.newtex++;
     if (tx.res) Retire(tx.res);
+    if (tx.lm) Retire(tx.lm);
     tx = Tex{};
     tx.d = d;
     // a DXT texture smaller than a block keeps its size: padded to 4x4, texcoords 0..1 would stretch over the
@@ -3734,13 +3814,146 @@ Image* VulkanBackend::BindGuestTexture(const State& s, int stage, const TextureD
             tx.whole = total > kSigWholeMax ? Hash(p, total) ^ mark : 0;
             tx.sign = sign;
             UploadTexture(tx, d, p, palette.va ? palette.colors : nullptr);
+            // new bytes: the smoothed copy is of the old ones
+            if (tx.lm) Retire(tx.lm);
+            tx.lm.reset();
+            tx.lm_job.reset();
+        }
+    }
+    if (fi.depth) info.shadow = ShadowDepthKind(d.format);
+    info.sign = sign;
+    // a level's lightmap: its smoothed copy once the worker has made it, the title's until then
+    constexpr uint32_t kLightmapMin = 16, kLightmapMax = 512;
+    if (app::Get().smooth_lightmaps && !d.cube && d.depth == 1 && !fi.depth && !sign && !d.linear &&
+        (fi.host == Host::BGRA8 || fi.host == Host::BC1 || fi.host == Host::BC2 || fi.host == Host::BC3) &&
+        std::min(d.width, d.height) >= kLightmapMin && std::max(d.width, d.height) <= kLightmapMax) {
+        if (!tx.lightmap && LightmapStage(s, stage)) tx.lightmap = true;
+        if (tx.lightmap) {
+            if ((tx.lm || tx.lm_job) && tx.lm_params != LightmapParams(app::Get())) {
+                if (tx.lm) Retire(tx.lm);
+                tx.lm.reset();
+                tx.lm_job.reset();
+            }
+            if (!tx.lm && !tx.lm_job)
+                QueueLightmap(tx, d, fi, static_cast<const uint8_t*>(kernel::HostPtr(d.data)),
+                              palette.va ? palette.colors : nullptr);
+            // a frame's uploads of finished ones held to kLightmapUploads bytes, the first always: a 2048 one is 21 MB
+            constexpr uint64_t kLightmapUploads = 16ull << 20;
+            if (lm_frame_ != presents_) {
+                lm_frame_ = presents_;
+                lm_uploaded_ = 0;
+            }
+            if (tx.lm_job && tx.lm_job->done.load(std::memory_order_acquire) &&
+                (lm_uploaded_ == 0 || lm_uploaded_ + tx.lm_job->bytes <= kLightmapUploads))
+                FinishLightmap(tx);
+            if (tx.lm) {
+                stages.view[stage] = tx.lm->view;
+                stages.levels[stage] = tx.lm_levels;
+                stages.smooth[stage] = true;
+                return tx.lm.get();
+            }
         }
     }
     stages.view[stage] = tx.res->view;
     stages.levels[stage] = tx.levels;
-    if (fi.depth) info.shadow = ShadowDepthKind(d.format);
-    info.sign = sign;
     return tx.res.get();
+}
+
+// level 0 of a lightmap to the worker, which makes it larger and smooth
+void VulkanBackend::QueueLightmap(Tex& tx, const TextureDesc& d, const FormatInfo& fi, const uint8_t* p,
+                                  const uint32_t* colors) {
+    auto job = std::make_shared<LightmapJob>();
+    job->host = fi.host;
+    job->w = d.width;
+    job->h = d.height;
+    // lightmap_size texels across at most: at 512, 128 four times its size, 256 twice, 512 smoothed at its own
+    const app::Settings& set = app::Get();
+    job->scale = std::max(set.lightmap_size / std::max(d.width, d.height), 1u);
+    job->along = float(set.lightmap_smoothing);
+    tx.lm_params = LightmapParams(set);
+    uint32_t pitch;
+    DecodeLevel(d, 0, 0, p, colors, job->px, pitch);
+    if (fi.host == Host::BGRA8 && pitch != d.width * 4) {
+        for (uint32_t y = 0; y < d.height && size_t(y + 1) * pitch <= job->px.size(); y++)
+            std::memmove(&job->px[size_t(y) * d.width * 4], &job->px[size_t(y) * pitch], d.width * 4);
+    }
+    if (fi.host == Host::BGRA8) job->px.resize(size_t(d.width) * 4 * d.height);
+    tx.lm_job = job;
+    {
+        std::lock_guard<std::mutex> g(lmw_.lock);
+        lmw_.queue.push_back(job);
+        if (!lmw_.thread.joinable())
+            lmw_.thread = std::thread([this] {
+                for (;;) {
+                    std::shared_ptr<LightmapJob> j;
+                    {
+                        std::unique_lock<std::mutex> g(lmw_.lock);
+                        lmw_.wake.wait(g, [&] { return lmw_.stop || !lmw_.queue.empty(); });
+                        if (lmw_.stop) return;
+                        j = std::move(lmw_.queue.front());
+                        lmw_.queue.pop_front();
+                    }
+                    // a texture whose bytes changed, or that went, before its turn holds the only other reference
+                    if (j.use_count() == 1) continue;
+                    if (j->host != Host::BGRA8) {
+                        std::vector<uint8_t> px;
+                        DecodeBlocks(j->host, j->px.data(), j->w, j->h, px);
+                        j->px.swap(px);
+                    }
+                    auto t0 = std::chrono::steady_clock::now();
+                    j->levels.resize(1);
+                    SmoothLightmap(j->px, j->w, j->h, j->scale, j->along, j->levels[0]);
+                    j->px = {};
+                    uint32_t uw = j->w * j->scale, uh = j->h * j->scale;
+                    j->bytes = j->levels[0].size();
+                    while (uw > 1 || uh > 1) {
+                        const std::vector<uint8_t>& up = j->levels.back();
+                        uint32_t w = std::max(uw >> 1, 1u), h = std::max(uh >> 1, 1u);
+                        std::vector<uint8_t> px(size_t(w) * 4 * h);
+                        for (uint32_t y = 0; y < h; y++)
+                            for (uint32_t x = 0; x < w; x++)
+                                for (uint32_t c = 0; c < 4; c++) {
+                                    uint32_t x0 = std::min(x * 2, uw - 1), x1 = std::min(x * 2 + 1, uw - 1);
+                                    uint32_t y0 = std::min(y * 2, uh - 1), y1 = std::min(y * 2 + 1, uh - 1);
+                                    uint32_t sum = up[(size_t(y0) * uw + x0) * 4 + c] + up[(size_t(y0) * uw + x1) * 4 + c] +
+                                                   up[(size_t(y1) * uw + x0) * 4 + c] + up[(size_t(y1) * uw + x1) * 4 + c];
+                                    px[(size_t(y) * w + x) * 4 + c] = uint8_t((sum + 2) / 4);
+                                }
+                        j->bytes += px.size();
+                        j->levels.push_back(std::move(px));
+                        uw = w;
+                        uh = h;
+                    }
+                    LOGR("lightmap: %ux%u smoothed to %ux%u in %.1f ms", j->w, j->h, j->w * j->scale, j->h * j->scale,
+                         std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
+                    j->done.store(true, std::memory_order_release);
+                }
+            });
+    }
+    lmw_.wake.notify_one();
+}
+
+// the worker's lightmap and its levels up as the texture's smoothed copy
+void VulkanBackend::FinishLightmap(Tex& tx) {
+    std::shared_ptr<LightmapJob> job = std::move(tx.lm_job);
+    ImageSpec sp;
+    sp.fmt = kBgra;
+    sp.w = job->w * job->scale;
+    sp.h = job->h * job->scale;
+    sp.d = 1;
+    sp.levels = uint32_t(job->levels.size());
+    sp.layers = 1;
+    sp.type = VK_IMAGE_VIEW_TYPE_2D;
+    ImageRef im = NewImage(sp);
+    if (!im) return;
+    std::swap(tx.res, im);  // UploadTextureLevel writes tx.res
+    Transition(*tx.res, kDst);
+    for (uint32_t l = 0; l < sp.levels; l++) UploadTextureLevel(tx, 0, l, job->levels[l], std::max(sp.w >> l, 1u) * 4);
+    Transition(*tx.res, kRead);
+    std::swap(tx.res, im);
+    tx.lm = std::move(im);
+    tx.lm_levels = sp.levels;
+    lm_uploaded_ += job->bytes;
 }
 
 Image* VulkanBackend::BindTexture(const State& s, int stage, DrawTextures& stages) {
@@ -3752,6 +3965,7 @@ Image* VulkanBackend::BindTexture(const State& s, int stage, DrawTextures& stage
     stages.k[stage] = 1;
     stages.wide[stage] = 0;
     stages.exact[stage] = false;
+    stages.smooth[stage] = false;
     TextureDesc d;
     if (!s.textures[size_t(stage)] || !Describe(s.textures[size_t(stage)], d)) return nullptr;
     const FormatInfo& fi = Format(d.format);
@@ -6228,6 +6442,7 @@ void VulkanBackend::ReleaseOldTextures() {
     for (auto it = textures_.begin(); it != textures_.end();) {
         if (it->second.frame + kIdleFrames < presents_) {
             Retire(it->second.res);
+            if (it->second.lm) Retire(it->second.lm);
             it = textures_.erase(it);
         } else {
             ++it;

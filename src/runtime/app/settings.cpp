@@ -1,6 +1,7 @@
 // the settings file in ConfigDir
 #include <algorithm>
 #include <atomic>
+#include <bit>
 #include <cstdio>
 #include <fstream>
 #include <sstream>
@@ -76,6 +77,10 @@ void Load() {
     s.motion_blur = std::min<uint32_t>(t["motion_blur"].value_or(s.motion_blur), 100);
     s.fog = t["fog"].value_or(s.fog);
     s.fsr = t["fsr"].value_or(s.fsr);
+    s.smooth_lightmaps = t["smooth_lightmaps"].value_or(s.smooth_lightmaps);
+    s.lightmap_smoothing = std::clamp<uint32_t>(t["lightmap_smoothing"].value_or(s.lightmap_smoothing), 1, 10);
+    s.lightmap_size = t["lightmap_size"].value_or(s.lightmap_size);
+    if (s.lightmap_size < 256 || s.lightmap_size > 2048 || !std::has_single_bit(s.lightmap_size)) s.lightmap_size = 512;
     s.fsr_sharpness = std::min<uint32_t>(t["fsr_sharpness"].value_or(s.fsr_sharpness), 100);
     s.fur_sharpness = std::min<uint32_t>(t["fur_sharpness"].value_or(s.fur_sharpness), 100);
     s.volume = std::min<uint32_t>(t["volume"].value_or(s.volume), 100);
@@ -152,6 +157,9 @@ toml::table Table() {
                   {"motion_blur", int64_t(s.motion_blur)},
                   {"fog", s.fog},
                   {"fsr", s.fsr},
+                  {"smooth_lightmaps", s.smooth_lightmaps},
+                  {"lightmap_smoothing", int64_t(s.lightmap_smoothing)},
+                  {"lightmap_size", int64_t(s.lightmap_size)},
                   {"fsr_sharpness", int64_t(s.fsr_sharpness)},
                   {"fur_sharpness", int64_t(s.fur_sharpness)},
                   {"volume", int64_t(s.volume)},
