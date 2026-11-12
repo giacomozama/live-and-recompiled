@@ -281,5 +281,8 @@ extern const GameInfo kGame;
 // sleeps out the rest of the frame for the fps cap, and for the console's presentation interval: a title that
 // presents every vblanks-th 60 Hz blank (D3DPRESENT_INTERVAL_TWO is 2) never runs faster than 60 / vblanks
 void Pace(uint32_t vblanks = 1);
+// the same for a picture of the held title shown again under the host menu (Redisplay): at the monitor's refresh rate,
+// not the cap, so the menu moves as smoothly as the display can show it
+void PaceMenu();
 
 }  // namespace app

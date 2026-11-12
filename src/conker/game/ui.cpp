@@ -1176,7 +1176,7 @@ void Draw(double fps) {
                 const int mine = index++;
                 // the pad's cursor is the tab's highlight alone, no border (the tab draws its cursor as it begins)
                 ImGui::PushStyleColor(ImGuiCol_NavCursor, ImVec4(0, 0, 0, 0));
-                ImGui::PushStyleColor(ImGuiCol_Text, mine == kQuitTab ? kDanger : ImGui::GetStyleColorVec4(ImGuiCol_Text));
+                ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0, 0, 0, 0));  // its label is drawn with the pills, once (below)
                 const std::string label = std::string(T(name)) + "##" + name;  // the English name is the ID
                 const bool selected =
                     ImGui::BeginTabItem(label.c_str(), nullptr, target == mine ? ImGuiTabItemFlags_SetSelected : 0);
@@ -1852,12 +1852,15 @@ void Draw(double fps) {
                 ImDrawList* dl = ImGui::GetWindowDrawList();
                 for (int i = 0; i < index; i++) {
                     const Pill& p = pills[i];
-                    if (i != shown && !(p.hot && !hush)) continue;
-                    const bool danger = i == kQuitTab;  // Quit is red, not the accent
-                    ImVec4 fill = danger ? kDanger : st.Colors[ImGuiCol_CheckMark];
-                    fill.w = i == shown ? 0.80f : 0.0f;
-                    if (i != shown) fill = danger ? ImVec4(kDanger.x, kDanger.y, kDanger.z, 0.16f) : ImVec4(1.0f, 1.0f, 1.0f, 0.07f);
-                    dl->AddRectFilled(p.lo, p.hi, ImGui::GetColorU32(fill), (p.hi.y - p.lo.y) * 0.5f);  // a pill
+                    // every tab's label is drawn here alone (ImGui's is clear): drawn twice, ImGui's at its own spot and
+                    // this centred one, a hovered tab's looked bold and a pixel wider
+                    if (i == shown || (p.hot && !hush)) {
+                        const bool danger = i == kQuitTab;  // Quit is red, not the accent
+                        ImVec4 fill = danger ? kDanger : st.Colors[ImGuiCol_CheckMark];
+                        fill.w = i == shown ? 0.80f : 0.0f;
+                        if (i != shown) fill = danger ? ImVec4(kDanger.x, kDanger.y, kDanger.z, 0.16f) : ImVec4(1.0f, 1.0f, 1.0f, 0.07f);
+                        dl->AddRectFilled(p.lo, p.hi, ImGui::GetColorU32(fill), (p.hi.y - p.lo.y) * 0.5f);  // a pill
+                    }
                     const ImVec2 size = ImGui::CalcTextSize(p.name);
                     dl->AddText(ImVec2(std::round((p.lo.x + p.hi.x - size.x) * 0.5f), std::round((p.lo.y + p.hi.y - size.y) * 0.5f)),
                                 ImGui::GetColorU32(i == kQuitTab && i != shown ? kDanger : st.Colors[ImGuiCol_Text]), p.name);

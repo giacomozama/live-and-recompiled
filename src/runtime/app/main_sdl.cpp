@@ -41,6 +41,7 @@ std::string g_join;
 uint32_t g_user = 0;  // the event type Post, ApplyDisplay and OpenGameWindow send to the window thread
 enum : int32_t { kUserPost, kUserApply, kUserOpen, kUserText };
 std::atomic<uint64_t> g_desktop{0};  // width << 32 | height, read on any thread
+std::atomic<uint32_t> g_refresh{60};  // the window's display's refresh rate in Hz, read on any thread
 
 // virtual-key codes and the keys SDL names by position; the generic Shift, Ctrl and Alt take either side
 constexpr int kVkShift = 0x10, kVkCtrl = 0x11, kVkAlt = 0x12;
@@ -149,6 +150,8 @@ void StoreDesktop() {
     SDL_DisplayID d = g_window ? SDL_GetDisplayForWindow(g_window) : SDL_GetPrimaryDisplay();
     if (const SDL_DisplayMode* m = SDL_GetDesktopDisplayMode(d))
         g_desktop = uint64_t(uint32_t(m->w)) << 32 | uint32_t(m->h);
+    if (const SDL_DisplayMode* m = SDL_GetCurrentDisplayMode(d))
+        if (m->refresh_rate >= 24.0f) g_refresh = uint32_t(std::lround(m->refresh_rate));
 }
 
 void DumpThreads() {
@@ -483,6 +486,17 @@ void Pace(uint32_t vblanks) {
         return;
     }
     auto period = std::chrono::nanoseconds(1000000000ull / cap);
+    next += period;
+    if (next < now - period) next = now;
+    while (clock::now() + std::chrono::milliseconds(2) < next) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    while (clock::now() < next) std::this_thread::yield();
+}
+
+void PaceMenu() {
+    using clock = std::chrono::steady_clock;
+    static clock::time_point next = clock::now();
+    auto now = clock::now();
+    auto period = std::chrono::nanoseconds(1000000000ull / std::max(g_refresh.load(), 24u));
     next += period;
     if (next < now - period) next = now;
     while (clock::now() + std::chrono::milliseconds(2) < next) std::this_thread::sleep_for(std::chrono::milliseconds(1));

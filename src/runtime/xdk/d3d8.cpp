@@ -1223,7 +1223,7 @@ HLE_STDCALL(D3DDevice_Swap, 1) {
         } else {
             kernel::HoldFor(kernel::kHoldFreeze, true);
         }
-        app::Pace(1);
+        app::PaceMenu();
         std::this_thread::sleep_for(std::chrono::milliseconds(1));  // no cap and no vsync: not a core spun on a menu
     }
     kernel::HoldFor(kernel::kHoldFreeze, false);

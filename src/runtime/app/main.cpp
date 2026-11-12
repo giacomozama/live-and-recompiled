@@ -379,6 +379,28 @@ void Pace(uint32_t vblanks) {
     while (clock::now() < next) std::this_thread::yield();
 }
 
+void PaceMenu() {
+    using clock = std::chrono::steady_clock;
+    static clock::time_point next = clock::now(), asked{};
+    static uint32_t hz = 60;
+    auto now = clock::now();
+    if (now - asked > std::chrono::seconds(1)) {  // the window's monitor's rate, asked again now and then (it may move)
+        asked = now;
+        MONITORINFOEXW mi{};
+        mi.cbSize = sizeof(mi);
+        DEVMODEW dm{};
+        dm.dmSize = sizeof(dm);
+        if (GetMonitorInfoW(MonitorFromWindow(g_hwnd, MONITOR_DEFAULTTOPRIMARY), &mi) &&
+            EnumDisplaySettingsW(mi.szDevice, ENUM_CURRENT_SETTINGS, &dm) && dm.dmDisplayFrequency >= 24)
+            hz = dm.dmDisplayFrequency;
+    }
+    auto period = std::chrono::nanoseconds(1000000000ull / hz);
+    next += period;
+    if (next < now - period) next = now;
+    while (clock::now() + std::chrono::milliseconds(2) < next) Sleep(1);
+    while (clock::now() < next) std::this_thread::yield();
+}
+
 }  // namespace app
 
 // a GUI program has no console of its own: started from a shell, print into that shell's (unless output is redirected)
