@@ -413,7 +413,7 @@ bool Section(const char* name) {
     {
         // a header a whole number of pixels tall, so its edges and the card's border meet
         const float fs = ImGui::GetFontSize();
-        ImGui::PushStyleVarY(ImGuiStyleVar_FramePadding, (std::round(fs + ImGui::GetStyle().FramePadding.y * 2.4f) - fs) * 0.5f);
+        ImGui::PushStyleVarY(ImGuiStyleVar_FramePadding, (std::round(fs + ImGui::GetStyle().FramePadding.y * 2.8f) - fs) * 0.5f);
     }
     const ImGuiID id = ImGui::GetID(name);
     const ImGuiID t_id = ImHashStr("section_t", 0, id), h_id = ImHashStr("section_h", 0, id);
@@ -1361,7 +1361,7 @@ void Draw(double fps) {
                 ImGui::PopStyleVar();
                 g_inset_on = false;
                 InsetOn();
-                ImGui::Dummy(ImVec2(0.0f, std::round(RowInset() * 0.5f)));  // as far below the tab row's separator as the header is from the sides
+                ImGui::SetCursorPosY(std::round(RowInset() * 0.5f));  // the first card as far under the tab row's separator as it is from the sides
                 if (g_pad.scroll != 0.0f) ImGui::SetScrollY(ImGui::GetScrollY() + g_pad.scroll);
                 return true;
             };
@@ -1672,9 +1672,10 @@ void Draw(double fps) {
                 if (Section("Characters")) {
                     Check("Force max character LoD", &characters::g_max_lod);
                     Hint("Characters keep their full model and smooth animation however far away.", true);
-                    Check("Detailed multiplayer characters", &characters::g_menu_models);
+                    Check("Detailed multiplayer characters (experimental)", &characters::g_menu_models);
                     Hint("Multiplayer classes use their more detailed character select models in matches; squirrels get "
-                         "fur on the body. Takes effect from the next match.", true);
+                         "fur on the body. Experimental: some effects and animations may look wrong. Takes effect from "
+                         "the next match.", true);
                 }
 
                 if (Section("Grass")) {

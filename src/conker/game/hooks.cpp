@@ -359,7 +359,7 @@ void ConkerCharacterLod(X86Context& ctx, uint8_t* base) {
 // body and head (the match's only on the tail or hair), and for some Tediz (the Future ones, the WWII grunt).
 // characters::g_menu_models draws a class's character select model in a match for its full one, either side's, the
 // WWII classes' and the Future ones'.
-bool characters::g_menu_models = true;
+bool characters::g_menu_models = false;
 
 // a model's name, "" without one
 static std::string ModelName(uint32_t id) {
