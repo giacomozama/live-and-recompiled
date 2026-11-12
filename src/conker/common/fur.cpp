@@ -175,7 +175,7 @@ constexpr HairPiece kHairPieces[] = {{276, 0.3f}};
 //
 // Each kind of fur its own look (fur::Look), three float4 of xs each, FurLook picks one into furA..furC: furA droop,
 // tufting, thickness, taper; furB strands, tufts across a tile, root shade, gap shade; furC sheen, glow, length, fill;
-// furT the tone, from xs[15] (one float a kind).
+// furT the tone, from xs[15] (one float a kind); furS the strays, their share and length, from xs[18] and xs[19].
 // The weasels' program is FUR_MAP_STRANDS; the chipmunks share their programs with the grey squirrels and are told
 // apart by who the game draws (fur::TagShells), their types in xs[12] and xs[13]; the weasels drawn by other
 // programs (the Heist's) by theirs in xs[14]; those left the game's own fur by theirs in xs[9]; a hair piece left the
@@ -183,6 +183,7 @@ constexpr HairPiece kHairPieces[] = {{276, 0.3f}};
 constexpr const char* kStrandFunctions = R"(
 static float4 furA, furB, furC;
 static float furT;   // tone, xs[15] by kind
+static float2 furS;  // strays (fur::Look::stray): their share of the strands, how far past the coat the longest go
 static float furJoin;  // the shells between and the game's as its one, for the game's own fur: xs[10].x, a hair's y
 static bool furOff;  // the game's own fur: its masks, color and light (the types in xs[9])
 static bool furHair;  // a model's piece of hair (fur::HairOf), whichever fur it has: it moves
@@ -191,6 +192,7 @@ void FurLook(int k) {
     furB = xs[3 * k + 1];
     furC = xs[3 * k + 2];
     furT = xs[15][k];
+    furS = float2(xs[18][k], xs[19][k]);
     furJoin = xs[10].x;
 }
 int FurLookOf() {
@@ -293,7 +295,33 @@ float FurStrands(float2 uv, float h, float du, out float along, out float gap, o
     along = lerp(along, saturate(h / top), even);
     across = lerp(across, 0.5, even);
     seed = lerp(seed, 0.5, even);
-    return lerp(cover, far, toward);
+    cover = lerp(cover, far, toward);
+    // strays (fur::Look::stray): strands of their own, one on each cell of a coarser grid (as many strands to a cell as
+    // their share leaves), rising from the skin at any tuft's will, each leaning its own way the more it rises and
+    // reaching 60 to 100 % of the way to their length, past the coat, frizz or straws of hay. Under the coat they're
+    // lost in it, so they need no tuft's gathering. Under a pixel thin, they cover as much less
+    [branch] if (furS.x > 0 && h < furS.y) {
+        float g = sqrt(furS.x);  // a stray's cell across, in its strands'
+        float2 sv = uv * furB.x * g, vb = floor(sv);
+        float sblur = max(du * furB.x * g, 1e-3);
+        [unroll] for (int y = -1; y <= 1; y++) [unroll] for (int x = -1; x <= 1; x++) {
+            float2 id = vb + float2(x, y), q = FurHash(id + 71.9);
+            float len = lerp(1, furS.y, lerp(0.6, 1, q.x));
+            if (h >= len) continue;
+            float t = h / len;
+            float2 at = id + 0.15 + 0.7 * FurHash(id + 53.1) + (FurHash(id + 89.3) - 0.5) * 0.8 * t * t;
+            float rad = furA.z * lerp(0.6, 1, q.y) * pow(1 - t, furA.w) * g;
+            float d = length(sv - at);
+            float c = saturate((rad - d) / sblur + 0.5) * saturate(2 * rad / sblur);
+            if (c > cover) {
+                cover = c;
+                along = t;
+                seed = q.y;
+                across = saturate(d / max(rad, 1e-3));
+            }
+        }
+    }
+    return cover;
 }
 )";
 
@@ -313,7 +341,7 @@ constexpr const char* kStrandVs = R"(
         o.d1.xyz = saturate(R1.y * c[180].xyz);
         float key = dot(o.d1.xyz, 1), sum = key + dot(o.d0.xyz, 1);
         float3 n = normalize(FUR_NORMAL.xyz), v = float3(x, y, z);
-        float hh = saturate(FUR_TOP * xc.x);
+        float hh = clamp(FUR_TOP * xc.x, 0, 3);  // past 1 on the shells past the game's outermost, for the strays
         FurPick(FUR_HAIRY);
         // bare skin (a vertex of length 0: the weasels' hands and feet, Berri's face) grown to the look's fill of half
         // the longest, out along the normal as the program's own offset: in depth too, outward, so a full projection
@@ -460,7 +488,7 @@ constexpr const char* kStrandPre = R"(
 #endif
             float reach = furC.z * (three ? saturate(t2.b * 2) : 1);
             furH = i.x0.w / max(reach, 1e-3);
-            furCover = furH < 1 && !(hazy && c[2].y == -1) ? FurStrands(fuv, furH, fdu, furAlong, furGap, furSeed, furAcross) : 0;
+            furCover = furH < max(1, furS.x > 0 ? furS.y : 0) && !(hazy && c[2].y == -1) ? FurStrands(fuv, furH, fdu, furAlong, furGap, furSeed, furAcross) : 0;
             float4 strands = float4((float3)lerp(0.70, 0.91, saturate(furH)), furCover);
 #if STAGE3_MODE == 1
             if (three) t3 = strands; else
@@ -643,6 +671,8 @@ void PutLook(float (*xs)[4], int k, const fur::Look& l) {
     c[2] = pc(l.length);
     c[3] = pc(l.fill);
     xs[15][k] = pc(l.tone);  // the kinds' tones side by side, no fourth float4 each
+    xs[18][k] = pc(l.stray);  // the strays likewise
+    xs[19][k] = pc(std::max(l.stray_length, 100u));
 }
 
 // the shells between each two of the game's for the model in the draw's tag: its look's, and none on the game's own
@@ -693,6 +723,46 @@ int HairyStrandsBetween(const float* tag, const float* top) {
             }
     }
     return int(TaggedShells(tag));
+}
+
+// the look a draw's strands take, as Fill hands it to the shaders: the tagged model's (the menu's, else its
+// defaults), a hair piece's own where the draw is the hair's (as HairyStrandsBetween tells); false on the game's own
+// fur or untagged
+bool DrawLook(const float* tag, const float* top, bool hairy, fur::Look& out) {
+    if (!tag || tag[3] != 1.0f || tag[0] < 0) return false;
+    const uint32_t type = uint32_t(tag[0]), model = fur::Canonical(type);
+    if (hairy && top && top[0] > 0)
+        for (const HairPiece& hp : kHairPieces) {
+            fur::ModelLook hair;
+            if (model != hp.model || top[0] / (top[3] + 1) >= hp.most || !OwnHair(hp.model, hair)) continue;
+            out = hair.look;
+            return !hair.game;
+        }
+    if (const fur::ModelLook* m = fur::FindModelLook(model)) {
+        out = m->look;
+        return !m->game;
+    }
+    out = fur::DefaultLook(model);
+    return !fur::GameFurOf(type);
+}
+
+// the shells past the game's outermost (ProgramShading::beyond_of), for the strays that reach past it: as close
+// together as the model's own (its extra shells between), up to kMaxBeyond; *reach how far past, a share of the fur's
+constexpr int kLayers = 16;  // the shells' loop (ProgramShading::top_layers)
+constexpr int kMaxBeyond = 32;
+int Beyond(const float* tag, const float* top, bool hairy, int between, float* reach) {
+    fur::Look l;
+    if (!DrawLook(tag, top, hairy, l) || l.stray == 0) return 0;
+    const float over = float(l.length) * float(std::max(l.stray_length, 100u)) / 1e4f - 1;
+    if (over <= 0.01f) return 0;
+    *reach = over;
+    return std::min(int(std::ceil(over * float(kLayers * (1 + between)))), kMaxBeyond);
+}
+int StrandsBeyond(const float* tag, const float* top, float* reach) {
+    return Beyond(tag, top, false, StrandsBetween(tag, top), reach);
+}
+int HairyStrandsBeyond(const float* tag, const float* top, float* reach) {
+    return Beyond(tag, top, true, HairyStrandsBetween(tag, top), reach);
 }
 
 // each draw's: the three kinds' default looks and the types that pick them, or, for a model with a look of its own
@@ -759,6 +829,9 @@ void FillStrands(float (*xs)[4], const float* tag) { Fill(xs, tag, false); }
 constexpr float kCrownTag[4] = {float(fur::kCrown), 0, 0, 1};
 void FillCrownStrands(float (*xs)[4], const float*) { Fill(xs, kCrownTag, false); }
 int CrownStrandsBetween(const float*, const float*) { return int(TaggedShells(kCrownTag)); }
+int CrownStrandsBeyond(const float*, const float* top, float* reach) {
+    return Beyond(kCrownTag, top, false, int(TaggedShells(kCrownTag)), reach);
+}
 void FillWeaselStrands(float (*xs)[4], const float* tag) { Fill(xs, tag, true); }
 
 float DepthAlpha() {
@@ -793,8 +866,10 @@ void fur::Init() {
                                           .functions = kStrandFunctions, .depth_alpha = depth_alpha,
                                           .without = without, .pre = pre,
                                           .between_of = crown ? CrownStrandsBetween : hairy ? HairyStrandsBetween : StrandsBetween,
-                                          .top_layers = 16,
-                                          .between_mark = int(kTagRegister), .unsharpened = true});
+                                          .top_layers = kLayers,
+                                          .between_mark = int(kTagRegister),
+                                          .beyond_of = crown ? CrownStrandsBeyond : hairy ? HairyStrandsBeyond : StrandsBeyond,
+                                          .unsharpened = true});
     };
     gpu::g_program_watch.push_back({.match = kMatch, .seen = SeenHair, .regs = 1 << 1, .spread = true, .vertices = 1024,
                                     .on = &g_hair_watch});
@@ -1085,6 +1160,7 @@ constexpr LookKey kLookKeys[] = {
     {"length", &fur::Look::length},         {"fill", &fur::Look::fill},
     {"tone", &fur::Look::tone},             {"sway", &fur::Look::sway},
     {"motion", &fur::Look::motion},
+    {"stray", &fur::Look::stray},           {"stray_length", &fur::Look::stray_length},
 };
 
 }  // namespace

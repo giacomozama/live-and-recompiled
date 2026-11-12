@@ -1110,6 +1110,7 @@ private:
     void BindGeometry(const Assembled& a);
     void IssueGeometry(const Assembled& a);
     bool DrawBetweenShells(const State& s, const Assembled& a, uint32_t shading, const Bindings& b);
+    void DrawBeyondShells(const State& s, const Assembled& a, uint32_t shading, const Bindings& b);
     void UploadVertexBuffers(const Assembled& a);
     // visibility tests
     bool EnsureQueries();
@@ -4348,6 +4349,34 @@ bool VulkanBackend::DrawBetweenShells(const State& s, const Assembled& a, uint32
     return true;
 }
 
+// ProgramShading::beyond_of: the shells past the draw, its piece's outermost, drawn after it with its geometry still
+// bound and vertex constants of their own, then the draw's own bindings pushed back
+void VulkanBackend::DrawBeyondShells(const State& s, const Assembled& a, uint32_t shading, const Bindings& b) {
+    const ProgramShading& ps = g_program_shading[shading - 1];
+    if (!ps.beyond_of || !ps.top_layers || ps.top < 0 || ps.top >= int(s.vsc.size())) return;
+    const float* top = s.vsc[size_t(ps.top)].data();
+    if (top[0] <= 0 || int(top[3]) != ps.top_layers - 1) return;
+    const bool reg = ps.fill_register >= 0 && ps.fill_register < int(s.vsc.size());
+    float reach = 0;
+    const int n = ps.beyond_of(reg ? s.vsc[size_t(ps.fill_register)].data() : nullptr, top, &reach);
+    if (n <= 0 || reach <= 0) return;
+    Bindings eb = b;
+    for (int j = 1; j <= n; j++) {
+        Alloc vc = Upload(sizeof(s.vsc.v));
+        std::memcpy(vc.cpu, s.vsc.data(), sizeof(s.vsc.v));
+        const float x = top[0] * (1 + reach * float(j) / float(n));
+        std::memcpy(vc.cpu + size_t(ps.top) * sizeof(s.vsc[0]), &x, sizeof(x));
+        if (ps.between_mark >= 0 && ps.between_mark < int(s.vsc.size())) {
+            const float mark = -1;
+            std::memcpy(vc.cpu + size_t(ps.between_mark) * sizeof(s.vsc[0]) + sizeof(float), &mark, sizeof(mark));
+        }
+        eb.cb[0] = {vc.buf, vc.off, sizeof(s.vsc.v)};
+        PushRaw(eb);
+        IssueGeometry(a);
+    }
+    PushRaw(b);
+}
+
 // Assemble, timed and counted
 bool VulkanBackend::AssembleDraw(const State& s, uint32_t prim, uint32_t start, uint32_t count,
                                  const uint8_t* indices, Assembled& a, bool patches) {
@@ -5058,6 +5087,7 @@ void VulkanBackend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t
     else
         DrawGeometry(a);
     EndCountedDraw(query);
+    if (sh.shading) DrawBeyondShells(s, a, sh.shading, b);  // uncounted too, before the draw's depth pass
     if (hud_bars_ && bound_rt_) {  // the sides a frame wide HUD draw no longer covers, black (kHudInPlaceBars)
         // over the draw's own edge by a console pixel: its outermost texels blend with what lies under, a hairline
         // where the frame's edge hid it

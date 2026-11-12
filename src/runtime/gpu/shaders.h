@@ -116,6 +116,11 @@ struct ProgramShading {
     // when 0 or more, a vertex constant (hardware order) whose y the shells between set to -1 in their copies, for
     // the shaders to tell them from the draw's own
     int between_mark = -1;
+    // when set with top_layers, the shells drawn past a draw that is its piece's outermost (top's w top_layers - 1),
+    // after it, its state the same: their number (0 none) from its fill_register and top registers (null as
+    // between_of's), and in *reach how far past its own x they go, a share of it, x stepped evenly out to there. Marked
+    // as between_mark's, and no depth pass, as the shells between
+    int (*beyond_of)(const float* reg, const float* top, float* reach) = nullptr;
     // when set and FSR is on, its draws keep FSR's sharpening off where they cover (fur, soft by design): they write
     // their output alpha into the target's alpha, the largest kept (kWmaskAlphaMax), the frame's otherwise 0 (the
     // title clears it so and blends no draw by it), and EASU upscales those pixels plainly and RCAS leaves them be

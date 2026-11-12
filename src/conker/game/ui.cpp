@@ -1292,6 +1292,8 @@ void Draw(double fps) {
                             cell("Back glow %", &l.back_glow, 0u, 200u, d.back_glow);
                             cell("Bare skin fill %", &l.fill, 0u, 100u, d.fill);
                             cell("Fur brightness %", &l.tone, 50u, 200u, d.tone);
+                            cell("Strays %", &l.stray, 0u, 30u, d.stray);
+                            cell("Stray length %", &l.stray_length, 100u, 250u, d.stray_length);
                             ImGui::EndTable();
                         }
                         ImGui::PopID();

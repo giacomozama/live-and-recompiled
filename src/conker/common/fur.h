@@ -40,6 +40,11 @@ struct Look {
     uint32_t tone = 100;
     uint32_t sway = 0;      // a hair's (HairOf): % how far it sways in the air, its tips most
     uint32_t motion = 100;  // a hair's: % how far it trails behind the character's movement and turns, and swings back
+    // strays: % of the strands (one in so many, on a grid of their own) longer than the coat, each leaning its own
+    // way, frizz or straws of hay peeking out; 0 none. The renderer draws shells past the game's outermost for them
+    // where they reach past it (fur.cpp StrandsBeyond), none without strays
+    uint32_t stray = 0;
+    uint32_t stray_length = 150;  // % of the coat's length the longest strays reach (each 60 to 100 % of the way there)
     bool operator==(const Look&) const = default;
 };
 // A model's look starts from its kind's: the coat (Conker, the squirrels, grey ones too, and most others); the
