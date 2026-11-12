@@ -59,6 +59,8 @@ void Load() {
     s.render_percent = std::min<uint32_t>(t["render_percent"].value_or(s.render_percent), 200);
     s.fps_cap = t["fps_cap"].value_or(s.fps_cap);
     s.vsync = t["vsync"].value_or(s.vsync);
+    s.hdr = t["hdr"].value_or(s.hdr);
+    s.hdr_paper_white = std::clamp<uint32_t>(t["hdr_paper_white"].value_or(s.hdr_paper_white), 80, 500);
     s.aniso = t["anisotropic_filtering"].value_or(s.aniso);
     s.msaa = t["msaa"].value_or(s.msaa);
     s.smaa = t["smaa"].value_or(s.smaa);
@@ -130,6 +132,8 @@ toml::table Table() {
                   {"render_percent", int64_t(s.render_percent)},
                   {"fps_cap", int64_t(s.fps_cap)},
                   {"vsync", s.vsync},
+                  {"hdr", s.hdr},
+                  {"hdr_paper_white", int64_t(s.hdr_paper_white)},
                   {"anisotropic_filtering", int64_t(s.aniso)},
                   {"msaa", int64_t(s.msaa)},
                   {"smaa", s.smaa},

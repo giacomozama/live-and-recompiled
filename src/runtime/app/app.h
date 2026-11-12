@@ -28,6 +28,10 @@ struct Settings {
     uint32_t render_percent = 100;   // of the size the frame is shown at (RenderScale)
     uint32_t fps_cap = 60;           // 0 unlimited
     bool vsync = true;
+    // HDR output (an HDR10 swap chain, where the display and compositor offer one): the SDR picture shown with its
+    // white at hdr_paper_white nits
+    bool hdr = false;
+    uint32_t hdr_paper_white = 200;
     // pictures shown per frame the title presents: 1 (off), or 2 to 4, the ones between made from the frames around
     // them; the title sets it (Conker from its frame rate), it isn't saved
     uint32_t frame_generation = 1;

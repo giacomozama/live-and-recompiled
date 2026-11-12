@@ -4,12 +4,18 @@
 #include "app/app.h"
 #include "core/log.h"
 
+#include <atomic>
+
 namespace gpu {
 
 std::vector<std::string>& Adapters() {
     static std::vector<std::string> list;
     return list;
 }
+
+static std::atomic<bool> g_hdr_available{false};
+bool HdrAvailable() { return g_hdr_available.load(std::memory_order_relaxed); }
+void SetHdrAvailable(bool on) { g_hdr_available.store(on, std::memory_order_relaxed); }
 
 // A backend is picked by name; each one a platform has gets a line here. Vulkan is the only one so far, and what an
 // unknown name gets.

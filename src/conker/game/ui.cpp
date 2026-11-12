@@ -1167,6 +1167,19 @@ void Draw(double fps) {
                 ImGui::Dummy(ImVec2(0.0f, ImGui::GetStyle().ItemSpacing.y * 0.75f));  // set apart from the dropdown above
                 Check("V-Sync", &s.vsync);
                 Hint("Waits for the display to refresh before showing each frame. Stops screen tearing; turn it off for the lowest latency.", true);
+                {
+                    // offered once the swap chain found an HDR10 format; kept clickable while on, to turn it off
+                    bool can = gpu::HdrAvailable() || s.hdr;
+                    ImGui::BeginDisabled(!can);
+                    Check("HDR", &s.hdr);
+                    ImGui::EndDisabled();
+                    Hint(can ? "Sends the picture to the display as HDR10. Needs HDR turned on in the system's display settings."
+                             : "The display or desktop offers no HDR output.", true);
+                    if (s.hdr) {
+                        Slider("Paper white (nits)", &s.hdr_paper_white, 80, 500, app::Settings{}.hdr_paper_white);
+                        Hint("How bright white is shown.", true);
+                    }
+                }
 
                 ImGui::SeparatorText(T("Quality"));
                 Slider("Render %", &s.render_percent, 25, 200, app::Settings{}.render_percent);

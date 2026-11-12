@@ -92,6 +92,9 @@ private:
 // its own file with a Create<Name>Backend here, and a line in CreateBackend (backend.cpp)
 // the GPUs the backend can draw with, named, as it found them at start (empty before); the settings' gpu names one
 std::vector<std::string>& Adapters();
+// the swap chain's surface offers an HDR10 format (set as the swap chain is made, false before)
+bool HdrAvailable();
+void SetHdrAvailable(bool);
 std::unique_ptr<Backend> CreateBackend(uint32_t width, uint32_t height);
 std::unique_ptr<Backend> CreateVulkanBackend();
 // the same backend driven from a thread of its own: calls return once recorded

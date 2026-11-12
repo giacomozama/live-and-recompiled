@@ -152,6 +152,35 @@ float4 psmain(O i) : SV_Target {
 }
 )";
 
+// the frame as an SDR display shows it (gamma 2.2, Rec.709) into HDR10: Rec.2020, PQ, white at p.x x 10000 nits
+const char* kHdrHlsl = R"(
+cbuffer B : register(b1) { float4 p; float4 unused; };
+Texture2D img : register(t0);
+SamplerState ls : register(s0);
+SamplerState ps : register(s1);
+struct O { float4 p : SV_Position; float2 uv : TEXCOORD0; };
+O vs(uint id : SV_VertexID) {
+    O o;
+    float2 t = float2((id << 1) & 2, id & 2);
+    o.p = float4(t * float2(2, -2) + float2(-1, 1), 0, 1);
+    o.uv = t;
+    return o;
+}
+float3 Pq(float3 y) {
+    const float m1 = 0.1593017578125, m2 = 78.84375, c1 = 0.8359375, c2 = 18.8515625, c3 = 18.6875;
+    float3 ym = pow(saturate(y), m1);
+    return pow((c1 + c2 * ym) / (1 + c3 * ym), m2);
+}
+float4 encode(O i) : SV_Target {
+    float3 c = img.Load(int3(int2(i.p.xy), 0)).rgb;
+    float3 lin = pow(saturate(c), 2.2);
+    const float3x3 to2020 = {0.627404, 0.329283, 0.043313,
+                             0.069097, 0.919540, 0.011362,
+                             0.016391, 0.088013, 0.895595};
+    return float4(Pq(mul(to2020, lin) * p.x), 1);
+}
+)";
+
 const char* kDepthHlsl = R"(
 Texture2D<float> img : register(t0);
 SamplerState ps : register(s1);
@@ -1323,6 +1352,10 @@ private:
     VkSwapchainKHR swap_ = VK_NULL_HANDLE;
     VkFormat swap_fmt_ = kBgra;
     bool swap_vsync_ = true;
+    bool swap_hdr_want_ = false;  // app::Settings::hdr as the swap chain was made
+    bool swap_hdr_ = false;       // HDR10: DrawFrame draws into hdr_frame_, then encodes it into the swap chain image
+    VkFormat ui_fmt_ = kBgra;     // the overlay pipeline's target format
+    ImageRef hdr_frame_;
     uint32_t swap_gen_ = 1;    // the frame generation it has images for
     bool swap_stale_ = false;  // out of date or suboptimal: made again before the next frame
     bool minimised_ = false;
@@ -1683,6 +1716,7 @@ VulkanBackend::~VulkanBackend() {
     late_.clear();
     cap_tex_.clear();
     bb_.clear();
+    hdr_frame_.reset();
     dummy_2d_.reset();
     dummy_3d_.reset();
     dummy_cube_.reset();
@@ -1739,6 +1773,16 @@ bool VulkanBackend::CreateInstance() {
 #else
     std::vector<const char*> exts = app::VulkanExtensions();  // the SDL window's surface ones
 #endif
+    {
+        // the HDR color spaces a surface may list (CreateSwapChain), where the loader has them
+        uint32_t n = 0;
+        vkEnumerateInstanceExtensionProperties(nullptr, &n, nullptr);
+        std::vector<VkExtensionProperties> have(n);
+        vkEnumerateInstanceExtensionProperties(nullptr, &n, have.data());
+        for (const VkExtensionProperties& e : have)
+            if (!std::strcmp(e.extensionName, VK_EXT_SWAPCHAIN_COLOR_SPACE_EXTENSION_NAME))
+                exts.push_back(VK_EXT_SWAPCHAIN_COLOR_SPACE_EXTENSION_NAME);
+    }
     bool debug = std::getenv("XBE_VULKAN_DEBUG") != nullptr;
     const char* validation = "VK_LAYER_KHRONOS_validation";
     if (debug) exts.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
@@ -2092,6 +2136,17 @@ bool VulkanBackend::CreateSwapChain() {
             break;
         }
     }
+    // HDR10: 10 bit PQ in Rec.2020, which DrawFrame encodes to (kHdrHlsl) when the setting is on
+    auto hdr = std::find_if(formats.begin(), formats.end(), [](const VkSurfaceFormatKHR& f) {
+        return f.colorSpace == VK_COLOR_SPACE_HDR10_ST2084_EXT &&
+               (f.format == VK_FORMAT_A2B10G10R10_UNORM_PACK32 || f.format == VK_FORMAT_A2R10G10B10_UNORM_PACK32);
+    });
+    SetHdrAvailable(hdr != formats.end());
+    swap_hdr_want_ = app::Get().hdr;
+    swap_hdr_ = swap_hdr_want_ && hdr != formats.end();
+    if (swap_hdr_) fmt = *hdr;
+    if (swap_hdr_want_ && !swap_hdr_) LOG_FIRST(1, "vulkan: HDR is on but the surface offers no HDR10 format, SDR");
+    if (swap_hdr_) LOGR("vulkan: HDR10 swap chain (format %d)", int(fmt.format));
     vkGetPhysicalDeviceSurfacePresentModesKHR(phys_, surface_, &n, nullptr);
     std::vector<VkPresentModeKHR> modes(n);
     vkGetPhysicalDeviceSurfacePresentModesKHR(phys_, surface_, &n, modes.data());
@@ -2134,6 +2189,24 @@ bool VulkanBackend::CreateSwapChain() {
     swap_fmt_ = fmt.format;
     bb_w_ = ci.imageExtent.width;
     bb_h_ = ci.imageExtent.height;
+    if (hdr_frame_) Retire(std::move(hdr_frame_));
+    if (swap_hdr_) {
+        hdr_frame_ = NewImage({.fmt = kBgra, .w = bb_w_, .h = bb_h_,
+                               .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT});
+        if (!hdr_frame_) swap_hdr_ = false;
+    }
+    // the overlay draws where the frame is drawn: the 8 bit picture HDR encodes from, else the swap chain image
+    if (VkFormat ui = swap_hdr_ ? kBgra : swap_fmt_; ui != ui_fmt_) {
+        ui_fmt_ = ui;
+        if (ui_) {
+            ImGui_ImplVulkan_PipelineInfo pi{};
+            pi.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
+            pi.PipelineRenderingCreateInfo = {VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
+            pi.PipelineRenderingCreateInfo.colorAttachmentCount = 1;
+            pi.PipelineRenderingCreateInfo.pColorAttachmentFormats = &ui_fmt_;
+            ImGui_ImplVulkan_CreateMainPipeline(&pi);
+        }
+    }
     vkGetSwapchainImagesKHR(dev_, swap_, &n, nullptr);
     std::vector<VkImage> images(n);
     vkGetSwapchainImagesKHR(dev_, swap_, &n, images.data());
@@ -2279,7 +2352,7 @@ bool VulkanBackend::InitUi() {
     ii.UseDynamicRendering = true;
     ii.PipelineInfoMain.PipelineRenderingCreateInfo = {VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
     ii.PipelineInfoMain.PipelineRenderingCreateInfo.colorAttachmentCount = 1;
-    ii.PipelineInfoMain.PipelineRenderingCreateInfo.pColorAttachmentFormats = &swap_fmt_;
+    ii.PipelineInfoMain.PipelineRenderingCreateInfo.pColorAttachmentFormats = &ui_fmt_;
     ui_ = ImGui_ImplVulkan_Init(&ii);
     if (!ui_) LOGE("vulkan: the overlay could not start");
     return ui_;
@@ -5587,7 +5660,8 @@ void VulkanBackend::ResizeSwap() {
     if (minimised_) return;
     bool vsync = app::Get().vsync;
     uint32_t gen = std::clamp<uint32_t>(app::Get().frame_generation, 1, kMaxGen);
-    if (swap_ && !swap_stale_ && ext.width == bb_w_ && ext.height == bb_h_ && vsync == swap_vsync_ && gen == swap_gen_)
+    if (swap_ && !swap_stale_ && ext.width == bb_w_ && ext.height == bb_h_ && vsync == swap_vsync_ && gen == swap_gen_ &&
+        app::Get().hdr == swap_hdr_want_)
         return;
     Flush();
     vkDeviceWaitIdle(dev_);
@@ -5777,7 +5851,8 @@ void VulkanBackend::DrawFrame(Image* picture, uint32_t bi, bool fsr) {
         }
     }
 
-    Image& bb = *bb_[bi];
+    Image& bb = swap_hdr_ ? *hdr_frame_ : *bb_[bi];
+    const VkFormat out_fmt = swap_hdr_ ? kBgra : swap_fmt_;
     SetTargets(&bb, nullptr);
     bound_rt_ = bound_ds_ = nullptr;
     EnsureRendering();
@@ -5800,15 +5875,31 @@ void VulkanBackend::DrawFrame(Image* picture, uint32_t bi, bool fsr) {
             };
             Alloc cb = Upload(kPassCbBytes);
             std::memcpy(cb.cpu, p, sizeof(p));
-            DrawFullScreen(EnsurePassPipeline(kFsrHlsl, "rcas", swap_fmt_, -1), cb,
+            DrawFullScreen(EnsurePassPipeline(kFsrHlsl, "rcas", out_fmt, -1), cb,
                            {final_src, lut_->view, VK_NULL_HANDLE, VK_NULL_HANDLE});
         } else {
             float uv[4] = {0, 0, 1, 1};
-            Blit(final_src, uv, {.gamma = gamma_, .rtv = swap_fmt_});
+            Blit(final_src, uv, {.gamma = gamma_, .rtv = out_fmt});
         }
     }
 
     DrawUi();
+    if (swap_hdr_) {
+        // the SDR picture, overlay and all, into the HDR10 image: its white at the paper white setting
+        Transition(bb, kRead);
+        Image& out = *bb_[bi];
+        SetTargets(&out, nullptr);
+        bound_rt_ = bound_ds_ = nullptr;
+        EnsureRendering();
+        SetFullViewport(bb_w_, bb_h_);
+        Alloc cb = Upload(kPassCbBytes);
+        float p[8] = {float(set.hdr_paper_white) / 10000.0f};
+        std::memcpy(cb.cpu, p, sizeof(p));
+        DrawFullScreen(EnsurePassPipeline(kHdrHlsl, "encode", swap_fmt_, -1), cb,
+                       {bb.view, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE});
+        Transition(out, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
+        return;
+    }
     Transition(bb, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
 }
 
