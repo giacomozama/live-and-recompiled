@@ -2200,6 +2200,117 @@ std::shared_ptr<gpu::PixelShader> RawCombiner() {
     return raw;
 }
 
+// the last inline texture offset and format a stage was given, which together name its header (InlineTexture)
+uint32_t g_inline_tex_off[4] = {}, g_inline_tex_fmt[4] = {};
+
+// Indexed triangle draws that follow one another in a walk with nothing changed between them are drawn as one
+// triangle list. A level's static push buffers draw a mesh as many pieces a few indices each, every piece its own
+// begin and end: 10,900 four-index fans of the trench walls and ground in one frame (F3 capture 021802, 13,972 draws
+// against 600 to 2,000 elsewhere), each after the same two constants written again. The chip takes those as one
+// stream; a backend draw each held the frame under 120 FPS at that angle. XBE_NO_DRAW_MERGE draws them one by one.
+struct HeldDraw {
+    std::vector<uint16_t> indices;  // a triangle list
+    uint32_t at = 0, source = 0;    // the first piece's place, for its tag (TagOfDraw)
+    bool open = false;
+};
+HeldDraw g_held;
+
+bool MergeDraws() {
+    static const bool on = std::getenv("XBE_NO_DRAW_MERGE") == nullptr;
+    return on;
+}
+
+// a piece's indices as triangles of a list, the winding kept; false for what is not triangles
+bool AppendTriangles(uint32_t prim, const std::vector<uint16_t>& in, std::vector<uint16_t>& out) {
+    const size_t n = in.size();
+    switch (prim) {
+        case 5:  // triangle list
+            out.insert(out.end(), in.begin(), in.begin() + n / 3 * 3);
+            return true;
+        case 6:  // triangle strip
+            for (size_t i = 0; i + 2 < n; i++) {
+                if (i & 1) out.insert(out.end(), {in[i + 1], in[i], in[i + 2]});
+                else out.insert(out.end(), {in[i], in[i + 1], in[i + 2]});
+            }
+            return true;
+        case 7:  // fan
+            for (size_t i = 1; i + 1 < n; i++) out.insert(out.end(), {in[0], in[i], in[i + 1]});
+            return true;
+        case 8:  // quads
+            for (size_t i = 0; i + 3 < n; i += 4) out.insert(out.end(), {in[i], in[i + 1], in[i + 2], in[i], in[i + 2], in[i + 3]});
+            return true;
+        default: return false;
+    }
+}
+
+// draws the held pieces with the states they were pushed under
+void FlushHeld() {
+    if (!g_held.open) return;
+    g_held.open = false;
+    if (!g_backend || g_held.indices.empty()) return;
+    SyncDeferred();
+    const uint32_t at = std::exchange(g_draw_at, g_held.at), source = std::exchange(g_lod_source, g_held.source);
+    const uint32_t count = uint32_t(g_held.indices.size());
+    DumpRawMethods("walkidx", g_state.vs_handle, 5, count);
+    uint32_t base = std::exchange(g_state.base_vertex, 0);  // the chip has no base vertex
+    BackendDraw(5, 0, count, reinterpret_cast<const uint8_t*>(g_held.indices.data()));
+    g_state.base_vertex = base;
+    g_draw_at = at;
+    g_lod_source = source;
+}
+
+// would method m (packet method `method`) = v change what a held draw is drawn with, so it has to be drawn first.
+// Begin, end and the indices are decided where the walk handles them.
+bool Changes(uint32_t m, uint32_t method, uint32_t v) {
+    if (m == 0x17FC || m == 0x1800 || m == 0x1808 || method == 0x1800 || method == 0x1808 || m == 0x1EA4) return false;
+    if (m >= 0xB80 && m < 0xC00) {  // a constant: changed only if its value does
+        if (g_vs_const_reg >= 192) return false;
+        return std::memcmp(&g_state.vsc[g_vs_const_reg][(m - 0xB80) / 4 & 3], &v, 4) != 0;
+    }
+    if (m >= 0x1720 && m < 0x1760) {
+        uint32_t slot = (m - 0x1720) / 4, h = g_vb_header[slot];
+        return !h || g_state.streams[slot].vb != h || R32(h + 4) != (v & 0x7FFFFFFF);
+    }
+    if (m >= 0x1760 && m < 0x17A0) {
+        const auto& s = g_state.streams[(m - 0x1760) / 4];
+        return s.stride != v >> 8 || s.fmt != (v & 0xFF);
+    }
+    // programs, visibility reports, vertex data of another kind (the attributes' current values outside a begin)
+    if ((m >= 0xB00 && m < 0xB80) || m == 0x1E9C || m == 0x1EA0 || m == gpu::kMClearReport || m == gpu::kMGetReport ||
+        m == 0x1810 || m == 0x1818 || (m >= 0x1500 && m < 0x1528) || (m >= 0x1880 && m < 0x1B00))
+        return true;
+    if (g_state.simple[m >> 2] != v) return true;
+    // the same value again: what the walk derives from it besides simple[]
+    if (m >= 0x1B00 && m < 0x1C00) {
+        uint32_t stage = (m - 0x1B00) / 0x40, sub = (m - 0x1B00) % 0x40;
+        if (sub != 0 && sub != 4) return false;
+        uint32_t h = InlineTexture(sub == 0 ? v : g_inline_tex_off[stage], sub == 4 ? v : g_inline_tex_fmt[stage]);
+        return h && g_state.textures[stage] != h;
+    }
+    if (m == 0x1E70) return g_state.rs[gpu::kRsPsTextureModes] != v;
+    if (m == gpu::kMPsConstant0) return !g_state.chip_tfactor;
+    if (m == 0x3B8) return !g_spec_raw || g_spec_value != v || g_state.rs[gpu::kRsSpecularEnable] != v;
+    if (m == gpu::kMStencilTestEnable) return g_state.rs[gpu::kRsStencilEnable] != v;
+    if (m == kMDepthTestEnable) return g_state.rs[gpu::kRsZEnable] != v;
+    if (m == gpu::kMStencilFail) return g_state.rs[gpu::kRsStencilFail] != v;
+    if (m == kMCullEnable || m == kMCullFace || m == kMFrontFace) {
+        uint32_t front = g_state.simple[kMFrontFace >> 2] ? g_state.simple[kMFrontFace >> 2] : kCw;
+        uint32_t face = g_state.simple[kMCullFace >> 2] ? g_state.simple[kMCullFace >> 2] : kGlBack;
+        uint32_t culled = face == kGlFront ? front : front ^ 1;
+        return g_state.rs[gpu::kRsFrontFace] != front ||
+               g_state.rs[gpu::kRsCullMode] != (g_state.simple[kMCullEnable >> 2] ? culled : 0);
+    }
+    if (m == 0x2A4 || m == 0x29C || m == 0x9C0 || m == 0x9C4) {
+        if (!g_state.chip_fog) return true;
+        if (m == 0x2A4) return g_state.fog_enable != v;
+        if (m == 0x29C) return g_state.fog_mode != v;
+        return std::memcmp(&g_state.fog_param[(m - 0x9C0) / 4], &v, 4) != 0;
+    }
+    if ((m >= 0x260 && m < 0x280) || m == 0x288 || m == 0x28C || (m >= 0xAA0 && m < 0xAE0) || (m >= 0x1E40 && m <= 0x1E60))
+        return g_state.ps != RawCombiner();
+    return false;
+}
+
 // reads the commands pushed since the last call: vertex data between a begin and an end is drawn, visibility tests
 // are run, the rest is skipped
 void Walk(uint32_t end) {
@@ -2362,6 +2473,7 @@ void Walk(uint32_t end) {
             bool last = true;  // the slot's last component
             std::memcpy(&f, &v, 4);
             NoteMethodSeen(m, v);
+            if (g_held.open && Changes(m, method, v)) FlushHeld();
             ApplyVisibilityMethod(m, v);
             if (m == 0x1800 || m == 0x1808 || method == 0x1800 || method == 0x1808) {
                 // NV097_ARRAY_ELEMENT16/32. The title indexes its geometry, and xemu marks both methods
@@ -2389,18 +2501,31 @@ void Walk(uint32_t end) {
                     ~Unplace() { g_draw_at = 0; }
                 } unplace;
                 if (v) {
+                    if (g_held.open && (v < 5 || v > 8)) FlushHeld();
                     g_im_prim = v;
                     g_im_mask = 0;
                     g_im_vertices.clear();
                     g_im_raw.clear();
                     g_im_indices.clear();
                     g_im_ranges.clear();
+                } else if (!g_im_indices.empty() && g_im_prim >= 5 && g_im_prim <= 8 && MergeDraws()) {
+                    // an indexed piece of triangles: held, joined by those that follow (HeldDraw)
+                    if (!g_held.open) {
+                        g_held.open = true;
+                        g_held.indices.clear();
+                        g_held.at = g_draw_at;
+                        g_held.source = g_lod_source;
+                    }
+                    AppendTriangles(g_im_prim, g_im_indices, g_held.indices);
+                    g_im_prim = 0;
+                    g_im_indices.clear();
                 } else if (!g_im_ranges.empty()) {
                     // runs of the bound vertex arrays, each its own primitive
                     uint32_t open = g_im_prim;
                     g_im_prim = 0;
                     if (open) {
                         SyncDeferred();
+                        FlushHeld();
                         LOG_FIRST(4, "d3d: inline draw arrays, prim %u, %zu runs", open, g_im_ranges.size());
                         uint32_t base = std::exchange(g_state.base_vertex, 0);  // the chip has no base vertex
                         for (auto [first, n] : g_im_ranges) BackendDraw(open, first, n, nullptr);
@@ -2408,6 +2533,7 @@ void Walk(uint32_t end) {
                     }
                     g_im_ranges.clear();
                 } else if (!g_im_raw.empty()) {
+                    FlushHeld();
                     uint32_t bytes = uint32_t(g_im_raw.size()) * 4;
                     bool drawn = DrawInlineArray(g_im_prim, g_im_raw.data(), bytes);
                     if (!drawn && g_state.vs && bytes % 28 == 0) {
@@ -2442,6 +2568,7 @@ void Walk(uint32_t end) {
                     uint32_t open = g_im_prim;
                     g_im_prim = 0;
                     if (g_backend && open) {
+                        FlushHeld();
                         SyncDeferred();
                         LOG_FIRST(4, "d3d: inline indexed draw, prim %u, %zu indices", open, g_im_indices.size());
                         DumpRawMethods("walkidx", g_state.vs_handle, open, uint32_t(g_im_indices.size()));
@@ -2452,6 +2579,7 @@ void Walk(uint32_t end) {
                     }
                     g_im_indices.clear();
                 } else {
+                    FlushHeld();
                     EndPrimitive();
                 }
                 continue;
@@ -2553,9 +2681,9 @@ void Walk(uint32_t end) {
                 g_state.simple.set(m >> 2, v);
                 uint32_t stage = (m - 0x1B00) / 0x40, sub = (m - 0x1B00) % 0x40;
                 if (sub == 0 || sub == 4) {
-                    static uint32_t off[4] = {}, fmt[4] = {};
-                    (sub == 0 ? off : fmt)[stage] = v;
-                    if (uint32_t h = InlineTexture(off[stage], fmt[stage])) g_state.textures[stage] = h;
+                    (sub == 0 ? g_inline_tex_off : g_inline_tex_fmt)[stage] = v;
+                    if (uint32_t h = InlineTexture(g_inline_tex_off[stage], g_inline_tex_fmt[stage]))
+                        g_state.textures[stage] = h;
                 } else {
                     RawTextureState(stage, sub, v);
                 }
@@ -2620,6 +2748,7 @@ void Walk(uint32_t end) {
             std::fprintf(stderr, "\n");
         }
     }
+    FlushHeld();  // the next commands may come through another path
     g_walk = end;
 }
 }  // namespace
