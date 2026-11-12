@@ -61,6 +61,7 @@ namespace ui {
 bool g_fps_overlay = false;
 uint32_t g_accent = 4;  // orange
 bool g_fps_title = true;
+bool g_menu_resizable = false;
 
 namespace {
 
@@ -983,13 +984,16 @@ void Draw(double fps) {
     if (!open) return;
 
     app::Settings& s = app::Get();
-    // the whole display but for a margin; the mouse can still reach every edge
+    // the whole display but for a margin; the mouse can still reach every edge. Resizable (Debug): it starts there,
+    // then stays where it is dragged or sized to (by its edges, or the empty space in it), for the session
     const ImVec2 display = ImGui::GetIO().DisplaySize;
     const float scale = ImGui::GetFontSize() / 13.0f;  // the minimums were set with ImGui's 13 px font
     const float margin = std::max(std::round(std::min(display.x, display.y) * 0.04f), 12.0f * scale);
-    ImGui::SetNextWindowPos(ImVec2(margin, margin), ImGuiCond_Always);
+    const ImGuiCond place = g_menu_resizable ? ImGuiCond_Once : ImGuiCond_Always;
+    ImGui::SetNextWindowPos(ImVec2(margin, margin), place);
     ImGui::SetNextWindowSize(ImVec2(std::max(display.x - margin * 2.0f, 1.0f), std::max(display.y - margin * 2.0f, 1.0f)),
-                             ImGuiCond_Always);
+                             place);
+    if (g_menu_resizable) ImGui::SetNextWindowSizeConstraints(ImVec2(320.0f * scale, 200.0f * scale), display);
     if (!was_open) ImGui::SetNextWindowFocus();
     // the menu fades in with the blur behind it (vulkan.cpp Redisplay: the same time and curve)
     static double opened_at = 0.0;
@@ -999,9 +1003,10 @@ void Draw(double fps) {
     g_fade = fade;
     ImGui::PushStyleVar(ImGuiStyleVar_Alpha, fade);
     bool keep_open = true;
+    const ImGuiWindowFlags fixed = g_menu_resizable ? 0 : ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize;
     if (ImGui::Begin("Settings", &keep_open,
-                     ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoCollapse |
-                         ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoSavedSettings)) {
+                     fixed | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoTitleBar |
+                         ImGuiWindowFlags_NoSavedSettings)) {
         // roomier rows, so the pad's cursor is easy to follow and a thumb-sized target is easy to hit
         const ImGuiStyle& base = ImGui::GetStyle();
         ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(base.FramePadding.x * 1.25f, base.FramePadding.y * 1.5f));
@@ -1582,6 +1587,11 @@ void Draw(double fps) {
                 Check("Overlay", &g_fps_overlay);
                 ImGui::SameLine();
                 Check("Window title", &g_fps_title);
+                ImGui::SeparatorText(T("Menu"));
+                Check("Resizable menu", &g_menu_resizable);
+                Hint("Drag the menu's edges to size it, or an empty part of it to move it, to see the game beside it. "
+                     "F7 freezes the game on its frame, drawn again as settings change; F8 steps a frame.",
+                     true);
                 DrawWarp();
                 end_tab();
             }
@@ -1778,6 +1788,7 @@ namespace ui {
 bool g_fps_overlay = false;
 uint32_t g_accent = 4;  // orange
 bool g_fps_title = true;
+bool g_menu_resizable = false;
 
 void Draw(double) {}
 
