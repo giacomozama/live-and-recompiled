@@ -362,7 +362,8 @@ float4 apply(O i) : SV_Target {
 // depth (t1), as the occlusion's, taken by d0..d2 to where the camera of the frame before saw it, the pixel's way
 // across the screen since then; the picture (t0) averaged along it, scaled and held to a length. What lies near the
 // camera (the player's character the camera follows, a weapon held up to it) stays sharp and keeps out of the blur
-// around it: the camera's own motion says nothing of how it moves. b1: px the picture's 1 / size, the scale (the
+// around it: the camera's own motion says nothing of how it moves; so does the screen's middle, where the camera
+// looks. b1: px the picture's 1 / size, the scale (the
 // shutter's share of the time between pictures over the frame's pictures), the longest way as a share of the height;
 // frame, vp, pr, pr2 as the occlusion's; d0..d2 the rows of view now to view before (row . (p, 1))
 const char* kMotionBlurHlsl = R"(
@@ -390,6 +391,10 @@ float2 UvOf(float3 v) {
 }
 // none of the blur nearer than 150 units (a metre and a half), all of it past 400
 float Far(float w) { return saturate((w - 150) / 250); }
+// none of it within 12% of the height of the screen's middle, where the camera looks (the character it follows round),
+// all of it from 35%
+float Edge(float2 uv) { return saturate((length((uv - 0.5) * float2(frame.x / frame.y, 1)) - 0.12) / 0.23); }
+float Keep(float2 uv, float w) { return Far(w) * Edge(uv); }
 float4 blur(O i) : SV_Target {
     float2 uv = i.uv;
     float4 c = a.SampleLevel(ps, uv, 0);
@@ -397,7 +402,7 @@ float4 blur(O i) : SV_Target {
     float3 p = ViewAt(uv, w);
     float3 q = float3(dot(d0.xyz, p) + d0.w, dot(d1.xyz, p) + d1.w, dot(d2.xyz, p) + d2.w);
     if (q.z > -1) return c;  // behind the camera before
-    float2 way = (UvOf(q) - uv) * frame.xy * px.z * Far(w);  // guest pixels
+    float2 way = (UvOf(q) - uv) * frame.xy * px.z * Keep(uv, w);  // guest pixels
     float len = length(way), most = px.w * frame.y;
     if (len < 0.5) return c;
     if (len > most) way *= most / len;
@@ -409,7 +414,7 @@ float4 blur(O i) : SV_Target {
     const int kTaps = 16;
     [unroll] for (int k = 0; k < kTaps; k++) {
         float2 t = uv + step * ((k + jitter) / kTaps - 0.5);
-        float wt = Far(ViewW(b.SampleLevel(ps, t, 0).r));
+        float wt = Keep(t, ViewW(b.SampleLevel(ps, t, 0).r));
         sum += a.SampleLevel(ls, t, 0) * wt;
         weights += wt;
     }
@@ -1620,11 +1625,12 @@ private:
     ImageRef post_tmp_[5];
     // the motion blur's camera (g_view_constants.camera): its view (rows of view space's axes), the frame it came in
     // (seen: any yet), and the one of the frame before; the picture's 3D draws went through more than one viewport (a
-    // split screen), which the blur leaves alone
+    // split screen), which the blur leaves alone; when each frame's camera first came, for how fast it turns
     std::array<float, 4> cam_[3]{}, cam_before_[3]{};
     uint32_t cam_frame_ = 0, cam_before_frame_ = 0;
     bool cam_seen_ = false, cam_before_seen_ = false, many_views_ = false;
-    bool MotionBlurWay(float d[12]) const;
+    std::chrono::steady_clock::time_point cam_at_{}, cam_before_at_{};
+    bool MotionBlurWay(float d[12], float& gain) const;
     ImageRef smaa_area_, smaa_search_;  // SMAA's lookups (gpu/smaa_tex.h)
     std::unordered_map<uint64_t, int> pos_w_;
     uint64_t presents_ = 0;
@@ -4914,6 +4920,8 @@ void VulkanBackend::TrackView(const State& s) {
                 std::copy(cam_, cam_ + 3, cam_before_);
                 cam_before_frame_ = cam_frame_;
                 cam_before_seen_ = cam_seen_;
+                cam_before_at_ = cam_at_;
+                cam_at_ = std::chrono::steady_clock::now();
             }
             for (int i = 0; i < 3; i++) cam_[i] = s.vsc[size_t(vc.camera + i)];
             cam_frame_ = frame;
@@ -5012,9 +5020,12 @@ bool VulkanBackend::EnsureSmaaTextures() {
     return smaa_area_ && smaa_search_;
 }
 
-// the motion blur's way for this picture: d, the rows taking view space now to the frame before's, false for none (the
-// camera still, cut to another place, no camera from the frame before, a split screen)
-bool VulkanBackend::MotionBlurWay(float d[12]) const {
+// the motion blur's way for this picture: d, the rows taking view space now to the frame before's (a camera going round
+// the character it follows keeps the character where it was, and so sharp), gain how much
+// of the blur the turn's speed calls for (none under 40 degrees a second, all of it from 140: only a quick look round
+// blurs, not aiming or looking about slowly), false for none (the camera still or turning slowly, cut to another
+// place, no camera from the frame before, a split screen)
+bool VulkanBackend::MotionBlurWay(float d[12], float& gain) const {
     if (!app::Get().motion_blur || g_view_constants.camera < 0 || !view_ok_ || many_views_ || !cam_seen_ ||
         !cam_before_seen_ || ((cam_frame_ - cam_before_frame_) & 0xFFFFFF) != 1)
         return false;
@@ -5044,7 +5055,12 @@ bool VulkanBackend::MotionBlurWay(float d[12]) const {
     // a cut: turned more than 30 degrees, or moved more than 400 units (4 m), in a frame
     const float turn_cos = (d[0] + d[5] + d[10] - 1) * 0.5f;
     const float moved = std::sqrt(d[3] * d[3] + d[7] * d[7] + d[11] * d[11]);
-    return turn_cos > 0.866f && moved < 400.0f;
+    if (!(turn_cos > 0.866f && moved < 400.0f)) return false;
+    const float dt = std::clamp(std::chrono::duration<float>(cam_at_ - cam_before_at_).count(), 1.0f / 240, 1.0f / 15);
+    const float speed = std::acos(std::min(turn_cos, 1.0f)) * (180.0f / 3.14159265f) / dt;  // degrees a second
+    const float x = std::clamp((speed - 40.0f) / 100.0f, 0.0f, 1.0f);
+    gain = x * x * (3 - 2 * x);
+    return gain > 0.0f;
 }
 
 // the target's picture through the motion blur, SMAA and grade, each pass reading what the one before wrote and the
@@ -5057,7 +5073,8 @@ void VulkanBackend::ApplyPost(Target& t) {
     bool smaa = set.smaa;
     float way[12];
     Target* z = nullptr;
-    bool blur = MotionBlurWay(way);
+    float gain = 0;
+    bool blur = MotionBlurWay(way, gain);
     if (blur) {
         z = FindTarget(post_zs_, true);
         blur = z && z->res && z->res->depth_view && z->w == t.w && z->h == t.h;
@@ -5108,7 +5125,7 @@ void VulkanBackend::ApplyPost(Target& t) {
         if (cap_) fprintf(cap_, "     note motion blur over %08X by %08X\n", t.data, z->data);
         ResolveSamples(*z);
         const auto &s = view_vp_[0], &o = view_vp_[1], &x = view_pr_[0], &y = view_pr_[1], &zr = view_pr_[2];
-        const float scale = float(set.motion_blur) / 100.0f / float(std::max<uint32_t>(Pictures(), 1));
+        const float scale = float(set.motion_blur) / 100.0f * gain / float(std::max<uint32_t>(Pictures(), 1));
         float bp[32] = {1.0f / t.w, 1.0f / t.h, scale, 0.06f,
                         float(t.gw), float(t.gh), (o[2] - s[2] * zr[2]) / post_zscale_, s[2] * zr[3] / post_zscale_,
                         s[0], s[1], o[0], o[1],

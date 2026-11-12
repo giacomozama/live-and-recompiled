@@ -165,9 +165,9 @@ constexpr Line kLines[] = {
      "Alcance de la oclusión ambiental", "Raggio dell'occlusione ambientale", "アンビエントオクルージョンの範囲"},
     {"Motion blur %", "Bewegungsunschärfe %", "Flou de mouvement %", "Desenfoque de movimiento %",
      "Sfocatura di movimento %", "モーションブラー %"},
-    {"Blurs the picture as the camera turns and moves.", "Verwischt das Bild, wenn sich die Kamera dreht und bewegt.",
-     "Floute l'image quand la caméra tourne et se déplace.", "Desenfoca la imagen cuando la cámara gira y se mueve.",
-     "Sfoca l'immagine quando la telecamera ruota e si muove.", "カメラが回転・移動するときに画面をぼかします。"},
+    {"Blurs the picture as the camera turns quickly.", "Verwischt das Bild, wenn sich die Kamera schnell dreht.",
+     "Floute l'image quand la caméra tourne vite.", "Desenfoca la imagen cuando la cámara gira rápido.",
+     "Sfoca l'immagine quando la telecamera ruota velocemente.", "カメラが素早く回転するときに画面をぼかします。"},
     {"Reset", "Zurücksetzen", "Réinitialiser", "Restablecer", "Ripristina", "リセット"},
 
     // enhancements
