@@ -3900,7 +3900,6 @@ void VulkanBackend::QueueLightmap(Tex& tx, const TextureDesc& d, const FormatInf
                         DecodeBlocks(j->host, j->px.data(), j->w, j->h, px);
                         j->px.swap(px);
                     }
-                    auto t0 = std::chrono::steady_clock::now();
                     j->levels.resize(1);
                     SmoothLightmap(j->px, j->w, j->h, j->scale, j->along, j->levels[0]);
                     j->px = {};
@@ -3924,8 +3923,6 @@ void VulkanBackend::QueueLightmap(Tex& tx, const TextureDesc& d, const FormatInf
                         uw = w;
                         uh = h;
                     }
-                    LOGR("lightmap: %ux%u smoothed to %ux%u in %.1f ms", j->w, j->h, j->w * j->scale, j->h * j->scale,
-                         std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
                     j->done.store(true, std::memory_order_release);
                 }
             });
