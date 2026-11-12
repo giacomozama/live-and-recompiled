@@ -448,6 +448,10 @@ at = 0x2EBB36  # an airborne character's vertical substeps: the console's count 
 call = "ConkerAirSubsteps"
 
 [[hook]]
+at = 0x2A4471  # the cutscene censor box's move: its velocity is a console frame's, spread over the frame's ticks
+call = "ConkerCensorMove"
+
+[[hook]]
 at = 0x312FAB  # a weapon mode's measured speed: a frame of one tick counts its distance as two (walk or run, clip speed)
 call = "ConkerWeaponWalkSpeed"
 

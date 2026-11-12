@@ -922,6 +922,33 @@ void ConkerWeaponWalkSpeed(X86Context& ctx, uint8_t* base) {
     if (display::GameRate() > 30 && kernel::R32(0x7FA20C) == 1) ctx.xmm[0].f[0] *= 2.0f;
 }
 
+// The cutscene censor box (0x2A442B, while the byte [0x8496FC] is set): a 100x100 rectangle of the frame pixelated
+// in 7x7 blocks (0x1EB210) at the ints [0x849700] x, [0x849704] y, which the scene's command 0x93 (0x59002) sets
+// with a velocity in pixels a frame, the ints [0x849708] and [0x84970C], added each drawn frame (0x2A4471) unless
+// paused. Each value is in pixels a console frame of two ticks: at 60 FPS it was added twice as often and the box slid
+// off the caveman boss as the camera panned (F3 captures 133631, 133632: y 260 to 400 in a second, x still). Above
+// 30 a frame adds the velocity times its ticks over two, the odd half pixel carried to the next frame.
+// [[hook]] before 0x2A4471: the add of the velocity to the position
+void ConkerCensorMove(X86Context& ctx, uint8_t* base) {
+    (void)ctx;
+    if (display::GameRate() <= 30) return;
+    static int32_t last[2] = {}, carry[2] = {};
+    const uint32_t ticks = std::clamp(kernel::R32(0x7FA20C), 1u, 60u);
+    for (int i = 0; i < 2; i++) {
+        const uint32_t at = 0x849700 + 4 * i;
+        int32_t pos, vel;
+        std::memcpy(&pos, base + at, 4);
+        std::memcpy(&vel, base + at + 8, 4);
+        if (pos != last[i]) carry[i] = 0;  // placed again by the scene
+        const int32_t sum = vel * int32_t(ticks) + carry[i];
+        const int32_t step = sum >= 0 ? sum / 2 : -((1 - sum) / 2);  // floor
+        carry[i] = sum - 2 * step;
+        last[i] = pos + step;
+        const int32_t before = last[i] - vel;  // the game adds vel next
+        std::memcpy(base + at, &before, 4);
+    }
+}
+
 // 0x2EBAD0 (esi the character) moves an airborne character up and down in fixed substeps: as many as the time scale
 // [0x7FDB8C] (the slow motion factor times ticks / 2) times 10, truncated (0x2EBB32), each taking [+0xD4] x 0.1 off the
 // vertical speed [+0xD0] and adding the speed x 0.05 to y [+0x7C]. Heist's slow motion dive across the bank hall
