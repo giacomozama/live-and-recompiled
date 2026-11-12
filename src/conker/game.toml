@@ -403,6 +403,14 @@ at = 0x636AF   # a package taken by the level load: a class's, its character sel
 call = "ConkerMenuPackages"
 
 [[hook]]
+at = 0x7FC6E   # a player's draw, its effect passes chosen: a cloaked or shielded player drawn with its match model (characters::g_menu_models)
+call = "ConkerMenuEffects"
+
+[[hook]]
+at = 0x805A6   # the draw's end: the character select model back
+call = "ConkerMenuEffectsEnd"
+
+[[hook]]
 at = 0x801A2   # a player's see-through pieces: the Tediz Poisoner's character select helmet drawn solid
 call = "ConkerSolidHelmet"
 

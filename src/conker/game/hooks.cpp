@@ -485,8 +485,12 @@ static void SurveyLevelModels(X86Context& ctx, uint8_t* base) {
     LOGR("fur survey: level %u has %d models: %s", level, count, line.c_str());
 }
 
-// the players drawn with a character select model, and that model. Game thread
-static std::unordered_map<uint32_t, uint32_t> g_menu_drawn;
+// the players drawn with a character select model: that model, its instance and scene copy in slot 0, and the
+// match model's they took the place of. Game thread
+struct MenuDrawn {
+    uint32_t model, inst, copy, match_inst, match_copy;
+};
+static std::unordered_map<uint32_t, MenuDrawn> g_menu_drawn;
 
 // [[hook]] at 0x2B3368, after 0x2B3510; ebp the player
 void ConkerMenuSkeleton(X86Context& ctx, uint8_t* base) {
@@ -534,13 +538,14 @@ void ConkerMenuSkeleton(X86Context& ctx, uint8_t* base) {
     X86_PUSH32(0x2B3368u);
     sub_000865C0(ctx, base);
     ctx.esp += 8;
+    const uint32_t match_inst = kernel::R32(player + 0x4B0), match_copy = kernel::R32(player + 0x4C4);
     kernel::W32(player + 0x4B0, inst);
     kernel::W32(player + 0x4C4, copy);
     ctx.ecx = player, ctx.ebx = kernel::R32(player + 0x3C8);
     X86_PUSH32(0x2B3368u);
     sub_002B3510(ctx, base);
     ctx = saved;
-    g_menu_drawn[player] = model;
+    g_menu_drawn[player] = {model, inst, copy, match_inst, match_copy};
     LOGI("models: player %08X draws %s (%u), instance %08X, scene %08X", player, ModelName(model).c_str(), model, inst,
          scene);
 }
@@ -552,13 +557,101 @@ void ConkerMenuSkeleton(X86Context& ctx, uint8_t* base) {
 // solid (d3d::OpaqueDraws); the helmet is all that pass has
 static bool OpaqueHelmet(uint32_t player) {
     const auto it = g_menu_drawn.find(player);
-    if (it == g_menu_drawn.end() || kernel::R32(player + 0x3A8) != 0) return false;
+    if (it == g_menu_drawn.end() || kernel::R32(player + 0x3A8) != 0 || kernel::R32(player + 0x4B0) != it->second.inst)
+        return false;
+    const uint32_t model = it->second.model;
     static std::unordered_map<uint32_t, bool> poisoner;  // by model
-    const auto p = poisoner.find(it->second);
+    const auto p = poisoner.find(model);
     if (p != poisoner.end()) return p->second;
-    const std::string name = ModelName(it->second);
-    return poisoner[it->second] = name == "MultiFrontend\\CombatTedizMultiPoisoner" ||
-                                  name == "MultiFrontend\\CombatTedizMultiWWIIPoisoner";
+    const std::string name = ModelName(model);
+    return poisoner[model] = name == "MultiFrontend\\CombatTedizMultiPoisoner" ||
+                             name == "MultiFrontend\\CombatTedizMultiWWIIPoisoner";
+}
+
+// The draw's effect passes (0x7FC05..0x7FD43: flags at [esp+0xE..0x11] by the draw's kind [ebp+0x18]) each run only
+// when the drawn model's data allows them (its word +0xC: bit 1 [esp+0xE], 2 [esp+0xF], 8 [esp+0x10], 0x20
+// [esp+0x11]), and 0x82730 draws them with an effect's entries of that model's own tables ([data+0x10], [data+0x14],
+// by its words +0x1C..+0x26), the effect picked by the player's state: cloaked when [[player+0x568]+0x624] is set
+// (0x2C38A0; its draws are of kind 10), others in action states 0x3D and 0x3F ([player+0x64], 0x82A84). The
+// Sneaker's shield is none of those: it is up while [[player+0x568]+0x6F8] is 1 (and the byte at +0x5DD), from the
+// raise (animation 0x54E at +0x474) to the lower (0x54D), found by diffing the player's objects across two shields
+// (2026-11-12); the match model draws it, the character select model has no shield. The character select models have
+// none of the effects' entries, so a cloaked player lost only its fur and a shielded one showed nothing. A match draws each
+// player four times a frame (kinds 3, 1, 9, 2), stencil passes over each other's pixels; kind 2 asks for pass 2
+// every frame, and drawn with the match model under the menu model's other passes it left a shell on screen at all
+// times (2026-11-12). So while a player is cloaked or shielded every draw of it is of its match model, whose instance
+// and scene copy (bound to the same animation controller) are put back in slot 0 for the draw. The player swapped
+// back, 0 for none. Game thread
+static uint32_t g_effect_player = 0;
+
+static bool EffectOn(uint32_t player, uint32_t kind, uint32_t model) {
+    const uint32_t owner = kernel::R32(player + 0x568), act = kernel::R32(player + 0x64);
+    if (kind == 10 || act == 0x3D || act == 0x3F) return true;
+    if (owner < 0x10000) return false;
+    if (kernel::G<uint8_t>(owner + 0x624)) return true;
+    static std::unordered_map<uint32_t, bool> sneaker;  // by model
+    auto s = sneaker.find(model);
+    if (s == sneaker.end()) s = sneaker.emplace(model, ModelName(model).find("Sneaker") != std::string::npos).first;
+    return s->second && kernel::R32(owner + 0x6F8) != 0;
+}
+
+// XBE_MENU_EFFECT_TRACE=1: a player drawn with a menu model, each time a kind of its draws changes what it asks for:
+// the kind [ebp+0x18], viewport [ebp+0xC] and alpha [ebp+0x14], the flags at [esp+0xE..0x11], the player's action
+// state [player+0x64] and state [player+0xA1], the cloak's [[player+0x568]+0x624], and the model drawn; with the
+// draws of that kind since the last line
+static void TraceMenuEffects(X86Context& ctx, uint32_t player, bool swap) {
+    static const bool on = [] {
+        const char* e = std::getenv("XBE_MENU_EFFECT_TRACE");
+        return e && *e && *e != '0';
+    }();
+    if (!on) return;
+    char line[320];
+    const uint32_t owner = kernel::R32(player + 0x568), kind = kernel::R32(ctx.ebp + 0x18);
+    std::snprintf(line, sizeof(line), "kind %u viewport %u alpha %u flags e%u f%u g%u h%u act %02X state %u cloak %u: %s",
+                  kind, kernel::R32(ctx.ebp + 0xC), kernel::R32(ctx.ebp + 0x14), kernel::G<uint8_t>(ctx.esp + 0xE),
+                  kernel::G<uint8_t>(ctx.esp + 0xF), kernel::G<uint8_t>(ctx.esp + 0x10),
+                  kernel::G<uint8_t>(ctx.esp + 0x11), kernel::R32(player + 0x64), kernel::G<uint8_t>(player + 0xA1),
+                  owner >= 0x10000 ? kernel::G<uint8_t>(owner + 0x624) : 0u, swap ? "match model" : "menu model");
+    struct Seen {
+        std::string line;
+        uint32_t draws = 0;
+    };
+    static std::unordered_map<uint64_t, Seen> seen;  // by player, viewport and kind
+    Seen& s = seen[uint64_t(player) << 16 | (kernel::R32(ctx.ebp + 0xC) & 0xFF) << 8 | (kind & 0xFF)];
+    s.draws++;
+    if (s.line == line) return;
+    LOGR("menu effects: player %08X %s (after %u draws)", player, line, s.draws);
+    s.line = line;
+    s.draws = 0;
+}
+
+// [[hook]] at 0x7FC6E, the effect flags set, before the model's own are read; ebx the player
+void ConkerMenuEffects(X86Context& ctx, uint8_t* base) {
+    (void)base;
+    const uint32_t player = ctx.ebx;
+    const auto it = g_menu_drawn.find(player);
+    if (it == g_menu_drawn.end() || kernel::G<uint8_t>(player + 0x3A8) != 0) return;
+    const MenuDrawn& d = it->second;
+    if (kernel::R32(player + 0x4B0) != d.inst) return;
+    const bool swap = d.match_inst >= 0x10000 && kernel::R32(d.match_inst + 0x24) >= 0x10000 &&
+                      d.match_copy >= 0x10000 && EffectOn(player, kernel::R32(ctx.ebp + 0x18), d.model);
+    TraceMenuEffects(ctx, player, swap);
+    if (!swap) return;
+    kernel::W32(player + 0x4B0, d.match_inst);
+    kernel::W32(player + 0x4C4, d.match_copy);
+    g_effect_player = player;
+}
+
+// [[hook]] at 0x805A6, the draw's end: the menu model back in slot 0
+void ConkerMenuEffectsEnd(X86Context& ctx, uint8_t* base) {
+    (void)ctx, (void)base;
+    if (!g_effect_player) return;
+    const auto it = g_menu_drawn.find(g_effect_player);
+    if (it != g_menu_drawn.end()) {
+        kernel::W32(g_effect_player + 0x4B0, it->second.inst);
+        kernel::W32(g_effect_player + 0x4C4, it->second.copy);
+    }
+    g_effect_player = 0;
 }
 
 // [[hook]] at 0x801A2, before pass 2; ebx the player
