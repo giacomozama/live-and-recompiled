@@ -62,6 +62,7 @@ endforeach()
 set(ENABLE_HLSL ON CACHE BOOL "" FORCE)
 FetchContent_Declare(glslang GIT_REPOSITORY https://github.com/KhronosGroup/glslang.git GIT_TAG 15.0.0 GIT_SHALLOW TRUE)
 FetchContent_MakeAvailable(zydis tomlplusplus imgui roboto SDL3 miniz vulkan_headers volk vma glslang fltk)
+execute_process(COMMAND ${CMAKE_COMMAND} -P ${CMAKE_CURRENT_LIST_DIR}/patch_imgui.cmake ${imgui_SOURCE_DIR})
 
 # Codegen runs on the host. By default it is this build's own xbe_recomp, which works when the target runs here
 # (a native build, or Windows on Windows); cross compiling for another OS, set XBE_CODEGEN_TOOL to a native one's path.

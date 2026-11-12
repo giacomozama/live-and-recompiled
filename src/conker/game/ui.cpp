@@ -98,6 +98,7 @@ bool Arrived(ImGuiID& was) {
     return arrived;
 }
 ImGuiID g_main_focus = 0;
+bool g_tab_focused = false;  // the pad's cursor is on a tab button (last frame); render thread only
 bool g_tab_arrived = false;  // the cursor reached a tab this frame (its page follows); render thread only
 
 // the sounds of the menu, for the keyboard and the pads alone: a tab or setting changing, and the cursor moving.
@@ -159,26 +160,40 @@ void Cues(bool opened_before, bool settings_changed) {
     }
 }
 
-// a 1px black line around the current window, a 1px translucent one just inside it and a soft shadow outside, drawn
-// on the foreground list (which the window's own clip box doesn't limit), faded by `fade`
-void DrawWindowFrame(float fade) {
-    // a 1px black line around the window and a 1px translucent one just inside it, over the window's own edge
-    // (the foreground list isn't clipped to the window)
-    const ImVec2 lo = ImGui::GetWindowPos(), hi(lo.x + ImGui::GetWindowWidth(), lo.y + ImGui::GetWindowHeight());
-    const float round = ImGui::GetStyle().WindowRounding;
-    ImDrawList* dl = ImGui::GetForegroundDrawList();
-    // AddRect draws its line inside the rectangle it is given: the black one's rectangle is the window's grown by
-    // a pixel, the white one's the window's own
+// a 1px black line around a rectangle, a 1px translucent one just inside it and a soft shadow outside, faded by `fade`
+void DrawFrame(ImDrawList* dl, ImVec2 lo, ImVec2 hi, float round, float fade, int rings = 16, float strength = 90.0f, float line = 255.0f) {
+    // AddRect draws its line inside the rectangle it is given: the black one's rectangle is the rectangle grown by
+    // a pixel, the white one's its own
     // a soft shadow outside the black line: rings a pixel wide, each fainter than the one inside it
-    constexpr int kShadow = 16;
+    const int kShadow = rings;
     for (int k = 0; k < kShadow; k++) {
         const float t = 1.0f - float(k) / float(kShadow), grow = 2.0f + float(k);
         dl->AddRect(ImVec2(lo.x - grow, lo.y - grow), ImVec2(hi.x + grow, hi.y + grow),
-                    IM_COL32(0, 0, 0, int(90.0f * t * t * t * fade)), round + grow, 0, 1.0f);
+                    IM_COL32(0, 0, 0, int(strength * t * t * t * fade)), round + grow, 0, 1.0f);
     }
     dl->AddRect(ImVec2(lo.x - 1.0f, lo.y - 1.0f), ImVec2(hi.x + 1.0f, hi.y + 1.0f),
-                IM_COL32(0, 0, 0, int(255.0f * fade)), round + 1.0f, 0, 1.0f);
+                IM_COL32(0, 0, 0, int(line * fade)), round + 1.0f, 0, 1.0f);
     dl->AddRect(lo, hi, IM_COL32(255, 255, 255, int(24.0f * fade)), round, 0, 1.0f);
+}
+
+// the lower edge of DrawFrame's two lines (no shadow), up to where the corners turn into the sides: a header's, under
+// the card's own outline
+void DrawFrameBottom(ImDrawList* dl, ImVec2 lo, ImVec2 hi, float round, float fade, float line) {
+    auto edge = [&](ImVec2 a, ImVec2 b, float r, ImU32 col) {  // as AddRect's line, inside the rectangle given
+        a.x += 0.5f, a.y += 0.5f, b.x -= 0.5f, b.y -= 0.5f;
+        r = std::min(r, (b.x - a.x) * 0.5f);
+        dl->PathArcTo(ImVec2(b.x - r, b.y - r), r, 0.0f, IM_PI * 0.5f);
+        dl->PathArcTo(ImVec2(a.x + r, b.y - r), r, IM_PI * 0.5f, IM_PI);
+        dl->PathStroke(col, 0, 1.0f);
+    };
+    edge(ImVec2(lo.x - 1.0f, lo.y - 1.0f), ImVec2(hi.x + 1.0f, hi.y + 1.0f), round + 1.0f, IM_COL32(0, 0, 0, int(line * fade)));
+    edge(lo, hi, round, IM_COL32(255, 255, 255, int(24.0f * fade)));
+}
+
+// the current window's frame, on the foreground list (which the window's own clip box doesn't limit)
+void DrawWindowFrame(float fade) {
+    const ImVec2 lo = ImGui::GetWindowPos(), hi(lo.x + ImGui::GetWindowWidth(), lo.y + ImGui::GetWindowHeight());
+    DrawFrame(ImGui::GetForegroundDrawList(), lo, hi, ImGui::GetStyle().WindowRounding, fade);
 }
 
 // the game is held while the menu or the prompt is up (kernel::Hold), but for a multiplayer match, which runs on for
@@ -355,12 +370,18 @@ struct {
     ImGuiID height_id = 0;
     float max_y = 0.0f;       // the layout's extent before the rows, which a part-open section keeps to its drawn part
 } g_sec;
+float g_card_l = 0.0f, g_card_r = 0.0f;  // the open section's card, which the lines between its settings stay within
+bool g_any_section = false;             // a section above in this tab: the next card keeps its distance from it
 float g_clip_bottom = 3.4e38f;  // lines drawn between settings stay above this while a section is part open
+
+void SettingGap();
 
 void EndSection() {
     if (!g_sec.active) return;
     g_sec.active = false;
     ImGuiWindow* w = ImGui::GetCurrentWindow();
+    ImGui::Dummy(ImVec2(0.0f, ImGui::GetStyle().ItemSpacing.y));  // the card's room under its last setting
+    g_card_l = g_card_r = 0.0f;
     const float measured = ImGui::GetCursorScreenPos().y - g_sec.y0;
     w->StateStorage.SetFloat(g_sec.height_id, measured);
     if (g_sec.faded) ImGui::PopStyleVar();
@@ -377,24 +398,54 @@ void EndSection() {
 
 bool Section(const char* name) {
     EndSection();
-    const float pad = ImGui::GetStyle().ItemSpacing.y * 0.3f;  // air inside an open section, above its rows and below
-    if (g_section_open) ImGui::Dummy(ImVec2(0.0f, pad * g_sec.t));
     // the header is rounded and sits in from the window's edges, by less than the rows under it
     const float margin = std::round(RowInset() * 0.5f);
     ImGuiWindow* w = ImGui::GetCurrentWindow();
     InsetOff();
+    if (g_any_section) {  // between one card and the next, as far as the header is from the sides (the cursor is at an open card's bottom, an item spacing below a closed one's)
+        const ImVec2 at = ImGui::GetCursorScreenPos();
+        ImGui::SetCursorScreenPos(ImVec2(at.x, at.y + margin - (g_section_open ? 0.0f : ImGui::GetStyle().ItemSpacing.y)));
+    }
+    g_any_section = true;
     ImGui::Indent(margin);
-    w->WorkRect.Max.x -= margin;
-    ImGui::PushStyleVarY(ImGuiStyleVar_FramePadding, ImGui::GetStyle().FramePadding.y * 1.2f);
-    const bool open = ImGui::CollapsingHeader(T(name), ImGuiTreeNodeFlags_DefaultOpen);
-    ImGui::PopStyleVar();
-    ImGui::Unindent(margin);
-    w->WorkRect.Max.x += margin;
-
+    const float work_right = w->WorkRect.Max.x;
+    w->WorkRect.Max.x = std::round(work_right - margin);
+    {
+        // a header a whole number of pixels tall, so its edges and the card's border meet
+        const float fs = ImGui::GetFontSize();
+        ImGui::PushStyleVarY(ImGuiStyleVar_FramePadding, (std::round(fs + ImGui::GetStyle().FramePadding.y * 2.4f) - fs) * 0.5f);
+    }
     const ImGuiID id = ImGui::GetID(name);
     const ImGuiID t_id = ImHashStr("section_t", 0, id), h_id = ImHashStr("section_h", 0, id);
     float t = w->StateStorage.GetFloat(t_id, -1.0f);
     const float height = w->StateStorage.GetFloat(h_id, 0.0f);
+    {
+        // the section's card, framed like the window, round its header and rows (as tall as the rows were
+        // laid out last frame, by how far open it is)
+        // on whole pixels, the header's frame too, so the border and the header's fill meet exactly
+        ImVec2 at = ImGui::GetCursorScreenPos();
+        at = ImVec2(std::round(at.x), std::round(at.y));
+        ImGui::SetCursorScreenPos(at);
+        const float shown = t < 0.0f ? 1.0f : t * t * (3.0f - 2.0f * t);
+        const float bottom = std::round(at.y + ImGui::GetFrameHeight() + (t != 0.0f ? ImGui::GetStyle().ItemSpacing.y + height * shown : 0.0f));
+        ImVec4 bg = ImGui::GetStyle().Colors[ImGuiCol_WindowBg];  // a tiny bit brighter than the backdrop
+        bg.x += (1.0f - bg.x) * 0.03f, bg.y += (1.0f - bg.y) * 0.03f, bg.z += (1.0f - bg.z) * 0.03f, bg.w = 1.0f;
+        w->DrawList->AddRectFilled(at, ImVec2(std::round(w->WorkRect.Max.x), bottom), ImGui::GetColorU32(bg), ImGui::GetStyle().FrameRounding);
+        DrawFrame(w->DrawList, at, ImVec2(std::round(w->WorkRect.Max.x), bottom), ImGui::GetStyle().FrameRounding, ImGui::GetStyle().Alpha, 6, 30.0f, 120.0f);
+        g_card_l = at.x;
+        g_card_r = w->WorkRect.Max.x;
+    }
+    const bool open = ImGui::CollapsingHeader(T(name), ImGuiTreeNodeFlags_DefaultOpen);
+    // open, the header keeps the card's black and translucent white lines along its bottom edge and round its lower corners, setting it off from the
+    // rows (the rest of its outline is the card's own)
+    if (open || t > 0.0f) {
+        const ImVec2 lo = ImGui::GetItemRectMin(), hi = ImGui::GetItemRectMax();
+        DrawFrameBottom(w->DrawList, lo, hi, ImGui::GetStyle().FrameRounding, ImGui::GetStyle().Alpha, 120.0f);
+    }
+    ImGui::PopStyleVar();
+    ImGui::Unindent(margin);
+    w->WorkRect.Max.x = work_right;
+
     const float target = open ? 1.0f : 0.0f;
     if (t < 0.0f || height <= 0.0f) {
         t = target;  // first sight, or never laid out open: no animation
@@ -411,6 +462,7 @@ bool Section(const char* name) {
     g_section_open = t > 0.0f;
     g_first_row = true;
     if (t <= 0.0f) {
+        g_card_l = g_card_r = 0.0f;
         InsetOff();
         g_sec.t = 0.0f;
         return false;
@@ -474,13 +526,15 @@ void SettingGap() {
         const float air = ImGui::GetStyle().ItemSpacing.y * 0.6f;  // above and below the line, around each setting
         ImGui::Dummy(ImVec2(0.0f, air));
         const float y = std::round(ImGui::GetCursorScreenPos().y);
-        const float right = w->Pos.x + w->Size.x - w->ScrollbarSizes.x;
+        const bool carded = g_card_r > g_card_l;  // inside a section's card: the line runs its width
+        const float left = carded ? g_card_l : w->Pos.x;
+        const float right = carded ? g_card_r : w->Pos.x + w->Size.x - w->ScrollbarSizes.x;
         // past the child's own clip box sideways (it keeps half the padding), not up or down: a line scrolled out of
         // the page stays out of it
         const float top = std::max(y - 1.0f, w->InnerClipRect.Min.y), bottom = std::min({y + 2.0f, w->InnerClipRect.Max.y, g_clip_bottom});
         if (top < bottom) {
-            w->DrawList->PushClipRect(ImVec2(w->Pos.x, top), ImVec2(right, bottom));
-            w->DrawList->AddLine(ImVec2(w->Pos.x, y), ImVec2(right, y), ImGui::GetColorU32(ImGuiCol_Separator));
+            w->DrawList->PushClipRect(ImVec2(left, top), ImVec2(right, bottom));
+            w->DrawList->AddLine(ImVec2(left, y), ImVec2(right, y), ImGui::GetColorU32(ImGuiCol_Separator));
             w->DrawList->PopClipRect();
         }
         ImGui::Dummy(ImVec2(0.0f, 1.0f + air));
@@ -1020,7 +1074,16 @@ void PadFrame(bool open, bool quit) {
 
     if (!shown && !fed) return;
     fed = shown;
-    io.AddKeyEvent(ImGuiKey_GamepadFaceDown, drive.a);
+    // A on a tab button goes down into its page (the cursor on the first setting) instead of activating the tab, and A
+    // is the page's own only once it has been let go
+    static bool a_was = false, a_eaten = false;
+    const bool on_tab = g_tab_focused;
+    g_tab_focused = false;
+    const bool into_page = drive.a && !a_was && on_tab;
+    if (into_page) a_eaten = true;
+    if (!drive.a) a_eaten = false;
+    a_was = drive.a;
+    io.AddKeyEvent(ImGuiKey_GamepadFaceDown, drive.a && !a_eaten);
     io.AddKeyEvent(ImGuiKey_GamepadFaceRight, drive.b);
     io.AddKeyEvent(ImGuiKey_GamepadFaceUp, drive.y);
     // the left stick presses the d-pad's keys (ImGui moves the cursor with those alone, and repeats them as they are
@@ -1034,7 +1097,7 @@ void PadFrame(bool open, bool quit) {
     lean(-drive.lx, stick_left, horizontal), lean(drive.lx, stick_right, horizontal);
     lean(drive.ly, stick_up, !horizontal), lean(-drive.ly, stick_down, !horizontal);
     io.AddKeyEvent(ImGuiKey_GamepadDpadUp, drive.up || stick_up);
-    io.AddKeyEvent(ImGuiKey_GamepadDpadDown, drive.down || stick_down);
+    io.AddKeyEvent(ImGuiKey_GamepadDpadDown, drive.down || stick_down || into_page);
     io.AddKeyEvent(ImGuiKey_GamepadDpadLeft, drive.left || stick_left);
     io.AddKeyEvent(ImGuiKey_GamepadDpadRight, drive.right || stick_right);
 }
@@ -1264,6 +1327,7 @@ void Draw(double fps) {
                                     ImRect(ImGui::GetItemRectMin().x - origin.x, ImGui::GetItemRectMin().y - origin.y,
                                            ImGui::GetItemRectMax().x - origin.x, ImGui::GetItemRectMax().y - origin.y));
                 }
+                if (ImGui::IsItemFocused()) g_tab_focused = true;
                 const bool arrived = Arrived(g_main_focus) && !selected;
                 if (arrived) g_tab_target.store(mine), g_tab_arrived = true;
                 // drawn once the tabs are all in (below), when the one that is becoming selected is known
@@ -1303,6 +1367,7 @@ void Draw(double fps) {
             };
             auto end_tab = [] {
                 EndSection();
+                g_any_section = false;
                 g_section_open = false;
                 g_first_row = true;
                 ImGui::Dummy(ImVec2(0.0f, ImGui::GetFontSize() * 1.5f));  // space below the last row when scrolled to the end
