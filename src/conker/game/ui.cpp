@@ -347,13 +347,18 @@ void InsetOff() {
 bool Section(const char* name) {
     const float pad = ImGui::GetStyle().ItemSpacing.y * 0.3f;  // air inside an open section, above its rows and below
     if (g_section_open) ImGui::Dummy(ImVec2(0.0f, pad));
+    // the header is rounded and sits in from the window's edges, by less than the rows under it
+    const float margin = std::round(RowInset() * 0.5f);
+    ImGuiWindow* w = ImGui::GetCurrentWindow();
     InsetOff();
-    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 0.0f);
+    ImGui::Indent(margin);
+    w->WorkRect.Max.x -= margin;
+    ImGui::PushStyleVarY(ImGuiStyleVar_FramePadding, ImGui::GetStyle().FramePadding.y * 1.2f);
     const bool open = ImGui::CollapsingHeader(T(name), ImGuiTreeNodeFlags_DefaultOpen);
     ImGui::PopStyleVar();
-    if (open) {
-        InsetOn();
-    }
+    ImGui::Unindent(margin);
+    w->WorkRect.Max.x += margin;
+    if (open) InsetOn();
     g_section_open = open;
     g_first_row = true;
     return open;
@@ -1224,6 +1229,7 @@ void Draw(double fps) {
                 ImGui::PopStyleVar();
                 g_inset_on = false;
                 InsetOn();
+                ImGui::Dummy(ImVec2(0.0f, std::round(RowInset() * 0.5f)));  // as far below the tab row's separator as the header is from the sides
                 if (g_pad.scroll != 0.0f) ImGui::SetScrollY(ImGui::GetScrollY() + g_pad.scroll);
                 return true;
             };
