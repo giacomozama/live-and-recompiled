@@ -590,8 +590,8 @@ static bool OpaqueHelmet(uint32_t player) {
 // [esp+0x11]), and 0x82730 draws them with an effect's entries of that model's own tables ([data+0x10], [data+0x14],
 // by its words +0x1C..+0x26), the effect picked by the player's state: cloaked when [[player+0x568]+0x624] is set
 // (0x2C38A0; its draws are of kind 10), others in action states 0x3D and 0x3F ([player+0x64], 0x82A84). The
-// Sneaker's shield is none of those: it is up while [[player+0x568]+0x6F8] is 1 and the byte at +0x5DD set, from the
-// raise (animation 0x54E at +0x474) to the lower (0x54D), found by diffing the player's objects across two shields
+// Sneaker's shield is none of those: it is up while the byte at [[player+0x568]+0x5DD] is set, from the raise
+// (animation 0x54E at +0x474) to the lower (0x54D), found by diffing the player's objects across two shields
 // (2026-11-12); the match model draws it, the character select model has no shield. The character select models have
 // none of the effects' entries, so a cloaked player lost only its fur and a shielded one showed nothing. A match draws each
 // player four times a frame (kinds 3, 1, 9, 2), stencil passes over each other's pixels; kind 2 asks for pass 2
@@ -601,6 +601,28 @@ static bool OpaqueHelmet(uint32_t player) {
 // none. Game thread
 static uint32_t g_effect_player = 0;
 
+// XBE_SHIELD_TRACE=1: a Sneaker's shield state, each time it changes: [[player+0x568]+0x6F8] (word and float),
+// the byte at +0x5DD, the animations at [player+0x474] and [[player+0x568]+0x474], the player's action state
+// [player+0x64] and state byte [player+0xA1]. To find what marks the shield up after a respawn or a class change
+static void TraceShield(uint32_t player, uint32_t owner) {
+    static const bool on = [] {
+        const char* e = std::getenv("XBE_SHIELD_TRACE");
+        return e && *e && *e != '0';
+    }();
+    if (!on || owner < 0x10000) return;
+    const uint32_t w = kernel::R32(owner + 0x6F8);
+    float f;
+    std::memcpy(&f, &w, 4);
+    char line[200];
+    std::snprintf(line, sizeof(line), "6F8 %08X (%g) 5DD %u anim %X/%X act %02X state %u", w, f,
+                  kernel::G<uint8_t>(owner + 0x5DD), kernel::R32(player + 0x474), kernel::R32(owner + 0x474),
+                  kernel::R32(player + 0x64), kernel::G<uint8_t>(player + 0xA1));
+    static std::unordered_map<uint32_t, std::string> last;  // by player
+    if (last[player] == line) return;
+    last[player] = line;
+    LOGR("shield: player %08X owner %08X %s", player, owner, line);
+}
+
 static bool EffectOn(uint32_t player, uint32_t kind, uint32_t model) {
     const uint32_t owner = kernel::R32(player + 0x568), act = kernel::R32(player + 0x64);
     if (kind == 10 || act == 0x3D || act == 0x3F) return true;
@@ -609,9 +631,11 @@ static bool EffectOn(uint32_t player, uint32_t kind, uint32_t model) {
     static std::unordered_map<uint32_t, bool> sneaker;  // by model
     auto s = sneaker.find(model);
     if (s == sneaker.end()) s = sneaker.emplace(model, ModelName(model).find("Sneaker") != std::string::npos).first;
-    // exactly 1 with +0x5DD set: the word also holds floats (1.0f) and countdowns after a class change
-    // (XBE_MENU_EFFECT_TRACE, 2026-11-12), which drew a Sneaker with its match model on and off at random
-    return s->second && kernel::R32(owner + 0x6F8) == 1 && kernel::G<uint8_t>(owner + 0x5DD) != 0;
+    if (s->second && kind == 1) TraceShield(player, owner);
+    // the byte at +0x5DD alone: 1 from the raise (animation 0x54E at [owner+0x474]) to the lower (0x54D), on a first
+    // life and after a respawn or a class change alike (XBE_SHIELD_TRACE, 2026-11-12); the word at +0x6F8 is 1 only
+    // on a first life, floats (1.0f) and other values after, which drew a Sneaker with its match model at random
+    return s->second && kernel::G<uint8_t>(owner + 0x5DD) != 0;
 }
 
 // XBE_MENU_EFFECT_TRACE=1: a player drawn with a menu model, each time a kind of its draws changes what it asks for:
