@@ -757,14 +757,6 @@ private:
         frame_draws_ = 0;
     }
 
-    static float DecalBias() {
-        static const float k = [] {
-            const char* e = std::getenv("XBE_INTERP_DECAL_BIAS");
-            return e ? std::strtof(e, nullptr) : 2.0f;  // XBE_INTERP_DECAL_BIAS overrides; 1 leaves decals be
-        }();
-        return k;
-    }
-
     // the frame's commands again, up to its Present in last, with the draws' constants at t from the frame before's;
     // only what draws: clears, copies, state, draws. Plain: the frozen frame (held_frame_, its Present in its last
     // batch) as it was drawn, nothing blended
@@ -812,36 +804,15 @@ private:
                         n++;
                         if (perf) gen_blend_ns_ += Ns(blend_start);
                         if (!interp::Hidden(how)) {
-                            // a decal (depth tested, not written, polygon offset on, as Conker's shadow receiver
-                            // 4A0744A9) pulled DecalBias times its offset toward the camera: its matrices and the
-                            // floor's, blended apart, put it behind the floor at points of a lift ride (1.3 needed)
-                            const uint32_t was_offset = SimpleState(rs, kMDepthOffset);
-                            const uint32_t was_slope = SimpleState(rs, kMSlopeScale);
-                            const bool decal = DecalBias() != 1.0f && rs.rs[kRsZEnable] &&
-                                               !SimpleState(rs, kMZWriteEnable) && SimpleState(rs, kMSolidOffsetEnable);
-                            if (decal) {
-                                float o = Bits(was_offset) * DecalBias(), sl = Bits(was_slope) * DecalBias();
-                                uint32_t ob, sb;
-                                std::memcpy(&ob, &o, 4);
-                                std::memcpy(&sb, &sl, 4);
-                                rs.simple.set(kMDepthOffset >> 2, ob);
-                                rs.simple.set(kMSlopeScale >> 2, sb);
-                                changed = true;
-                            }
                             inner_->Changed(changed);
                             changed = false;
-                            // the frame's own draw but for its constants: neither moved vertices nor a decal's offset
-                            inner_->AsDrawn(!moved && !decal);
+                            // the frame's own draw but for its constants, unless its vertices were moved
+                            inner_->AsDrawn(!moved);
                             auto draw_start = perf ? PerfClock::now() : PerfClock::time_point{};
                             inner_->Draw(rs, c.a, start, c.c, c.d ? data : nullptr);
                             if (perf) {
                                 gen_draw_ns_ += Ns(draw_start);
                                 gen_draws_++;
-                            }
-                            if (decal) {
-                                rs.simple.set(kMDepthOffset >> 2, was_offset);
-                                rs.simple.set(kMSlopeScale >> 2, was_slope);
-                                changed = true;
                             }
                         } else {
                             inner_->Pass();  // the frame drew it: the backend's count of draws stays the frame's
