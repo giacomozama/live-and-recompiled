@@ -113,7 +113,7 @@ void Cues(bool opened_before, bool settings_changed) {
     static bool was_popup = false;
     static ImGuiID nav = 0, active = 0;
     static double active_at = 0.0;
-    static bool active_keys = false;
+    static bool active_keys = false, active_tweak = false;
     static const ImGuiWindow* nav_window = nullptr;
     static int tab = 0;
     const double now = ImGui::GetTime();
@@ -126,8 +126,11 @@ void Cues(bool opened_before, bool settings_changed) {
     // an item taken up (a slider), or the cursor going into a list (the checkpoints) to pick from it
     const bool activated = g.ActiveId != 0 && g.ActiveId != active && g.ActiveIdSource != ImGuiInputSource_Mouse;
     // ... and let go of; a button's press is over at once and is not
-    const bool released = g.ActiveId == 0 && active != 0 && active_keys && now - active_at > 0.1;
-    if (g.ActiveId != active) active_at = now, active_keys = g.ActiveIdSource != ImGuiInputSource_Mouse;
+    // (only one that took the arrow keys in, a slider or a field: a button, checkbox or header held down and let go of
+    // gave its sound with the press)
+    const bool released = g.ActiveId == 0 && active != 0 && active_keys && active_tweak && now - active_at > 0.1;
+    if (g.ActiveId != active) active_at = now, active_keys = g.ActiveIdSource != ImGuiInputSource_Mouse, active_tweak = false;
+    if (g.ActiveId != 0 && g.ActiveIdUsingNavDirMask) active_tweak = true;
     active = g.ActiveId;
     const ImGuiWindow* win = g.NavWindow;
     const bool entered = win != nav_window && win && (win->Flags & ImGuiWindowFlags_ChildWindow) &&
@@ -154,6 +157,28 @@ void Cues(bool opened_before, bool settings_changed) {
         audio::Play(audio::Cue::Move);
         move_at = now;
     }
+}
+
+// a 1px black line around the current window, a 1px translucent one just inside it and a soft shadow outside, drawn
+// on the foreground list (which the window's own clip box doesn't limit), faded by `fade`
+void DrawWindowFrame(float fade) {
+    // a 1px black line around the window and a 1px translucent one just inside it, over the window's own edge
+    // (the foreground list isn't clipped to the window)
+    const ImVec2 lo = ImGui::GetWindowPos(), hi(lo.x + ImGui::GetWindowWidth(), lo.y + ImGui::GetWindowHeight());
+    const float round = ImGui::GetStyle().WindowRounding;
+    ImDrawList* dl = ImGui::GetForegroundDrawList();
+    // AddRect draws its line inside the rectangle it is given: the black one's rectangle is the window's grown by
+    // a pixel, the white one's the window's own
+    // a soft shadow outside the black line: rings a pixel wide, each fainter than the one inside it
+    constexpr int kShadow = 16;
+    for (int k = 0; k < kShadow; k++) {
+        const float t = 1.0f - float(k) / float(kShadow), grow = 2.0f + float(k);
+        dl->AddRect(ImVec2(lo.x - grow, lo.y - grow), ImVec2(hi.x + grow, hi.y + grow),
+                    IM_COL32(0, 0, 0, int(90.0f * t * t * t * fade)), round + grow, 0, 1.0f);
+    }
+    dl->AddRect(ImVec2(lo.x - 1.0f, lo.y - 1.0f), ImVec2(hi.x + 1.0f, hi.y + 1.0f),
+                IM_COL32(0, 0, 0, int(255.0f * fade)), round + 1.0f, 0, 1.0f);
+    dl->AddRect(lo, hi, IM_COL32(255, 255, 255, int(24.0f * fade)), round, 0, 1.0f);
 }
 
 // the game is held while the menu or the prompt is up (kernel::Hold), but for a multiplayer match, which runs on for
@@ -296,11 +321,39 @@ std::string Items(std::initializer_list<const char*> items) {
 // a settings section: a header that folds its rows away, open to begin with
 bool g_first_row = true;      // nothing drawn above in this section or tab yet: no separator before the next setting
 bool g_section_open = false;  // the section before this one, open: its rows end where the next begins (or the tab ends)
+// the page reaches the window's edges (its section headers and separators too), and the rows are inset by the window's
+// padding, which sits around the tabs and inside the rows instead
+bool g_inset_on = false;
+float RowInset() { return std::max(ImGui::GetStyle().WindowPadding.x - 4.0f, 1.0f); }  // both sides
+void InsetOn() {
+    if (g_inset_on) return;
+    const float inset = RowInset();
+    ImGuiWindow* w = ImGui::GetCurrentWindow();
+    ImGui::Indent(inset);
+    w->WorkRect.Max.x -= inset;
+    w->ContentRegionRect.Max.x -= inset;  // what GetContentRegionAvail (the controls' widths) reads
+    g_inset_on = true;
+}
+void InsetOff() {
+    if (!g_inset_on) return;
+    const float inset = RowInset();
+    ImGuiWindow* w = ImGui::GetCurrentWindow();
+    ImGui::Unindent(inset);
+    w->WorkRect.Max.x += inset;
+    w->ContentRegionRect.Max.x += inset;
+    g_inset_on = false;
+}
+
 bool Section(const char* name) {
     const float pad = ImGui::GetStyle().ItemSpacing.y * 0.3f;  // air inside an open section, above its rows and below
     if (g_section_open) ImGui::Dummy(ImVec2(0.0f, pad));
+    InsetOff();
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 0.0f);
     const bool open = ImGui::CollapsingHeader(T(name), ImGuiTreeNodeFlags_DefaultOpen);
-    if (open) ImGui::Dummy(ImVec2(0.0f, pad));
+    ImGui::PopStyleVar();
+    if (open) {
+        InsetOn();
+    }
     g_section_open = open;
     g_first_row = true;
     return open;
@@ -338,9 +391,35 @@ void Hints(std::initializer_list<const char*> lines) {
     ImGui::Dummy(ImVec2(0.0f, style.ItemSpacing.y * 0.75f));
 }
 
+// what comes before a setting: a line between it and the one above, or under a section's header the room such a line
+// gives (a table's cells and a row's later widgets are no settings of their own)
+void SettingGap() {
+    if (!g_first_row && !ImGui::GetCurrentTable() && ImGui::GetCursorScreenPos().x <= ImGui::GetCurrentWindow()->Pos.x + ImGui::GetCurrentWindow()->DC.Indent.x + 1.0f)
+    {
+        // the whole width of the window, over its padding (the child's clip box takes it)
+        ImGuiWindow* w = ImGui::GetCurrentWindow();
+        const float air = ImGui::GetStyle().ItemSpacing.y * 0.6f;  // above and below the line, around each setting
+        ImGui::Dummy(ImVec2(0.0f, air));
+        const float y = std::round(ImGui::GetCursorScreenPos().y);
+        const float right = w->Pos.x + w->Size.x - w->ScrollbarSizes.x;
+        // past the child's own clip box sideways (it keeps half the padding), not up or down: a line scrolled out of
+        // the page stays out of it
+        const float top = std::max(y - 1.0f, w->InnerClipRect.Min.y), bottom = std::min(y + 2.0f, w->InnerClipRect.Max.y);
+        if (top < bottom) {
+            w->DrawList->PushClipRect(ImVec2(w->Pos.x, top), ImVec2(right, bottom));
+            w->DrawList->AddLine(ImVec2(w->Pos.x, y), ImVec2(right, y), ImGui::GetColorU32(ImGuiCol_Separator));
+            w->DrawList->PopClipRect();
+        }
+        ImGui::Dummy(ImVec2(0.0f, 1.0f + air));
+    }
+    else if (g_first_row && g_section_open && !ImGui::GetCurrentTable())  // under its header, the room a separator would give
+        ImGui::Dummy(ImVec2(0.0f, ImGui::GetStyle().ItemSpacing.y * 0.6f + 1.0f));
+    g_first_row = false;
+}
+
 // a setting's label to the left of its widget, in a column as wide for every setting (wrapped if it is longer): draws
 // it, sizes the widget that follows it (to the row's end, less `after` for a button beside it) and returns the widget's hidden label
-float LabelWidth() { return std::min(ImGui::GetFontSize() * 13.0f, ImGui::GetContentRegionAvail().x * 0.4f); }  // less in a narrow column
+float LabelWidth() { return std::min(ImGui::GetFontSize() * 20.0f, ImGui::GetContentRegionAvail().x * 0.55f); }  // less in a narrow column
 // on to the value column on the same line, `start` the label's screen x (SameLine's offset would be off in a table cell)
 void ToValueColumn(float start, float width) {
     ImGui::SameLine(0.0f, 0.0f);
@@ -348,10 +427,7 @@ void ToValueColumn(float start, float width) {
 }
 const char* Beside(const char* label, float after = 0.0f, float wide = 0.0f) {
     static std::string id;
-    // a line between settings (a table's cells and a row's later widgets are no settings of their own)
-    if (!g_first_row && !ImGui::GetCurrentTable() && ImGui::GetCursorPosX() <= ImGui::GetCursorStartPos().x + 1.0f)
-        ImGui::Separator();
-    g_first_row = false;
+    SettingGap();
     const float x = ImGui::GetCursorScreenPos().x, width = std::max(LabelWidth(), wide);
     ImGui::AlignTextToFramePadding();
     ImGui::PushTextWrapPos(ImGui::GetCursorScreenPos().x + width);
@@ -405,12 +481,21 @@ void Slider(const char* label, int32_t* v, int32_t min, int32_t max, int32_t def
 // Two percentages on one track, lo below hi and kept at least `gap` apart, with a Reset beside it. The handle nearest
 // the click takes the drag.
 void RangeSlider(const char* label, uint32_t* lo, uint32_t* hi, uint32_t min, uint32_t max, uint32_t gap,
-                 uint32_t def_lo, uint32_t def_hi) {
+                 uint32_t def_lo, uint32_t def_hi, float column = -1.0f, float track = 0.0f, float reset_w = 0.0f) {
     ImGui::PushID(label);
     const ImGuiStyle& st = ImGui::GetStyle();
     const float reset = ImGui::CalcTextSize(T("Reset")).x + st.FramePadding.x * 2.0f;
-    Beside(label, reset + st.ItemInnerSpacing.x);
-    const float w = ImGui::CalcItemWidth(), h = ImGui::GetFrameHeight();
+    float w;
+    if (column >= 0.0f) {  // in a row of buttons (the keys): the label, the track as wide as the keys, a Reset as theirs
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextUnformatted(T(label));
+        ImGui::SameLine(column);
+        w = track;
+    } else {
+        Beside(label, reset + st.ItemInnerSpacing.x);
+        w = ImGui::CalcItemWidth();
+    }
+    const float h = ImGui::GetFrameHeight();
     const ImVec2 p = ImGui::GetCursorScreenPos();
     ImGui::InvisibleButton("##range", ImVec2(w, h));
     static int dragging = 0;  // 0 the low handle, 1 the high
@@ -443,7 +528,7 @@ void RangeSlider(const char* label, uint32_t* lo, uint32_t* hi, uint32_t min, ui
     }
     ImGui::SameLine(0, st.ItemInnerSpacing.x);
     ImGui::BeginDisabled(*lo == def_lo && *hi == def_hi);
-    if (ImGui::Button(T("Reset"))) *lo = def_lo, *hi = def_hi;
+    if (ImGui::Button(T("Reset"), ImVec2(column >= 0.0f ? reset_w : 0.0f, 0))) *lo = def_lo, *hi = def_hi;
     ImGui::EndDisabled();
     ImGui::Dummy(ImVec2(0.0f, ImGui::GetTextLineHeight() + 2.0f));  // room for the numbers under the track
     ImGui::PopID();
@@ -456,8 +541,9 @@ bool Check(const char* label, bool* v) {
         ImGui::Dummy(ImVec2(0.0f, ImGui::GetStyle().ItemSpacing.y * 0.75f));
     // the label at the left in the labels' column and the box at the right of it, where the other controls sit
     // a label wider than the column takes the room it needs, as far as the box still fits, and wraps past that
+    const float gap = ImGui::GetStyle().ItemSpacing.x * 2.0f;  // the least between a label's end and its box, besides the usual
     const float room = ImGui::GetContentRegionAvail().x - ImGui::GetFrameHeight() - ImGui::GetStyle().ItemSpacing.x * 2.0f;
-    return ImGui::Checkbox(Beside(label, 0.0f, std::min(ImGui::CalcTextSize(T(label)).x + 1.0f, room)), v);
+    return ImGui::Checkbox(Beside(label, 0.0f, std::min(ImGui::CalcTextSize(T(label)).x + gap, room)), v);
 }
 
 // the device in a player's keyboard, mouse or controller slot; picking one another player has moves it here
@@ -503,9 +589,10 @@ void DeviceCombo(int player, input::Kind kind) {
 
 // a player's devices, and whether new controllers find a player on their own (shared by all, under each tab)
 void DrawDevices(int player) {
-    ImGui::SeparatorText(T("Devices"));
+    if (!Section("Devices")) return;
     const float x0 = ImGui::GetCursorScreenPos().x, label_width = LabelWidth();
     for (input::Kind kind : {input::Kind::Keyboard, input::Kind::Mouse, input::Kind::Controller}) {
+        SettingGap();
         ImGui::AlignTextToFramePadding();
         ImGui::TextUnformatted(T(kind == input::Kind::Keyboard ? "Keyboard" : kind == input::Kind::Mouse ? "Mouse" : "Controller"));
         ToValueColumn(x0, label_width);  // the column of the other settings
@@ -518,7 +605,7 @@ void DrawDevices(int player) {
 
 // a player's controller options, the game's own two (they replace its Options menu's)
 void DrawController(int player) {
-    ImGui::SeparatorText(T("Controller"));
+    if (!Section("Controller")) return;
     Check("Invert aim", &gamepad::g_invert_aim[player]);
     Hint("Up on the right stick aims down while aiming. The camera and the mouse aren't affected.", true);
     Check("Vibration", &gamepad::g_vibration[player]);
@@ -531,7 +618,7 @@ void DrawController(int player) {
 
 // a player's mouse look
 void DrawMouse(int player) {
-    ImGui::SeparatorText(T("Mouse"));
+    if (!Section("Mouse")) return;
     Check("Mouse look", &mouse::g_look[player]);
     Hint("Move the mouse to look around. Open this menu (F1) or press Alt+Tab to get the cursor back.", true);
     Slider("Horizontal %", &mouse::g_sensitivity[player], 10, 500, mouse::kDefaultSensitivity);
@@ -546,7 +633,10 @@ void DrawKeys(int player) {
     if (g_rebind >= 0 && g_rebind_player != player) g_rebind = -1;
     PollRebind();
     g_cancel_hovered = false;  // the waiting row sets it again as it draws
-    ImGui::SeparatorText(T("Keyboard"));
+    if (!Section("Keyboard")) {
+        g_rebind = -1;  // folded away: no key waits
+        return;
+    }
     Hint("Right-click a slot (Y on a controller) to clear it. Picking a key that is already used swaps the two.");
     if (const int scheme = keyboard::Scheme(player))
         ImGui::Text(T("In use now: %s's controls"), keyboard::SchemeName(scheme));
@@ -557,81 +647,89 @@ void DrawKeys(int player) {
     };
     struct Group {
         const char* title;
+        int row, side;  // the table cell it stacks in
         std::vector<Row> rows;
     };
     using namespace keyboard;
     static const Group kGroups[] = {
-        {"Movement", {{kMoveUp, "Forward"}, {kMoveDown, "Back"}, {kMoveLeft, "Left"}, {kMoveRight, "Right"},
+        {"Movement", 0, 0, {{kMoveUp, "Forward"}, {kMoveDown, "Back"}, {kMoveLeft, "Left"}, {kMoveRight, "Right"},
                       {kJump, "Jump"}, {kCrouch, "Crouch"}, {kWalk, "Walk"}, {kCreep, "Creep"}}},
-        {"Camera", {{kLookUp, "Look up"}, {kLookDown, "Look down"}, {kLookLeft, "Look left"},
+        {"Camera", 0, 1, {{kLookUp, "Look up"}, {kLookDown, "Look down"}, {kLookLeft, "Look left"},
                     {kLookRight, "Look right"}, {kZoom, "Zoom (story)"}}},
-        {"Weapons", {{kAttack, "Attack / fire"}, {kAim, "Aim / equip weapon"}, {kWeaponMode, "First person / mode"},
+        {"Weapons", 1, 0, {{kAttack, "Attack / fire"}, {kAim, "Aim / equip weapon"}, {kWeaponMode, "First person / mode"},
                      {kReload, "Reload"}, {kUse, "Use (story)"}}},
-        {"Multiplayer", {{kAbility, "Abilities"}, {kCycle, "Cycle equipped (hold for item wheel)"}, {kVote, "Vote kick"},
+        {"Game", 0, 1, {{kPause, "Pause"}, {kQuit, "Quit (title menu)"}}},
+        {"Multiplayer", 1, 1, {{kAbility, "Abilities"}, {kCycle, "Cycle equipped (hold for item wheel)"}, {kVote, "Vote kick"},
                          {kRadio, "Radio mode"}}},
-        {"Game", {{kPause, "Pause"}, {kQuit, "Quit (title menu)"}}},
     };
-    // two columns, the groups in pairs
+    // two columns and two rows (Weapons and Multiplayer line up), each cell its groups stacked
     if (!ImGui::BeginTable("##groups", 2, ImGuiTableFlags_SizingStretchSame)) return;
-    for (const Group& g : kGroups) {
+    for (int cell = 0; cell < 4; cell++) {
         ImGui::TableNextColumn();
-        ImGui::PushID(g.title);
-        ImGui::BeginChild("##group", ImVec2(0, 0),
-                          ImGuiChildFlags_Borders | ImGuiChildFlags_AutoResizeY | ImGuiChildFlags_NavFlattened);
-        ImGui::SeparatorText(T(g.title));
-        // label, the action's keys side by side, then its Reset; the keys line up down the frame
-        const float spacing = ImGui::GetStyle().ItemInnerSpacing.x;
-        const float reset = std::max(ImGui::CalcTextSize(T("Reset")).x, ImGui::CalcTextSize(T("Cancel")).x) +
-                            ImGui::GetStyle().FramePadding.x * 2.0f;  // the same button, either label
-        const float avail = ImGui::GetContentRegionAvail().x;
-        const float column = ImGui::GetCursorPosX() + avail * 0.3f;
-        const float key_w = std::max((avail * 0.7f - reset - spacing * kSlots) / kSlots, 1.0f);
-        for (const Row& r : g.rows) {
-            ImGui::PushID(r.action);
-            ImGui::AlignTextToFramePadding();
-            ImGui::TextUnformatted(T(r.label));
-            ImGui::SameLine(column);
-            for (int s = 0; s < kSlots; s++) {
-                if (s) ImGui::SameLine(0, spacing);
-                ImGui::PushID(s);
-                const bool waiting = g_rebind == r.action && g_rebind_slot == s;
-                if (ImGui::Button(waiting ? T("press...") : KeyName(g_keys[player][r.action][s]),
-                                  ImVec2(key_w, 0)) &&
-                    !g_rebind_settle) {
-                    g_rebind = r.action;
-                    g_rebind_player = player;
-                    g_rebind_slot = s;
-                    g_rebind_armed = false;
+        for (const Group& g : kGroups) {
+            if (g.row * 2 + g.side != cell) continue;
+            ImGui::PushID(g.title);
+            ImGui::BeginChild("##group", ImVec2(0, 0),
+                              ImGuiChildFlags_Borders | ImGuiChildFlags_AutoResizeY | ImGuiChildFlags_NavFlattened);
+            ImGui::SeparatorText(T(g.title));
+            // label, the action's keys side by side, then its Reset; the keys line up down the frame
+            const float spacing = ImGui::GetStyle().ItemInnerSpacing.x;
+            const float reset = std::max(ImGui::CalcTextSize(T("Reset")).x, ImGui::CalcTextSize(T("Cancel")).x) +
+                                ImGui::GetStyle().FramePadding.x * 2.0f;  // the same button, either label
+            const float avail = ImGui::GetContentRegionAvail().x;
+            const float column = ImGui::GetCursorPosX() + avail * 0.3f;
+            const float key_w = std::max((avail * 0.7f - reset - spacing * kSlots) / kSlots, 1.0f);
+            for (const Row& r : g.rows) {
+                ImGui::PushID(r.action);
+                ImGui::AlignTextToFramePadding();
+                ImGui::TextUnformatted(T(r.label));
+                ImGui::SameLine(column);
+                for (int s = 0; s < kSlots; s++) {
+                    if (s) ImGui::SameLine(0, spacing);
+                    ImGui::PushID(s);
+                    const bool waiting = g_rebind == r.action && g_rebind_slot == s;
+                    if (ImGui::Button(waiting ? T("press...") : KeyName(g_keys[player][r.action][s]),
+                                      ImVec2(key_w, 0)) &&
+                        !g_rebind_settle) {
+                        g_rebind = r.action;
+                        g_rebind_player = player;
+                        g_rebind_slot = s;
+                        g_rebind_armed = false;
+                    }
+                    // right click unbinds, but not while a rebind waits or has just taken its key: then the click is
+                    // Mouse 2 being bound, which PollRebind takes before this button sees it
+                    // (Y on a slot the pad has focused does too)
+                    if ((ImGui::IsItemClicked(ImGuiMouseButton_Right) || (g_pad.y && ImGui::IsItemFocused())) &&
+                        g_rebind < 0 && !g_rebind_settle)
+                        g_keys[player][r.action][s] = 0;
+                    ImGui::PopID();
                 }
-                // right click unbinds, but not while a rebind waits or has just taken its key: then the click is
-                // Mouse 2 being bound, which PollRebind takes before this button sees it
-                // (Y on a slot the pad has focused does too)
-                if ((ImGui::IsItemClicked(ImGuiMouseButton_Right) || (g_pad.y && ImGui::IsItemFocused())) &&
-                    g_rebind < 0 && !g_rebind_settle)
-                    g_keys[player][r.action][s] = 0;
+                ImGui::SameLine(0, spacing);
+                if (g_rebind == r.action) {
+                    // waiting: Reset becomes Cancel, which PollRebind honours when the left click lands on it
+                    ImGui::Button(T("Cancel"), ImVec2(reset, 0));
+                    g_cancel_hovered = ImGui::IsItemHovered();
+                } else {
+                    ImGui::BeginDisabled(IsDefault(player, r.action));
+                    if (ImGui::Button(T("Reset"), ImVec2(reset, 0))) ResetKey(player, r.action);
+                    ImGui::EndDisabled();
+                    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+                        ImGui::SetTooltip(T("default: %s"), ActionDefault(r.action).c_str());
+                }
                 ImGui::PopID();
             }
-            ImGui::SameLine(0, spacing);
-            if (g_rebind == r.action) {
-                // waiting: Reset becomes Cancel, which PollRebind honours when the left click lands on it
-                ImGui::Button(T("Cancel"), ImVec2(reset, 0));
-                g_cancel_hovered = ImGui::IsItemHovered();
-            } else {
-                ImGui::BeginDisabled(IsDefault(player, r.action));
-                if (ImGui::Button(T("Reset"), ImVec2(reset, 0))) ResetKey(player, r.action);
-                ImGui::EndDisabled();
-                if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-                    ImGui::SetTooltip(T("default: %s"), ActionDefault(r.action).c_str());
+            if (g.rows[0].action == kMoveUp) {  // the Walk and Creep tilts, under the movement keys
+                ImGui::Spacing();
+                g_first_row = true;  // no separator over it: it belongs to the movement keys above
+                RangeSlider("Creep / Walk %", &g_creep_percent[player], &g_walk_percent[player], kTiltMin, kTiltMax, kTiltGap,
+                            kDefaultCreep, kDefaultWalk, column, key_w * kSlots + spacing * (kSlots - 1), reset);
             }
+            ImGui::EndChild();
             ImGui::PopID();
+            // room before the next group stacked in the same cell
+            if (&g != &kGroups[std::size(kGroups) - 1] && (&g + 1)->row == g.row && (&g + 1)->side == g.side)
+                ImGui::Dummy(ImVec2(0.0f, ImGui::GetStyle().ItemSpacing.y * 1.5f));
         }
-        if (g.rows[0].action == kMoveUp) {  // the Walk and Creep tilts, under the movement keys
-            ImGui::Spacing();
-            RangeSlider("Creep / Walk %", &g_creep_percent[player], &g_walk_percent[player], kTiltMin, kTiltMax, kTiltGap,
-                        kDefaultCreep, kDefaultWalk);
-        }
-        ImGui::EndChild();
-        ImGui::PopID();
     }
     ImGui::EndTable();
     if (ImGui::Button(T("Default keys"))) {
@@ -1008,12 +1106,16 @@ void Draw(double fps) {
         const ImVec2 display = ImGui::GetIO().DisplaySize;
         ImGui::SetNextWindowPos(ImVec2(display.x * 0.5f, display.y * 0.5f), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
         bool up = false;
+        // the menu window's background, its translucency too (a popup's is more opaque)
+        ImGui::PushStyleColor(ImGuiCol_PopupBg, ImGui::GetStyleColorVec4(ImGuiCol_WindowBg));
         if (ImGui::BeginPopupModal("Quit?", nullptr,
                                    ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoTitleBar)) {
             up = QuitBody();
+            DrawWindowFrame(1.0f);
             if (!up) ImGui::CloseCurrentPopup();
             ImGui::EndPopup();
         }
+        ImGui::PopStyleColor();
         // the prompt sounds like the menu
         static bool was_quit = false;
         if (!open) Cues(was_quit, false);
@@ -1057,7 +1159,8 @@ void Draw(double fps) {
         const float row_y = ImGui::GetCursorPosY();
         if (ImGui::BeginTabBar("##tabs")) {
             // each tab scrolls on its own above the footer line
-            const float footer = ImGui::GetFrameHeightWithSpacing() + ImGui::GetStyle().ItemSpacing.y * 2.0f;
+            // the footer: its separator right under the page (the page ends on it, its own padding at its bottom), then the line
+            const float footer = ImGui::GetFrameHeight() + ImGui::GetStyle().ItemSpacing.y + 2.0f;
             const int target = g_tab_target.exchange(-1);
             int index = 0;
             // the tabs' pills: the selected one's, and the hovered or pad-focused one's, drawn together so that a tab that
@@ -1097,13 +1200,30 @@ void Draw(double fps) {
                 if (!selected && (arrived || target == mine || ImGui::IsItemClicked())) pending = mine;
                 if (!selected) return false;
                 g_tab_now = mine;
-                ImGui::Dummy(ImVec2(0.0f, ImGui::GetFontSize() * 0.6f));  // air between the tabs and the page
+                ImGui::Dummy(ImVec2(0.0f, ImGui::GetFontSize() * 0.6f));  // air under the tabs, above their separator
+                {
+                    // the separator under the tab row, the window's whole width
+                    ImGuiWindow* w = ImGui::GetCurrentWindow();
+                    const float y = std::round(ImGui::GetCursorScreenPos().y);
+                    w->DrawList->PushClipRect(ImVec2(w->Pos.x, y - 1.0f), ImVec2(w->Pos.x + w->Size.x, y + 2.0f));
+                    w->DrawList->AddLine(ImVec2(w->Pos.x, y + 0.5f), ImVec2(w->Pos.x + w->Size.x, y + 0.5f),
+                                         ImGui::GetColorU32(ImGuiCol_Separator));
+                    w->DrawList->PopClipRect();
+                    ImGui::Dummy(ImVec2(0.0f, 1.0f));
+                    ImGui::SetCursorPosY(ImGui::GetCursorPosY() - ImGui::GetStyle().ItemSpacing.y);  // the page starts on it
+                }
                 // a page fades in as its tab is picked (the one before is already gone: only the shown tab is submitted)
                 static int faded_tab = -1;
                 static double faded_at = 0.0;
                 if (faded_tab != mine) faded_tab = mine, faded_at = ImGui::GetTime();
                 ImGui::PushStyleVar(ImGuiStyleVar_Alpha, std::min(float((ImGui::GetTime() - faded_at) / 0.15), 1.0f) * g_fade);
-                ImGui::BeginChild("##page", ImVec2(0, -footer), ImGuiChildFlags_NavFlattened);
+                // from the window's left edge to its right, with no padding of its own (InsetOn gives the rows theirs)
+                ImGui::SetCursorPosX(0.0f);
+                ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
+                ImGui::BeginChild("##page", ImVec2(ImGui::GetWindowWidth(), -footer), ImGuiChildFlags_NavFlattened);
+                ImGui::PopStyleVar();
+                g_inset_on = false;
+                InsetOn();
                 if (g_pad.scroll != 0.0f) ImGui::SetScrollY(ImGui::GetScrollY() + g_pad.scroll);
                 return true;
             };
@@ -1111,6 +1231,7 @@ void Draw(double fps) {
                 g_section_open = false;
                 g_first_row = true;
                 ImGui::Dummy(ImVec2(0.0f, ImGui::GetFontSize() * 1.5f));  // space below the last row when scrolled to the end
+                InsetOff();
                 ImGui::EndChild();
                 ImGui::PopStyleVar();
                 ImGui::EndTabItem();
@@ -1136,6 +1257,7 @@ void Draw(double fps) {
                 }
                 if (Section("Appearance")) {
                     {
+                        SettingGap();
                         ImGui::AlignTextToFramePadding();
                         const float x0 = ImGui::GetCursorScreenPos().x, label_width = LabelWidth();
                         ImGui::TextUnformatted(T("UI accent color"));
@@ -1583,26 +1705,22 @@ void Draw(double fps) {
             }
 
             if (tab("Controls")) {
-                // whose controls: a list, not a second row of tabs, so the pad's cursor goes straight down the page
-                std::string players;
+                // whose controls: a row of radio buttons above the sections, not a second row of tabs
+                const float air = ImGui::GetStyle().ItemSpacing.y * 1.2f;
+                ImGui::Dummy(ImVec2(0.0f, air));
+                Beside("Player");  // its label, the buttons in the value column
                 for (int p = 0; p < input::kPorts; p++) {
                     char name[64];
                     std::snprintf(name, sizeof name, T("Player %d"), p + 1);
-                    players += name;
-                    players += '\0';
+                    if (p) ImGui::SameLine();
+                    ImGui::RadioButton((std::string(name) + "##player" + std::to_string(p)).c_str(), &g_player_now, p);
                 }
-                ImGui::Combo(Beside("Player"), &g_player_now, players.c_str());
+                ImGui::Dummy(ImVec2(0.0f, air));
                 const int p = g_player_now;
                 ImGui::PushID(p);
                 DrawDevices(p);
-                // side by side
-                if (ImGui::BeginTable("##pads", 2, ImGuiTableFlags_SizingStretchSame)) {
-                    ImGui::TableNextColumn();
-                    DrawController(p);
-                    ImGui::TableNextColumn();
-                    DrawMouse(p);
-                    ImGui::EndTable();
-                }
+                DrawController(p);
+                DrawMouse(p);
                 DrawKeys(p);
                 keys_shown = true;
                 ImGui::PopID();
@@ -1650,8 +1768,6 @@ void Draw(double fps) {
             if (tab("Mods")) {
                 // the folders are looked at again each time the tab opens, and on Rescan
                 if (ImGui::IsWindowAppearing()) app::ScanMods();
-                // the lists sit apart from the rows around them, not tucked under one setting
-                const ImVec2 gap(0.0f, ImGui::GetStyle().ItemSpacing.y);
                 if (Section("Mods")) {
                     std::vector<app::ModEntry>& mods = s.mods;
                     if (mods.empty()) ImGui::TextDisabled("%s", T("No mods installed."));
@@ -1659,6 +1775,8 @@ void Draw(double fps) {
                     const float arrow = ImGui::GetFrameHeight();
                     for (int i = 0; i < int(mods.size()); i++) {
                         ImGui::PushID(mods[i].name.c_str());  // by name: the cursor goes with a mod as it moves
+                        SettingGap();
+                        const float x0 = ImGui::GetCursorScreenPos().x;
                         ImGui::BeginDisabled(i == 0);
                         if (ImGui::ArrowButton("##up", ImGuiDir_Up)) move = i, to = i - 1;
                         ImGui::EndDisabled();
@@ -1667,14 +1785,19 @@ void Draw(double fps) {
                         if (ImGui::ArrowButton("##down", ImGuiDir_Down)) move = i, to = i + 1;
                         ImGui::EndDisabled();
                         ImGui::SameLine(0.0f, arrow * 0.5f);
-                        Check(mods[i].name.c_str(), &mods[i].enabled);
+                        ImGui::AlignTextToFramePadding();
+                        ImGui::TextUnformatted(mods[i].name.c_str());
+                        // the box at the value column of the other settings, or past a name that runs beyond the labels
+                        const float end = ImGui::GetItemRectMax().x + ImGui::GetStyle().ItemSpacing.x * 3.0f;
+                        const float column = x0 + LabelWidth() + ImGui::GetStyle().ItemSpacing.x;
+                        ImGui::SameLine(0.0f, 0.0f);
+                        ImGui::SetCursorScreenPos(ImVec2(std::max(column, end), ImGui::GetCursorScreenPos().y));
+                        ImGui::Checkbox("##on", &mods[i].enabled);
                         ImGui::PopID();
                     }
                     if (move >= 0) std::swap(mods[move], mods[to]);
-                    ImGui::Dummy(gap);
                     Hints({"Ticked mods are in use. One higher in the list wins where two replace the same file.",
                            "A change starts from the next launch."});
-                    ImGui::Dummy(gap);
                     if (app::ModsChanged())
                         ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.35f, 1.0f), "%s", T("Restart the game to use these mods."));
                 }
@@ -1682,10 +1805,8 @@ void Draw(double fps) {
                     static std::string dir;
                     if (dir.empty()) dir = app::ModsDir().string();
                     ImGui::TextWrapped("%s", dir.c_str());
-                    ImGui::Dummy(gap);
                     Hints({"Put each mod in its own folder here, laid out like the game's disc (dvddata\\...).",
                            "The game's own files are left as they are."});
-                    ImGui::Dummy(gap);
                     if (ImGui::Button(T("Rescan"))) app::ScanMods();
                 }
                 end_tab();
@@ -1694,7 +1815,6 @@ void Draw(double fps) {
             if (tab("Debug")) {
                 if (Section("FPS")) {
                     Check("Overlay", &g_fps_overlay);
-                    ImGui::SameLine();
                     Check("Window title", &g_fps_title);
                 }
                 if (Section("Menu")) {
@@ -1702,8 +1822,8 @@ void Draw(double fps) {
                     Hint("Drag the menu's edges to size it, or an empty part of it to move it, to see the game beside it. "
                          "F7 freezes the game on its frame, drawn again as settings change; F8 steps a frame.",
                          true);
-                    DrawWarp();
                 }
+                if (Section("Warp")) DrawWarp();
                 end_tab();
             }
             if (tab("Quit")) {
@@ -1764,7 +1884,16 @@ void Draw(double fps) {
         }
         if (!keys_shown) g_rebind = -1;  // leaving the Controls tab cancels a rebind
 
-        ImGui::Separator();
+        {
+            // the footer's separator, the window's whole width, right where the page ends
+            ImGuiWindow* w = ImGui::GetCurrentWindow();
+            ImGui::SetCursorPosY(ImGui::GetCursorPosY() - ImGui::GetStyle().ItemSpacing.y);
+            const float y = std::round(ImGui::GetCursorScreenPos().y);
+            w->DrawList->PushClipRect(ImVec2(w->Pos.x, y - 1.0f), ImVec2(w->Pos.x + w->Size.x, y + 2.0f));
+            w->DrawList->AddLine(ImVec2(w->Pos.x, y), ImVec2(w->Pos.x + w->Size.x, y), ImGui::GetColorU32(ImGuiCol_Separator));
+            w->DrawList->PopClipRect();
+            ImGui::Dummy(ImVec2(0.0f, 1.0f));
+        }
         ImGui::AlignTextToFramePadding();
         // the build's version (git describe, cmake/version.cmake) at the footer line's far right; on a narrow window the
         // hint is cut short of it
@@ -1778,6 +1907,7 @@ void Draw(double fps) {
         ImGui::SameLine(version_x);
         ImGui::TextDisabled("%s", XBE_VERSION);
         ImGui::PopStyleVar(2);
+        DrawWindowFrame(g_fade);
     }
     ImGui::End();
     ImGui::PopStyleVar();
