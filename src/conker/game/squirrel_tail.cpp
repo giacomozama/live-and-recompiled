@@ -27,6 +27,7 @@
 #include <cstdlib>
 #include <cstring>
 
+#include "common/crate_fall.h"
 #include "core/log.h"
 #include "kernel/kernel.h"
 
@@ -133,10 +134,11 @@ void HoldTail(uint32_t mats, float seconds) {
 
 }  // namespace
 
-// 0x7FB00: a player's draw (arg 0 its index): notes the kneeling squirrel's skeleton node
+// 0x7FB00: a player's draw (arg 0 its index): notes the kneeling squirrel's skeleton node, and a crate's (crate_fall.cpp)
 X86_EXTERN_FUNC(__imp__sub_0007FB00);
 X86_FUNC(sub_0007FB00) {
     const uint32_t player = kernel::R32(kPlayers) + kernel::R32(ctx.esp + 4) * kPlayerSize;
+    crate_fall::NoteDraw(player);
     if (kernel::R32(player + 0x68) == kSquirrelType) {
         g_node = kernel::R32(player + 0x4EC);
         static std::chrono::steady_clock::time_point last;
@@ -157,10 +159,12 @@ X86_FUNC(sub_0007FB00) {
     __imp__sub_0007FB00(ctx, base);
 }
 
-// 0x3EC7D0 (cdecl: node, data): a skeleton node hands its bone matrices to the palettes under it
+// 0x3EC7D0 (cdecl: node, data): a skeleton node hands its bone matrices to the palettes under it; a crate's slam eased
+// first (crate_fall.cpp)
 X86_EXTERN_FUNC(__imp__sub_003EC7D0);
 X86_FUNC(sub_003EC7D0) {
     const uint32_t node = kernel::R32(ctx.esp + 4), data = kernel::R32(ctx.esp + 8);
+    crate_fall::Skeleton(node, data);
     if (node && node == g_node) {
         if (int slot = PadlockSlot(); slot >= 0)
             HoldTail(kernel::R32(kernel::R32(node + 0xC) + data + 4), CutsceneSeconds(slot));
