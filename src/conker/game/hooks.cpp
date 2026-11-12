@@ -435,9 +435,9 @@ void ConkerMenuReset(X86Context& ctx, uint8_t* base) {
 // (0x36A60, [player+0x3C4], [player+0x3C8] its handle), and hands that to every model's skeleton (0x2B3510, ebx the
 // handle). The animations take only on a controller made on the class's own full model: a menu model first in the
 // list stood in its bind pose, as did the class's middle one (2026-11-09). So the list stays the game's, and once
-// the controller is handed out the menu model takes slot 0: its instance (0x86440, eax the model, edi the type), a
-// copy of its scene for the player, and the same controller handed to it. The full model's copy stays: the
-// controller was made on it
+// the controller is handed out the menu model gets its instance (0x86440, eax the model, edi the type), a copy of its
+// scene for the player, and the same controller (handed out through slot 0, which then gets the match model back:
+// the menu model takes it for the player's draws alone, see MenuDrawn)
 X86_EXTERN_FUNC(sub_00086440);
 X86_EXTERN_FUNC(sub_003ED030);
 X86_EXTERN_FUNC(sub_002AF0E0);
@@ -485,10 +485,21 @@ static void SurveyLevelModels(X86Context& ctx, uint8_t* base) {
     LOGR("fur survey: level %u has %d models: %s", level, count, line.c_str());
 }
 
-// the players drawn with a character select model: that model, its instance and scene copy in slot 0, and the
-// match model's they took the place of. Game thread
+// the players drawn with a character select model: that model, its instance and scene copy, and the match model's
+// that slot 0 keeps. Game thread
+//
+// The game reads slot 0 ([player+0x4B0] instance, [player+0x4C4] scene copy, [player+0x4EC] skeleton node) outside
+// the draw too, and expects the class's match model there: the camera took its height from it once after a spawn (with
+// the character select model the camera sat 21 units low, the model drawn high against it: F3 captures 164954 and
+// 165030; an F10 toggle test, 2026-11-12, put it right for good by holding the match model in slot 0 a moment), and
+// effects keep indexes into its locator table ([scene+0x10]: 121 entries for the squirrel grunt's match model, 51
+// for its character select one), which read through the other model a joint out of range (a crash at 0xC9356 on a
+// class change). So slot 0 keeps the match model, and each draw of the player (0x7FC6E to 0x805A6) has the character
+// select model's instance, copy and skeleton node in its place, its parts' shown bits copied by name from the match
+// copy first (MirrorParts)
 struct MenuDrawn {
     uint32_t model, inst, copy, match_inst, match_copy;
+    uint32_t skel, match_skel;  // skeleton nodes ([player+0x4EC])
 };
 static std::unordered_map<uint32_t, MenuDrawn> g_menu_drawn;
 
@@ -539,13 +550,19 @@ void ConkerMenuSkeleton(X86Context& ctx, uint8_t* base) {
     sub_000865C0(ctx, base);
     ctx.esp += 8;
     const uint32_t match_inst = kernel::R32(player + 0x4B0), match_copy = kernel::R32(player + 0x4C4);
+    const uint32_t match_skel = kernel::R32(player + 0x4EC);
     kernel::W32(player + 0x4B0, inst);
     kernel::W32(player + 0x4C4, copy);
     ctx.ecx = player, ctx.ebx = kernel::R32(player + 0x3C8);
     X86_PUSH32(0x2B3368u);
     sub_002B3510(ctx, base);
     ctx = saved;
-    g_menu_drawn[player] = {model, inst, copy, match_inst, match_copy};
+    const uint32_t skel = kernel::R32(player + 0x4EC);
+    // slot 0 keeps the match model between draws
+    kernel::W32(player + 0x4B0, match_inst);
+    kernel::W32(player + 0x4C4, match_copy);
+    kernel::W32(player + 0x4EC, match_skel);
+    g_menu_drawn[player] = {model, inst, copy, match_inst, match_copy, skel, match_skel};
     LOGI("models: player %08X draws %s (%u), instance %08X, scene %08X", player, ModelName(model).c_str(), model, inst,
          scene);
 }
@@ -573,15 +590,15 @@ static bool OpaqueHelmet(uint32_t player) {
 // [esp+0x11]), and 0x82730 draws them with an effect's entries of that model's own tables ([data+0x10], [data+0x14],
 // by its words +0x1C..+0x26), the effect picked by the player's state: cloaked when [[player+0x568]+0x624] is set
 // (0x2C38A0; its draws are of kind 10), others in action states 0x3D and 0x3F ([player+0x64], 0x82A84). The
-// Sneaker's shield is none of those: it is up while [[player+0x568]+0x6F8] is 1 (and the byte at +0x5DD), from the
+// Sneaker's shield is none of those: it is up while [[player+0x568]+0x6F8] is 1 and the byte at +0x5DD set, from the
 // raise (animation 0x54E at +0x474) to the lower (0x54D), found by diffing the player's objects across two shields
 // (2026-11-12); the match model draws it, the character select model has no shield. The character select models have
 // none of the effects' entries, so a cloaked player lost only its fur and a shielded one showed nothing. A match draws each
 // player four times a frame (kinds 3, 1, 9, 2), stencil passes over each other's pixels; kind 2 asks for pass 2
 // every frame, and drawn with the match model under the menu model's other passes it left a shell on screen at all
-// times (2026-11-12). So while a player is cloaked or shielded every draw of it is of its match model, whose instance
-// and scene copy (bound to the same animation controller) are put back in slot 0 for the draw. The player swapped
-// back, 0 for none. Game thread
+// times (2026-11-12). So while a player is cloaked or shielded every draw of it is of its match model, the one slot 0
+// holds between draws; otherwise its character select model is swapped in for the draw. The player swapped, 0 for
+// none. Game thread
 static uint32_t g_effect_player = 0;
 
 static bool EffectOn(uint32_t player, uint32_t kind, uint32_t model) {
@@ -592,7 +609,9 @@ static bool EffectOn(uint32_t player, uint32_t kind, uint32_t model) {
     static std::unordered_map<uint32_t, bool> sneaker;  // by model
     auto s = sneaker.find(model);
     if (s == sneaker.end()) s = sneaker.emplace(model, ModelName(model).find("Sneaker") != std::string::npos).first;
-    return s->second && kernel::R32(owner + 0x6F8) != 0;
+    // exactly 1 with +0x5DD set: the word also holds floats (1.0f) and countdowns after a class change
+    // (XBE_MENU_EFFECT_TRACE, 2026-11-12), which drew a Sneaker with its match model on and off at random
+    return s->second && kernel::R32(owner + 0x6F8) == 1 && kernel::G<uint8_t>(owner + 0x5DD) != 0;
 }
 
 // XBE_MENU_EFFECT_TRACE=1: a player drawn with a menu model, each time a kind of its draws changes what it asks for:
@@ -605,13 +624,17 @@ static void TraceMenuEffects(X86Context& ctx, uint32_t player, bool swap) {
         return e && *e && *e != '0';
     }();
     if (!on) return;
-    char line[320];
+    char line[360];
     const uint32_t owner = kernel::R32(player + 0x568), kind = kernel::R32(ctx.ebp + 0x18);
-    std::snprintf(line, sizeof(line), "kind %u viewport %u alpha %u flags e%u f%u g%u h%u act %02X state %u cloak %u: %s",
+    std::snprintf(line, sizeof(line),
+                  "kind %u viewport %u alpha %u flags e%u f%u g%u h%u act %02X state %u cloak %u shield %u/%u: %s",
                   kind, kernel::R32(ctx.ebp + 0xC), kernel::R32(ctx.ebp + 0x14), kernel::G<uint8_t>(ctx.esp + 0xE),
                   kernel::G<uint8_t>(ctx.esp + 0xF), kernel::G<uint8_t>(ctx.esp + 0x10),
                   kernel::G<uint8_t>(ctx.esp + 0x11), kernel::R32(player + 0x64), kernel::G<uint8_t>(player + 0xA1),
-                  owner >= 0x10000 ? kernel::G<uint8_t>(owner + 0x624) : 0u, swap ? "match model" : "menu model");
+                  owner >= 0x10000 ? kernel::G<uint8_t>(owner + 0x624) : 0u,
+                  owner >= 0x10000 ? kernel::R32(owner + 0x6F8) : 0u,
+                  owner >= 0x10000 ? kernel::G<uint8_t>(owner + 0x5DD) : 0u,
+                  swap ? "match model" : "menu model");
     struct Seen {
         std::string line;
         uint32_t draws = 0;
@@ -625,6 +648,66 @@ static void TraceMenuEffects(X86Context& ctx, uint32_t player, bool swap) {
     s.draws = 0;
 }
 
+static bool GuestPtr(uint32_t p) { return p >= 0x10000 && mem::IsCommitted(p) && mem::IsCommitted(p + 0x5F); }
+
+// A scene's parts ([scene+0x14]: a count, then 20-byte entries, the name's address at +0 and the bit at +8) are shown
+// or hidden by name on the player's copy in slot 0 (0x2F7A50, 0x81E60: bit n of the bytes at [copy+0xC], 0x80 >> n %
+// 8), the ears, head or tail shot off among them. The bits the two models' parts share a name in, by character select
+// model: (match bit, character select bit)
+static std::string GuestString(uint32_t at) {
+    std::string out;
+    for (uint32_t i = 0; GuestPtr(at) && i < 64; i++) {
+        const char c = kernel::G<char>(at + i);
+        if (!c) break;
+        out += c;
+    }
+    return out;
+}
+
+static void MirrorParts(const MenuDrawn& d) {
+    static std::unordered_map<uint64_t, std::vector<std::pair<uint32_t, uint32_t>>> maps;  // by both instances
+    auto parts = [](uint32_t inst) -> uint32_t {
+        const uint32_t data = GuestPtr(inst) ? kernel::R32(inst + 0x24) : 0;
+        const uint32_t scene = GuestPtr(data) ? kernel::R32(data + 0x8) : 0;
+        return GuestPtr(scene) ? kernel::R32(scene + 0x14) : 0;
+    };
+    const uint64_t key = uint64_t(d.match_inst) << 32 | d.inst;
+    auto it = maps.find(key);
+    if (it == maps.end()) {
+        std::vector<std::pair<uint32_t, uint32_t>> pairs;
+        const uint32_t a = parts(d.match_inst), b = parts(d.inst);
+        if (GuestPtr(a) && GuestPtr(b)) {
+            const uint32_t na = std::min(kernel::R32(a), 256u), nb = std::min(kernel::R32(b), 256u);
+            const uint32_t ea = kernel::R32(a + 4), eb = kernel::R32(b + 4);
+            std::unordered_map<std::string, uint32_t> match_bits;
+            for (uint32_t i = 0; i < na && GuestPtr(ea + 20 * i); i++)
+                match_bits.emplace(GuestString(kernel::R32(ea + 20 * i)), kernel::R32(ea + 20 * i + 8));
+            for (uint32_t i = 0; i < nb && GuestPtr(eb + 20 * i); i++) {
+                const auto m = match_bits.find(GuestString(kernel::R32(eb + 20 * i)));
+                if (m != match_bits.end() && !m->first.empty())
+                    pairs.emplace_back(m->second, kernel::R32(eb + 20 * i + 8));
+            }
+        }
+        LOGI("models: %s shares %zu parts with its match model", ModelName(d.model).c_str(), pairs.size());
+        it = maps.emplace(key, std::move(pairs)).first;
+    }
+    const uint32_t from = kernel::R32(d.match_copy + 0xC), to = kernel::R32(d.copy + 0xC);
+    if (!GuestPtr(from) || !GuestPtr(to)) return;
+    for (const auto& [mb, cb] : it->second) {
+        if (mb > 0x7FF || cb > 0x7FF) continue;
+        const bool on = kernel::G<uint8_t>(from + (mb >> 3)) & (0x80 >> (mb & 7));
+        uint8_t& byte = kernel::G<uint8_t>(to + (cb >> 3));
+        byte = on ? byte | (0x80 >> (cb & 7)) : byte & ~(0x80 >> (cb & 7));
+    }
+}
+
+// slot 0 between draws: the match model
+static void SlotMatch(uint32_t player, const MenuDrawn& d) {
+    kernel::W32(player + 0x4B0, d.match_inst);
+    kernel::W32(player + 0x4C4, d.match_copy);
+    kernel::W32(player + 0x4EC, d.match_skel);
+}
+
 // [[hook]] at 0x7FC6E, the effect flags set, before the model's own are read; ebx the player
 void ConkerMenuEffects(X86Context& ctx, uint8_t* base) {
     (void)base;
@@ -632,25 +715,32 @@ void ConkerMenuEffects(X86Context& ctx, uint8_t* base) {
     const auto it = g_menu_drawn.find(player);
     if (it == g_menu_drawn.end() || kernel::G<uint8_t>(player + 0x3A8) != 0) return;
     const MenuDrawn& d = it->second;
-    if (kernel::R32(player + 0x4B0) != d.inst) return;
-    const bool swap = d.match_inst >= 0x10000 && kernel::R32(d.match_inst + 0x24) >= 0x10000 &&
-                      d.match_copy >= 0x10000 && EffectOn(player, kernel::R32(ctx.ebp + 0x18), d.model);
-    TraceMenuEffects(ctx, player, swap);
-    if (!swap) return;
-    kernel::W32(player + 0x4B0, d.match_inst);
-    kernel::W32(player + 0x4C4, d.match_copy);
+    if (kernel::R32(player + 0x4B0) != d.match_inst || kernel::R32(player + 0x4C4) != d.match_copy) {
+        static std::unordered_map<uint32_t, uint32_t> told;  // by player: the slot 0 instance last logged
+        if (told[player] != kernel::R32(player + 0x4B0)) {
+            told[player] = kernel::R32(player + 0x4B0);
+            LOGR("models: player %08X slot 0 holds %08X/%08X, not its match model %08X/%08X (%s): drawn as it is",
+                 player, kernel::R32(player + 0x4B0), kernel::R32(player + 0x4C4), d.match_inst, d.match_copy,
+                 ModelName(d.model).c_str());
+        }
+        return;
+    }
+    const bool effect = EffectOn(player, kernel::R32(ctx.ebp + 0x18), d.model);
+    TraceMenuEffects(ctx, player, effect);
+    if (effect) return;
+    MirrorParts(d);
+    kernel::W32(player + 0x4B0, d.inst);
+    kernel::W32(player + 0x4C4, d.copy);
+    kernel::W32(player + 0x4EC, d.skel);
     g_effect_player = player;
 }
 
-// [[hook]] at 0x805A6, the draw's end: the menu model back in slot 0
+// [[hook]] at 0x805A6, the draw's end: the match model back in slot 0
 void ConkerMenuEffectsEnd(X86Context& ctx, uint8_t* base) {
     (void)ctx, (void)base;
     if (!g_effect_player) return;
     const auto it = g_menu_drawn.find(g_effect_player);
-    if (it != g_menu_drawn.end()) {
-        kernel::W32(g_effect_player + 0x4B0, it->second.inst);
-        kernel::W32(g_effect_player + 0x4C4, it->second.copy);
-    }
+    if (it != g_menu_drawn.end()) SlotMatch(g_effect_player, it->second);
     g_effect_player = 0;
 }
 
