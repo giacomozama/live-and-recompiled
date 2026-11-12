@@ -350,11 +350,32 @@ const char* Beside(const char* label, float after = 0.0f) {
 struct SliderEnd { int frame = -1; float y = 0.0f; } g_slider_end;
 
 // a percent slider with a Reset beside it, greyed out while the value is its default
-void Slider(const char* label, uint32_t* v, uint32_t min, uint32_t max, uint32_t def) {
+// div > 1 shows v / div with two decimals (a setting kept in hundredths)
+void Slider(const char* label, uint32_t* v, uint32_t min, uint32_t max, uint32_t def, uint32_t div = 1) {
     ImGui::PushID(label);
     const float reset = ImGui::CalcTextSize(T("Reset")).x + ImGui::GetStyle().FramePadding.x * 2.0f;
     Beside(label, reset + ImGui::GetStyle().ItemInnerSpacing.x);
-    ImGui::SliderScalar("##slider", ImGuiDataType_U32, v, &min, &max, "%u");
+    if (div > 1) {
+        float f = float(*v) / float(div);
+        if (ImGui::SliderFloat("##slider", &f, float(min) / float(div), float(max) / float(div), "%.2f"))
+            *v = std::clamp<uint32_t>(uint32_t(std::lround(f * float(div))), min, max);
+    } else {
+        ImGui::SliderScalar("##slider", ImGuiDataType_U32, v, &min, &max, "%u");
+    }
+    ImGui::SameLine(0, ImGui::GetStyle().ItemInnerSpacing.x);
+    ImGui::BeginDisabled(*v == def);
+    if (ImGui::Button(T("Reset"))) *v = def;
+    ImGui::EndDisabled();
+    ImGui::PopID();
+    g_slider_end = {ImGui::GetFrameCount(), ImGui::GetCursorPosY()};
+}
+
+// a signed one, shown with its sign
+void Slider(const char* label, int32_t* v, int32_t min, int32_t max, int32_t def) {
+    ImGui::PushID(label);
+    const float reset = ImGui::CalcTextSize(T("Reset")).x + ImGui::GetStyle().FramePadding.x * 2.0f;
+    Beside(label, reset + ImGui::GetStyle().ItemInnerSpacing.x);
+    ImGui::SliderScalar("##slider", ImGuiDataType_S32, v, &min, &max, "%+d");
     ImGui::SameLine(0, ImGui::GetStyle().ItemInnerSpacing.x);
     ImGui::BeginDisabled(*v == def);
     if (ImGui::Button(T("Reset"))) *v = def;
@@ -1180,6 +1201,10 @@ void Draw(double fps) {
                         Hint("How bright white is shown.", true);
                     }
                 }
+                Slider("Gamma", &s.gamma, 180, 260, app::Settings{}.gamma, 100);
+                Hint("Higher darkens shadows and midtones, lower brightens them. 2.20 shows the picture as drawn.", true);
+                Slider("Brightness", &s.brightness, -20, 20, app::Settings{}.brightness);
+                Hint("Raises or lowers the black level. White stays the same.", true);
 
                 ImGui::SeparatorText(T("Quality"));
                 Slider("Render %", &s.render_percent, 25, 200, app::Settings{}.render_percent);

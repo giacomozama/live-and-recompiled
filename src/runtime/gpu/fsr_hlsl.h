@@ -156,10 +156,15 @@ float4 easu(O i) : SV_Target {
 // RCAS (Robust Contrast-Adaptive Sharpening)
 // -----------------------------------------------------------------------------
 
+// the brightness setting: black raised to b (b > 0) or b taken down to black (b < 0), white kept
+float3 Level(float3 c, float b) { return b >= 0 ? b + c * (1 - b) : saturate((c + b) / (1 + b)); }
+
 float4 rcas(O i) : SV_Target {
     float2 texel = con0.xy;
     float sharpness = con0.z;
     float gamma_on = con0.w;
+    float power = con1.y;  // the gamma setting's, after the title's ramp (1: none)
+    float level = con1.z;  // the brightness setting's (Level)
 
     float4 b4 = img.SampleLevel(ls, i.uv + float2( 0, -1) * texel, 0);
     float4 d4 = img.SampleLevel(ls, i.uv + float2(-1,  0) * texel, 0);
@@ -190,6 +195,8 @@ float4 rcas(O i) : SV_Target {
                      lut.SampleLevel(ps, float2(rgb.g, 0.5), 0).g,
                      lut.SampleLevel(ps, float2(rgb.b, 0.5), 0).b);
     }
+    if (level != 0.0) rgb = Level(rgb, level);
+    if (power != 1.0) rgb = pow(saturate(rgb), power);
 
     return float4(rgb, 1.0);
 }

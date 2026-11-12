@@ -32,6 +32,10 @@ struct Settings {
     // white at hdr_paper_white nits
     bool hdr = false;
     uint32_t hdr_paper_white = 200;
+    // the display gamma the picture is shown for, in hundredths: 220 as it was drawn, higher darker in the midtones
+    uint32_t gamma = 220;
+    // the black level in % of white, -20 to 20: raised above 0, shadows taken down to black below it; white kept
+    int32_t brightness = 0;
     // pictures shown per frame the title presents: 1 (off), or 2 to 4, the ones between made from the frames around
     // them; the title sets it (Conker from its frame rate), it isn't saved
     uint32_t frame_generation = 1;

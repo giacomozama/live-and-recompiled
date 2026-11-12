@@ -126,7 +126,7 @@ constexpr VkImageLayout kSrc = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
 constexpr VkImageLayout kDst = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
 
 const char* kBlitHlsl = R"(
-cbuffer B : register(b1) { float4 uvrect; float4 opts; };
+cbuffer B : register(b1) { float4 uvrect; float4 opts; float4 opts2; };
 Texture2D img : register(t0);
 Texture2D lut : register(t1);
 SamplerState ls : register(s0);
@@ -139,6 +139,8 @@ O vs(uint id : SV_VertexID) {
     o.uv = uvrect.xy + t * uvrect.zw;
     return o;
 }
+// the brightness setting: black raised to b (b > 0) or b taken down to black (b < 0), white kept
+float3 Level(float3 c, float b) { return b >= 0 ? b + c * (1 - b) : saturate((c + b) / (1 + b)); }
 float4 psmain(O i) : SV_Target {
     float4 c = 0;
     int n = max((int)opts.z, 1);
@@ -148,11 +150,13 @@ float4 psmain(O i) : SV_Target {
     c /= n * n;
     c.rgb *= opts.w;
     if (opts.x > 0) c.rgb = float3(lut.Sample(ps, float2(c.r, 0.5)).r, lut.Sample(ps, float2(c.g, 0.5)).g, lut.Sample(ps, float2(c.b, 0.5)).b);
+    if (opts2.y != 0) c.rgb = Level(c.rgb, opts2.y);
+    if (opts2.x != 1) c.rgb = pow(saturate(c.rgb), opts2.x);
     return float4(c.rgb, opts.y > 0 ? c.a : 1);
 }
 )";
 
-// the frame as an SDR display shows it (gamma 2.2, Rec.709) into HDR10: Rec.2020, PQ, white at p.x x 10000 nits
+// the frame as an SDR display shows it (gamma p.y, Rec.709) into HDR10: Rec.2020, PQ, white at p.x x 10000 nits
 const char* kHdrHlsl = R"(
 cbuffer B : register(b1) { float4 p; float4 unused; };
 Texture2D img : register(t0);
@@ -173,7 +177,7 @@ float3 Pq(float3 y) {
 }
 float4 encode(O i) : SV_Target {
     float3 c = img.Load(int3(int2(i.p.xy), 0)).rgb;
-    float3 lin = pow(saturate(c), 2.2);
+    float3 lin = pow(saturate(c), p.y);
     const float3x3 to2020 = {0.627404, 0.329283, 0.043313,
                              0.069097, 0.919540, 0.011362,
                              0.016391, 0.088013, 0.895595};
@@ -769,6 +773,8 @@ struct BlitOptions {
     bool alpha = false;       // the source's alpha, else 1
     uint32_t taps = 1;        // n x n box filter per pixel
     float mul = 1;            // color scale
+    float power = 1;          // the color raised to it, after the gamma lookup
+    float level = 0;          // the brightness setting's black level (kBlitHlsl Level), before power
     VkFormat rtv = kBgra;     // the target's format
     bool over = false;        // premultiplied over the target, which keeps its alpha
     uint32_t samples = 1;     // the target's
@@ -3004,8 +3010,9 @@ void VulkanBackend::DrawFullScreen(VkPipeline pso, const Alloc& cb, std::array<V
 
 void VulkanBackend::Blit(VkImageView src, const float uvrect[4], const BlitOptions& o) {
     Alloc cb = Upload(kPassCbBytes);
-    float c[8] = {uvrect[0], uvrect[1], uvrect[2], uvrect[3],
-                  o.gamma ? 1.0f : 0.0f, o.alpha ? 1.0f : 0.0f, float(o.taps), o.mul};
+    float c[12] = {uvrect[0], uvrect[1], uvrect[2], uvrect[3],
+                   o.gamma ? 1.0f : 0.0f, o.alpha ? 1.0f : 0.0f, float(o.taps), o.mul,
+                   o.power, o.level, 0.0f, 0.0f};
     std::memcpy(cb.cpu, c, sizeof(c));
     DrawFullScreen(EnsureBlitPipeline(o.rtv, o.over, o.samples), cb, {src, lut_->view, VK_NULL_HANDLE, VK_NULL_HANDLE});
 }
@@ -5853,6 +5860,10 @@ void VulkanBackend::DrawFrame(Image* picture, uint32_t bi, bool fsr) {
 
     Image& bb = swap_hdr_ ? *hdr_frame_ : *bb_[bi];
     const VkFormat out_fmt = swap_hdr_ ? kBgra : swap_fmt_;
+    // the gamma setting: SDR shows the picture as a display of that gamma would, against 2.2; HDR decodes with it
+    const float gamma = float(set.gamma) / 100.0f;
+    const float power = swap_hdr_ ? 1.0f : gamma / 2.2f;
+    const float level = float(set.brightness) / 100.0f;
     SetTargets(&bb, nullptr);
     bound_rt_ = bound_ds_ = nullptr;
     EnsureRendering();
@@ -5871,7 +5882,7 @@ void VulkanBackend::DrawFrame(Image* picture, uint32_t bi, bool fsr) {
                 1.0f / float(out_h),
                 sharpness,
                 gamma_ ? 1.0f : 0.0f,
-                float(set.fur_sharpness) / 100.0f, 0.0f, 0.0f, 0.0f
+                float(set.fur_sharpness) / 100.0f, power, level, 0.0f
             };
             Alloc cb = Upload(kPassCbBytes);
             std::memcpy(cb.cpu, p, sizeof(p));
@@ -5879,7 +5890,7 @@ void VulkanBackend::DrawFrame(Image* picture, uint32_t bi, bool fsr) {
                            {final_src, lut_->view, VK_NULL_HANDLE, VK_NULL_HANDLE});
         } else {
             float uv[4] = {0, 0, 1, 1};
-            Blit(final_src, uv, {.gamma = gamma_, .rtv = out_fmt});
+            Blit(final_src, uv, {.gamma = gamma_, .power = power, .level = level, .rtv = out_fmt});
         }
     }
 
@@ -5893,7 +5904,7 @@ void VulkanBackend::DrawFrame(Image* picture, uint32_t bi, bool fsr) {
         EnsureRendering();
         SetFullViewport(bb_w_, bb_h_);
         Alloc cb = Upload(kPassCbBytes);
-        float p[8] = {float(set.hdr_paper_white) / 10000.0f};
+        float p[8] = {float(set.hdr_paper_white) / 10000.0f, gamma};
         std::memcpy(cb.cpu, p, sizeof(p));
         DrawFullScreen(EnsurePassPipeline(kHdrHlsl, "encode", swap_fmt_, -1), cb,
                        {bb.view, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE});
