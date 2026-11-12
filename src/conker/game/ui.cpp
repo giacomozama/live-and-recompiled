@@ -1260,6 +1260,8 @@ void Draw(double fps) {
             if (tab("Enhancements")) {
                 ImGui::SeparatorText(T("Camera"));
                 Slider("Field of view", &display::g_fov, display::kFovMin, display::kFovMax, display::kFov);
+                Slider("Extra look up", &display::g_look_up, 0, display::kLookUpMax, 0);
+                Hint("Lets the third person camera tilt further up, in degrees. 0 is the original limit.");
 
                 ImGui::SeparatorText(T("Lighting"));
                 Check("Per-pixel lighting", &lighting::g_per_pixel);

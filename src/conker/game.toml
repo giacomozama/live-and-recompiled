@@ -350,6 +350,10 @@ at = 0x64471   # its tail jump to 0x645C0: the vertical field of view scaled by 
 call = "ConkerCameraFov"
 
 [[hook]]
+at = 0x4793E   # far third person camera: its distance from the pitch's share of the console's range (look_up)
+call = "ConkerFarCameraCeiling"
+
+[[hook]]
 at = 0xD9AAF   # a character effect's draw: what it pushes tagged as the effect's, for frame generation (tags.cpp)
 call = "ConkerEffectDraw"
 

@@ -58,6 +58,7 @@ const app::GameInfo app::kGame = {
                 {"ui_accent", nullptr, &ui::g_accent},  // the settings menu's accent color, 0 blue to 6 purple, 4 orange by default (ui_font.cpp)
                 {"frame_rate", nullptr, &display::g_frame_rate},  // 30, 60, 120, 180 or 240 (src/conker/game/display.cpp)
                 {"fov", nullptr, &display::g_fov},  // the view's height in degrees in play, 50 the console's (display.cpp)
+                {"look_up", nullptr, &display::g_look_up},  // degrees the third person camera tilts up past the console's (display.cpp)
                 {"hud_split", &display::g_hud_split, nullptr},  // a match's HUD unstretched, at the display's edges (display.cpp)
                 {"skippable_cutscenes", &cutscenes::g_skippable, nullptr},  // LT skips any cutscene (hooks.cpp)
                 {"english_bubbles", &cutscenes::g_english_bubbles, nullptr},  // the throne monologues' bubbles in English (hooks.cpp)

@@ -122,6 +122,7 @@ std::atomic<uint32_t> g_ticks{0};
 uint32_t Ticks() { return g_ticks.load(std::memory_order_relaxed); }
 
 uint32_t g_fov = kFov;
+uint32_t g_look_up = 0;
 bool g_hud_split = true;
 
 std::atomic<float> g_camera_fov{50.0f};
@@ -174,6 +175,34 @@ float Aspect(float d) {
 }  // namespace display
 
 using display::Rate;
+
+// 0x47DC0 (the player in ecx, the pitch's floor out at [esi], its ceiling at [edx]): the third person camera's pitch
+// limits, which 0x47730 holds its pitch ([camera+0x8EC], degrees, the stick's turn taken off it) inside. The near
+// camera -45..-2, the far one (player+0x220 == 3) -30..-5, some cameras -65..65; nothing written while player+0xC0
+// has 0x100. look_up raises the near and far ceilings (display::g_look_up); the far camera's distance keeps the
+// console's ceiling (ConkerFarCameraCeiling)
+X86_EXTERN_FUNC(__imp__sub_00047DC0);
+X86_FUNC(sub_00047DC0) {
+    const uint32_t floor_at = ctx.esi, ceiling_at = ctx.edx;
+    __imp__sub_00047DC0(ctx, base);
+    const uint32_t up = std::min(display::g_look_up, display::kLookUpMax);
+    if (!up) return;
+    float lo, hi;
+    std::memcpy(&lo, base + floor_at, 4);
+    std::memcpy(&hi, base + ceiling_at, 4);
+    if (!(lo == -45.0f && hi == -2.0f) && !(lo == -30.0f && hi == -5.0f)) return;  // not near or far (or not written)
+    hi += float(up);
+    std::memcpy(base + ceiling_at, &hi, 4);
+}
+
+// [[hook]] before 0x4793E in 0x47730, the far camera's distance (xmm0 the pitch's ceiling, xmm5 its floor): the
+// pitch's share of the way from ceiling to floor, held to 0..1, sets how far back the camera sits. Given the console's
+// ceiling again, a pitch look_up let above it keeps the top's distance, and the rest keep theirs
+void ConkerFarCameraCeiling(X86Context& ctx, uint8_t* base) {
+    (void)base;
+    const uint32_t up = std::min(display::g_look_up, display::kLookUpMax);
+    if (up && ctx.xmm[5].f[0] == -30.0f && ctx.xmm[0].f[0] == -5.0f + float(up)) ctx.xmm[0].f[0] = -5.0f;
+}
 
 // 0x2A7B60: the frame timer, called once a frame by the frame loop before it renders and presents. Above 30 the game
 // paces itself: the runtime still paces Swap to the fps cap, and to 30 for the console's interval, so the render

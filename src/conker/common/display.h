@@ -33,6 +33,12 @@ float CameraFov();
 constexpr uint32_t kFov = 50, kFovMin = 40, kFovMax = 100;
 extern uint32_t g_fov;
 
+// settings.toml look_up: degrees the third person camera may tilt up past the console's stop (0x47DC0 holds the near
+// camera's pitch to -45..-2, -2 about level, the far one's to -30..-5), so the view looks further up from below the
+// player; 0 is the console's
+constexpr uint32_t kLookUpMax = 60;
+extern uint32_t g_look_up;
+
 // settings.toml hud_split: a multiplayer match's HUD drawn unstretched at a display wider than 4:3, each element kept
 // to its edge of the display (display.cpp, HUD); off, it stretches with the frame as on a widescreen console. Read
 // each frame
