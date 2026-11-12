@@ -1202,12 +1202,29 @@ HLE_STDCALL(D3DDevice_Swap, 1) {
     uint32_t vblanks = interval & 0x80000000u ? 1 : interval & 8 ? 4 : interval & 4 ? 3 : interval & 2 ? 2 : 1;
     app::Pace(vblanks);
     // a host menu is up (kernel::Hold): the title waits here, its clocks stopped, its last picture shown again under
-    // the menu
-    while (kernel::Held() && g_backend) {
-        g_backend->Redisplay();
+    // the menu. Frozen (F7, gpu::g_freeze): it waits here too, and the renderer draws its last frame again each time
+    // (Refresh), unblurred, so a setting changed shows on it; F8 lets one frame through. A frame the renderer didn't
+    // keep whole (the freeze came mid-frame) runs on, kept, up to twice; then the picture is only shown again
+    static int unkept = 0;  // frames run on since the freeze for want of one kept
+    if (!gpu::g_freeze.load()) unkept = 0;
+    while (g_backend && (kernel::Held() || gpu::g_freeze.load())) {
+        if (!gpu::g_freeze.load()) {
+            kernel::HoldFor(kernel::kHoldFreeze, false);
+            g_backend->Redisplay();
+        } else if (gpu::g_freeze_steps.load() && gpu::g_freeze_steps.fetch_sub(1)) {
+            break;
+        } else if (g_backend->Refresh()) {
+            unkept = 0;
+            kernel::HoldFor(kernel::kHoldFreeze, true);
+        } else if (unkept++ < 2) {
+            break;
+        } else {
+            kernel::HoldFor(kernel::kHoldFreeze, true);
+        }
         app::Pace(1);
         std::this_thread::sleep_for(std::chrono::milliseconds(1));  // no cap and no vsync: not a core spun on a menu
     }
+    kernel::HoldFor(kernel::kHoldFreeze, false);
     // like the XDK, the surfaces stay put and their memory rotates: titles keep back buffer pointers and copy its data
     uint32_t last = g_buffers[g_buffer_count - 1], data = R32(last + 4), lk = R32(last + 8);
     for (uint32_t i = g_buffer_count - 1; i > 0; i--) {

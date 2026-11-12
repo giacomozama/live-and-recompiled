@@ -212,6 +212,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             if (wp == VK_F4 && !(lp & (1 << 30))) gpu::g_record_dump = true;
             if (wp == VK_F5 && !(lp & (1 << 30))) x86_profile_dump();  // not on auto repeat
             if (wp == VK_F6 && !(lp & (1 << 30))) x86_profile_mark();
+            if (wp == VK_F7 && !(lp & (1 << 30))) gpu::ToggleFreeze();
+            if (wp == VK_F8) gpu::StepFrozen();  // on auto repeat too: frame by frame while held
             return 0;
         case WM_INPUT:
             RawInput(hwnd, reinterpret_cast<HRAWINPUT>(lp));

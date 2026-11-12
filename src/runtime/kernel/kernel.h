@@ -199,7 +199,10 @@ std::vector<ThreadRef> Threads();
 // in nanoseconds from the first read. Hold stops them, the title thread held at its next Swap (d3d8.cpp) and the
 // audio silent, as a host menu is up; let go, they run on from where they stopped. Any thread
 int64_t ClockNs();
+// HoldFor holds for a reason of its own, kept until each reason lets go: Hold is the host menu's, kHoldFreeze F7's
+enum : uint32_t { kHoldMenu = 1, kHoldFreeze = 2 };
 void Hold(bool on);
+void HoldFor(uint32_t reason, bool on);
 bool Held();
 
 // files

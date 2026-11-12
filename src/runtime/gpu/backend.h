@@ -34,6 +34,9 @@ public:
     // draws nothing, the menu still has to; blurred the longer it is held, unless blur is false (a load's fade). A
     // backend without a window does nothing
     virtual void Redisplay(bool /*blur*/ = true) {}
+    // the freeze (g_freeze): the last frame drawn again from its kept commands, with the settings as they are now,
+    // and presented; false when no frame was kept whole (nothing is shown then)
+    virtual bool Refresh() { return false; }
     // frame generation: Present shows the first of a frame's pictures and holds the rest for later; Due says when the
     // next held one is to be shown (false when none is held), Show shows those due by now. Present itself shows any
     // still held from the frame before first
@@ -108,5 +111,16 @@ inline std::atomic<uint64_t> g_perf_rec_cycles[5];
 inline std::atomic<bool> g_capture{false};
 // F4: save the pictures XBE_INTERP_RECORD keeps (gpu/interp.h) under diag::CaptureDir
 inline std::atomic<bool> g_record_dump{false};
+// F7: the game frozen on its last frame, drawn again each refresh with the settings as they are now (d3d8.cpp's Swap
+// waits, Backend::Refresh draws); F8 lets one more frame through, steps, freezing first if it isn't
+inline std::atomic<bool> g_freeze{false};
+inline std::atomic<uint32_t> g_freeze_steps{0};
+inline void ToggleFreeze() {
+    g_freeze_steps = 0;
+    g_freeze = !g_freeze.load();
+}
+inline void StepFrozen() {
+    if (g_freeze.exchange(true)) g_freeze_steps++;
+}
 
 }  // namespace gpu

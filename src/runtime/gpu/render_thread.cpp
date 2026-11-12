@@ -56,7 +56,7 @@ constexpr uint32_t kMoveRing = 1u << 20, kMoveHeaders = 1u << 16;
 
 enum class WaitFor : uint8_t { ReadBack, Resource, Fence, Flush, Copy, Frame, Count };
 
-enum class Op : uint8_t { State, Draw, Clear, Copy, Present, Redisplay, Sync, RecordLate, Flush, Gamma, ClearReport, GetReport, Note };
+enum class Op : uint8_t { State, Draw, Clear, Copy, Present, Redisplay, Refresh, Sync, RecordLate, Flush, Gamma, ClearReport, GetReport, Note };
 
 struct Cmd {
     Op op;
@@ -281,6 +281,12 @@ public:
         c.a = blur;
         cur_->cmds.push_back(c);
         Wait(Submit(), WaitFor::Frame, nullptr);
+    }
+
+    bool Refresh() override {
+        cur_->cmds.push_back(Cmd{Op::Refresh});
+        Wait(Submit(), WaitFor::Frame, nullptr);
+        return refreshed_.load();
     }
 
     void Sync(uint32_t data, uint32_t) override { ReadBack(data, false); }
@@ -658,14 +664,24 @@ private:
             rec_end_ = 0;
             ShowDue();
             uint64_t id = b->id;
-            // a frame's batches are kept to its Present while frame generation draws it again
+            // a frame's batches are kept to its Present while frame generation draws it again, and past it while the
+            // game is frozen (held_frame_, DrawFrozen draws it again)
             std::vector<Batch*> freed;
+            const bool alone = b->cmds.size() == 1 && (b->cmds[0].op == Op::Redisplay || b->cmds[0].op == Op::Refresh);
             if (frame_over_) {
-                freed.swap(frame_);
-                freed.push_back(b);
+                frame_.push_back(b);
+                freed.swap(held_frame_);
+                if (holding_ && g_freeze.load()) {
+                    held_frame_.swap(frame_);
+                    held_start_ = frame_start_;
+                    held_front_ = last_front_;
+                } else {
+                    freed.insert(freed.end(), frame_.begin(), frame_.end());
+                    frame_.clear();
+                }
                 frame_over_ = false;
                 BeginFrame();
-            } else if (keeping_ && !(b->cmds.size() == 1 && b->cmds[0].op == Op::Redisplay)) {
+            } else if (holding_ && !alone) {
                 frame_.push_back(b);
             } else {
                 if (posted) WaitRecord();  // a held frame's Redisplay, read by the recorder
@@ -730,8 +746,9 @@ private:
     // a frame starts: kept for drawing again when frame generation is on, from the state it starts with
     void BeginFrame() {
         keeping_ = app::Get().frame_generation > 1;
+        holding_ = keeping_ || g_freeze.load();  // a frame frozen on is kept whole
+        frame_start_ = state_;
         if (keeping_) {
-            frame_start_ = state_;
             // the recorder starts the frame where the render thread is (idle: the Present waited for it)
             WaitRecord();
             rec_state_ = state_;
@@ -749,10 +766,11 @@ private:
     }
 
     // the frame's commands again, up to its Present in last, with the draws' constants at t from the frame before's;
-    // only what draws: clears, copies, state, draws
-    void Replay(const Batch& last, float t) {
+    // only what draws: clears, copies, state, draws. Plain: the frozen frame (held_frame_, its Present in its last
+    // batch) as it was drawn, nothing blended
+    void Replay(const Batch* last, float t, bool plain = false) {
         State& rs = replay_state_;
-        rs = frame_start_;
+        rs = plain ? held_start_ : frame_start_;
         uint32_t n = 0;
         // what changed between draws, as Execute tells the backend: the blended constants don't count, so a run of
         // draws in one state keeps the backend's fast path as the frame did
@@ -771,6 +789,12 @@ private:
                         // a draw a run drawn again took with it (most of the bloodbath's): nothing to blend, the
                         // backend only counts it
                         interp::g_run_tag = c.tag;  // the HUD's placement reads it (gpu::g_hud_split)
+                        if (plain) {
+                            inner_->Changed(changed);
+                            changed = false;
+                            inner_->Draw(rs, c.a, c.b, c.c, c.d ? data : nullptr);
+                            break;
+                        }
                         if (inner_->Skips()) {
                             n++;
                             inner_->Changed(changed);
@@ -837,8 +861,22 @@ private:
                 }
             }
         };
-        for (const Batch* b : frame_) run(*b);
-        run(last);
+        for (const Batch* b : plain ? held_frame_ : frame_) run(*b);
+        if (last) run(*last);
+    }
+
+    // the frozen frame drawn again and presented, the settings read as they are now; without one kept, the picture
+    // shown last again
+    void DrawFrozen() {
+        if (held_frame_.empty()) {
+            inner_->Redisplay(false);
+            refreshed_ = false;
+            return;
+        }
+        Replay(nullptr, 1.0f, true);
+        inner_->Present(held_front_);
+        changed_ = true;  // the backend's state is the frozen frame's end
+        refreshed_ = true;
     }
 
     // a frame's Present: with frame generation, the pictures between the frame before and it drawn first
@@ -850,6 +888,7 @@ private:
             gen_rec_wait_ns_ += Ns(wait_start);
         }
         interp::Presented(c.s1.data);
+        last_front_ = c.s1;
         uint32_t pictures = keeping_ ? inner_->Pictures() : 1;
         if (pictures > 1 && frame_draws_) {
             auto match_start = PerfClock::now();
@@ -870,7 +909,7 @@ private:
                 inner_->Replaying(true);
                 ShadingReplay(true, t);
                 interp::BeginPass(t);
-                Replay(b, t);
+                Replay(&b, t);
                 interp::EndPass(i - 1);
                 ShadingReplay(false);
                 inner_->Replaying(false);
@@ -949,6 +988,7 @@ private:
             case Op::Copy: inner_->Copy(c.s1, c.s2, c.a, c.b, c.c); break;
             case Op::Present: Present(b, c); break;
             case Op::Redisplay: inner_->Redisplay(c.a != 0); break;
+            case Op::Refresh: DrawFrozen(); break;
             case Op::Sync: inner_->Sync(c.a, 0); break;
             case Op::RecordLate: inner_->RecordLate(c.a); break;
             case Op::Flush: inner_->Flush(); break;
@@ -990,6 +1030,13 @@ private:
     std::vector<Batch*> frame_;
     State frame_start_, replay_state_;
     bool keeping_ = false, frame_over_ = false;
+    // the freeze: holding_, the frame is kept whole (frame generation's or g_freeze at its start); the last frame kept
+    // past its Present while frozen, the state it started with and its front buffer; DrawFrozen drew it
+    bool holding_ = false;
+    std::vector<Batch*> held_frame_;
+    State held_start_;
+    Surface last_front_{}, held_front_{};
+    std::atomic<bool> refreshed_{false};
     uint32_t frame_draws_ = 0;
     uint64_t gen_match_ns_ = 0, gen_replay_ns_ = 0, gen_blend_ns_ = 0;  // XBE_PERF, over gen_frames_
     uint64_t gen_matched_ns_ = 0, gen_draw_ns_ = 0, gen_between_ns_ = 0;  // Match alone, backend draws, Between

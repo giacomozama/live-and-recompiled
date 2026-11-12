@@ -901,6 +901,18 @@ void Draw(double fps) {
         ImGui::PopStyleVar();
     }
 
+    // F7's freeze (gpu::g_freeze): a note at the top's middle while the game waits on its last frame
+    if (gpu::g_freeze.load()) {
+        ImDrawList* dl = ImGui::GetForegroundDrawList();
+        const char* label = "Frozen: F7 resumes, F8 steps a frame";
+        const float font = ImGui::GetFontSize();
+        const ImVec2 text = ImGui::GetFont()->CalcTextSizeA(font, FLT_MAX, 0.0f, label);
+        const float pad = font * 0.5f, x = (ImGui::GetIO().DisplaySize.x - text.x) * 0.5f, y = font * 0.6f;
+        dl->AddRectFilled(ImVec2(x - pad, y - pad * 0.5f), ImVec2(x + text.x + pad, y + text.y + pad * 0.5f),
+                          IM_COL32(0, 0, 0, 150), font * 0.4f);
+        dl->AddText(ImGui::GetFont(), font, ImVec2(x, y), IM_COL32(255, 255, 255, 235), label);
+    }
+
     // a cutscene's hold to skip: a pill at the bottom right whose border fills as the button is held
     if (const float hold = cutscenes::Hold(); hold > 0.0f && !open && !quit) {
         ImDrawList* dl = ImGui::GetForegroundDrawList();

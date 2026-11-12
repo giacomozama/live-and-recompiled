@@ -91,9 +91,14 @@ int64_t ClockNs() {
     return f >= 0 ? std::min(v, f) : v;
 }
 
-void Hold(bool on) {
+void Hold(bool on) { HoldFor(kHoldMenu, on); }
+
+void HoldFor(uint32_t reason, bool on) {
     static std::mutex m;
+    static uint32_t reasons = 0;
     std::lock_guard lock(m);
+    reasons = on ? reasons | reason : reasons & ~reason;
+    on = reasons != 0;
     int64_t f = g_clock_frozen.load();
     if (on && f < 0) {
         // a little ahead, so a reader that looked just before is not past it
