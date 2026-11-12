@@ -1254,14 +1254,6 @@ void Draw(double fps) {
                            app::Settings{}.ambient_occlusion_radius);
                 Slider("Motion blur %", &s.motion_blur, 0, 100, app::Settings{}.motion_blur);
                 Hint("Blurs the picture as the camera turns quickly.");
-                end_tab();
-            }
-
-            if (tab("Enhancements")) {
-                ImGui::SeparatorText(T("Camera"));
-                Slider("Field of view", &display::g_fov, display::kFovMin, display::kFovMax, display::kFov);
-                Slider("Extra look up", &display::g_look_up, 0, display::kLookUpMax, 0);
-                Hint("Lets the third person camera tilt further up, in degrees. 0 is the original limit.");
 
                 ImGui::SeparatorText(T("Lighting"));
                 Check("Per-pixel lighting", &lighting::g_per_pixel);
@@ -1411,6 +1403,14 @@ void Draw(double fps) {
                 Check("Unstretched multiplayer HUD", &display::g_hud_split);
                 Hint("On a widescreen display, the HUD in a multiplayer match keeps its shape, each part at the left, "
                      "the middle or the right of the screen. Off: it stretches across the screen.", true);
+                end_tab();
+            }
+
+            if (tab("Enhancements")) {
+                ImGui::SeparatorText(T("Camera"));
+                Slider("Field of view", &display::g_fov, display::kFovMin, display::kFovMax, display::kFov);
+                Slider("Extra look up", &display::g_look_up, 0, display::kLookUpMax, 0);
+                Hint("Lets the third person camera tilt further up, in degrees. 0 is the original limit.");
 
                 ImGui::SeparatorText(T("Menus"));
                 Check("Readable menu hints", &menus::g_bright_hints);
