@@ -37,7 +37,10 @@ TEXT_END = text[1] + text[2]
 DATA_LO, DATA_HI = 0x64F980, 0x881A80
 RDATA_LO, RDATA_HI = 0x561000, 0x64F980
 
-TIMING = {0x7FA20C, 0x7FA210, 0x7FA214, 0x7FA218, 0x7FA21C, 0x7FA250, 0x7FDB8C}
+TIMING = {0x7FA20C, 0x7FA210, 0x7FA214, 0x7FA218, 0x7FA21C, 0x7FA250, 0x7FDB8C,
+          0x7FDD28}  # the time scale times 100, a word (0x2D37F4)
+ROOTS = set(TIMING)
+DERIVED = set()  # globals stored from timing values and constants alone (the player's step 0x7FDD28): timing too
 
 funcs = sorted(int(m, 16) for m in re.findall(r"\{0x([0-9A-F]+)u, sub_", open(f"{ROOT}/generated/game/x86_func_mapping.cpp").read()))
 funcs = [f for f in funcs if text[1] <= f < TEXT_END]
@@ -76,158 +79,258 @@ def mem_key(op, esp_delta, regver):
         return ("A", b, regver.get(b, 0), m.disp)  # array: not tracked as the same slot
     return ("F", b, regver.get(b, 0), m.disp)
 
-def scan(fva, fend, out):
-    reg = collections.defaultdict(frozenset)   # register -> tags
-    regver = {}                                  # register -> version (a field key's base identity)
-    memt = {}                                    # tracked memory -> tags
-    fpu = []                                     # x87 stack of tags
-    esp = 0
-    reads_timing = False
-    sites = []
-    code = bytes_at(fva, fend - fva)
-    for ins in md.disasm(code, fva):
-        mn = ins.mnemonic
-        if mn.startswith("int3"):
-            break
-        ops = ins.operands
-        # tags of memory operands read
-        def tags_of_mem(op):
-            k = mem_key(op, esp, regver)
-            t = memt.get(k)
-            if k[0] == "G":
-                a = k[1]
-                if a in TIMING:
-                    return frozenset({"T"}) | (t or frozenset())
-                if RDATA_LO <= a < RDATA_HI:
-                    return frozenset({"K"})  # a constant
-                base_t = frozenset({("L",) + k})
-            elif k[0] == "S":
-                base_t = frozenset({"S"})
-            else:
-                base_t = frozenset({("L",) + k})
-            return (t | base_t) if t else base_t
+class State:
+    __slots__ = ("reg", "regver", "memt", "fpu", "esp")
 
-        if mn == "call":
-            for r in ("eax", "ecx", "edx"):
-                reg[r] = frozenset({"R"}); regver[r] = regver.get(r, 0) + 1
-            for i in range(8):
-                reg[f"xmm{i}"] = frozenset({"R"})
-            fpu = [frozenset({"R"})] if fpu else []
-            memt = {k: v for k, v in memt.items() if k[0] == "S"}
-            continue
-        if mn == "push":
-            esp -= 4
-            if ops[0].type == x86.X86_OP_REG:
-                memt[("S", esp)] = reg[canon(ops[0].reg)]
-            elif ops[0].type == x86.X86_OP_MEM:
-                memt[("S", esp)] = tags_of_mem(ops[0])
-            else:
-                memt[("S", esp)] = frozenset({"C"})
-            continue
-        if mn == "pop":
-            if ops[0].type == x86.X86_OP_REG:
-                r = canon(ops[0].reg); reg[r] = memt.get(("S", esp), frozenset({"S"})); regver[r] = regver.get(r, 0) + 1
-            esp += 4
-            continue
-        if mn in ("sub", "add") and ops[0].type == x86.X86_OP_REG and canon(ops[0].reg) == "esp" and ops[1].type == x86.X86_OP_IMM:
-            esp += -ops[1].imm if mn == "sub" else ops[1].imm
-            continue
-        if mn in ("ret", "jmp") and (mn == "ret" or ops[0].type != x86.X86_OP_IMM):
-            pass
+    def __init__(self):
+        self.reg = collections.defaultdict(frozenset)  # register -> tags
+        self.regver = {}                                 # register -> where it was last written (a field key's base)
+        self.memt = {}                                   # tracked memory -> tags
+        self.fpu = []                                    # x87 stack of tags
+        self.esp = 0
 
-        # x87
-        if mn.startswith("f"):
-            memops = [o for o in ops if o.type == x86.X86_OP_MEM]
-            mt = tags_of_mem(memops[0]) if memops else None
-            if mt is not None and "T" in mt:
-                reads_timing = True
-            st = lambda i: fpu[-1 - i] if len(fpu) > i else frozenset()
-            if mn in ("fld", "fild"):
-                fpu.append(mt if mt is not None else st(0))
-            elif mn in ("fld1", "fldz", "fldpi"):
-                fpu.append(frozenset({"C"}))
-            elif mn in ("fst", "fstp", "fistp", "fist", "fisttp"):
-                v = st(0)
-                if memops:
-                    k = mem_key(memops[0], esp, regver)
-                    sites.append((ins, k, v))
-                    memt[k] = v
-                if mn.endswith("p") and fpu:
-                    fpu.pop()
-            elif mn == "fxch":
-                if len(fpu) >= 2:
-                    fpu[-1], fpu[-2] = fpu[-2], fpu[-1]
-            elif mn in ("faddp", "fsubp", "fsubrp", "fmulp", "fdivp", "fdivrp"):
-                if len(fpu) >= 2:
-                    a = fpu.pop()
-                    fpu[-1] = fpu[-1] | a | (frozenset({"X"}) if mn in MUL and "T" not in a else frozenset({"A"}))
-            elif mn in ("fadd", "fsub", "fsubr", "fmul", "fdiv", "fdivr", "fiadd", "fisub", "fimul", "fidiv"):
-                src = mt if mt is not None else (st(1) if len(ops) < 2 else st(0) | st(1))
-                if fpu:
-                    fpu[-1] = fpu[-1] | src | (frozenset({"X"}) if mn in MUL and "T" not in src else (frozenset({"A"}) if mn in ADD else frozenset()))
-            elif mn in ("fcomp", "fcompp", "fucompp", "fucomp"):
-                if fpu: fpu.pop()
-                if mn.endswith("pp") and fpu: fpu.pop()
-            elif mn == "fchs" or mn == "fabs":
-                pass
-            continue
+    def copy(self):
+        c = State()
+        c.reg = collections.defaultdict(frozenset, self.reg)
+        c.regver = dict(self.regver)
+        c.memt = dict(self.memt)
+        c.fpu = list(self.fpu)
+        c.esp = self.esp
+        return c
 
-        if not ops:
-            continue
-        # generic
-        try:
-            rr, rw = ins.regs_access()
-        except capstone.CsError:
-            continue
-        src = frozenset()
-        memw = None
-        dst_read = True
-        for i, o in enumerate(ops):
-            if o.type == x86.X86_OP_MEM:
-                if mn == "lea":
-                    for rg in (o.mem.base, o.mem.index):
-                        if rg: src |= reg[canon(rg)]
-                    continue
-                if i == 0 and (o.access & capstone.CS_AC_WRITE):
-                    memw = o
-                    if o.access & capstone.CS_AC_READ:
-                        src |= tags_of_mem(o)
-                else:
-                    src |= tags_of_mem(o)
-                for rg in (o.mem.base, o.mem.index):
-                    pass
-            elif o.type == x86.X86_OP_REG:
-                if i == 0 and mn in MOVLIKE:
-                    continue
-                if i == 0 and mn == "xor" and len(ops) == 2 and ops[1].type == x86.X86_OP_REG and ops[1].reg == o.reg:
-                    src = frozenset({"C"})
-                    break
-                if i == 0 and mn in ("xorps", "pxor") and ops[1].type == x86.X86_OP_REG and ops[1].reg == o.reg:
-                    src = frozenset({"C"})
-                    break
-                src |= reg[canon(o.reg)]
-            elif o.type == x86.X86_OP_IMM:
-                src |= frozenset({"C"})
-        if "T" in src:
-            reads_timing = True
-        if mn in MUL and "T" not in src:
-            src |= frozenset({"X"})
-        if mn in ADD:
-            src |= frozenset({"A"})
-        if mn in ("cmp", "test", "comiss", "ucomiss", "bt") or mn.startswith("j"):
-            continue
-        if memw is not None:
-            k = mem_key(memw, esp, regver)
-            sites.append((ins, k, src))
-            memt[k] = src
+    def merge(self, o):
+        """Union o into self (paths meeting); True if self changed."""
+        changed = False
+        for r, t in o.reg.items():
+            u = self.reg[r] | t
+            if u != self.reg[r]:
+                self.reg[r] = u
+                changed = True
+        for r, v in o.regver.items():
+            if self.regver.get(r, v) != v and self.regver[r] < v:
+                self.regver[r] = v
+                changed = True
+            elif r not in self.regver:
+                self.regver[r] = v
+                changed = True
+        for k, t in o.memt.items():
+            u = self.memt.get(k, frozenset()) | t
+            if u != self.memt.get(k):
+                self.memt[k] = u
+                changed = True
+        if len(o.fpu) > len(self.fpu):
+            self.fpu = list(o.fpu[:len(o.fpu) - len(self.fpu)]) + self.fpu
+            changed = True
+        for i in range(1, len(o.fpu) + 1):
+            u = self.fpu[-i] | o.fpu[-i]
+            if u != self.fpu[-i]:
+                self.fpu[-i] = u
+                changed = True
+        return changed
+
+
+def successors(ins, nxt, at):
+    mn = ins.mnemonic
+    if mn == "ret" or mn.startswith("int3") or mn == "hlt":
+        return []
+    if mn.startswith("j") or mn.startswith("loop"):
+        op = ins.operands[0] if ins.operands else None
+        tgt = [op.imm] if op is not None and op.type == x86.X86_OP_IMM and op.imm in at else []
+        return tgt if mn == "jmp" else tgt + [nxt]
+    return [nxt]
+
+
+def transfer(ins, s, sites, flags):
+    """Apply one instruction to the state s; stores go into sites (address -> (ins, key, tags))."""
+    mn = ins.mnemonic
+    ops = ins.operands
+    reg, memt = s.reg, s.memt
+
+    def tags_of_mem(op):
+        k = mem_key(op, s.esp, s.regver)
+        t = memt.get(k)
+        if k[0] == "G":
+            a = k[1]
+            if a in TIMING:
+                return frozenset({"T"}) | (t or frozenset())
+            if RDATA_LO <= a < RDATA_HI:
+                return frozenset({"K"})  # a constant
+            base_t = frozenset({("L",) + k})
+        elif k[0] == "S":
+            base_t = frozenset({"S"})
         else:
-            for r in rw:
-                n = canon(r)
-                if n in ("eflags", "esp", "eip"):
-                    continue
-                reg[n] = src
-                regver[n] = regver.get(n, 0) + 1
-    for ins, k, v in sites:
+            base_t = frozenset({("L",) + k})
+        return (t | base_t) if t else base_t
+
+    def store(k, v):
+        old = sites.get(ins.address)
+        sites[ins.address] = (ins, k, v | old[2] if old else v)
+        memt[k] = v
+
+    if mn == "call":
+        for r in ("eax", "ecx", "edx"):
+            reg[r] = frozenset({"R"}); s.regver[r] = ins.address
+        for i in range(8):
+            reg[f"xmm{i}"] = frozenset({"R"})
+        s.fpu = [frozenset({"R"})] if s.fpu else []
+        for k in [k for k in memt if k[0] != "S"]:
+            del memt[k]
+        return
+    if mn == "push":
+        s.esp -= 4
+        if ops[0].type == x86.X86_OP_REG:
+            memt[("S", s.esp)] = reg[canon(ops[0].reg)]
+        elif ops[0].type == x86.X86_OP_MEM:
+            memt[("S", s.esp)] = tags_of_mem(ops[0])
+        else:
+            memt[("S", s.esp)] = frozenset({"C"})
+        return
+    if mn == "pop":
+        if ops[0].type == x86.X86_OP_REG:
+            r = canon(ops[0].reg); reg[r] = memt.get(("S", s.esp), frozenset({"S"})); s.regver[r] = ins.address
+        s.esp += 4
+        return
+    if mn in ("sub", "add") and ops[0].type == x86.X86_OP_REG and canon(ops[0].reg) == "esp" and ops[1].type == x86.X86_OP_IMM:
+        s.esp += -ops[1].imm if mn == "sub" else ops[1].imm
+        return
+
+    if mn.startswith("f"):  # x87
+        fpu = s.fpu
+        memops = [o for o in ops if o.type == x86.X86_OP_MEM]
+        mt = tags_of_mem(memops[0]) if memops else None
+        if mt is not None and "T" in mt:
+            flags["timing"] = True
+        st = lambda i: fpu[-1 - i] if len(fpu) > i else frozenset()
+        if mn in ("fld", "fild"):
+            fpu.append(mt if mt is not None else st(0))
+        elif mn in ("fld1", "fldz", "fldpi"):
+            fpu.append(frozenset({"C"}))
+        elif mn in ("fst", "fstp", "fistp", "fist", "fisttp"):
+            v = st(0)
+            if memops:
+                store(mem_key(memops[0], s.esp, s.regver), v)
+            if mn.endswith("p") and fpu:
+                fpu.pop()
+        elif mn == "fxch":
+            if len(fpu) >= 2:
+                fpu[-1], fpu[-2] = fpu[-2], fpu[-1]
+        elif mn in ("faddp", "fsubp", "fsubrp", "fmulp", "fdivp", "fdivrp"):
+            if len(fpu) >= 2:
+                a = fpu.pop()
+                fpu[-1] = fpu[-1] | a | (frozenset({"X"}) if mn in MUL and "T" not in a else frozenset({"A"}))
+        elif mn in ("fadd", "fsub", "fsubr", "fmul", "fdiv", "fdivr", "fiadd", "fisub", "fimul", "fidiv"):
+            src = mt if mt is not None else (st(1) if len(ops) < 2 else st(0) | st(1))
+            if fpu:
+                fpu[-1] = fpu[-1] | src | (frozenset({"X"}) if mn in MUL and "T" not in src else (frozenset({"A"}) if mn in ADD else frozenset()))
+        elif mn in ("fcomp", "fcompp", "fucompp", "fucomp"):
+            if fpu: fpu.pop()
+            if mn.endswith("pp") and fpu: fpu.pop()
+        return
+
+    if not ops:
+        return
+    try:
+        rr, rw = ins.regs_access()
+    except capstone.CsError:
+        return
+    src = frozenset()
+    memw = None
+    for i, o in enumerate(ops):
+        if o.type == x86.X86_OP_MEM:
+            if mn == "lea":
+                for rg in (o.mem.base, o.mem.index):
+                    if rg: src |= reg[canon(rg)]
+                continue
+            if i == 0 and (o.access & capstone.CS_AC_WRITE):
+                memw = o
+                if o.access & capstone.CS_AC_READ:
+                    src |= tags_of_mem(o)
+            else:
+                src |= tags_of_mem(o)
+        elif o.type == x86.X86_OP_REG:
+            if i == 0 and mn in MOVLIKE:
+                continue
+            if i == 0 and mn in ("xor", "xorps", "pxor", "sub") and len(ops) == 2 and ops[1].type == x86.X86_OP_REG and ops[1].reg == o.reg:
+                src = frozenset({"C"})
+                break
+            src |= reg[canon(o.reg)]
+        elif o.type == x86.X86_OP_IMM:
+            src |= frozenset({"C"})
+    if "T" in src:
+        flags["timing"] = True
+    if mn in MUL and "T" not in src:
+        src |= frozenset({"X"})
+    if mn in ADD:
+        src |= frozenset({"A"})
+    if mn in ("cmp", "test", "comiss", "ucomiss", "bt") or mn.startswith("j"):
+        return
+    if memw is not None:
+        store(mem_key(memw, s.esp, s.regver), src)
+    else:
+        for r in rw:
+            n = canon(r)
+            if n in ("eflags", "esp", "eip"):
+                continue
+            reg[n] = src
+            s.regver[n] = ins.address
+
+
+def scan(fva, fend, out):
+    """Forward taint dataflow over the function's control flow: states meet (union) where paths join."""
+    insns = []
+    for ins in md.disasm(bytes_at(fva, fend - fva), fva):
+        insns.append(ins)
+        if ins.mnemonic.startswith("int3"):
+            break
+    if not insns:
+        return False
+    at = {x.address: i for i, x in enumerate(insns)}
+    succ = []
+    leaders = {0}
+    for i, x in enumerate(insns):
+        nxt = insns[i + 1].address if i + 1 < len(insns) else None
+        ss = [at[a] for a in successors(x, nxt, at) if a is not None and a in at]
+        succ.append(ss)
+        if ss != [i + 1]:
+            leaders.update(ss)
+            if i + 1 < len(insns):
+                leaders.add(i + 1)
+    starts = sorted(leaders)
+    block_of = {}
+    blocks = []
+    for bi, st in enumerate(starts):
+        end = starts[bi + 1] if bi + 1 < len(starts) else len(insns)
+        blocks.append((st, end))
+        block_of[st] = bi
+    entry = [None] * len(blocks)
+    entry[0] = State()
+    visits = [0] * len(blocks)
+    work = [0]
+    sites = {}
+    flags = {"timing": False}
+    while work:
+        bi = work.pop()
+        visits[bi] += 1
+        if visits[bi] > 12:
+            continue
+        s = entry[bi].copy()
+        st, end = blocks[bi]
+        for i in range(st, end):
+            transfer(insns[i], s, sites, flags)
+        for j in succ[end - 1]:
+            if j not in block_of:
+                continue
+            bj = block_of[j]
+            if entry[bj] is None:
+                entry[bj] = s.copy()
+                work.append(bj)
+            elif entry[bj].merge(s):
+                work.append(bj)
+    reads_timing = flags["timing"]
+    for ins, k, v in sites.values():
+        if k[0] == "G" and "T" in v and DATA_LO <= k[1] < DATA_HI and k[1] not in TIMING and \
+                all(t in ("T", "C", "K", "X", "A") or (t[0] == "L" and t[1] == "G" and t[2] in TIMING) for t in v):
+            DERIVED.add(k[1])
         if k[0] not in ("G", "F"):
             continue
         if ("L",) + k not in v:
@@ -252,20 +355,35 @@ def scan(fva, fend, out):
                     " ".join(hex(a) for a in gl[:4])))
     return reads_timing
 
-res = []
-for i, f in enumerate(funcs):
-    end = funcs[i + 1] if i + 1 < len(funcs) else TEXT_END
-    if end - f > 0x20000:
-        end = f + 0x20000
-    out = []
-    try:
-        rt = scan(f, end, out)
-    except Exception as e:
-        print(f"# {f:#x}: {e}", file=sys.stderr)
-        continue
-    if out:
-        for r in out:
-            res.append(r[:5] + (rt,) + r[6:])
+def scan_all():
+    res = []
+    for i, f in enumerate(funcs):
+        end = funcs[i + 1] if i + 1 < len(funcs) else TEXT_END
+        if end - f > 0x20000:
+            end = f + 0x20000
+        out = []
+        try:
+            rt = scan(f, end, out)
+        except Exception as e:
+            print(f"# {f:#x}: {e}", file=sys.stderr)
+            continue
+        if out:
+            for r in out:
+                res.append(r[:5] + (rt,) + r[6:])
+    return res
+
+
+# timing spreads through globals: rescan with each pass's derived globals as roots until none are new
+res = scan_all()
+for _ in range(4):
+    new = DERIVED - TIMING
+    if not new:
+        break
+    TIMING |= new
+    print(f"# timing globals derived: {' '.join(hex(a) for a in sorted(new))}", file=sys.stderr)
+    res = scan_all()
+
+
 def keep(k, txt):
     if txt.split()[0] in ("or", "and", "shr", "shl", "xor", "adc", "sbb", "sar"):
         return False  # flags and bit packing
