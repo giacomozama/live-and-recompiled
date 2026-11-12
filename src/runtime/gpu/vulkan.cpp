@@ -1110,7 +1110,9 @@ public:
     void ApplyFade();
     bool Due(std::chrono::steady_clock::time_point& at) override {
         if (held_.empty()) return false;
-        at = held_.front().at;
+        TimeHeld();
+        // the GPU not done with the first yet: looked at again shortly
+        at = held_.front().after ? std::chrono::steady_clock::now() + std::chrono::microseconds(500) : held_.front().at;
         return true;
     }
     void Show() override;
@@ -1800,10 +1802,16 @@ private:
     };
     std::vector<Recorded> recorded_;  // a ring, the next written at recorded_next_
     uint64_t recorded_next_ = 0;
+    // without vsync a picture past the frame's first has its time from when the GPU finished the first (after, its
+    // timeline value; 0 once seen, at then set): the first waits for the GPU, a later one timed from its submission
+    // went up right behind it, and an immediate or mailbox swap chain showed the later one alone
     struct Held {
         uint32_t bi;
         std::chrono::steady_clock::time_point at;
+        uint64_t after = 0;
+        std::chrono::steady_clock::duration offset{};
     };
+    void TimeHeld();
     std::deque<Held> held_;
     std::chrono::steady_clock::time_point gen_last_{};
     double gen_period_ = 1.0 / 60;
@@ -6405,9 +6413,21 @@ void VulkanBackend::SaveRecorded() {
 }
 
 // the held pictures due by now, in order
+void VulkanBackend::TimeHeld() {
+    if (held_.empty() || !held_.front().after) return;
+    const uint64_t done = Completed();
+    const auto now = std::chrono::steady_clock::now();
+    for (Held& h : held_)
+        if (h.after && done >= h.after) {
+            h.at = now + h.offset;
+            h.after = 0;
+        }
+}
+
 void VulkanBackend::Show() {
+    TimeHeld();
     auto now = std::chrono::steady_clock::now();
-    while (!held_.empty() && held_.front().at <= now) {
+    while (!held_.empty() && !held_.front().after && held_.front().at <= now) {
         QueuePresent(held_.front().bi);
         held_.pop_front();
     }
@@ -6555,14 +6575,17 @@ void VulkanBackend::Present(const Surface& front) {
     BuildUi();
     Frame& f = CurrentFrame();
     uint32_t shown = 0;
+    uint64_t first = 0;  // the first picture's timeline value
     for (size_t i = 0; i < pictures.size(); i++, shown++) {
         uint32_t bi = 0;
         if (!AcquireImage(bi, f.acquired[i])) break;
         BeginCommands(f.present[i]);
         DrawFrame(i < sources.size() ? sources[i] : nullptr, bi, true, i < masks.size() ? masks[i] : nullptr);
         Submit(false, f.acquired[i], present_sem_[bi]);
-        held_.push_back({bi, now + std::chrono::duration_cast<std::chrono::steady_clock::duration>(
-                                       std::chrono::duration<double>(gen_period_ * double(i) / double(pictures.size())))});
+        if (!i) first = fence_value_;
+        const auto offset = std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+            std::chrono::duration<double>(gen_period_ * double(i) / double(pictures.size())));
+        held_.push_back({bi, now + offset, i && !swap_vsync_ ? first : 0, offset});
     }
     DeliverReports();
     {
