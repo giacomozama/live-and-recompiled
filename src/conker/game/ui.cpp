@@ -1772,20 +1772,20 @@ void Draw(double fps) {
                     Check("Floor depth of field", &reflection::g_floor_depth);
                     Hint("Fixes the blur on shiny, reflective floors.", true);
                 }
+                end_tab();
+            }
+
+            if (tab("Tweaks")) {
+                if (Section("Camera")) {
+                    Slider("Field of view", &display::g_fov, display::kFovMin, display::kFovMax, display::kFov);
+                    Slider("Extra look up", &display::g_look_up, 0, display::kLookUpMax, 0);
+                    Hint("Lets the third person camera tilt further up, in degrees. 0 is the original limit.");
+                }
 
                 if (Section("HUD")) {
                     Check("Unstretched multiplayer HUD", &display::g_hud_split);
                     Hint("On a widescreen display, the HUD in a multiplayer match keeps its shape, each part at the left, "
                          "the middle or the right of the screen. Off: it stretches across the screen.", true);
-                }
-                end_tab();
-            }
-
-            if (tab("Enhancements")) {
-                if (Section("Camera")) {
-                    Slider("Field of view", &display::g_fov, display::kFovMin, display::kFovMax, display::kFov);
-                    Slider("Extra look up", &display::g_look_up, 0, display::kLookUpMax, 0);
-                    Hint("Lets the third person camera tilt further up, in degrees. 0 is the original limit.");
                 }
 
                 if (Section("Menus")) {

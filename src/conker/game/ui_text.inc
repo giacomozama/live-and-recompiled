@@ -9,7 +9,7 @@ constexpr Line kLines[] = {
     // tabs and footer
     {"General", "Allgemein", "Général", "General", "Generale", "一般"},
     {"Graphics", "Grafik", "Graphismes", "Gráficos", "Grafica", "グラフィック"},
-    {"Enhancements", "Verbesserungen", "Améliorations", "Mejoras", "Miglioramenti", "拡張"},
+    {"Tweaks", "Anpassungen", "Ajustements", "Ajustes", "Ritocchi", "調整"},
     {"Audio", "Audio", "Audio", "Audio", "Audio", "オーディオ"},
     {"Controls", "Steuerung", "Commandes", "Controles", "Comandi", "操作"},
     {"Multiplayer", "Mehrspieler", "Multijoueur", "Multijugador", "Multigiocatore", "マルチプレイ"},
