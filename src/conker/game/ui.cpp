@@ -15,6 +15,7 @@
 #include <cctype>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <cwchar>
 #include <initializer_list>
 #include <string>
@@ -399,7 +400,8 @@ void EndSection() {
     }
 }
 
-bool Section(const char* name) {
+// a section's card: its header folds the rows away, or with `collapsible` off there is no header and the rows are always shown
+bool Section(const char* name, bool collapsible = true) {
     EndSection();
     // the header is rounded and sits in from the window's edges, by less than the rows under it
     const float margin = std::round(RowInset() * 0.5f);
@@ -430,7 +432,8 @@ bool Section(const char* name) {
         at = ImVec2(std::round(at.x), std::round(at.y));
         ImGui::SetCursorScreenPos(at);
         const float shown = t < 0.0f ? 1.0f : t * t * (3.0f - 2.0f * t);
-        const float bottom = std::round(at.y + ImGui::GetFrameHeight() + (t != 0.0f ? ImGui::GetStyle().ItemSpacing.y + height * shown : 0.0f));
+        const float head = collapsible ? ImGui::GetFrameHeight() : 0.0f;
+        const float bottom = std::round(at.y + head + (t != 0.0f ? (collapsible ? ImGui::GetStyle().ItemSpacing.y : 0.0f) + height * shown : 0.0f));
         ImVec4 bg = ImGui::GetStyle().Colors[ImGuiCol_WindowBg];  // a tiny bit brighter than the backdrop
         bg.x += (1.0f - bg.x) * 0.03f, bg.y += (1.0f - bg.y) * 0.03f, bg.z += (1.0f - bg.z) * 0.03f, bg.w = 1.0f;
         w->DrawList->AddRectFilled(at, ImVec2(std::round(w->WorkRect.Max.x), bottom), ImGui::GetColorU32(bg), ImGui::GetStyle().FrameRounding);
@@ -439,11 +442,11 @@ bool Section(const char* name) {
         g_card_r = w->WorkRect.Max.x;
     }
     ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 0.0f);  // its lines are the card's and its bottom edge's
-    const bool open = ImGui::CollapsingHeader(T(name), ImGuiTreeNodeFlags_DefaultOpen);
+    const bool open = collapsible ? ImGui::CollapsingHeader(T(name), ImGuiTreeNodeFlags_DefaultOpen) : true;
     ImGui::PopStyleVar();
     // open, the header keeps the card's black and translucent white lines along its bottom edge and round its lower corners, setting it off from the
     // rows (the rest of its outline is the card's own)
-    if (g_decorations && (open || t > 0.0f)) {
+    if (collapsible && g_decorations && (open || t > 0.0f)) {
         const ImVec2 lo = ImGui::GetItemRectMin(), hi = ImGui::GetItemRectMax();
         DrawFrameBottom(w->DrawList, lo, hi, ImGui::GetStyle().FrameRounding, ImGui::GetStyle().Alpha, 120.0f);
     }
@@ -1347,6 +1350,7 @@ void Draw(double fps) {
         // and the window's own lines, without the shadow)
         ImGuiStyle& st = ImGui::GetStyle();
         st.FrameBorderSize = g_decorations ? 1.0f : 0.0f;
+        st.PopupBorderSize = g_decorations ? 0.0f : 1.0f;  // the dropdowns' frames are drawn below, with their shadow
         st.Colors[ImGuiCol_Border] = ImVec4(1, 1, 1, 24.0f / 255.0f);
         st.Colors[ImGuiCol_BorderShadow] = ImVec4(0, 0, 0, 120.0f / 255.0f);
     }
@@ -1612,12 +1616,12 @@ void Draw(double fps) {
                         // the languages the game has text for (aid/text), in XC_LANGUAGE order; the menu has the same six
                         static const char* const kKeys[] = {"english", "japanese", "german", "french", "spanish", "italian"};
                         constexpr int kCount = int(std::size(kKeys));
-                        constexpr const char* kNames = "English\0日本語\0Deutsch\0Français\0Español\0Italiano\0";
                         auto pick = [&](const char* label, std::string& setting) {
                             int lang = 0;
                             for (int i = 0; i < kCount; i++)
                                 if (setting == kKeys[i]) lang = i;
-                            if (ImGui::Combo(Beside(label), &lang, kNames)) setting = kKeys[lang];
+                            // segments, or a dropdown where the six names don't fit the room
+                            if (Segmented(label, &lang, {"English", "日本語", "Deutsch", "Français", "Español", "Italiano"})) setting = kKeys[lang];
                         };
                         pick("UI", s.ui_language);
                         pick("Game text", s.language);
@@ -1626,14 +1630,10 @@ void Draw(double fps) {
                 }
                 if (Section("Appearance")) {
                     {
-                        SettingGap();
-                        ImGui::AlignTextToFramePadding();
-                        const float x0 = ImGui::GetCursorScreenPos().x, label_width = LabelWidth();
-                        ImGui::TextUnformatted(T("UI accent color"));
+                        Beside("UI accent color");  // its label (with the hint under it), the swatches in the value column
                         const float size = ImGui::GetFrameHeight() * 1.1f, gap = size * 0.4f;
                         for (uint32_t i = 0; i < 7; i++) {
                             if (i) ImGui::SameLine(0.0f, gap);
-                            else ToValueColumn(x0, label_width);
                             ImGui::PushID(int(i));
                             float rgb[3];
                             app::UiAccentColor(int(i), rgb);
@@ -2076,17 +2076,16 @@ void Draw(double fps) {
             }
 
             if (tab("Controls")) {
-                // whose controls: a row of radio buttons above the sections, not a second row of tabs
-                const float air = ImGui::GetStyle().ItemSpacing.y * 1.2f;
-                ImGui::Dummy(ImVec2(0.0f, air));
-                {
-                    // Segmented takes names it can keep for the frame
-                    char names[input::kPorts][64];
-                    for (int p = 0; p < input::kPorts; p++) std::snprintf(names[p], sizeof names[p], T("Player %d"), p + 1);
-                    static_assert(input::kPorts == 4, "the segments below are one per port");
-                    Segmented("Player", &g_player_now, {names[0], names[1], names[2], names[3]});
+                // whose controls: a card of its own above the sections, not a second row of tabs
+                if (Section("Player", false)) {
+                    {
+                        // Segmented takes names it can keep for the frame
+                        char names[input::kPorts][64];
+                        for (int p = 0; p < input::kPorts; p++) std::snprintf(names[p], sizeof names[p], T("Player %d"), p + 1);
+                        static_assert(input::kPorts == 4, "the segments below are one per port");
+                        Segmented("Player", &g_player_now, {names[0], names[1], names[2], names[3]});
+                    }
                 }
-                ImGui::Dummy(ImVec2(0.0f, air));
                 const int p = g_player_now;
                 ImGui::PushID(p);
                 DrawDevices(p);
@@ -2209,13 +2208,17 @@ void Draw(double fps) {
                 end_tab();
             }
             if (tab("Quit")) {
-                ImGui::TextUnformatted(T("Quit the game? Progress since the last save is lost."));
-                const auto shade = [](float f) { return ImVec4(kDanger.x * f, kDanger.y * f, kDanger.z * f, 1.0f); };
-                ImGui::PushStyleColor(ImGuiCol_Button, shade(0.75f));
-                ImGui::PushStyleColor(ImGuiCol_ButtonHovered, kDanger);
-                ImGui::PushStyleColor(ImGuiCol_ButtonActive, shade(0.6f));
-                if (ImGui::Button(T("Quit game"))) app::Quit();  // the tab is the prompt: no second one
-                ImGui::PopStyleColor(3);
+                if (Section("Quit", false)) {
+                    SettingGap();  // the room under the card's top, as before a settings row
+                    ImGui::TextUnformatted(T("Quit the game? Progress since the last save is lost."));
+                    ImGui::Dummy(ImVec2(0.0f, ImGui::GetStyle().ItemSpacing.y * 0.75f));  // set apart from the button
+                    const auto shade = [](float f) { return ImVec4(kDanger.x * f, kDanger.y * f, kDanger.z * f, 1.0f); };
+                    ImGui::PushStyleColor(ImGuiCol_Button, shade(0.75f));
+                    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, kDanger);
+                    ImGui::PushStyleColor(ImGuiCol_ButtonActive, shade(0.6f));
+                    if (ImGui::Button(T("Quit game"))) app::Quit();  // the tab is the prompt: no second one
+                    ImGui::PopStyleColor(3);
+                }
                 end_tab();
             }
             {
@@ -2301,6 +2304,14 @@ void Draw(double fps) {
     }
     ImGui::End();
     ImGui::PopStyleVar();
+    if (g_decorations) {
+        // the dropdown lists: framed like the window, on the foreground list (their own clip box would cut the shadow)
+        for (ImGuiWindow* pw : ImGui::GetCurrentContext()->Windows)
+            if (pw->Active && !pw->Hidden && (pw->Flags & ImGuiWindowFlags_Popup) && !(pw->Flags & ImGuiWindowFlags_Tooltip) &&
+                std::strncmp(pw->Name, "##Combo_", 8) == 0)
+                DrawFrame(ImGui::GetForegroundDrawList(), pw->Pos, ImVec2(pw->Pos.x + pw->Size.x, pw->Pos.y + pw->Size.y),
+                          ImGui::GetStyle().PopupRounding, g_fade);
+    }
     Cues(opened_before, settings_changed);
     g_tab_arrived = false;
     if (!keep_open) Close();  // the window's X

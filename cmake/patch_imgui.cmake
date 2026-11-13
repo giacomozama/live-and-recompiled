@@ -1,8 +1,9 @@
-# Two changes to the ImGui source (idempotent; run as cmake -P patch_imgui.cmake <imgui source dir>):
+# Three changes to the ImGui source (idempotent; run as cmake -P patch_imgui.cmake <imgui source dir>):
 #  - The pad and keyboard selection outline sits a few pixels outside its widget, with the widget's own corner radius:
 #    it takes that distance on its radius too, so its corners run round the widget's.
 #  - A frame's border (FrameBorderSize) is two lines: ImGuiCol_Border on the frame's edge and ImGuiCol_BorderShadow in
 #    a ring just outside it (ImGui offsets that one a pixel down and right instead).
+#  - A dropdown list opens an item spacing clear of its control instead of touching it.
 set(file "${CMAKE_ARGV3}/imgui.cpp")
 file(READ "${file}" text)
 set(patched "${text}")
@@ -25,4 +26,18 @@ if(NOT patched MATCHES "p_min - ImVec2\\(1, 1\\)")
 endif()
 if(NOT patched STREQUAL text)
     file(WRITE "${file}" "${patched}")
+endif()
+
+set(widgets "${CMAKE_ARGV3}/imgui_widgets.cpp")
+file(READ "${widgets}" wtext)
+set(wpatched "${wtext}")
+if(NOT wpatched MATCHES "combo_clear")
+    string(REPLACE "ImVec2 pos = FindBestWindowPosForPopupEx(bb.GetBL(), size_expected, &popup_window->AutoPosLastDirection, r_outer, bb, ImGuiPopupPositionPolicy_ComboBox);"
+                   "const ImRect combo_clear(bb.Min - ImVec2(0.0f, g.Style.ItemSpacing.y), bb.Max + ImVec2(0.0f, g.Style.ItemSpacing.y));\n            ImVec2 pos = FindBestWindowPosForPopupEx(combo_clear.GetBL(), size_expected, &popup_window->AutoPosLastDirection, r_outer, combo_clear, ImGuiPopupPositionPolicy_ComboBox);" wpatched "${wpatched}")
+    if(wpatched STREQUAL wtext)
+        message(WARNING "patch_imgui: BeginComboPopup not found, dropdown lists touch their control")
+    endif()
+endif()
+if(NOT wpatched STREQUAL wtext)
+    file(WRITE "${widgets}" "${wpatched}")
 endif()
