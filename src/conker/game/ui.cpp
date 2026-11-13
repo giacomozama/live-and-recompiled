@@ -382,7 +382,8 @@ void EndSection() {
     if (!g_sec.active) return;
     g_sec.active = false;
     ImGuiWindow* w = ImGui::GetCurrentWindow();
-    ImGui::Dummy(ImVec2(0.0f, ImGui::GetStyle().ItemSpacing.y));  // the card's room under its last setting
+    // the card's room under its last setting: as much as a row has under it, from the line to the next one
+    ImGui::Dummy(ImVec2(0.0f, std::max(ImGui::GetStyle().ItemSpacing.y * 0.1f, 0.0f)));
     g_card_l = g_card_r = 0.0f;
     const float measured = ImGui::GetCursorScreenPos().y - g_sec.y0;
     w->StateStorage.SetFloat(g_sec.height_id, measured);
@@ -488,20 +489,97 @@ bool Section(const char* name) {
     return true;
 }
 
-// a hint under the setting before it: smaller, dimmed and wrapped, lined up with a checkbox's label
+// PushTextWrapPos takes the window's local x; this wraps at a screen x
+void WrapAtScreenX(float x) {
+    const ImGuiWindow* w = ImGui::GetCurrentWindow();
+    ImGui::PushTextWrapPos(x - w->Pos.x + w->Scroll.x);
+}
+
+// the setting row being laid out (Beside starts it), for a hint called right after it to join: the hint goes under the
+// label, in the label's room, and the label with it and the control are centred on each other down the row. What a hint
+// and a control measure is kept from the last frame under the row's id, so the row can be centred before they are drawn.
+struct RowMeasure { float hint_h = 0.0f, ctrl_h = 0.0f; };
+struct RowState {
+    int frame = -1;
+    bool open = false;  // a hint may still join it
+    ImGuiID key = 0;
+    float x = 0.0f, top = 0.0f, width = 0.0f;  // the label's column and the row's top
+    float label_y = 0.0f, label_h = 0.0f;      // where its label was drawn, and how tall
+    float ctrl_y = 0.0f;                       // where its control starts
+} g_row;
+std::unordered_map<ImGuiID, RowMeasure> g_row_measure;
+
+// a hint under the setting before it: smaller, dimmed and wrapped. Right after a setting row it is the label's subtext,
+// in the label's room; elsewhere it runs the width under what is above
 void Hint(const char* text, bool checkbox = false) {
     const ImGuiStyle& style = ImGui::GetStyle();
-    const float indent = 0.0f;  // checkboxes sit at the right of their labels now, the hint lines up with the label
-    (void)checkbox;
+    const bool inline_hint = g_row.open && g_row.frame == ImGui::GetFrameCount();
     ImGui::PushFont(nullptr, std::max(std::round(style.FontSizeBase * 0.8f), 11.0f));
+    if (inline_hint) {
+        g_row.open = false;
+        const float gap = std::round(style.ItemSpacing.y * 0.25f);
+        const float hint_h = ImGui::CalcTextSize(T(text), nullptr, false, g_row.width).y;
+        const float ctrl_h = std::max(ImGui::GetCursorScreenPos().y - style.ItemSpacing.y - g_row.ctrl_y, 0.0f);
+        RowMeasure& m = g_row_measure[g_row.key];
+        m.hint_h = hint_h, m.ctrl_h = ctrl_h;
+        const float pair = g_row.label_h + gap + hint_h;
+        const float height = std::max(pair, ctrl_h);
+        ImGui::SetCursorScreenPos(ImVec2(g_row.x, g_row.label_y + g_row.label_h + gap));
+        WrapAtScreenX(g_row.x + g_row.width);
+        ImGui::PushStyleColor(ImGuiCol_Text, style.Colors[ImGuiCol_TextDisabled]);
+        ImGui::TextUnformatted(T(text));
+        ImGui::PopStyleColor();
+        ImGui::PopTextWrapPos();
+        ImGui::PopFont();
+        // on past the row, where an item spacing and the next one's gap come
+        ImGui::SetCursorScreenPos(ImVec2(g_row.x, g_row.top + height));
+        ImGui::Dummy(ImVec2(0.0f, 0.0f));
+        return;
+    }
     // close to its setting; a checkbox's label sits mid-frame, so under a dropdown or slider it keeps the full spacing
     if (checkbox) ImGui::SetCursorPosY(ImGui::GetCursorPosY() - style.ItemSpacing.y * 0.5f);
-    if (indent > 0) ImGui::Indent(indent);
     ImGui::PushStyleColor(ImGuiCol_Text, style.Colors[ImGuiCol_TextDisabled]);
     ImGui::TextWrapped("%s", T(text));
     ImGui::PopStyleColor();
-    if (indent > 0) ImGui::Unindent(indent);
     ImGui::PopFont();
+}
+
+// a warning card: amber tint, a "!" mark and the text at full size, framed like the cards
+void WarningCard(const char* text) {
+    const ImGuiStyle& style = ImGui::GetStyle();
+    ImGuiWindow* w = ImGui::GetCurrentWindow();
+    ImDrawList* dl = w->DrawList;
+    const ImVec4 amber(0.96f, 0.69f, 0.20f, 1.0f);
+    const float pad = std::round(style.FramePadding.y * 1.5f);
+    const float vpad = std::round(style.FramePadding.y * 1.9f);
+    const float icon = ImGui::GetFontSize() * 1.2f;
+    const float side = std::round(style.ItemSpacing.y * 0.5f);  // the gap above the card
+    ImGui::Dummy(ImVec2(0.0f, side));
+    const float left = std::round(ImGui::GetCursorScreenPos().x);
+    const float right = std::round(w->WorkRect.Max.x);
+    const float top = std::round(ImGui::GetCursorScreenPos().y);
+    const float round = style.FrameRounding;
+
+    dl->ChannelsSplit(2);
+    dl->ChannelsSetCurrent(1);
+    const float text_x = left + pad + icon + pad * 1.6f;
+    ImGui::SetCursorScreenPos(ImVec2(text_x, top + vpad + 2.0f));
+    WrapAtScreenX(right - pad);
+    ImGui::TextWrapped("%s", T(text));
+    ImGui::PopTextWrapPos();
+    const float bottom = std::round(std::max(ImGui::GetCursorScreenPos().y - style.ItemSpacing.y, top + vpad + icon) + vpad + 2.0f);
+    dl->ChannelsSetCurrent(0);
+    const ImVec2 lo(left, top), hi(right, bottom);
+    dl->AddRectFilled(lo, hi, ImGui::GetColorU32(ImVec4(amber.x, amber.y, amber.z, 0.12f)), round);
+    if (g_decorations) DrawFrame(dl, lo, hi, round, style.Alpha, 6, 30.0f, 120.0f);
+    // the mark: a filled disc with an exclamation point
+    const ImVec2 c(left + pad + icon * 0.5f, top + vpad + icon * 0.5f);
+    dl->AddCircleFilled(c, icon * 0.5f, ImGui::GetColorU32(amber));
+    const ImVec2 ts = ImGui::CalcTextSize("!");
+    dl->AddText(ImVec2(c.x - ts.x * 0.5f, c.y - ts.y * 0.5f), IM_COL32(30, 20, 0, 255), "!");
+    dl->ChannelsMerge();
+    ImGui::SetCursorScreenPos(ImVec2(left, bottom));
+    ImGui::Dummy(ImVec2(right - left, 0.0f));  // an item spacing below, as between any two rows
 }
 
 // a hint as a dotted list, under the setting before it as Hint
@@ -528,7 +606,10 @@ void SettingGap() {
         // the whole width of the window, over its padding (the child's clip box takes it)
         ImGuiWindow* w = ImGui::GetCurrentWindow();
         const float air = ImGui::GetStyle().ItemSpacing.y * 0.6f;  // above and below the line, around each setting
-        ImGui::Dummy(ImVec2(0.0f, air));
+        // the line halfway between the rows: the cursor is an item spacing under the row above, and a Dummy adds one more
+        // after itself, so the room above the line was an item spacing more than the room below it; both are now half of what they added up to
+        const float sy = ImGui::GetStyle().ItemSpacing.y;
+        ImGui::SetCursorScreenPos(ImVec2(ImGui::GetCursorScreenPos().x, ImGui::GetCursorScreenPos().y + air + 0.5f * sy));
         const float y = std::round(ImGui::GetCursorScreenPos().y);
         const bool carded = g_card_r > g_card_l;  // inside a section's card: the line runs its width
         const float left = carded ? g_card_l : w->Pos.x;
@@ -538,10 +619,10 @@ void SettingGap() {
         const float top = std::max(y - 1.0f, w->InnerClipRect.Min.y), bottom = std::min({y + 2.0f, w->InnerClipRect.Max.y, g_clip_bottom});
         if (top < bottom) {
             w->DrawList->PushClipRect(ImVec2(left, top), ImVec2(right, bottom));
-            w->DrawList->AddLine(ImVec2(left, y), ImVec2(right, y), ImGui::GetColorU32(ImGuiCol_Separator));
+            w->DrawList->AddRectFilled(ImVec2(left, y), ImVec2(right, y + 1.0f), ImGui::GetColorU32(ImGuiCol_Separator));  // one whole pixel row
             w->DrawList->PopClipRect();
         }
-        ImGui::Dummy(ImVec2(0.0f, 1.0f + air));
+        ImGui::Dummy(ImVec2(0.0f, 1.0f + air + 0.5f * sy));  // the line's pixel, then as much room as above it
     }
     else if (g_first_row && g_section_open && !ImGui::GetCurrentTable())  // under its header, the room a separator would give
         ImGui::Dummy(ImVec2(0.0f, ImGui::GetStyle().ItemSpacing.y * 0.6f + 1.0f));
@@ -550,7 +631,7 @@ void SettingGap() {
 
 // a setting's label to the left of its widget, in a column as wide for every setting (wrapped if it is longer): draws
 // it, sizes the widget that follows it (to the row's end, less `after` for a button beside it) and returns the widget's hidden label
-float LabelWidth() { return std::min(ImGui::GetFontSize() * 20.0f, ImGui::GetContentRegionAvail().x * 0.55f); }  // less in a narrow column
+float LabelWidth() { return std::min(ImGui::GetFontSize() * 28.0f, ImGui::GetContentRegionAvail().x * 0.65f); }  // less in a narrow column
 // on to the value column on the same line, `start` the label's screen x (SameLine's offset would be off in a table cell)
 void ToValueColumn(float start, float width) {
     ImGui::SameLine(0.0f, 0.0f);
@@ -558,14 +639,42 @@ void ToValueColumn(float start, float width) {
 }
 const char* Beside(const char* label, float after = 0.0f, float wide = 0.0f) {
     static std::string id;
+    // a hint that never came for the last row: forget what it measured
+    if (g_row.open && g_row.frame == ImGui::GetFrameCount()) g_row_measure.erase(g_row.key);
     SettingGap();
+    const ImGuiStyle& st = ImGui::GetStyle();
     const float x = ImGui::GetCursorScreenPos().x, width = std::max(LabelWidth(), wide);
-    ImGui::AlignTextToFramePadding();
-    ImGui::PushTextWrapPos(ImGui::GetCursorScreenPos().x + width);
-    ImGui::TextUnformatted(T(label));
-    ImGui::PopTextWrapPos();
-    ImGui::SameLine(0.0f, 0.0f);
-    ImGui::SetCursorScreenPos(ImVec2(x + width + ImGui::GetStyle().ItemSpacing.x, ImGui::GetCursorScreenPos().y));
+    const float top = ImGui::GetCursorScreenPos().y;
+    const ImGuiID key = ImGui::GetID(label);
+    const auto known = g_row_measure.find(key);
+    const char* text = T(label);
+    float label_y = top;
+    float ctrl_y = top;
+    const bool hinted = known != g_row_measure.end() && known->second.hint_h > 0.0f;
+    float label_h = ImGui::CalcTextSize(text, nullptr, false, width).y;
+    if (hinted) {
+        // a label with a hint under it: the pair and the control centred on each other
+        const float gap = std::round(st.ItemSpacing.y * 0.25f);
+        const float pair = label_h + gap + known->second.hint_h;
+        const float height = std::max(pair, known->second.ctrl_h);
+        label_y = top + std::round((height - pair) * 0.5f);
+        ctrl_y = top + std::round((height - known->second.ctrl_h) * 0.5f);
+        ImGui::SetCursorScreenPos(ImVec2(x, label_y));
+        WrapAtScreenX(x + width);
+        ImGui::TextUnformatted(text);
+        ImGui::PopTextWrapPos();
+    } else {
+        ImGui::AlignTextToFramePadding();
+        label_h = ImGui::GetFrameHeight();
+        WrapAtScreenX(x + width);
+        ImGui::TextUnformatted(text);
+        ImGui::PopTextWrapPos();
+        label_h = std::max(ImGui::GetItemRectSize().y, label_h);
+    }
+    // not on the label's line when it is under a hint's: its height (two lines, say) would be the control's line's
+    if (!hinted) ImGui::SameLine(0.0f, 0.0f);
+    ImGui::SetCursorScreenPos(ImVec2(x + width + st.ItemSpacing.x, ctrl_y));
+    g_row = {ImGui::GetFrameCount(), true, key, x, top, width, label_y, label_h, ctrl_y};
     const float room = ImGui::GetContentRegionAvail().x;
     ImGui::SetNextItemWidth(std::max(room - after, ImGui::GetFontSize() * 4.0f));
     id = std::string("##") + label;
@@ -601,7 +710,9 @@ bool Segmented(const char* label, int* v, std::initializer_list<const char*> ite
     bool changed = false;
     const float height = ImGui::GetFrameHeight(), round = st.FrameRounding;
     ImDrawList* dl = ImGui::GetWindowDrawList();
-    const ImVec2 lo = ImGui::GetCursorScreenPos(), hi(lo.x + total, lo.y + height);
+    // drawn on whole pixels (the widths are whole already), so a fill's edge and the lines on it meet exactly
+    const ImVec2 origin = ImGui::GetCursorScreenPos();
+    const ImVec2 lo(std::round(origin.x), std::round(origin.y)), hi(lo.x + total, lo.y + height);
     dl->AddRectFilled(lo, hi, ImGui::GetColorU32(ImGuiCol_FrameBg), round);
     ImGui::PushID(id);
     float x = lo.x;
@@ -619,17 +730,47 @@ bool Segmented(const char* label, int* v, std::initializer_list<const char*> ite
         const ImVec2 size = ImGui::CalcTextSize(names[size_t(i)].c_str());
         dl->AddText(ImVec2(std::round((a.x + b.x - size.x) * 0.5f), std::round((a.y + b.y - size.y) * 0.5f)),
                     ImGui::GetColorU32(ImGuiCol_Text), names[size_t(i)].c_str());
-        if (i && g_decorations) {  // a line between this segment and the one before: dark, with a light one beside it
+        const bool beside_chosen = *v == i || *v == i - 1;  // the chosen one's sides have lines of their own
+        if (i && g_decorations && !beside_chosen) {  // a line between this segment and the one before: dark, with a light one beside it
             dl->AddLine(ImVec2(a.x + 0.5f, a.y + 1.0f), ImVec2(a.x + 0.5f, b.y - 1.0f), IM_COL32(0, 0, 0, int(120.0f * st.Alpha)));
             dl->AddLine(ImVec2(a.x + 1.5f, a.y + 1.0f), ImVec2(a.x + 1.5f, b.y - 1.0f), IM_COL32(255, 255, 255, int(24.0f * st.Alpha)));
-        } else if (i) {
+        } else if (i && !g_decorations) {
             dl->AddLine(ImVec2(a.x + 0.5f, a.y + 1.0f), ImVec2(a.x + 0.5f, b.y - 1.0f), IM_COL32(255, 255, 255, int(40.0f * st.Alpha)));
+        }
+        if (*v == i && g_decorations) {
+            // its sides, as DrawFrame draws a rectangle: the dark line just outside the fill (on the neighbour's edge, so the
+            // fill doesn't show through it), the light one on the fill's own edge
+            const float y0 = a.y + 1.0f, y1 = b.y - 1.0f;
+            const ImU32 dark = IM_COL32(0, 0, 0, int(200.0f * st.Alpha)), light = IM_COL32(255, 255, 255, int(55.0f * st.Alpha));
+            if (i > 0) {
+                dl->AddLine(ImVec2(a.x - 0.5f, y0), ImVec2(a.x - 0.5f, y1), dark);
+                dl->AddLine(ImVec2(a.x + 0.5f, y0), ImVec2(a.x + 0.5f, y1), light);
+            }
+            if (i + 1 < int(names.size())) {
+                dl->AddLine(ImVec2(b.x + 0.5f, y0), ImVec2(b.x + 0.5f, y1), dark);
+                dl->AddLine(ImVec2(b.x - 0.5f, y0), ImVec2(b.x - 0.5f, y1), light);
+            }
         }
         x = b.x;
         ImGui::PopID();
     }
     ImGui::PopID();
-    if (g_decorations) DrawFrame(dl, lo, hi, round, st.Alpha, 0, 0.0f, 120.0f);
+    if (g_decorations) {
+        DrawFrame(dl, lo, hi, round, st.Alpha, 0, 0.0f, 120.0f);
+        // over the chosen segment the lines need more to show, as on the tabs' selected pill: the same frame again, with
+        // the tabs' stronger lines, kept to that segment's stretch of it
+        float x = lo.x;
+        for (int i = 0; i < int(widths.size()); i++) {
+            const float x1 = x + widths[size_t(i)];
+            if (*v == i) {
+                dl->PushClipRect(ImVec2(i == 0 ? lo.x - 1.0f : x, lo.y - 1.0f),
+                                 ImVec2(i + 1 == int(widths.size()) ? hi.x + 1.0f : x1, hi.y + 1.0f), true);
+                DrawFrame(dl, lo, hi, round, st.Alpha, 0, 0.0f, 200.0f, 55.0f);
+                dl->PopClipRect();
+            }
+            x = x1;
+        }
+    }
     return changed;
 }
 
@@ -932,56 +1073,23 @@ void DrawKeys(int player) {
 }
 
 // the Debug tab: warps to a checkpoint, a level or a cutscene (warp.cpp runs them on the main thread)
+// a titled part inside a card: the full-width line the settings have between them, then its title
+void SubHeading(const char* title) {
+    SettingGap();
+    // no bold face: the title drawn twice, a pixel apart
+    const char* text = T(title);
+    const ImVec2 at = ImGui::GetCursorScreenPos(), size = ImGui::CalcTextSize(text);
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const ImU32 col = ImGui::GetColorU32(ImGuiCol_Text);
+    dl->AddText(at, col, text);
+    dl->AddText(ImVec2(at.x + 1.0f, at.y), col, text);
+    ImGui::Dummy(ImVec2(size.x + 1.0f, size.y));
+}
+
 void DrawWarp() {
     static char filter[64] = "";
     static int checkpoint = -1;
-    static int level = 0, spawn = 0, cut_level = 0, cut_index = 0;
-
-    const int current = warp::CurrentLevel();
-    const char* current_name = warp::LevelName(current);
-    ImGui::SeparatorText(T("Current level"));
-    ImGui::Text("%d %s", current, current_name ? current_name : "");
-    const std::string status = warp::Status();
-    if (!status.empty()) ImGui::TextDisabled("%s", status.c_str());
-
-    ImGui::SeparatorText(T("Checkpoints"));
-    Hint("Warning: these start a new game. Don't save afterwards over a save you want to keep.");
-    ImGui::InputTextWithHint("##filter", T("filter by name or level"), filter, sizeof filter);
-    const std::vector<warp::Checkpoint>& list = warp::Checkpoints();
-    auto matches = [](const std::string& s) {
-        std::string a = s, b = filter;
-        for (char& c : a) c = char(std::tolower(uint8_t(c)));
-        for (char& c : b) c = char(std::tolower(uint8_t(c)));
-        return a.find(b) != std::string::npos;
-    };
-    if (ImGui::BeginListBox("##checkpoints", ImVec2(-FLT_MIN, ImGui::GetTextLineHeightWithSpacing() * 10))) {
-        for (int i = 0; i < int(list.size()); i++) {
-            const warp::Checkpoint& c = list[size_t(i)];
-            const char* ln = warp::LevelName(c.level);
-            if (!ln) continue;  // the multiplayer ones, whose levels are another table's
-            char row[192];
-            std::snprintf(row, sizeof row, "%3d  %-20s spawn %-3d %s", i, ln, c.spawn, c.name.c_str());
-            if (filter[0] && !matches(row)) continue;
-            if (ImGui::Selectable(row, checkpoint == i, ImGuiSelectableFlags_AllowDoubleClick)) {
-                checkpoint = i;
-                // a second A on the same row soon after the first is a double click
-                static int tapped = -1;
-                static double tapped_at = 0.0;
-                bool again = ImGui::IsMouseDoubleClicked(0);
-                if (ImGui::IsKeyPressed(ImGuiKey_GamepadFaceDown, false)) {
-                    const double now = ImGui::GetTime();
-                    again = again || (tapped == i && now - tapped_at < 0.5);
-                    tapped = i, tapped_at = now;
-                }
-                if (again && warp::GoCheckpoint(i)) Close();
-            }
-        }
-        ImGui::EndListBox();
-    }
-    ImGui::BeginDisabled(checkpoint < 0);
-    if (ImGui::Button(T("Start at checkpoint")) && warp::GoCheckpoint(checkpoint)) Close();
-    ImGui::EndDisabled();
-    Hint("Or double-click one. Earlier checkpoints count as completed.");
+    static int cut_level = 0, cut_index = 0;
 
     // the levels that exist, for the combos
     std::string items;
@@ -999,30 +1107,74 @@ void DrawWarp() {
         *v = ids[size_t(idx)];
     };
 
-    ImGui::SeparatorText(T("Level"));
-    level_combo("Level", "level", &level);
-    ImGui::InputInt(T("Spawn"), &spawn);
-    spawn = std::clamp(spawn, 0, 255);
-    if (ImGui::Button(T("Load level")) && warp::GoLevel(level, spawn)) Close();
-    Hint("Starts with no progress.");
-
-    ImGui::SeparatorText(T("Cutscenes"));
-    int found_level = -1;
-    const std::vector<int> found = warp::Cutscenes(&found_level);
-    if (found_level >= 0) {
-        const char* fn = warp::LevelName(found_level);
-        ImGui::Text(T("In %s:"), fn ? fn : T("this level"));
-        if (found.empty()) ImGui::TextDisabled("%s", T("none"));
-        for (size_t i = 0; i < found.size(); i++) {
-            if (i % 10) ImGui::SameLine();
-            if (ImGui::Button(std::to_string(found[i]).c_str()) && warp::PlayCutscene(found_level, found[i])) Close();
-        }
+    {
+        SubHeading("Current level");
+        const int current = warp::CurrentLevel();
+        const char* current_name = warp::LevelName(current);
+        ImGui::Text("%d %s", current, current_name ? current_name : "");
+        const std::string status = warp::Status();
+        if (!status.empty()) ImGui::TextDisabled("%s", status.c_str());
     }
-    level_combo("Level", "cut", &cut_level);
-    ImGui::InputInt(T("Cutscene"), &cut_index);
-    cut_index = std::clamp(cut_index, 0, 255);
-    if (ImGui::Button(T("Play cutscene")) && warp::PlayCutscene(cut_level, cut_index)) Close();
-    Hint("Loads the level first. Nothing plays if that level doesn't have it.");
+
+    {
+        SubHeading("Checkpoints");
+        WarningCard("Warning: these start a new game. Don't save afterwards over a save you want to keep.");
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        ImGui::InputTextWithHint("##filter", T("filter by name or level"), filter, sizeof filter);
+        const std::vector<warp::Checkpoint>& list = warp::Checkpoints();
+        auto matches = [](const std::string& s) {
+            std::string a = s, b = filter;
+            for (char& c : a) c = char(std::tolower(uint8_t(c)));
+            for (char& c : b) c = char(std::tolower(uint8_t(c)));
+            return a.find(b) != std::string::npos;
+        };
+        if (ImGui::BeginListBox("##checkpoints", ImVec2(-FLT_MIN, ImGui::GetTextLineHeightWithSpacing() * 10))) {
+            for (int i = 0; i < int(list.size()); i++) {
+                const warp::Checkpoint& c = list[size_t(i)];
+                const char* ln = warp::LevelName(c.level);
+                if (!ln) continue;  // the multiplayer ones, whose levels are another table's
+                char row[192];
+                std::snprintf(row, sizeof row, "%3d  %-20s spawn %-3d %s", i, ln, c.spawn, c.name.c_str());
+                if (filter[0] && !matches(row)) continue;
+                if (ImGui::Selectable(row, checkpoint == i, ImGuiSelectableFlags_AllowDoubleClick)) {
+                    checkpoint = i;
+                    // a second A on the same row soon after the first is a double click
+                    static int tapped = -1;
+                    static double tapped_at = 0.0;
+                    bool again = ImGui::IsMouseDoubleClicked(0);
+                    if (ImGui::IsKeyPressed(ImGuiKey_GamepadFaceDown, false)) {
+                        const double now = ImGui::GetTime();
+                        again = again || (tapped == i && now - tapped_at < 0.5);
+                        tapped = i, tapped_at = now;
+                    }
+                    if (again && warp::GoCheckpoint(i)) Close();
+                }
+            }
+            ImGui::EndListBox();
+        }
+        ImGui::BeginDisabled(checkpoint < 0);
+        if (ImGui::Button(T("Start at checkpoint")) && warp::GoCheckpoint(checkpoint)) Close();
+        ImGui::EndDisabled();
+    }
+
+    {
+        SubHeading("Cutscenes");
+        int found_level = -1;
+        const std::vector<int> found = warp::Cutscenes(&found_level);
+        if (found_level >= 0) {
+            const char* fn = warp::LevelName(found_level);
+            ImGui::Text(T("In %s:"), fn ? fn : T("this level"));
+            if (found.empty()) ImGui::TextDisabled("%s", T("none"));
+            for (size_t i = 0; i < found.size(); i++) {
+                if (i % 10) ImGui::SameLine();
+                if (ImGui::Button(std::to_string(found[i]).c_str()) && warp::PlayCutscene(found_level, found[i])) Close();
+            }
+        }
+        level_combo("Level", "cut", &cut_level);
+        ImGui::InputInt(T("Cutscene"), &cut_index);
+        cut_index = std::clamp(cut_index, 0, 255);
+        if (ImGui::Button(T("Play cutscene")) && warp::PlayCutscene(cut_level, cut_index)) Close();
+    }
 }
 
 // the pads' buttons the menu reads, one port's or all the ones that drive it together
@@ -1820,47 +1972,47 @@ void Draw(double fps) {
             }
 
             if (tab("Audio")) {
-                Slider("Volume %", &s.volume, 0, 100, app::Settings{}.volume);
-                {
-                    static std::vector<audio::Device> devices;
-                    if (devices.empty() || ImGui::IsWindowAppearing()) devices = audio::Devices();
-                    const std::string system_default = T("System default");
-                    std::string current = system_default;
-                    for (const audio::Device& d : devices)
-                        if (d.id == s.audio_device) current = d.name;
-                    if (!s.audio_device.empty() && current == system_default)
-                        current += std::string(" ") + T("(selected device missing)");
-                    if (ImGui::BeginCombo(Beside("Output device"), current.c_str())) {
-                        if (ImGui::Selectable(system_default.c_str(), s.audio_device.empty())) {
-                            s.audio_device.clear();
-                            audio::SelectDevice(s.audio_device);
-                        }
+                if (Section("General")) {
+                    Slider("Volume %", &s.volume, 0, 100, app::Settings{}.volume);
+                    {
+                        static std::vector<audio::Device> devices;
+                        if (devices.empty() || ImGui::IsWindowAppearing()) devices = audio::Devices();
+                        const std::string system_default = T("System default");
+                        std::string current = system_default;
                         for (const audio::Device& d : devices)
-                            if (ImGui::Selectable(d.name.c_str(), d.id == s.audio_device)) {
-                                s.audio_device = d.id;
+                            if (d.id == s.audio_device) current = d.name;
+                        if (!s.audio_device.empty() && current == system_default)
+                            current += std::string(" ") + T("(selected device missing)");
+                        if (ImGui::BeginCombo(Beside("Output device"), current.c_str())) {
+                            if (ImGui::Selectable(system_default.c_str(), s.audio_device.empty())) {
+                                s.audio_device.clear();
                                 audio::SelectDevice(s.audio_device);
                             }
-                        ImGui::EndCombo();
+                            for (const audio::Device& d : devices)
+                                if (ImGui::Selectable(d.name.c_str(), d.id == s.audio_device)) {
+                                    s.audio_device = d.id;
+                                    audio::SelectDevice(s.audio_device);
+                                }
+                            ImGui::EndCombo();
+                        }
                     }
+                    {
+                        int speakers = s.surround ? 1 : 0;
+                        if (Segmented("Speakers", &speakers, {"Stereo", "5.1 surround"})) s.surround = speakers == 1;
+                        Hint("Stereo mixes for two speakers or headphones. 5.1 surround mixes for six speakers and "
+                             "plays on as many as the output device has. Starts from the next launch.");
+                    }
+                    Check("Mute in background", &s.mute_in_background);
+                    Hint("No sound while you are in another window.", true);
+                    Check("Menu sounds", &s.menu_sounds);
+                    Hint("The sounds of changing tabs and settings and of moving around this menu with the keyboard or a pad.", true);
                 }
-                {
-                    int speakers = s.surround ? 1 : 0;
-                    if (Segmented("Speakers", &speakers, {"Stereo", "5.1 surround"})) s.surround = speakers == 1;
-                    Hint("Stereo mixes for two speakers or headphones. 5.1 surround mixes for six speakers and "
-                         "plays on as many as the output device has. Starts from the next launch.");
-                }
-                ImGui::Dummy(ImVec2(0.0f, ImGui::GetStyle().ItemSpacing.y * 0.75f));  // set apart from the hint above
-                Check("Mute in background", &s.mute_in_background);
-                Hint("No sound while you are in another window.", true);
-                Check("Menu sounds", &s.menu_sounds);
-                Hint("The sounds of changing tabs and settings and of moving around this menu with the keyboard or a pad.", true);
                 // the mixer's choices, where how the console sounds isn't settled
                 if (Section("Mix")) {
                     {
                         const app::Settings def{};
-                        // at full size, not a dimmed hint: it is the first thing to read in this section
-                        ImGui::TextWrapped("%s", T("If the game already sounds good to you, leave these as they are."));
-                        ImGui::Dummy(ImVec2(0.0f, ImGui::GetStyle().ItemSpacing.y * 0.75f));
+                        // a warning card, not a dimmed hint: it is the first thing to read in this section
+                        WarningCard("If the game already sounds good to you, leave these as they are.");
                         ImGui::BeginDisabled(s.surround);
                         int backs = s.stereo_full_backs ? 1 : 0;
                         if (Segmented("Back speakers in stereo", &backs, {"-3 dB", "Full level"}))
@@ -1927,12 +2079,12 @@ void Draw(double fps) {
                 // whose controls: a row of radio buttons above the sections, not a second row of tabs
                 const float air = ImGui::GetStyle().ItemSpacing.y * 1.2f;
                 ImGui::Dummy(ImVec2(0.0f, air));
-                Beside("Player");  // its label, the buttons in the value column
-                for (int p = 0; p < input::kPorts; p++) {
-                    char name[64];
-                    std::snprintf(name, sizeof name, T("Player %d"), p + 1);
-                    if (p) ImGui::SameLine();
-                    ImGui::RadioButton((std::string(name) + "##player" + std::to_string(p)).c_str(), &g_player_now, p);
+                {
+                    // Segmented takes names it can keep for the frame
+                    char names[input::kPorts][64];
+                    for (int p = 0; p < input::kPorts; p++) std::snprintf(names[p], sizeof names[p], T("Player %d"), p + 1);
+                    static_assert(input::kPorts == 4, "the segments below are one per port");
+                    Segmented("Player", &g_player_now, {names[0], names[1], names[2], names[3]});
                 }
                 ImGui::Dummy(ImVec2(0.0f, air));
                 const int p = g_player_now;
@@ -1975,10 +2127,12 @@ void Draw(double fps) {
                            "A change starts from the next launch."});
                 }
                 if (Section("This PC")) {
-                    ImGui::Text(T("LAN IP: %s"), lan.c_str());
-                    if (!in_use) ImGui::Text("%s", T("Port: not open yet (it opens with Online)"));
-                    else if (!error) ImGui::Text(T("Port: UDP %u"), in_use);
-                    else ImGui::TextColored(ImVec4(1.0f, 0.45f, 0.35f, 1.0f), T("Port: UDP %u couldn't be opened (%s)"), in_use,
+                    SubHeading("LAN IP");
+                    ImGui::TextUnformatted(lan.c_str());
+                    SubHeading("Port");
+                    if (!in_use) ImGui::TextUnformatted(T("Not open yet (it opens with Online)"));
+                    else if (!error) ImGui::Text(T("UDP %u"), in_use);
+                    else ImGui::TextColored(ImVec4(1.0f, 0.45f, 0.35f, 1.0f), T("UDP %u couldn't be opened (%s)"), in_use,
                                             error == 10048 ? T("another program or copy has it") : T("blocked"));
                 }
                 end_tab();
@@ -2023,7 +2177,16 @@ void Draw(double fps) {
                 if (Section("Installing")) {
                     static std::string dir;
                     if (dir.empty()) dir = app::ModsDir().string();
-                    ImGui::TextWrapped("%s", dir.c_str());
+                    {
+                        // set in from the card's sides and down from its header
+                        const float side = std::round(ImGui::GetStyle().ItemSpacing.x * 1.5f);
+                        ImGui::Dummy(ImVec2(0.0f, ImGui::GetStyle().ItemSpacing.y));
+                        ImGui::Indent(side);
+                        ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x - side);
+                        ImGui::TextWrapped("%s", dir.c_str());
+                        ImGui::PopTextWrapPos();
+                        ImGui::Unindent(side);
+                    }
                     Hints({"Put each mod in its own folder here, laid out like the game's disc (dvddata\\...).",
                            "The game's own files are left as they are."});
                     if (ImGui::Button(T("Rescan"))) app::ScanMods();
@@ -2084,7 +2247,7 @@ void Draw(double fps) {
                     if (g_decorations)
                         // over the selected tab's bright fill the lines need more to show
                         DrawFrame(dl, p.lo, p.hi, (p.hi.y - p.lo.y) * 0.5f, st.Alpha, 0, 0.0f, i == shown ? 200.0f : 120.0f,
-                                  i == shown ? 90.0f : 24.0f);
+                                  i == shown ? 55.0f : 24.0f);
                     const ImVec2 size = ImGui::CalcTextSize(p.name);
                     dl->AddText(ImVec2(std::round((p.lo.x + p.hi.x - size.x) * 0.5f), std::round((p.lo.y + p.hi.y - size.y) * 0.5f)),
                                 ImGui::GetColorU32(i == kQuitTab && i != shown ? kDanger : st.Colors[ImGuiCol_Text]), p.name);
