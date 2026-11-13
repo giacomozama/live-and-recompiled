@@ -634,7 +634,7 @@ constexpr Line kLines[] = {
     {"Quit (title menu)", "Beenden (Titelmenü)", "Quitter (menu titre)", "Salir (menú principal)",
      "Esci (menu del titolo)", "終了（タイトルメニュー）"},
     {"press...", "drücken...", "appuyer...", "pulsa...", "premi...", "入力待ち..."},
-    {"default: %s", "Standard: %s", "par défaut : %s", "predeterminado: %s", "predefinito: %s", "初期設定：%s"},
+    {"Default: %s", "Standard: %s", "Par défaut : %s", "Predeterminado: %s", "Predefinito: %s", "初期設定：%s"},
     {"Default keys", "Standardtasten", "Touches par défaut", "Teclas predeterminadas", "Tasti predefiniti",
      "初期キー設定"},
 
@@ -745,6 +745,9 @@ constexpr Line kLines[] = {
      "Atención: estos inician una partida nueva. No guardes después sobre una partida que quieras conservar.",
      "Attenzione: questi avviano una nuova partita. Non salvare poi su un salvataggio che vuoi conservare.",
      "注意：これらは新しいゲームを開始します。残したいセーブデータには上書きセーブしないでください。"},
+    {"Restart the game for this change to take effect.", "Starte das Spiel neu, damit diese Änderung gilt.",
+     "Redémarre le jeu pour que ce changement prenne effet.", "Reinicia el juego para que este cambio surta efecto.",
+     "Riavvia il gioco perché questa modifica abbia effetto.", "この変更を反映するには、ゲームを再起動してください。"},
     {"filter by name or level", "nach Name oder Level filtern", "filtrer par nom ou niveau",
      "filtrar por nombre o nivel", "filtra per nome o livello", "名前またはレベルで絞り込み"},
     {"Start at checkpoint", "Am Checkpoint starten", "Démarrer au point de contrôle", "Empezar en el punto de control",

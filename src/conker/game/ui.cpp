@@ -192,11 +192,15 @@ void DrawFrameBottom(ImDrawList* dl, ImVec2 lo, ImVec2 hi, float round, float fa
     edge(lo, hi, round, IM_COL32(255, 255, 255, int(24.0f * fade)));
 }
 
-// the current window's frame, on the foreground list (which the window's own clip box doesn't limit)
+// the current window's frame, on its own list under a full-screen clip box (the window's own would cut the shadow); not
+// the foreground list, which draws over the tooltips
 void DrawWindowFrame(float fade) {
     if (!g_decorations) return;
     const ImVec2 lo = ImGui::GetWindowPos(), hi(lo.x + ImGui::GetWindowWidth(), lo.y + ImGui::GetWindowHeight());
-    DrawFrame(ImGui::GetForegroundDrawList(), lo, hi, ImGui::GetStyle().WindowRounding, fade);
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    dl->PushClipRectFullScreen();
+    DrawFrame(dl, lo, hi, ImGui::GetStyle().WindowRounding, fade);
+    dl->PopClipRect();
 }
 
 // the game is held while the menu or the prompt is up (kernel::Hold), but for a multiplayer match, which runs on for
@@ -647,6 +651,8 @@ const char* Beside(const char* label, float after = 0.0f, float wide = 0.0f) {
     SettingGap();
     const ImGuiStyle& st = ImGui::GetStyle();
     const float x = ImGui::GetCursorScreenPos().x, width = std::max(LabelWidth(), wide);
+    // text (and its hint) wraps short of the column's end, so a label keeps a wide gap from its control; the control's column stays put
+    const float text_width = width - (wide > LabelWidth() ? 0.0f : ImGui::GetFontSize() * 1.5f);
     const float top = ImGui::GetCursorScreenPos().y;
     const ImGuiID key = ImGui::GetID(label);
     const auto known = g_row_measure.find(key);
@@ -654,7 +660,7 @@ const char* Beside(const char* label, float after = 0.0f, float wide = 0.0f) {
     float label_y = top;
     float ctrl_y = top;
     const bool hinted = known != g_row_measure.end() && known->second.hint_h > 0.0f;
-    float label_h = ImGui::CalcTextSize(text, nullptr, false, width).y;
+    float label_h = ImGui::CalcTextSize(text, nullptr, false, text_width).y;
     if (hinted) {
         // a label with a hint under it: the pair and the control centred on each other
         const float gap = std::round(st.ItemSpacing.y * 0.25f);
@@ -663,13 +669,13 @@ const char* Beside(const char* label, float after = 0.0f, float wide = 0.0f) {
         label_y = top + std::round((height - pair) * 0.5f);
         ctrl_y = top + std::round((height - known->second.ctrl_h) * 0.5f);
         ImGui::SetCursorScreenPos(ImVec2(x, label_y));
-        WrapAtScreenX(x + width);
+        WrapAtScreenX(x + text_width);
         ImGui::TextUnformatted(text);
         ImGui::PopTextWrapPos();
     } else {
         ImGui::AlignTextToFramePadding();
         label_h = ImGui::GetFrameHeight();
-        WrapAtScreenX(x + width);
+        WrapAtScreenX(x + text_width);
         ImGui::TextUnformatted(text);
         ImGui::PopTextWrapPos();
         label_h = std::max(ImGui::GetItemRectSize().y, label_h);
@@ -677,7 +683,7 @@ const char* Beside(const char* label, float after = 0.0f, float wide = 0.0f) {
     // not on the label's line when it is under a hint's: its height (two lines, say) would be the control's line's
     if (!hinted) ImGui::SameLine(0.0f, 0.0f);
     ImGui::SetCursorScreenPos(ImVec2(x + width + st.ItemSpacing.x, ctrl_y));
-    g_row = {ImGui::GetFrameCount(), true, key, x, top, width, label_y, label_h, ctrl_y};
+    g_row = {ImGui::GetFrameCount(), true, key, x, top, text_width, label_y, label_h, ctrl_y};
     const float room = ImGui::GetContentRegionAvail().x;
     ImGui::SetNextItemWidth(std::max(room - after, ImGui::GetFontSize() * 4.0f));
     id = std::string("##") + label;
@@ -777,9 +783,6 @@ bool Segmented(const char* label, int* v, std::initializer_list<const char*> ite
     return changed;
 }
 
-// where the last slider ended, to tell a checkbox that follows it
-struct SliderEnd { int frame = -1; float y = 0.0f; } g_slider_end;
-
 // a percent slider with a Reset beside it, greyed out while the value is its default
 // div > 1 shows v / div with two decimals (a setting kept in hundredths)
 void Slider(const char* label, uint32_t* v, uint32_t min, uint32_t max, uint32_t def, uint32_t div = 1) {
@@ -798,7 +801,6 @@ void Slider(const char* label, uint32_t* v, uint32_t min, uint32_t max, uint32_t
     if (ImGui::Button(T("Reset"))) *v = def;
     ImGui::EndDisabled();
     ImGui::PopID();
-    g_slider_end = {ImGui::GetFrameCount(), ImGui::GetCursorPosY()};
 }
 
 // a signed one, shown with its sign
@@ -812,7 +814,6 @@ void Slider(const char* label, int32_t* v, int32_t min, int32_t max, int32_t def
     if (ImGui::Button(T("Reset"))) *v = def;
     ImGui::EndDisabled();
     ImGui::PopID();
-    g_slider_end = {ImGui::GetFrameCount(), ImGui::GetCursorPosY()};
 }
 
 // Two percentages on one track, lo below hi and kept at least `gap` apart, with a Reset beside it. The handle nearest
@@ -869,13 +870,10 @@ void RangeSlider(const char* label, uint32_t* lo, uint32_t* hi, uint32_t min, ui
     ImGui::EndDisabled();
     ImGui::Dummy(ImVec2(0.0f, ImGui::GetTextLineHeight() + 2.0f));  // room for the numbers under the track
     ImGui::PopID();
-    g_slider_end = {ImGui::GetFrameCount(), ImGui::GetCursorPosY()};
 }
 
 // a checkbox; right under a slider it gets a little more room
 bool Check(const char* label, bool* v) {
-    if (g_slider_end.frame == ImGui::GetFrameCount() && std::fabs(ImGui::GetCursorPosY() - g_slider_end.y) < 0.5f)
-        ImGui::Dummy(ImVec2(0.0f, ImGui::GetStyle().ItemSpacing.y * 0.75f));
     // the label at the left in the labels' column and the box at the right of it, where the other controls sit
     // a label wider than the column takes the room it needs, as far as the box still fits, and wraps past that
     const float gap = ImGui::GetStyle().ItemSpacing.x * 2.0f;  // the least between a label's end and its box, besides the usual
@@ -918,9 +916,20 @@ void DeviceCombo(int player, input::Kind kind) {
         for (const input::Device& d : devices) option(d.key, d.label);
         ImGui::EndCombo();
     }
-    if (kind != Kind::Controller && held == input::kAll && ImGui::IsItemHovered())
+    if (kind != Kind::Controller && held == input::kAll && ImGui::IsItemHovered()) {
+        const ImGuiStyle& ts = ImGui::GetStyle();
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(ts.WindowPadding.x * 0.5f, ts.WindowPadding.y * 0.4f));
+        {
+            ImVec4 dark = ImGui::GetStyleColorVec4(ImGuiCol_PopupBg);
+            dark.x *= 0.35f, dark.y *= 0.35f, dark.z *= 0.35f;
+            ImGui::PushStyleColor(ImGuiCol_PopupBg, dark);
+        }
+        ImGui::SetNextWindowBgAlpha(0.85f);
         ImGui::SetTooltip("%s", kind == Kind::Keyboard ? T("Uses every keyboard not given to another player")
                                                     : T("Uses every mouse not given to another player"));
+        ImGui::PopStyleVar();
+        ImGui::PopStyleColor();
+    }
     ImGui::PopID();
 }
 
@@ -1000,7 +1009,11 @@ void DrawKeys(int player) {
                          {kRadio, "Radio mode"}}},
     };
     // two columns and two rows (Weapons and Multiplayer line up), each cell its groups stacked
-    if (!ImGui::BeginTable("##groups", 2, ImGuiTableFlags_SizingStretchSame)) return;
+    // a wide gap between the columns (the padding falls on both sides of it)
+    ImGui::PushStyleVar(ImGuiStyleVar_CellPadding, ImVec2(ImGui::GetFontSize() * 1.2f, ImGui::GetStyle().CellPadding.y));
+    const bool groups = ImGui::BeginTable("##groups", 2, ImGuiTableFlags_SizingStretchSame | ImGuiTableFlags_NoPadOuterX);
+    ImGui::PopStyleVar();
+    if (!groups) return;
     for (int cell = 0; cell < 4; cell++) {
         ImGui::TableNextColumn();
         for (const Group& g : kGroups) {
@@ -1050,8 +1063,19 @@ void DrawKeys(int player) {
                     ImGui::BeginDisabled(IsDefault(player, r.action));
                     if (ImGui::Button(T("Reset"), ImVec2(reset, 0))) ResetKey(player, r.action);
                     ImGui::EndDisabled();
-                    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-                        ImGui::SetTooltip(T("default: %s"), ActionDefault(r.action).c_str());
+                    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+                        const ImGuiStyle& ts = ImGui::GetStyle();
+                        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(ts.WindowPadding.x * 0.5f, ts.WindowPadding.y * 0.4f));
+        {
+            ImVec4 dark = ImGui::GetStyleColorVec4(ImGuiCol_PopupBg);
+            dark.x *= 0.35f, dark.y *= 0.35f, dark.z *= 0.35f;
+            ImGui::PushStyleColor(ImGuiCol_PopupBg, dark);
+        }
+        ImGui::SetNextWindowBgAlpha(0.85f);
+                        ImGui::SetTooltip(T("Default: %s"), ActionDefault(r.action).c_str());
+                        ImGui::PopStyleVar();
+                        ImGui::PopStyleColor();
+                    }
                 }
                 ImGui::PopID();
             }
@@ -1061,6 +1085,7 @@ void DrawKeys(int player) {
                 RangeSlider("Creep / Walk %", &g_creep_percent[player], &g_walk_percent[player], kTiltMin, kTiltMax, kTiltGap,
                             kDefaultCreep, kDefaultWalk, column, key_w * kSlots + spacing * (kSlots - 1), reset);
             }
+            ImGui::Dummy(ImVec2(0.0f, 2.0f));  // the last row's buttons were clipped by the frame's bottom edge
             ImGui::EndChild();
             ImGui::PopID();
             // room before the next group stacked in the same cell
@@ -1626,6 +1651,8 @@ void Draw(double fps) {
                         pick("UI", s.ui_language);
                         pick("Game text", s.language);
                         Hint("Text only, requires restart. Voices stay in English.");
+                        static const std::string start_language = s.language;
+                        if (s.language != start_language) WarningCard("Restart the game for this change to take effect.");
                     }
                 }
                 if (Section("Appearance")) {
@@ -1703,7 +1730,6 @@ void Draw(double fps) {
                         }
                     }
 
-                    ImGui::Dummy(ImVec2(0.0f, ImGui::GetStyle().ItemSpacing.y * 0.75f));  // set apart from the dropdown above
                     Check("V-Sync", &s.vsync);
                     Hint("Waits for the display to refresh before showing each frame. Stops screen tearing; turn it off for the lowest latency.", true);
                     {
@@ -1869,7 +1895,11 @@ void Draw(double fps) {
                                      "as it stops.", true);
                             }
                             // the look in two columns, a pair to a row: each slider in the next cell
-                            if (!own->game && ImGui::BeginTable("##look", 2, ImGuiTableFlags_SizingStretchSame)) {
+                            ImGui::PushStyleVar(ImGuiStyleVar_CellPadding,
+                                                ImVec2(ImGui::GetFontSize() * 1.2f, ImGui::GetStyle().CellPadding.y));
+                            const bool look = !own->game && ImGui::BeginTable("##look", 2, ImGuiTableFlags_SizingStretchSame | ImGuiTableFlags_NoPadOuterX);
+                            ImGui::PopStyleVar();
+                            if (look) {
                                 const auto cell = [](auto&&... args) {
                                     ImGui::TableNextColumn();
                                     Slider(args...);
@@ -2001,6 +2031,8 @@ void Draw(double fps) {
                         if (Segmented("Speakers", &speakers, {"Stereo", "5.1 surround"})) s.surround = speakers == 1;
                         Hint("Stereo mixes for two speakers or headphones. 5.1 surround mixes for six speakers and "
                              "plays on as many as the output device has. Starts from the next launch.");
+                        static const bool start_surround = s.surround;
+                        if (s.surround != start_surround) WarningCard("Restart the game for this change to take effect.");
                     }
                     Check("Mute in background", &s.mute_in_background);
                     Hint("No sound while you are in another window.", true);
@@ -2124,6 +2156,8 @@ void Draw(double fps) {
                            "Hosting for players past the LAN: forward it on your router.",
                            "Each extra copy on this PC needs its own: launch it with --port N.",
                            "A change starts from the next launch."});
+                    static const uint32_t start_port = s.system_link_port;
+                    if (s.system_link_port != start_port) WarningCard("Restart the game for this change to take effect.");
                 }
                 if (Section("This PC")) {
                     SubHeading("LAN IP");
@@ -2171,7 +2205,7 @@ void Draw(double fps) {
                     Hints({"Ticked mods are in use. One higher in the list wins where two replace the same file.",
                            "A change starts from the next launch."});
                     if (app::ModsChanged())
-                        ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.35f, 1.0f), "%s", T("Restart the game to use these mods."));
+                        WarningCard("Restart the game to use these mods.");
                 }
                 if (Section("Installing")) {
                     static std::string dir;
@@ -2305,12 +2339,21 @@ void Draw(double fps) {
     ImGui::End();
     ImGui::PopStyleVar();
     if (g_decorations) {
-        // the dropdown lists: framed like the window, on the foreground list (their own clip box would cut the shadow)
+        // the dropdown lists and the tooltips: framed like the window, on the foreground list (their own clip box would cut the shadow)
         for (ImGuiWindow* pw : ImGui::GetCurrentContext()->Windows)
-            if (pw->Active && !pw->Hidden && (pw->Flags & ImGuiWindowFlags_Popup) && !(pw->Flags & ImGuiWindowFlags_Tooltip) &&
-                std::strncmp(pw->Name, "##Combo_", 8) == 0)
-                DrawFrame(ImGui::GetForegroundDrawList(), pw->Pos, ImVec2(pw->Pos.x + pw->Size.x, pw->Pos.y + pw->Size.y),
-                          ImGui::GetStyle().PopupRounding, g_fade);
+            if (pw->Active && !pw->Hidden &&
+                ((pw->Flags & ImGuiWindowFlags_Tooltip) ||
+                 ((pw->Flags & ImGuiWindowFlags_Popup) && std::strncmp(pw->Name, "##Combo_", 8) == 0))) {
+                const ImVec2 lo = pw->Pos, hi(pw->Pos.x + pw->Size.x, pw->Pos.y + pw->Size.y);
+                const float round = ImGui::GetStyle().PopupRounding;
+                if (pw->Flags & ImGuiWindowFlags_Tooltip) {
+                    // the whole frame a pixel in from the edge, the black and light lines still touching
+                    DrawFrame(ImGui::GetForegroundDrawList(), ImVec2(lo.x + 1.0f, lo.y + 1.0f), ImVec2(hi.x - 1.0f, hi.y - 1.0f),
+                              std::max(round - 1.0f, 0.0f), g_fade);
+                } else {
+                    DrawFrame(ImGui::GetForegroundDrawList(), lo, hi, round, g_fade);
+                }
+            }
     }
     Cues(opened_before, settings_changed);
     g_tab_arrived = false;
