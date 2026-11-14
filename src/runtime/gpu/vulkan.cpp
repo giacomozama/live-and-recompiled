@@ -294,6 +294,33 @@ float4 hblur(O i) : SV_Target { return Blur(i.uv, float2(px.x * px.z, 0)); }
 float4 vblur(O i) : SV_Target { return Blur(i.uv, float2(0, px.y * px.z)); }
 )";
 
+// the welcome screen's backdrop (app::RunWelcome), a placeholder: a dark gradient with soft glows drifting over it,
+// darker at the edges. b1: p.x the seconds since it showed, p.y the window's width over its height, p.z the fade
+const char* kWelcomeHlsl = R"(
+cbuffer B : register(b1) { float4 p; };
+struct O { float4 p : SV_Position; float2 uv : TEXCOORD0; };
+O vs(uint id : SV_VertexID) {
+    O o;
+    o.uv = float2((id << 1) & 2, id & 2);
+    o.p = float4(o.uv * float2(2, -2) + float2(-1, 1), 0, 1);
+    return o;
+}
+float Hash(float2 q) { return frac(sin(dot(q, float2(12.9898, 78.233))) * 43758.5453); }
+float Glow(float2 q, float2 at, float reach) { float2 d = q - at; return exp(-dot(d, d) * reach); }
+float4 ps(O i) : SV_Target {
+    float t = p.x;
+    float2 q = float2((i.uv.x - 0.5) * p.y, i.uv.y - 0.5);
+    float3 c = lerp(float3(0.030, 0.026, 0.050), float3(0.065, 0.035, 0.080), i.uv.y);
+    c += float3(0.95, 0.45, 0.12) * 0.22 * Glow(q, float2(sin(t * 0.13) * 0.55, cos(t * 0.11) * 0.30), 5.0);
+    c += float3(0.15, 0.45, 0.85) * 0.18 * Glow(q, float2(cos(t * 0.09 + 2.0) * 0.60, sin(t * 0.15 + 1.0) * 0.32), 4.0);
+    c += float3(0.55, 0.20, 0.70) * 0.14 * Glow(q, float2(sin(t * 0.07 + 4.0) * 0.40, cos(t * 0.12 + 3.0) * 0.35), 6.0);
+    c += 0.012 * sin(q.x * 6.0 + q.y * 4.0 + t * 0.4);
+    c *= 1.0 - 0.55 * saturate(dot(q, q) / (0.25 * p.y * p.y + 0.25));
+    c += (Hash(i.p.xy + frac(t)) - 0.5) / 255.0;  // dithered, no banding in the dark
+    return float4(saturate(c) * p.z, 1);
+}
+)";
+
 const char* kOcclusionHlsl = R"(
 cbuffer B : register(b1) { float4 px; float4 frame; float4 vp; float4 pr; float4 pr2; };
 Texture2D a : register(t0);
@@ -1100,6 +1127,12 @@ class VulkanBackend final : public Backend {
 public:
     ~VulkanBackend() override;
     bool Init(uint32_t width, uint32_t height) override;
+    // no target is made before the title's device: the scale follows the size at once
+    void SetGuestSize(uint32_t width, uint32_t height) override {
+        guest_w_ = width;
+        guest_h_ = height;
+        LoadSettings();
+    }
     void Clear(const State& s, uint32_t count, const uint8_t* rects, uint32_t flags, uint32_t color, float z,
                uint32_t stencil) override;
     void Draw(const State& s, uint32_t prim, uint32_t start, uint32_t count, const uint8_t* indices) override;
@@ -6137,7 +6170,8 @@ void VulkanBackend::BuildUi() {
     app::UiFontResize();
     ImGui_ImplVulkan_NewFrame();
     ImGui::NewFrame();
-    if (app::kGame.ui) app::kGame.ui(fps_);
+    if (app::Welcoming()) app::DrawWelcome();
+    else if (app::kGame.ui) app::kGame.ui(fps_);
     ImGui::Render();
 }
 
@@ -6215,6 +6249,18 @@ void VulkanBackend::DrawFrame(Image* picture, uint32_t bi, bool fsr, Image* mask
     ca.clearValue.color = {{0, 0, 0, 1}};
     VkClearRect cr{{{0, 0}, {bb.w, bb.h}}, 0, 1};
     vkCmdClearAttachments(cmd_, 1, &ca, 1, &cr);
+
+    // the welcome screen, before the title has drawn a picture: its backdrop over the whole window
+    if (!final_src && app::Welcoming()) {
+        static const auto since = std::chrono::steady_clock::now();
+        const float p[8] = {std::chrono::duration<float>(std::chrono::steady_clock::now() - since).count(), w / std::max(h, 1.0f),
+                            std::clamp(g_welcome_fade.load(std::memory_order_relaxed), 0.0f, 1.0f)};
+        SetViewport(0, 0, w, h);
+        SetScissor(0, 0, int32_t(bb_w_), int32_t(bb_h_));
+        Alloc cb = Upload(kPassCbBytes);
+        std::memcpy(cb.cpu, p, sizeof(p));
+        DrawFullScreen(EnsurePassPipeline(kWelcomeHlsl, "ps", out_fmt, -1), cb, {});
+    }
 
     if (final_src) {
         SetViewport((w - vw) / 2, (h - vh) / 2, vw, vh);

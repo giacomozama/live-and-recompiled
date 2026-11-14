@@ -358,6 +358,13 @@ bool StartHandover() { return false; }
 bool HandingOver() { return false; }
 void FinishHandover() {}
 
+bool Pump() {
+    SDL_Event e;
+    while (SDL_PollEvent(&e))
+        if (!Handle(e)) return false;
+    return true;
+}
+
 bool KeyDown(int vk) {
     if (vk <= 0 || vk > 0xFF) return false;
     // mouse buttons: 1 left, 2 right, 4 middle, 5 and 6 the side ones
@@ -564,6 +571,10 @@ int main(int argc, char** argv) {
     input::Init();
     app::AddInputDevices();
     if (app::kGame.window) app::kGame.window(app::g_window);
+    if (!app::RunWelcome()) {
+        logx::Flush();
+        kernel::Shutdown(0);
+    }
     std::string hdd = app::Instance() > 1 ? "hdd" + std::to_string(app::Instance()) : "hdd";
     if (!kernel::Boot(std::move(game.xbe), IMAGE_XBE, game.dir.string(), (app::DataDir() / hdd).string())) {
         app::Alert(L"The game failed to start, see the log: " + std::filesystem::path(logx::Path()).wstring());

@@ -39,6 +39,7 @@
 #include "common/loading.h"
 #include "common/menus.h"
 #include "common/mouse.h"
+#include "common/presets.h"
 #include "common/prompts.h"
 #include "common/reflection.h"
 #include "common/rope.h"
@@ -691,9 +692,9 @@ const char* Beside(const char* label, float after = 0.0f, float wide = 0.0f) {
 }
 // a setting with a few short choices: segments side by side in one rounded track, the chosen one in the accent. Where
 // they would not fit the room beside the label it is a dropdown instead. Leading spaces in a name (which line up a
-// dropdown's numbers) are dropped
+// dropdown's numbers) are dropped. A label that starts with ## has no label column: the segments take the whole row
 bool Segmented(const char* label, int* v, std::initializer_list<const char*> items) {
-    const char* id = Beside(label);
+    const char* id = label[0] == '#' && label[1] == '#' ? label : Beside(label);
     const ImGuiStyle& st = ImGui::GetStyle();
     std::vector<std::string> names;
     std::vector<float> widths;
@@ -707,7 +708,10 @@ bool Segmented(const char* label, int* v, std::initializer_list<const char*> ite
         total += widths.back();
     }
     const float room = std::floor(ImGui::GetContentRegionAvail().x);
-    if (total > room) return ImGui::Combo(id, v, Items(items).c_str());
+    if (total > room) {
+        if (id == label) ImGui::SetNextItemWidth(-FLT_MIN);  // no label column: the dropdown the row's width too
+        return ImGui::Combo(id, v, Items(items).c_str());
+    }
     // the row fills the room: each segment takes its share of what the names leave over, the last the rounding
     {
         const float extra = std::floor((room - total) / float(widths.size()));
@@ -1253,6 +1257,8 @@ bool Busy() {
            ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel);
 }
 
+void FeedNav(const Buttons& drive);
+
 // the pads, once a frame, before the menu draws. Start with Back opens or shuts the menu from any pad, and while the
 // menu or the prompt is up the pads drive ImGui's navigation: the left stick and d-pad move, A activates, B backs
 // out, LB and RB turn the tabs, the right stick scrolls the page. (ImGui's backends read
@@ -1320,6 +1326,13 @@ void PadFrame(bool open, bool quit) {
 
     if (!shown && !fed) return;
     fed = shown;
+    FeedNav(drive);
+}
+
+// the pads' buttons as ImGui's pad keys: the left stick and d-pad move, A activates, B backs out
+void FeedNav(const Buttons& drive) {
+    ImGuiIO& io = ImGui::GetIO();
+    io.BackendFlags |= ImGuiBackendFlags_HasGamepad;
     // A on a tab button goes down into its page (the cursor on the first setting) instead of activating the tab, and A
     // is the page's own only once it has been let go
     static bool a_was = false, a_eaten = false;
@@ -1362,6 +1375,17 @@ bool QuitBody() {
     return !cancel && !g_pad.b;
 }
 
+// the accent, and the widgets' frames: the white line on the frame's edge and the dark one just outside it (the section
+// cards' and the window's own lines, without the shadow)
+void MenuStyle() {
+    app::UiAccent(int(g_accent));
+    ImGuiStyle& st = ImGui::GetStyle();
+    st.FrameBorderSize = g_decorations ? 1.0f : 0.0f;
+    st.PopupBorderSize = g_decorations ? 0.0f : 1.0f;  // the dropdowns' frames are drawn below, with their shadow
+    st.Colors[ImGuiCol_Border] = ImVec4(1, 1, 1, 24.0f / 255.0f);
+    st.Colors[ImGuiCol_BorderShadow] = ImVec4(0, 0, 0, 120.0f / 255.0f);
+}
+
 }  // namespace
 
 void Draw(double fps) {
@@ -1369,16 +1393,7 @@ void Draw(double fps) {
     static double last_fps = -1.0;
     static bool last_title = !g_fps_title;
     static int last_look = -1;
-    app::UiAccent(int(g_accent));
-    {
-        // the widgets' frames: the white line on the frame's edge and the dark one just outside it (the section cards'
-        // and the window's own lines, without the shadow)
-        ImGuiStyle& st = ImGui::GetStyle();
-        st.FrameBorderSize = g_decorations ? 1.0f : 0.0f;
-        st.PopupBorderSize = g_decorations ? 0.0f : 1.0f;  // the dropdowns' frames are drawn below, with their shadow
-        st.Colors[ImGuiCol_Border] = ImVec4(1, 1, 1, 24.0f / 255.0f);
-        st.Colors[ImGuiCol_BorderShadow] = ImVec4(0, 0, 0, 120.0f / 255.0f);
-    }
+    MenuStyle();
     PadFrame(g_open.load(), g_quit.load());
     const bool open = g_open.load();
     const bool quit = g_quit.load();
@@ -2360,7 +2375,106 @@ void Draw(double fps) {
     if (!keep_open) Close();  // the window's X
 }
 
+bool Welcome() {
+    MenuStyle();
+    {
+        Buttons drive;
+        for (int port = 0; port < input::kPorts; port++) drive.Add(ReadPad(port));
+        FeedNav(drive);
+    }
+    app::Settings& s = app::Get();
+    static int preset = presets::kModern;
+    // in as the window opens, out after Start; done once out
+    static double shown_at = -1.0, start_at = -1.0;
+    const double now = ImGui::GetTime();
+    const bool first = shown_at < 0.0;
+    if (first) shown_at = now;
+    float fade = std::min(float((now - shown_at) / 0.25), 1.0f);
+    if (start_at >= 0.0) {
+        if (now - start_at >= 0.2) {
+            gpu::g_welcome_fade.store(0.0f);  // black from here until the game's first picture
+            return true;
+        }
+        fade = std::min(fade, 1.0f - float((now - start_at) / 0.2));
+    }
+    fade = fade * fade * (3.0f - 2.0f * fade);
+    g_fade = fade;
+    gpu::g_welcome_fade.store(fade);  // the backdrop (vulkan.cpp kWelcomeHlsl) with the window
+
+    const ImVec2 display = ImGui::GetIO().DisplaySize;
+    const ImGuiStyle& base = ImGui::GetStyle();
+    const float font = ImGui::GetFontSize();
+    const float margin = std::max(std::round(std::min(display.x, display.y) * 0.04f), font);
+    const float width = std::min(std::max(display.x * 0.42f, font * 34.0f), display.x - margin * 2.0f);
+    ImGui::SetNextWindowPos(ImVec2(display.x * 0.5f, display.y * 0.5f), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowSizeConstraints(ImVec2(width, 0.0f), ImVec2(width, display.y - margin * 2.0f));
+    if (first) ImGui::SetNextWindowFocus();
+    ImGui::PushStyleVar(ImGuiStyleVar_Alpha, fade);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(base.WindowPadding.x * 2.5f, base.WindowPadding.y * 2.5f));
+    if (ImGui::Begin("##welcome", nullptr,
+                     ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize |
+                         ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings |
+                         ImGuiWindowFlags_AlwaysAutoResize)) {
+        // the menu's roomier rows
+        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(base.FramePadding.x * 1.25f, base.FramePadding.y * 1.5f));
+        ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(base.ItemSpacing.x, base.ItemSpacing.y * 1.25f));
+        auto gap = [&](float lines) { ImGui::Dummy(ImVec2(0.0f, std::round(font * lines))); };
+        // a part's title: no bold face, so drawn twice a pixel apart (as SubHeading)
+        auto heading = [&](const char* title) {
+            const char* text = T(title);
+            const ImVec2 at = ImGui::GetCursorScreenPos(), size = ImGui::CalcTextSize(text);
+            ImDrawList* dl = ImGui::GetWindowDrawList();
+            const ImU32 col = ImGui::GetColorU32(ImGuiCol_Text);
+            dl->AddText(at, col, text);
+            dl->AddText(ImVec2(at.x + 1.0f, at.y), col, text);
+            ImGui::Dummy(ImVec2(size.x + 1.0f, size.y));
+        };
+
+        ImGui::PushFont(nullptr, std::round(base.FontSizeBase * 1.7f));
+        ImGui::TextUnformatted(T("Welcome"));
+        ImGui::PopFont();
+        Hint("Pick a language and a graphics preset. Both can be changed later in the settings menu (F1, or Start and Back on a controller), along with everything else.");
+        gap(1.0f);
+
+        heading("Language");
+        {
+            // the languages the game has text for, as on the General tab; the menu's and the game's text both
+            static const char* const kKeys[] = {"english", "japanese", "german", "french", "spanish", "italian"};
+            int lang = 0;
+            for (int i = 0; i < int(std::size(kKeys)); i++)
+                if (s.language == kKeys[i]) lang = i;
+            if (Segmented("##language", &lang, {"English", "日本語", "Deutsch", "Français", "Español", "Italiano"}))
+                s.language = s.ui_language = kKeys[lang];
+            Hint("Text only. Voices stay in English.");
+        }
+        gap(0.8f);
+
+        heading("Graphics");
+        Segmented("##preset", &preset,
+                  {presets::Name(presets::kNostalgic), presets::Name(presets::kModern), presets::Name(presets::kEnhanced)});
+        Hint(presets::Description(preset));
+        gap(1.2f);
+
+        // Start, the row's width, in the accent
+        const ImVec4 accent = ImGui::GetStyleColorVec4(ImGuiCol_CheckMark);
+        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(accent.x, accent.y, accent.z, 0.80f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(accent.x, accent.y, accent.z, 0.92f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive, accent);
+        if (ImGui::Button(T("Start"), ImVec2(-FLT_MIN, std::round(ImGui::GetFrameHeight() * 1.3f))) && start_at < 0.0) {
+            presets::Apply(preset);
+            start_at = now;
+        }
+        ImGui::PopStyleColor(3);
+        ImGui::PopStyleVar(2);
+        DrawWindowFrame(fade);
+    }
+    ImGui::End();
+    ImGui::PopStyleVar(2);
+    return false;
+}
+
 bool Message(void* hwnd, uint32_t msg, uintptr_t wp, intptr_t lp, intptr_t* result) {
+    if (app::Welcoming()) return false;  // before boot: no menu to open (the welcome screen is ImGui's alone)
     switch (msg) {
         case app::kMsgKeyDown:
             // not on auto repeat; the menu window and the game both take the key, the menu only when open
@@ -2477,6 +2591,8 @@ bool g_menu_resizable = false;
 bool g_decorations = true;
 
 void Draw(double) {}
+
+bool Welcome() { return true; }
 
 bool Message(void*, uint32_t, uintptr_t, intptr_t, intptr_t*) { return false; }
 

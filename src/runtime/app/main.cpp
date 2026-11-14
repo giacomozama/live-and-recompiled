@@ -323,6 +323,15 @@ void Post(uint32_t msg) {
     if (g_hwnd) PostMessageW(g_hwnd, msg, 0, 0);
 }
 void Quit() { Post(WM_CLOSE); }
+bool Pump() {
+    MSG msg;
+    while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
+        if (msg.message == WM_QUIT) return false;
+        TranslateMessage(&msg);
+        DispatchMessageW(&msg);
+    }
+    return true;
+}
 void SetTitle(const std::wstring& title) { SetWindowTextW(g_hwnd, title.c_str()); }
 bool Focused() { return g_hwnd && GetForegroundWindow() == g_hwnd && !IsIconic(g_hwnd); }
 bool Background() { return g_background.load(std::memory_order_relaxed); }
@@ -436,7 +445,9 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
     if (!app::FindGame(game)) return 1;
     app::MountMods();
 
-    bool splash = app::OpenSplash(), handover = app::StartHandover();
+    // the welcome screen (RunWelcome) shows in the game window from the start: no splash in front of it
+    const bool welcome = app::FirstRun() && app::kGame.welcome;
+    bool splash = !welcome && app::OpenSplash(), handover = app::StartHandover();
 
     WNDCLASSEXW wc{sizeof(wc)};
     wc.style = CS_HREDRAW | CS_VREDRAW;
@@ -470,6 +481,10 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
     std::wstring hdd = app::Instance() > 1 ? L"hdd" + std::to_wstring(app::Instance()) : L"hdd";
     if (app::Instance())
         SetWindowTextW(app::g_hwnd, (std::wstring(app::kGame.title) + L" [" + std::to_wstring(app::Instance()) + L"]").c_str());
+    if (!app::RunWelcome()) {
+        logx::Flush();
+        kernel::Shutdown(0);
+    }
     if (!kernel::Boot(std::move(game.xbe), IMAGE_XBE, game.dir.string(), (app::DataDir() / hdd).string())) {
         app::Alert(L"The game failed to start, see the log: " + std::filesystem::path(logx::Path()).wstring());
         return 1;

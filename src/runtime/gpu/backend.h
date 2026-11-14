@@ -22,6 +22,8 @@ public:
     virtual ~Backend() = default;
     // the title's back buffer size, the output window may differ
     virtual bool Init(uint32_t width, uint32_t height) = 0;
+    // a backend made before the title had a device (g_early): its back buffer size once it has, before anything is drawn
+    virtual void SetGuestSize(uint32_t /*width*/, uint32_t /*height*/) {}
     // rects: count D3DRECTs (4 x int32), null for the whole viewport
     virtual void Clear(const State& s, uint32_t count, const uint8_t* rects, uint32_t flags, uint32_t color, float z,
                        uint32_t stencil) = 0;
@@ -96,6 +98,10 @@ std::vector<std::string>& Adapters();
 bool HdrAvailable();
 void SetHdrAvailable(bool);
 std::unique_ptr<Backend> CreateBackend(uint32_t width, uint32_t height);
+std::unique_ptr<Backend> CreateBackend(uint32_t width, uint32_t height, bool& ok);  // ok: Init succeeded
+// a backend made before boot (app::RunWelcome draws the welcome screen with it), which the title's device takes over
+// instead of making its own (d3d8.cpp)
+inline std::unique_ptr<Backend> g_early;
 std::unique_ptr<Backend> CreateVulkanBackend();
 // the same backend driven from a thread of its own: calls return once recorded
 std::unique_ptr<Backend> CreateThreadedBackend(std::unique_ptr<Backend> inner);
@@ -104,6 +110,8 @@ std::unique_ptr<Backend> CreateThreadedBackend(std::unique_ptr<Backend> inner);
 // how much of the picture reaches the window, 0 black to 1 whole: a load fades through black (d3d8.cpp
 // LoadingScreenWanted); read by the backend as it shows each picture, the overlay drawn over it unfaded
 inline std::atomic<float> g_fade{1.0f};
+// the welcome screen's backdrop (app::RunWelcome), 0 black to 1 whole: the game fades it in and out with the screen
+inline std::atomic<float> g_welcome_fade{0.0f};
 inline std::atomic<uint64_t> g_perf_capture_ns{0}, g_perf_wait_ns{0}, g_perf_waits{0};
 inline std::atomic<uint64_t> g_perf_wait_kind_ns[6];  // read-back, resource, fence, flush, copy, next frame
 inline std::atomic<uint64_t> g_perf_sync_late{0}, g_perf_sync_block{0};  // read-backs the title waited for, by cause

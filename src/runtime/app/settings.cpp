@@ -43,9 +43,14 @@ void ToggleWindowed() {
 
 // the text the file last had from Load or Save, for SaveChanged
 static std::string g_written;
+static bool g_first_run = false;
+
+bool FirstRun() { return g_first_run; }
 
 void Load() {
     Settings& s = Get();
+    std::error_code ec;
+    g_first_run = !std::filesystem::exists(File(), ec);
     toml::table t;
     try {
         t = toml::parse_file(File().string());

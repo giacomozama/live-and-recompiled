@@ -799,7 +799,13 @@ HLE_STDCALL(Direct3D_CreateDevice, 6) {
         g_depth = NewSurface(w, h, zf, zf == 0x30 || zf == 0x31 ? 2 : 4);  // 0x30 LIN_D16, 0x31 LIN_F16
     }
     if (!g_backend) {
-        g_backend = gpu::CreateBackend(w, h);
+        // the welcome screen's (app::RunWelcome), made before boot, or one of its own
+        if (gpu::g_early) {
+            g_backend = std::move(gpu::g_early);
+            g_backend->SetGuestSize(w, h);
+        } else {
+            g_backend = gpu::CreateBackend(w, h);
+        }
         if (kRenderThread) g_backend = gpu::CreateThreadedBackend(std::move(g_backend));
     }
     g_state = gpu::State{};

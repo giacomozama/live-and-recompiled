@@ -121,6 +121,8 @@ inline uint32_t LanguageCode(const std::string& key) {
 Settings& Get();
 void Load();
 void Save();
+// there was no settings file to Load: the game's first launch here (the welcome screen shows, RunWelcome)
+bool FirstRun();
 // Save, when the settings differ from what the file had at Load or last Save; true when it wrote
 bool SaveChanged();
 std::string SettingsText();  // the settings as Save writes them
@@ -236,6 +238,14 @@ void OpenGameWindow(bool apply = true);  // any thread but the window thread's; 
 bool StartHandover();   // window thread, at launch; true: the game window starts hidden
 bool HandingOver();
 void FinishHandover();  // any thread but the window thread's: opens the game window, lets the old instance go
+// window thread: the window's waiting messages handled; false once the window is to close
+bool Pump();
+// the first launch (FirstRun) of a game with GameInfo::welcome: before Boot, on the window thread, the renderer made
+// early and the welcome screen drawn over black until the player is done, then the settings saved; the title's device
+// takes the renderer over (gpu::g_early). False when the window was closed on it
+bool RunWelcome();
+bool Welcoming();  // any thread: RunWelcome is up
+void DrawWelcome();  // the renderer, inside the ImGui frame while Welcoming, in place of GameInfo::ui; UiLock held
 
 // held around ImGui: the window thread's messages and the renderer's frame
 std::recursive_mutex& UiLock();
@@ -275,6 +285,9 @@ struct GameInfo {
     // the shape of the frame the title draws for a display of this shape (width over height), for a title whose
     // projection the game patches to fit any; null: the console's 16:9 or 4:3 (Widescreen)
     float (*aspect)(float display);
+    // the first launch's welcome screen (RunWelcome), before boot: each frame inside the ImGui frame in place of ui,
+    // UiLock held; true once the player is done with it. Null: no welcome screen
+    bool (*welcome)();
 };
 extern const GameInfo kGame;
 

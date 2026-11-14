@@ -92,4 +92,5 @@ const app::GameInfo app::kGame = {
     .pad = keyboard::Pad,                 // each player's keyboard and mouse as their pad (src/conker/game/keyboard.cpp)
     .rumble = gamepad::Rumble,            // each player's rumble at their vibration % (src/conker/game/hooks.cpp)
     .aspect = display::Aspect,            // the camera patch draws the display's shape (src/conker/game/display.cpp)
+    .welcome = ui::Welcome,               // the first launch's language and graphics preset, before boot (ui.cpp)
 };

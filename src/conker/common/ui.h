@@ -12,6 +12,10 @@ namespace ui {
 // the GameInfo::ui hook: drawn inside the ImGui frame on the render thread, with app::UiLock held
 void Draw(double fps);
 
+// the GameInfo::welcome hook: the first launch's welcome screen before boot (language and graphics preset), drawn like
+// Draw; true once the player has pressed Start and it has faded out
+bool Welcome();
+
 // the GameInfo::message hook: window thread, each message after ImGui's; true consumes it, result is returned
 bool Message(void* hwnd, uint32_t msg, uintptr_t wp, intptr_t lp, intptr_t* result);
 
