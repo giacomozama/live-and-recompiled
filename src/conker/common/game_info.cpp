@@ -57,7 +57,7 @@ const app::GameInfo app::kGame = {
                 {"menu_resizable", &ui::g_menu_resizable, nullptr},  // Debug: the settings menu moved and sized by the mouse (ui.cpp)
                 {"menu_decorations", &ui::g_decorations, nullptr},  // outlines round the settings menu's sections and widgets (ui.cpp)
                 {"ui_accent", nullptr, &ui::g_accent},  // the settings menu's accent color, 0 blue to 6 purple, 4 orange by default (ui_font.cpp)
-                {"frame_rate", nullptr, &display::g_frame_rate},  // 30, 60, 120, 180 or 240 (src/conker/game/display.cpp)
+                {"frame_rate", nullptr, &display::g_frame_rate},  // 0 (highest), 30, 60, 120, 180 or 240 (src/conker/game/display.cpp)
                 {"fov", nullptr, &display::g_fov},  // the view's height in degrees in play, 50 the console's (display.cpp)
                 {"look_up", nullptr, &display::g_look_up},  // degrees the third person camera tilts up past the console's (display.cpp)
                 {"hud_split", &display::g_hud_split, nullptr},  // a match's HUD unstretched, at the display's edges (display.cpp)

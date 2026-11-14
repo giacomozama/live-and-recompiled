@@ -5,7 +5,7 @@
 // Frame rate and aspect patches (src/conker/game/display.cpp), after the community widescreen and 60 FPS XBE patches.
 namespace display {
 
-// settings.toml frame_rate, the pictures shown a second: 30 is the console's (present every second blank), 60 the
+// settings.toml frame_rate (0 the highest: the most of these the monitor's refresh rate allows), the pictures shown a second: 30 is the console's (present every second blank), 60 the
 // patched game's limit; 120, 180 and 240 run the game at 60 and draw the frames between again (the runtime's frame
 // generation). XBE_FRAME_RATE overrides it. The headless harness keeps 30 unless asked, so its frame-counted pad
 // scripts hold.

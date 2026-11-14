@@ -499,6 +499,8 @@ void Pace(uint32_t vblanks) {
     while (clock::now() < next) std::this_thread::yield();
 }
 
+uint32_t MonitorRefresh() { return std::max(g_refresh.load(), 24u); }
+
 void PaceMenu() {
     using clock = std::chrono::steady_clock;
     static clock::time_point next = clock::now();

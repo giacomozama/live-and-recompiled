@@ -708,15 +708,18 @@ bool Segmented(const char* label, int* v, std::initializer_list<const char*> ite
         total += widths.back();
     }
     const float room = std::floor(ImGui::GetContentRegionAvail().x);
+    // equal segments: each is as wide as the longest name needs, so they fit when that times the count does
+    const float widest = *std::max_element(widths.begin(), widths.end());
+    total = widest * float(widths.size());
     if (total > room) {
         if (id == label) ImGui::SetNextItemWidth(-FLT_MIN);  // no label column: the dropdown the row's width too
         return ImGui::Combo(id, v, Items(items).c_str());
     }
-    // the row fills the room: each segment takes its share of what the names leave over, the last the rounding
+    // the row fills the room: every segment the same share of it, the last the rounding
     {
-        const float extra = std::floor((room - total) / float(widths.size()));
-        for (float& w : widths) w += extra;
-        widths.back() += room - total - extra * float(widths.size());
+        const float each = std::floor(room / float(widths.size()));
+        for (float& w : widths) w = each;
+        widths.back() += room - each * float(widths.size());
         total = room;
     }
 
@@ -1781,12 +1784,13 @@ void Draw(double fps) {
                         Slider("Fur sharpness %", &s.fur_sharpness, 0, 100, app::Settings{}.fur_sharpness);
                         Hint("How much of FSR's sharpening fur takes. 0 keeps it soft.", true);
                     }
-                    constexpr uint32_t kRates[] = {30, 60, 120, 180, 240};
+                    constexpr uint32_t kRates[] = {30, 60, 120, 180, 240, 0};
                     int rate = 0;
-                    for (int i = 0; i < 5; i++)
+                    for (int i = 0; i < 6; i++)
                         if (kRates[i] == display::g_frame_rate) rate = i;
-                    if (Segmented("Frame rate", &rate, {"30 (original)", " 60", " 120", " 180", " 240"}))
+                    if (Segmented("Frame rate", &rate, {"30 (original)", " 60", " 120", " 180", " 240", " Highest"}))
                         display::SetFrameRate(kRates[rate]);
+                    Hint("Highest picks the most the monitor's refresh rate allows (120 at 165 Hz).", true);
 
                     constexpr uint32_t kAniso[] = {0, 2, 4, 8, 16};
                     int aniso = 0;
@@ -2431,9 +2435,9 @@ bool Welcome() {
         };
 
         ImGui::PushFont(nullptr, std::round(base.FontSizeBase * 1.7f));
-        ImGui::TextUnformatted(T("Welcome"));
+        ImGui::TextUnformatted(T("Welcome to Live & Recompiled"));
         ImGui::PopFont();
-        Hint("Pick a language and a graphics preset. Both can be changed later in the settings menu (F1, or Start and Back on a controller), along with everything else.");
+        Hint("Pick a language and a graphics preset. The language and each individual graphics setting can be changed later in the settings menu (F1, or Start and Back on a controller).");
         gap(1.0f);
 
         heading("Language");
@@ -2460,10 +2464,15 @@ bool Welcome() {
         ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(accent.x, accent.y, accent.z, 0.80f));
         ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(accent.x, accent.y, accent.z, 0.92f));
         ImGui::PushStyleColor(ImGuiCol_ButtonActive, accent);
+        ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 0.0f);  // its lines are drawn below, as the segments' track has
         if (ImGui::Button(T("Start"), ImVec2(-FLT_MIN, std::round(ImGui::GetFrameHeight() * 1.3f))) && start_at < 0.0) {
             presets::Apply(preset);
             start_at = now;
         }
+        ImGui::PopStyleVar();
+        if (g_decorations)
+            DrawFrame(ImGui::GetWindowDrawList(), ImGui::GetItemRectMin(), ImGui::GetItemRectMax(),
+                      ImGui::GetStyle().FrameRounding, fade, 0, 0.0f, 200.0f, 55.0f);
         ImGui::PopStyleColor(3);
         ImGui::PopStyleVar(2);
         DrawWindowFrame(fade);

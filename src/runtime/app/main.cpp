@@ -388,6 +388,17 @@ void Pace(uint32_t vblanks) {
     while (clock::now() < next) std::this_thread::yield();
 }
 
+uint32_t MonitorRefresh() {
+    MONITORINFOEXW mi{};
+    mi.cbSize = sizeof(mi);
+    DEVMODEW dm{};
+    dm.dmSize = sizeof(dm);
+    if (GetMonitorInfoW(MonitorFromWindow(g_hwnd, MONITOR_DEFAULTTOPRIMARY), &mi) &&
+        EnumDisplaySettingsW(mi.szDevice, ENUM_CURRENT_SETTINGS, &dm) && dm.dmDisplayFrequency >= 24)
+        return dm.dmDisplayFrequency;
+    return 60;
+}
+
 void PaceMenu() {
     using clock = std::chrono::steady_clock;
     static clock::time_point next = clock::now(), asked{};

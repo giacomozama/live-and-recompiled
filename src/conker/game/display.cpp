@@ -83,7 +83,8 @@ constexpr uint32_t kGameMost = 60;     // the ticks are 60ths of a second: the g
 constexpr uint32_t kShownMost = 240;   // four pictures a frame, the most the runtime draws
 
 // 30, or a multiple of 60 up to kShownMost
-uint32_t Clamp(uint32_t r) { return r <= 30 ? 30 : std::min((r + kGameMost / 2) / kGameMost * kGameMost, kShownMost); }
+// (0 is the highest: the most of those the monitor's refresh rate allows, resolved in Shown)
+uint32_t Clamp(uint32_t r) { return r == 0 ? 0 :  r <= 30 ? 30 : std::min((r + kGameMost / 2) / kGameMost * kGameMost, kShownMost); }
 
 // what the setting asks for: the pictures shown a second
 uint32_t Shown() {
@@ -91,7 +92,13 @@ uint32_t Shown() {
         const char* e = std::getenv("XBE_FRAME_RATE");
         return e ? uint32_t(std::atoi(e)) : 0u;
     }();
-    return Clamp(env ? env : g_frame_rate);
+    uint32_t r = Clamp(env ? env : g_frame_rate);
+    if (r) return r;
+    // the most of those the monitor can show (a rate just under, as 59.94, counts for the one above)
+    uint32_t hz = app::MonitorRefresh(), best = 30;
+    for (uint32_t c : {60u, 120u, 180u, 240u})
+        if (c <= hz + 1) best = c;
+    return best;
 }
 
 // the game's: 30 (the console's) or 60, past which the runtime draws the frames between
@@ -217,6 +224,7 @@ X86_FUNC(sub_002A7B60) {
     static uint32_t shown = 0;
     static clock::time_point next = clock::now();
     uint32_t rate = Rate();
+    if (!display::g_frame_rate && display::Shown() / rate != app::Get().frame_generation) display::SetFrameRate(0);  // the monitor changed
     if (rate != shown) {
         LOGR("display: %u FPS%s", rate, rate > 30 ? ", ticks from the frame time" : " (the console's)");
         shown = rate;

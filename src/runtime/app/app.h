@@ -297,5 +297,7 @@ void Pace(uint32_t vblanks = 1);
 // the same for a picture of the held title shown again under the host menu (Redisplay): at the monitor's refresh rate,
 // not the cap, so the menu moves as smoothly as the display can show it
 void PaceMenu();
+// the window's monitor's refresh rate in Hz (60 when unknown)
+uint32_t MonitorRefresh();
 
 }  // namespace app
