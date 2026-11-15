@@ -721,13 +721,6 @@ void Turn(uint32_t actions, uint32_t turn, uint32_t ret, uint32_t player) {
         const float fov = display::CameraFov();
         const bool flying = Readable(player + kPlayerState, 4) && R32(player + kPlayerState) == kFlying;
         const int stick = fov < kScopedFov ? 1 : flying ? 2 : 0;
-        static std::atomic<int> was{0};
-        if (stick != was.exchange(stick))
-            LOGR("mouse: the weapon camera is %s (the view %.1f degrees high)",
-                 stick == 1   ? "a scope, turned as right stick"
-                 : stick == 2 ? "an aircraft's, turned as right stick"
-                              : "turned by the mouse",
-                 fov);
         if (stick) return;
     }
     if (ret == kTankTurnReturn) g_tank_us[port].store(Now(), std::memory_order_relaxed);

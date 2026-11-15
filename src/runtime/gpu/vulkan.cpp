@@ -5082,22 +5082,12 @@ void VulkanBackend::HudRoll() {
         }
         e.unseen = 0;
         const HudAnchor own = HudEdge(e.now, gw);
-        const HudAnchor was = e.anchor;
         if (e.anchor == kHudNoEdge || own == e.anchor) {
             e.anchor = own;
             e.against = 0;
         } else if (++e.against >= kHudTurnFrames) {
             e.anchor = own;
             e.against = 0;
-        }
-        // which element turned or came, and its box then: for the HUD's jumps (a log line each, at most 200)
-        static uint32_t told = 0;
-        if (e.anchor != was && told < 200) {
-            told++;
-            static const char kEdge[] = "-LMR";
-            LOGR("hud: element %08X %s %c, box %.0f..%.0f x %.0f..%.0f, last %.0f..%.0f", it->first,
-                 was == kHudNoEdge ? "new" : "turned", kEdge[e.anchor], e.now.x0, e.now.x1, e.now.y0, e.now.y1,
-                 e.last.x0, e.last.x1);
         }
         e.last = e.now;
         e.first_last = e.first_now;
