@@ -403,6 +403,14 @@ at = 0x2B3368  # a player's setup, its animation handed to its models: a class's
 call = "ConkerMenuSkeleton"
 
 [[hook]]
+at = 0x1F05D0  # the game's out of memory error, which reboots it: the size, tag and GPU heap logged
+call = "ConkerOutOfMemory"
+
+[[hook]]
+at = 0x2F58D2  # a player's teardown, its models about to be released (0x2B4310): its menu model's instance and scene copy first (characters::g_menu_models)
+call = "ConkerMenuRelease"
+
+[[hook]]
 at = 0x636AF   # a package taken by the level load: a class's, its character select model too (characters::g_menu_models)
 call = "ConkerMenuPackages"
 
@@ -429,6 +437,14 @@ call = "ConkerSolidHelmet"
 [[hook]]
 at = 0x801B7   # after them
 call = "ConkerSolidHelmetEnd"
+
+[[hook]]
+at = 0x2A9852  # a level's start, its instance and frontend lists about to be emptied: the menu models' nodes kept (characters::g_menu_models)
+call = "ConkerMenuKeepList"
+
+[[hook]]
+at = 0x2A9870  # after: the frontend list put back, released at the next level change
+call = "ConkerMenuKeptList"
 
 [[hook]]
 at = 0x8643D   # a level change, its frontend packages released: those asked for with them (characters::g_menu_models)

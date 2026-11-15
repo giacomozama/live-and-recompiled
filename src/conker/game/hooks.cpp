@@ -424,6 +424,72 @@ void ConkerMenuPackages(X86Context& ctx, uint8_t* base) {
     LOGI("models: level %u loads %s (%u) too", kernel::R32(0x7FA1F8), want.c_str(), model);
 }
 
+// A level's start (0x2A9852..0x2A986A) empties the instance list ([0x847230]) and the frontend's list ([0x847228] its
+// head: +4 the first node, each node +0 the one before, +4 the one after) without releasing them. The match's level
+// load has asked for the menu models by then (ConkerMenuPackages), so their nodes were dropped there, never released at
+// the level change (0x863E0) and their packages never freed: some 3.6 MB of the 34 MB GPU heap a match, until a later
+// level's Asset_GPUAlloc found too little and the game rebooted itself on the out of memory error (0x1F05D0, unless
+// DontRebootOnException.txt is there; a Future map after a WWII one, 8.6 MB asked with 6.6 MB free). When every node
+// on the list is a menu model's, the list is put back after it
+static uint32_t g_kept_list[2];
+static bool g_keep_list;
+
+// [[hook]] at 0x2A9852, the level's start, before the lists are emptied
+void ConkerMenuKeepList(X86Context& ctx, uint8_t* base) {
+    (void)ctx, (void)base;
+    g_keep_list = false;
+    const uint32_t first = kernel::R32(0x84722C);
+    if (!characters::g_menu_models || g_menu_requested.empty() || first < 0x10000) return;
+    int n = 0;
+    for (uint32_t node = first; node; node = kernel::R32(node + 4), n++) {
+        if (node < 0x10000 || n > 64) return;
+        if (std::find(g_menu_requested.begin(), g_menu_requested.end(), kernel::R32(node + 8)) == g_menu_requested.end()) {
+            LOGR("models: the frontend's list holds %s (%u) at a level's start, the menu models' nodes dropped",
+                 ModelName(kernel::R32(node + 8)).c_str(), kernel::R32(node + 8));
+            return;
+        }
+    }
+    g_kept_list[0] = kernel::R32(0x847228), g_kept_list[1] = first;
+    g_keep_list = true;
+}
+
+// [[hook]] at 0x2A9870, after them
+void ConkerMenuKeptList(X86Context& ctx, uint8_t* base) {
+    (void)ctx, (void)base;
+    if (!g_keep_list) return;
+    g_keep_list = false;
+    kernel::W32(0x847228, g_kept_list[0]);
+    kernel::W32(0x84722C, g_kept_list[1]);
+}
+
+// The physical heap the game's GPU assets come from (Asset_GPUAlloc, 0x63230, by 0x2AF430): made at 0x2AED70, at
+// [0x84A188], 0x2070000 bytes; a debug display (0x9B27B) shows 9 words of it from +0x28, +0x30 its used bytes and
+// +0x34 its free ones. Logged with the game's count of live allocations ([0x7FA4B4])
+static void LogGpuHeap(const char* when) {
+    const uint32_t heap = kernel::R32(0x84A188);
+    if (heap < 0x10000) return;
+    char words[160];
+    int n = 0;
+    for (uint32_t i = 0; i < 9; i++)
+        n += std::snprintf(words + n, sizeof(words) - size_t(n), " %08X", kernel::R32(heap + 0x28 + 4 * i));
+    LOGR("gpu heap: %s, level %u, live allocations %u, stats%s", when, kernel::R32(0x7FA1F8), kernel::R32(0x7FA4B4),
+         words);
+}
+
+// [[hook]] at 0x1F05D0, the game's out of memory error (cdecl: the size, the allocation's tag), which reboots it
+void ConkerOutOfMemory(X86Context& ctx, uint8_t* base) {
+    (void)base;
+    const uint32_t tag = kernel::R32(ctx.esp + 8);
+    std::string name;
+    for (uint32_t i = 0; tag >= 0x10000 && i < 64; i++) {
+        const char c = kernel::G<char>(tag + i);
+        if (!c) break;
+        name += c;
+    }
+    LOGR("out of memory: %u bytes for %s", kernel::R32(ctx.esp + 4), name.c_str());
+    LogGpuHeap("out of memory");
+}
+
 // [[hook]] at 0x8643D, the end of 0x863E0, the frontend's nodes released: those asked for with them
 void ConkerMenuReset(X86Context& ctx, uint8_t* base) {
     (void)ctx, (void)base;
@@ -501,15 +567,56 @@ struct MenuDrawn {
     uint32_t model, inst, copy, match_inst, match_copy;
     uint32_t skel, match_skel;  // skeleton nodes ([player+0x4EC])
     std::vector<std::pair<uint16_t, uint16_t>> follow;  // bones following their parents (FollowBones)
+    uint32_t level;  // [0x7FA1F8] at the setup
 };
 static std::unordered_map<uint32_t, MenuDrawn> g_menu_drawn;
+
+// A player's models are released by 0x2B4310 (eax the player, from its teardown at 0x2F58D2): for each of its five
+// slots the scene copy ([player+0x4C4 + 4i], 0x75640 with the model's scene), the slot's [player+0x4D8 + 4i], then a
+// reference on the instance ([player+0x4B0 + 4i], [inst+8]), the model's data freed with the last. The menu model's
+// instance and copy are no slot's, and were never released: 16 copies and instance references a match. So the
+// release runs once more for them, alone in slot 0, the player's own slots put back after
+X86_EXTERN_FUNC(sub_002B4310);
+static void ReleaseMenuModel(X86Context& ctx, uint8_t* base, uint32_t player, const MenuDrawn& d) {
+    uint32_t slots[15];
+    for (uint32_t i = 0; i < 15; i++) slots[i] = kernel::R32(player + 0x4B0 + 4 * i);
+    for (uint32_t i = 0; i < 15; i++) kernel::W32(player + 0x4B0 + 4 * i, 0);
+    kernel::W32(player + 0x4B0, d.inst);
+    kernel::W32(player + 0x4C4, d.copy);
+    const X86Context saved = ctx;
+    ctx.eax = player;
+    X86_PUSH32(0x2F58D7u);
+    sub_002B4310(ctx, base);
+    ctx = saved;
+    for (uint32_t i = 0; i < 15; i++) kernel::W32(player + 0x4B0 + 4 * i, slots[i]);
+    LOGI("models: player %08X releases %s (%u), instance %08X, copy %08X", player, ModelName(d.model).c_str(), d.model,
+         d.inst, d.copy);
+}
+
+// [[hook]] at 0x2F58D2, a player's teardown about to release its models (0x2B4310); ebp the player
+void ConkerMenuRelease(X86Context& ctx, uint8_t* base) {
+    const auto it = g_menu_drawn.find(ctx.ebp);
+    if (it == g_menu_drawn.end()) return;
+    // the game's own release skips the frontend's players' instances (type 0xB, 0x48, none) and ends in the
+    // frontend's (level 0x46) with 0x99E50; neither has a menu model
+    const uint32_t type = kernel::R32(ctx.ebp + 0x68);
+    if (type != 0xFFFF && type != 0x48 && type != 0xB && kernel::R32(0x7FA1F8) != 0x46)
+        ReleaseMenuModel(ctx, base, ctx.ebp, it->second);
+    g_menu_drawn.erase(it);
+}
 
 static std::vector<std::pair<uint16_t, uint16_t>> FollowBones(uint32_t skel, uint32_t match_skel);
 
 // [[hook]] at 0x2B3368, after 0x2B3510; ebp the player
 void ConkerMenuSkeleton(X86Context& ctx, uint8_t* base) {
     SurveyLevelModels(ctx, base);
-    g_menu_drawn.erase(ctx.ebp);
+    // set up again without a teardown (a class change in the same level): the menu model it had is released first;
+    // one left from another level is dropped, that level's models gone with it
+    if (const auto it = g_menu_drawn.find(ctx.ebp); it != g_menu_drawn.end()) {
+        if (it->second.level == kernel::R32(0x7FA1F8) && kernel::R32(0x7FA1F8) != 0x46)
+            ReleaseMenuModel(ctx, base, ctx.ebp, it->second);
+        g_menu_drawn.erase(it);
+    }
     if (!characters::g_menu_models) return;
     const uint32_t player = ctx.ebp, list = kernel::R32(player + 0x50C);
     if (list < 0x10000 || kernel::R32(player + 0x4B0) == 0) return;
@@ -568,7 +675,7 @@ void ConkerMenuSkeleton(X86Context& ctx, uint8_t* base) {
     auto follow = FollowBones(skel, match_skel);
     std::string follows;
     for (const auto& [b, parent] : follow) follows += " " + std::to_string(b) + "<-" + std::to_string(parent);
-    g_menu_drawn[player] = {model, inst, copy, match_inst, match_copy, skel, match_skel, std::move(follow)};
+    g_menu_drawn[player] = {model, inst, copy, match_inst, match_copy, skel, match_skel, std::move(follow), kernel::R32(0x7FA1F8)};
     LOGR("models: player %08X draws %s (%u), instance %08X, scene %08X, bones following their parents:%s", player,
          ModelName(model).c_str(), model, inst, scene, follows.empty() ? " none" : follows.c_str());
 }

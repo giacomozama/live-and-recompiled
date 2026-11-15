@@ -1216,7 +1216,7 @@ KERNEL_EXPORT(95, KeBugCheck, 1) {
 }
 
 KERNEL_EXPORT(49, HalReturnToFirmware, 1) {
-    LOGI("HalReturnToFirmware(%u): the title asked to leave", a[0]);
+    LOGR("HalReturnToFirmware(%u) from %08X: the title asked to leave", a[0], R32(ctx.esp));
     // quick reboot into a recompiled image, the XAPI wrote the launch data page: restart into its executable with it
     uint32_t page = R32(g_launch_data_page_va);
     if (a[0] == 2 && page) {
@@ -1226,10 +1226,10 @@ KERNEL_EXPORT(49, HalReturnToFirmware, 1) {
                 std::fwrite(HostPtr(page), 1, 0x1000, f);
                 std::fclose(f);
             }
-            LOGI("relaunching into %s", path.c_str());
+            LOGR("relaunching into %s", path.c_str());
             Relaunch(exe);
         }
-        LOGW("HalReturnToFirmware: %s is no recompiled image", path.c_str());
+        LOGR("HalReturnToFirmware: %s is no recompiled image", path.c_str());
     }
     LogGuestStack(ctx, 256);
     Shutdown(0);

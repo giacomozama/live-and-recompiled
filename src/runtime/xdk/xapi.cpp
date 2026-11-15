@@ -131,11 +131,14 @@ HLE_STDCALL(XInputSetState, 2) {
 // (the dashboard, updates) is refused and the title stays in its menu.
 X86_EXTERN_FUNC(GUEST_ORIG(XLaunchNewImageA));
 X86_FUNC(GUEST(XLaunchNewImageA)) {
-    std::string path = ReadCString(R32(ctx.esp + 4));
+    uint32_t name = R32(ctx.esp + 4);
+    std::string path = name ? ReadCString(name) : std::string();
+    LOGR("xapi: XLaunchNewImage(%s) from %08X", name ? path.c_str() : "null, the dashboard", R32(ctx.esp));
+    kernel::LogGuestStack(ctx, 64);
     if (ImageExe(path)) {
         GUEST_ORIG(XLaunchNewImageA)(ctx, base);
         return;
     }
-    LOGW("xapi: launch of %s refused, it is not recompiled", path.c_str());
+    LOGR("xapi: launch of %s refused, it is not recompiled", path.c_str());
     Return(ctx, 2, 2);  // ERROR_FILE_NOT_FOUND
 }
