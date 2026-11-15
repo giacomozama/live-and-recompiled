@@ -500,8 +500,11 @@ static void SurveyLevelModels(X86Context& ctx, uint8_t* base) {
 struct MenuDrawn {
     uint32_t model, inst, copy, match_inst, match_copy;
     uint32_t skel, match_skel;  // skeleton nodes ([player+0x4EC])
+    std::vector<std::pair<uint16_t, uint16_t>> follow;  // bones following their parents (FollowBones)
 };
 static std::unordered_map<uint32_t, MenuDrawn> g_menu_drawn;
+
+static std::vector<std::pair<uint16_t, uint16_t>> FollowBones(uint32_t skel, uint32_t match_skel);
 
 // [[hook]] at 0x2B3368, after 0x2B3510; ebp the player
 void ConkerMenuSkeleton(X86Context& ctx, uint8_t* base) {
@@ -562,9 +565,12 @@ void ConkerMenuSkeleton(X86Context& ctx, uint8_t* base) {
     kernel::W32(player + 0x4B0, match_inst);
     kernel::W32(player + 0x4C4, match_copy);
     kernel::W32(player + 0x4EC, match_skel);
-    g_menu_drawn[player] = {model, inst, copy, match_inst, match_copy, skel, match_skel};
-    LOGI("models: player %08X draws %s (%u), instance %08X, scene %08X", player, ModelName(model).c_str(), model, inst,
-         scene);
+    auto follow = FollowBones(skel, match_skel);
+    std::string follows;
+    for (const auto& [b, parent] : follow) follows += " " + std::to_string(b) + "<-" + std::to_string(parent);
+    g_menu_drawn[player] = {model, inst, copy, match_inst, match_copy, skel, match_skel, std::move(follow)};
+    LOGR("models: player %08X draws %s (%u), instance %08X, scene %08X, bones following their parents:%s", player,
+         ModelName(model).c_str(), model, inst, scene, follows.empty() ? " none" : follows.c_str());
 }
 
 // A player's draw (0x7FB00, ebx the player) draws its model's scene twice through [0x81BD70]: its solid pieces
@@ -722,6 +728,76 @@ static void MirrorParts(const MenuDrawn& d) {
         const bool on = kernel::G<uint8_t>(from + (mb >> 3)) & (0x80 >> (mb & 7));
         uint8_t& byte = kernel::G<uint8_t>(to + (cb >> 3));
         byte = on ? byte | (0x80 >> (cb & 7)) : byte & ~(0x80 >> (cb & 7));
+    }
+}
+
+// The character select model's skeleton is the match model's, bone for bone (29 for the WWII classes, the same
+// hierarchy), but its pieces skin to a bone the match model's don't: the WWII sharpshooter squirrel's nose to bone
+// 15, a child of the head (8). The match animations leave it some degrees off the head (the matrices logged
+// 2026-11-15), and the nose cracked open from his face at times, the head piece and the nose meeting at vertices each
+// side skins to its own bone. So each bone the character select model's palettes take and the match model's don't
+// follows its parent: its matrix is the parent's, the bones all being the same matrix in the rest pose.
+//
+// A skeleton node ([node+0x30] bones, [node+0x34] a record of 36 bytes each, its parent the low word at +0x18, 0xFFFF
+// for none) has its palette nodes, "ndMtxArray" (the registry entry at [node+0x10] begins with the type's name), in
+// its subtree (first child +0x14, next sibling +0x18): [node+0x34] entries of 8 bytes at [node+0x30], the bone the
+// first word
+static void MtxArrayBones(uint32_t skel, std::vector<bool>& used) {
+    std::vector<uint32_t> stack{GuestPtr(skel) ? kernel::R32(skel + 0x14) : 0};
+    for (int seen = 0; !stack.empty() && seen < 512; seen++) {
+        const uint32_t n = stack.back();
+        stack.pop_back();
+        if (!GuestPtr(n)) continue;
+        stack.push_back(kernel::R32(n + 0x18));
+        stack.push_back(kernel::R32(n + 0x14));
+        if (GuestString(kernel::R32(n + 0x10)) != "ndMtxArray") continue;
+        const uint32_t table = kernel::R32(n + 0x30), count = std::min(kernel::R32(n + 0x34), 256u);
+        for (uint32_t i = 0; i < count && GuestPtr(table + 8 * i); i++) {
+            const uint16_t b = kernel::G<uint16_t>(table + 8 * i);
+            if (b < used.size()) used[b] = true;
+        }
+    }
+}
+
+// the (bone, parent) pairs of the character select skeleton whose bone the match model doesn't skin to, parents first
+static std::vector<std::pair<uint16_t, uint16_t>> FollowBones(uint32_t skel, uint32_t match_skel) {
+    std::vector<std::pair<uint16_t, uint16_t>> out;
+    if (!GuestPtr(skel) || !GuestPtr(match_skel)) return out;
+    const uint32_t count = kernel::R32(skel + 0x30), records = kernel::R32(skel + 0x34);
+    if (count == 0 || count > 128 || kernel::R32(match_skel + 0x30) != count) return out;
+    std::vector<bool> menu(count), match(count);
+    MtxArrayBones(skel, menu);
+    MtxArrayBones(match_skel, match);
+    for (uint32_t b = 0; b < count; b++) {
+        if (!menu[b] || match[b] || !GuestPtr(records + 36 * b)) continue;
+        const uint16_t parent = kernel::G<uint16_t>(records + 36 * b + 0x18);
+        if (parent < count) out.emplace_back(uint16_t(b), parent);
+    }
+    // a bone after its parent when both follow
+    std::vector<std::pair<uint16_t, uint16_t>> ordered;
+    std::vector<bool> done(count);
+    for (size_t pass = 0; pass < out.size() && ordered.size() < out.size(); pass++)
+        for (const auto& [b, parent] : out) {
+            const bool parent_follows =
+                std::any_of(out.begin(), out.end(), [&](const auto& o) { return o.first == parent; });
+            if (!done[b] && (!parent_follows || done[parent])) {
+                done[b] = true;
+                ordered.emplace_back(b, parent);
+            }
+        }
+    return ordered;
+}
+
+void characters::Skeleton(uint32_t node, uint32_t data) {
+    if (!node || g_menu_drawn.empty()) return;
+    for (const auto& [player, d] : g_menu_drawn) {
+        if (node != d.skel || d.follow.empty()) continue;
+        const uint32_t mats = kernel::R32(kernel::R32(node + 0xC) + data + 4);
+        for (const auto& [b, parent] : d.follow) {
+            if (!GuestPtr(mats + 64 * std::max(b, parent))) return;
+            std::memmove(kernel::g_base + mats + 64 * b, kernel::g_base + mats + 64 * parent, 64);
+        }
+        return;
     }
 }
 

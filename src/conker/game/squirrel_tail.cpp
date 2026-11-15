@@ -27,6 +27,7 @@
 #include <cstdlib>
 #include <cstring>
 
+#include "common/characters.h"
 #include "common/crate_fall.h"
 #include "core/log.h"
 #include "kernel/kernel.h"
@@ -160,11 +161,12 @@ X86_FUNC(sub_0007FB00) {
 }
 
 // 0x3EC7D0 (cdecl: node, data): a skeleton node hands its bone matrices to the palettes under it; a crate's slam eased
-// first (crate_fall.cpp)
+// first (crate_fall.cpp), a character select model's extra bones set (characters::Skeleton)
 X86_EXTERN_FUNC(__imp__sub_003EC7D0);
 X86_FUNC(sub_003EC7D0) {
     const uint32_t node = kernel::R32(ctx.esp + 4), data = kernel::R32(ctx.esp + 8);
     crate_fall::Skeleton(node, data);
+    characters::Skeleton(node, data);
     if (node && node == g_node) {
         if (int slot = PadlockSlot(); slot >= 0)
             HoldTail(kernel::R32(kernel::R32(node + 0xC) + data + 4), CutsceneSeconds(slot));
