@@ -9,7 +9,7 @@
 // A tank's aim mode goes by the driver's camera instead, which TankAim turns (hooked on 0x3F4E0 at the end of the
 // file).
 //
-// A match's weapon wheel, held open, picks with the left stick: there the mouse points the left stick round its rim
+// A match's weapon or items wheel, held open, picks with the left stick: there the mouse points the left stick round its rim
 // instead of turning the camera (Wheel, hooked on the HUD 0x1C7C60, and Pad).
 //
 // A camera that does not go through 0x2F99A0 gets the mouse as right stick instead, once Turn has not run for
@@ -567,10 +567,12 @@ std::atomic<int64_t> g_nudge_us[kPorts] = {};
 std::atomic<int> g_nudge_x[kPorts] = {};
 constexpr int64_t kNudgeUs = 60000;
 
-// A match's weapon wheel, held open: it picks the slot the left stick points at, so the mouse points the left stick
-// instead of turning the camera. The HUD (0x1C7C60, its object hud) keeps two wheels, each a state at [hud+0x48] (the
-// weapons, the slot at [[hud+0x38]+0x34]) and [hud+0x4C] (the chosen slot's own choices, the one at actions+0xE4),
-// whose first dword is 1 while it is held open (it fades for a while after, still drawn). The player is
+// A match's weapon or items wheel, held open: it picks the slot the left stick points at, so the mouse points the left
+// stick instead of turning the camera. The HUD (0x1C7C60, its object hud) keeps three wheels, each a state at
+// [hud+0x48] (the weapons, Y held, the slot at [[hud+0x38]+0x34]), [hud+0x4C] (the chosen slot's own choices, the one
+// at actions+0xE4) and [hud+0x3C] (the items, X held, drawn in the weapons' place, the item at [[hud+0x38]+0x3C]),
+// all pointed by the same arrow ([hud+0x2C]), whose first dword is 1 while it is held open (it fades for a while
+// after, still drawn). The player is
 // [[hud+0x38]+0x0C], whose actions struct (their port) is the word at +0x60. Wheel notes when it last saw a player's
 // open; the HUD is drawn every frame, so a wheel not seen for kWheelUs has shut.
 std::atomic<int64_t> g_wheel_us[kPorts] = {};
@@ -602,6 +604,9 @@ bool InvertTurn(int port) { return warp::Multiplayer() ? gamepad::MatchInvert(po
 
 namespace {
 
+// the wheel held open: the weapons', the items' or the chosen slot's own
+enum class WheelKind { Weapons, Items, Other };
+
 // The scroll wheel steps a player's weapon. The inventory's slot is at +0x34, each slot 0x38 bytes from +0x40 and in
 // use while its first byte is set.
 // - The wheel shut: as the game's own switch does (0x330060, which goes round the eight slots for one of a kind), the
@@ -611,26 +616,41 @@ namespace {
 //   shows the slots in use in order on an arc round the top (0x1CB060 puts its arrow on one): one item straight up,
 //   two across 180 degrees, more across 240, the first at the left, item k of n at 90 + span/2 - k span/(n - 1).
 //   The item pointed at is kept, so notches quicker than the arrow go on from it.
+// - The items' wheel open ([hud+0x3C], X held): the same, over its items: four of 0x20 bytes from +0x200, in use while
+//   the first byte is 1 and the dword at +0x14 is not 10, the chosen one at +0x3C.
 // Away from the player steps back (left on the wheel), toward them on. Not while the inventory holds an item of its
 // own ([inventory+0x30], which takes the slots' place), nor with a single slot in use, nor on the chosen slot's own
 // wheel ([hud+0x4C]).
-void Scroll(int port, uint32_t inventory, uint32_t player, bool open, bool weapons) {
+void Scroll(int port, uint32_t inventory, uint32_t player, bool open, WheelKind kind) {
     constexpr uint32_t kSlot = 0x34, kHeld = 0x30, kSlots = 0x40, kSlotSize = 0x38, kCount = 8;
+    constexpr uint32_t kItem = 0x3C, kItems = 0x200, kItemSize = 0x20, kItemCount = 4, kItemKind = 0x14, kNoItem = 10;
     constexpr uint32_t kState = 0x568, kSwitch = 0x530;
     int turn = g_scroll[port].load(std::memory_order_relaxed);
     const int notches = turn / kNotch;
     while (!g_scroll[port].compare_exchange_weak(turn, turn - (turn / kNotch) * kNotch)) {
     }
-    if (!notches || (open && !weapons) || !Readable(inventory, kSlots + kCount * kSlotSize) || R32(inventory + kHeld))
+    if (!notches || (open && kind == WheelKind::Other) || !Readable(inventory, kItems + kItemCount * kItemSize))
         return;
-    const uint32_t was = R32(inventory + kSlot);
-    if (was >= kCount) return;
+    const bool on_items = open && kind == WheelKind::Items;
+    if (!on_items && R32(inventory + kHeld)) return;
+    const uint32_t was = R32(inventory + (on_items ? kItem : kSlot));
+    if (was >= (on_items ? kItemCount : kCount)) return;
     int items[kCount], n = 0, at = -1;
-    for (uint32_t i = 0; i < kCount; i++)
-        if (mem::Base()[inventory + kSlots + i * kSlotSize]) {
-            if (i == was) at = n;
-            items[n++] = int(i);
+    if (on_items) {
+        for (uint32_t i = 0; i < kItemCount; i++) {
+            const uint32_t item = inventory + kItems + i * kItemSize;
+            if (mem::Base()[item] == 1 && R32(item + kItemKind) != kNoItem) {
+                if (i == was) at = n;
+                items[n++] = int(i);
+            }
         }
+    } else {
+        for (uint32_t i = 0; i < kCount; i++)
+            if (mem::Base()[inventory + kSlots + i * kSlotSize]) {
+                if (i == was) at = n;
+                items[n++] = int(i);
+            }
+    }
     if (n < 2 || at < 0) return;
     const int step = notches > 0 ? -1 : 1;
 
@@ -664,15 +684,16 @@ void Scroll(int port, uint32_t inventory, uint32_t player, bool open, bool weapo
 
 // 0x1C7C60, before it draws a match's HUD (the object at hud): notes the player whose weapon wheel is held open
 void Wheel(uint32_t hud) {
-    constexpr uint32_t kInventory = 0x38, kWheels[] = {0x48, 0x4C}, kOwner = 0x0C, kActionsIndex = 0x60;
+    constexpr uint32_t kInventory = 0x38, kWheels[] = {0x48, 0x4C, 0x3C}, kOwner = 0x0C, kActionsIndex = 0x60;
     if (!warp::Multiplayer() || !Readable(hud + kInventory, 0x18)) return;
-    bool open = false, weapons = false;
-    for (uint32_t w : kWheels) {
-        const uint32_t state = R32(hud + w);
-        const bool held = Readable(state, 4) && R32(state) == 1;
-        open |= held;
-        if (w == kWheels[0]) weapons = held;
+    bool held[3] = {};
+    for (int i = 0; i < 3; i++) {
+        const uint32_t state = R32(hud + kWheels[i]);
+        held[i] = Readable(state, 4) && R32(state) == 1;
     }
+    const bool open = held[0] || held[1] || held[2];
+    // the HUD draws the items' wheel in the weapons' place while it is held
+    const WheelKind kind = held[2] ? WheelKind::Items : held[0] ? WheelKind::Weapons : WheelKind::Other;
     const uint32_t inventory = R32(hud + kInventory);
     if (!Readable(inventory + kOwner, 4)) return;
     const uint32_t player = R32(inventory + kOwner);
@@ -680,11 +701,8 @@ void Wheel(uint32_t hud) {
     uint16_t port;
     std::memcpy(&port, mem::Base() + player + kActionsIndex, 2);
     if (port >= kPorts) return;
-    if (open) {
-        if (!WheelOpen(port, Now())) LOGR("mouse: player %u's weapon wheel is open, the mouse points it", port + 1u);
-        g_wheel_us[port].store(Now(), std::memory_order_relaxed);
-    }
-    if (std::abs(g_scroll[port].load(std::memory_order_relaxed)) >= kNotch) Scroll(port, inventory, player, open, weapons);
+    if (open) g_wheel_us[port].store(Now(), std::memory_order_relaxed);
+    if (std::abs(g_scroll[port].load(std::memory_order_relaxed)) >= kNotch) Scroll(port, inventory, player, open, kind);
 }
 
 // 0x2F99A0, the camera's turn by the stick (see the hook at the end of the file), after it has run: this frame's
