@@ -899,6 +899,24 @@ void Turn(uint32_t actions, uint32_t turn, uint32_t ret, uint32_t player) {
     }
 }
 
+// 0x2F9FC0 (the turn's aim assist at turn+0x84 in esi), after it has run, called by 0x2F99A0 only. In a match (it
+// runs while [0x7819D5] is set) it looks for a target in a cone ahead with a clear line to it and sets the turn's
+// friction at +0x34 (0x2F99A0 scales both of the frame's turns by 1 minus it), a strength at +0x38 and the yaw's and
+// pitch's pull at +0x3C/+0x40 (the yaw's pull times the strength is added to the yaw's turn, unless turning fast).
+// A player looking with the mouse gets none of it: the values the game leaves when it sees no target. The target
+// itself (+0x0C) stays, for whatever else follows it.
+void AimAssist(uint32_t actions, uint32_t assist) {
+    constexpr uint32_t kPlayer1Actions = 0x763260, kActionsSize = 0x1B0;
+    constexpr uint32_t kFriction = 0x34, kPullPitch = 0x40;
+    if (actions < kPlayer1Actions || (actions - kPlayer1Actions) % kActionsSize) return;
+    const uint32_t port = (actions - kPlayer1Actions) / kActionsSize;
+    if (port >= uint32_t(kPorts) || !g_look[port] || !g_held.load() || !input::Has(int(port), input::Kind::Mouse))
+        return;
+    if (!Readable(assist + kFriction, kPullPitch + 4 - kFriction)) return;
+    for (uint32_t at = kFriction; at <= kPullPitch; at += 4) WF(assist + at, 0.0f);
+    LOG_FIRST(1, "mouse: no aim assist for the mouse");
+}
+
 // 0x3F4E0 (the player in eax), before it runs. In a tank the driver aims it: their camera, [player+0x3E4], keeps
 // the aim's yaw at +0x260 and pitch at +0x264 in degrees, and 0x3F4E0 turns them by the right stick (x squared
 // times a rate, at most 3 degrees a frame; the stick's y turns the pitch the other way round to on foot), wraps the
@@ -1058,6 +1076,8 @@ void Pad(int, input::Pad&) {}
 
 void Turn(uint32_t, uint32_t, uint32_t, uint32_t) {}
 
+void AimAssist(uint32_t, uint32_t) {}
+
 void TankAim(uint32_t) {}
 
 void Wheel(uint32_t) {}
@@ -1085,14 +1105,28 @@ X86_FUNC(sub_001C7C60) {
 // (faster past 0.8 of full, up to config+0x10 times as the stick is held), and the frame's turn comes off the yaw at
 // +0x04 (wrapped to 0..360) and the pitch at +0x40 (held inside config+0x18..+0x1C); springs at +0x0C and +0x48 ease
 // the view after them (+0x10, +0x4C). The frame's turns stay at +0x08 and +0x44 for the callers. The mouse is added
-// to what it worked out (mouse::Turn).
+// to what it worked out (mouse::Turn). Its aim assist (0x2F9FC0) learns whose actions they are here.
+namespace {
+thread_local uint32_t g_turn_actions = 0;
+}
 X86_EXTERN_FUNC(__imp__sub_002F99A0);
 X86_FUNC(sub_002F99A0) {
     const uint32_t actions = ctx.eax, turn = ctx.ecx, player = ctx.esi;
     uint32_t ret;
     std::memcpy(&ret, base + ctx.esp, 4);
+    g_turn_actions = actions;
     __imp__sub_002F99A0(ctx, base);
+    g_turn_actions = 0;
     mouse::Turn(actions, turn, ret, player);
+}
+
+// 0x2F9FC0 (the turn's aim assist in esi, from 0x2F99A0 only): a match's aim assist, none for the mouse
+// (mouse::AimAssist)
+X86_EXTERN_FUNC(__imp__sub_002F9FC0);
+X86_FUNC(sub_002F9FC0) {
+    const uint32_t assist = ctx.esi;
+    __imp__sub_002F9FC0(ctx, base);
+    mouse::AimAssist(g_turn_actions, assist);
 }
 
 // 0x3F4E0 (the player in eax): the player's camera in a vehicle, among much else; the tank's aim (mouse::TankAim)
