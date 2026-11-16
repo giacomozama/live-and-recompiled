@@ -705,6 +705,26 @@ call = "ConkerFriendlyFireLabel"
 at = 0x288D45  # a SysFindR kept in the session list: its token noted by the session's XNKID
 call = "ConkerLinkSession"
 
+# malformed packets in networklib's receive (0x419FA0): its message loop kept to the data that arrived (net_guard.cpp)
+[[hook]]
+at = 0x41A519  # the packet's length in bits: no more than the bytes received
+call = "ConkerNetLength"
+
+[[hook]]
+at = 0x41A540  # the message loop's top: its exit when a type no longer fits (counted signed)
+call = "ConkerNetLoop"
+on_true = 0x41A6F8
+
+[[hook]]
+at = 0x41A55A  # the type read: its exit for a type past the factory table or with no factory
+call = "ConkerNetType"
+on_true = 0x41A6F8
+
+[[hook]]
+at = 0x41A68F  # the message read: deleted and the loop left when its reading ran past the packet
+call = "ConkerNetRead"
+on_true = 0x41A6F0
+
 [[hook]]
 at = 0x258BF7  # joining a system link session: refused unless its token matches this copy's
 call = "ConkerLinkJoin"
