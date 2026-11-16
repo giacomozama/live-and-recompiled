@@ -14,7 +14,7 @@
 //
 // Here the host puts a token in those 29 bits:
 //   bits 0-7   its tick rate in Hz (display::GameRate: 30 or 60 now)
-//   bit 8      the session's rules: friendly fire off (g_no_friendly_fire, not a feature yet)
+//   bit 8      the session's rules: friendly fire off (syslink::g_no_friendly_fire, friendly_fire.cpp)
 //   bits 9-28  20 bits of a hash of "Live & Recompiled" and the build's version (XBE_VERSION, `git describe`), never 0
 // The layout belongs to the build: a build that changes it has another version, so its hash already differs from
 // every build that reads the bits otherwise.
@@ -34,6 +34,7 @@
 #include <unordered_map>
 
 #include "common/display.h"
+#include "common/link.h"
 #include "common/menus.h"
 #include "core/log.h"
 #include "cpu/x86_ops.h"
@@ -59,13 +60,12 @@ constexpr uint32_t kJoinVersion = 0x1F8;       // JoinG's version, a word
 // the token's fields
 constexpr uint32_t kTickMask = 0xFF;            // tick rate, Hz
 constexpr uint32_t kNoFriendlyFire = 1u << 8;  // rule: friendly fire off
+constexpr uint32_t kIsHost = 0x862C5C;           // byte: this copy hosts
+constexpr uint32_t kNetState = 0x863D08;         // 0 none, 1 joining, 2 waiting room, 3 playing, 4 leaving, 5 creating
 constexpr uint32_t kHashShift = 9, kHashBits = 20;
 constexpr uint32_t kHashMask = ((1u << kHashBits) - 1) << kHashShift;
 constexpr uint32_t kMatch = kHashMask | kTickMask;  // what a joining copy must share with the host
 static_assert(kHashShift + kHashBits == 29, "the token fills SysFindR's 29 bits");
-
-// the rule this copy hosts with: friendly fire off (a setting once the feature is there)
-bool g_no_friendly_fire = false;
 
 // 20 bits of FNV-1a over the build's name and version, never 0
 uint32_t BuildHash() {
@@ -78,7 +78,7 @@ uint32_t BuildHash() {
 
 // this copy's token, as advertised: the build, the tick rate it runs at now and the rules it hosts with
 uint32_t Token() {
-    return BuildHash() << kHashShift | (g_no_friendly_fire ? kNoFriendlyFire : 0) | (display::GameRate() & kTickMask);
+    return BuildHash() << kHashShift | (syslink::g_no_friendly_fire ? kNoFriendlyFire : 0) | (display::GameRate() & kTickMask);
 }
 
 // the JoinG version from a token's matched bits: 16 bits, never 0 (a refused join's) nor the console's 0x1D4
@@ -99,6 +99,8 @@ constexpr uint32_t kVersionNoticeKey = 0x603F38;  // L"VERSION_OUT_OK_SYNC", the
 uint32_t g_session_rules = 0;
 
 }  // namespace
+
+bool syslink::g_no_friendly_fire = false;
 
 // [[hook]] after 0x2888A8: the host's SysFindR (edi), its 29 bits set to 0, carries the token
 void ConkerLinkAdvertise(X86Context& ctx, uint8_t* base) {
@@ -150,11 +152,16 @@ void ConkerLinkJoinCheck(X86Context& ctx, uint8_t* base) {
     if (theirs != ours) LOGR("link: a join of version %04X refused (this copy's %04X)", theirs, ours);
 }
 
-// whether the session played now has friendly fire off: the host's own rule, or as the host advertised it to this
-// copy when it joined. For the friendly fire feature to read (each attacker's machine decides its own hits)
-bool SessionNoFriendlyFire() {
-    constexpr uint32_t kIsHost = 0x862C5C;  // byte: this copy hosts
+// the host's own rule, or as the host advertised it to this copy when it joined; out of a session (split screen,
+// Dumbots) this copy's own. Each attacker's machine decides its own hits, so every copy in a session plays the host's
+bool syslink::SessionNoFriendlyFire() {
+    if (!InSession()) return g_no_friendly_fire;
     return kernel::G<uint8_t>(kIsHost) ? g_no_friendly_fire : g_session_rules != 0;
+}
+
+bool syslink::InSession() {
+    const uint32_t net = kernel::G<uint32_t>(kNetState);
+    return net >= 1 && net <= 5;
 }
 
 // [[hook]] at 0x27CBF7 in JoinD's handling (0x27CB90): ecx the key of the notice's text about to be looked up

@@ -694,6 +694,14 @@ call = "ConkerLinkAdvertise"
 after = true
 
 [[hook]]
+at = 0x291B6C  # the match configure page's rows, before Reset Defaults: Friendly Fire (friendly_fire.cpp)
+call = "ConkerFriendlyFireRow"
+
+[[hook]]
+at = 0x245FC2  # a menu list row's label copied in: Friendly Fire's (friendly_fire.cpp)
+call = "ConkerFriendlyFireLabel"
+
+[[hook]]
 at = 0x288D45  # a SysFindR kept in the session list: its token noted by the session's XNKID
 call = "ConkerLinkSession"
 

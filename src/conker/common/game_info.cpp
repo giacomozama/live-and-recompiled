@@ -7,6 +7,7 @@
 #include "common/grass.h"
 #include "common/keyboard.h"
 #include "common/lighting.h"
+#include "common/link.h"
 #include "common/loading.h"
 #include "common/menus.h"
 #include "common/prompts.h"
@@ -64,6 +65,7 @@ const app::GameInfo app::kGame = {
                 {"player_tags", nullptr, &display::g_player_tags},  // over other players: 0 names, 1 markers, 2 off (player_tags.cpp)
                 {"player_outlines", &display::g_player_outlines, nullptr},  // other players outlined in a match (player_tags.cpp)
                 {"team_colors", nullptr, &display::g_team_colors},  // a match's team colours: 0 green/red, 1 blue/orange (player_tags.cpp)
+                {"no_friendly_fire", &syslink::g_no_friendly_fire, nullptr},  // a match's teammates don't hurt each other; online the host's (friendly_fire.cpp)
                 {"skippable_cutscenes", &cutscenes::g_skippable, nullptr},  // LT skips any cutscene (hooks.cpp)
                 {"english_bubbles", &cutscenes::g_english_bubbles, nullptr},  // the throne monologues' bubbles in English (hooks.cpp)
                 {"fade_loads", &loading::g_fade, nullptr},  // a fade to black instead of loading screens (hooks.cpp)
