@@ -54,6 +54,11 @@ extern uint32_t g_player_tags;
 // one glyph made the marker's triangle. Game thread
 void PlayerMarkerQuad();
 
+// settings.toml player_outlines: in a match the other players are outlined where they are in view, green for a
+// teammate and red for an opponent as the game's test (0x3488E0) has them for the view's player; never through a
+// wall (gpu::g_outlines, player_tags.cpp). Read each frame
+extern bool g_player_outlines;
+
 // The camera the game's draws go through ([0x84B868], its view at +0x10) for the runtime's motion blur
 // (gpu::ViewConstants::camera): its view in the vertex constants kCameraRegister to kCameraRegister + 2, a row for each
 // of view space's axes, and the frame (d3d::Presents) in kCameraRegister + 3, which no program of the game reads (the

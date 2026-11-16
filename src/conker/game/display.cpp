@@ -219,6 +219,8 @@ X86_EXTERN_FUNC(__imp__sub_002A7B60);
 X86_FUNC(sub_002A7B60) {
     warp::Poll(ctx);  // a frame of the level loop: the Debug tab's warps can run
     gpu::g_hud_split.store(display::HudSplit(), std::memory_order_relaxed);
+    gpu::g_outlines.store(display::g_player_outlines && warp::Multiplayer() && !warp::Frontend(),
+                          std::memory_order_relaxed);
     using clock = std::chrono::steady_clock;
     static bool owned = false;
     static uint32_t shown = 0;

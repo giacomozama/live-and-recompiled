@@ -1026,12 +1026,47 @@ void d3d::SetVertexConstant(uint32_t reg, const std::array<float, 4>& v) {
 
 namespace {
 bool g_opaque = false;  // d3d::OpaqueDraws
+uint8_t g_outline_mark = 0;  // d3d::OutlineMark
+// XBE_OUTLINE_TRACE: the draws under a mark this second, by what the marks made of them: depth test off, the title's
+// own stencil test kept, marked; and the stencil states the kept ones had
+struct OutlineCounts {
+    uint32_t no_z = 0, own_test = 0, marked = 0, unmarked_zwrite = 0;
+    uint32_t func = 0, ref = 0, mask = 0, wmask = 0, pass = 0, zfail = 0, fail = 0;
+};
+OutlineCounts g_outline_counts;
+bool OutlineTrace() {
+    static const bool on = std::getenv("XBE_OUTLINE_TRACE") != nullptr;
+    return on;
+}
+void OutlineTraceTick() {
+    if (!OutlineTrace()) return;
+    static auto last = std::chrono::steady_clock::now();
+    const auto now = std::chrono::steady_clock::now();
+    if (now - last < std::chrono::seconds(1)) return;
+    last = now;
+    const OutlineCounts c = std::exchange(g_outline_counts, {});
+    if (!c.no_z && !c.own_test && !c.marked) return;
+    LOGR("outlines: draws under a mark this second: %u marked, %u without a depth test, %u kept their own stencil "
+         "test unmarked (last: func %X ref %X mask %X write %X pass %X zfail %X fail %X); %u unmarked writing depth",
+         c.marked, c.no_z, c.own_test, c.func, c.ref, c.mask, c.wmask, c.pass, c.zfail, c.fail, c.unmarked_zwrite);
+}
 }  // namespace
 
 void d3d::OpaqueDraws(bool on) {
     std::lock_guard<std::recursive_mutex> lock(g_lock);
     Walk(Dev(kDevPush));
     g_opaque = on;
+}
+
+void d3d::OutlineMark(uint8_t mark) {
+    std::lock_guard<std::recursive_mutex> lock(g_lock);
+    Walk(Dev(kDevPush));
+    g_outline_mark = mark & 3;
+    if (g_backend) {  // the frame capture's line
+        char text[32];
+        std::snprintf(text, sizeof(text), "outline mark %u", unsigned(g_outline_mark));
+        g_backend->Note(text);
+    }
 }
 
 bool d3d::LoadingScreenWanted() {
@@ -1256,7 +1291,10 @@ HLE_STDCALL(D3DDevice_Clear, 6) {
         if (seen.insert(key).second)
             std::fprintf(stderr, "CLEARTARGET rt=%08X flags=%X color=%08X\n", g_state.rt.data, a[2], a[3]);
     }
-    if (g_backend) g_backend->Clear(g_state, a[0], rects, a[2], a[3], ArgF(a, 4), a[5]);
+    uint32_t flags = a[2];
+    // gpu::g_outlines: a depth clear clears the outline marks too, which the stencil keeps from frame to frame
+    if (gpu::g_outlines.load(std::memory_order_relaxed) && (flags & gpu::kClearZ)) flags |= gpu::kClearStencil;
+    if (g_backend) g_backend->Clear(g_state, a[0], rects, flags, a[3], ArgF(a, 4), a[5]);
     return 0;
 }
 
@@ -1813,6 +1851,87 @@ void BackendDraw(uint32_t prim, uint32_t start, uint32_t count, const uint8_t* i
             g_state.simple.set(gpu::kMZWriteEnable >> 2, zwrite);
         }
     } opaque;
+    // gpu::g_outlines: the stencil's top two bits take the draw's outline mark (OutlineMark), 0 for a draw of none
+    // that writes depth, so a mark stays only where its object is in front; the title's states back after it
+    static constexpr uint32_t kSimple[] = {gpu::kMStencilFunc, gpu::kMStencilRef, gpu::kMStencilMask,
+                                           gpu::kMStencilWriteMask, gpu::kMStencilZFail, gpu::kMStencilPass};
+    static constexpr uint32_t kKeep = 0x1E00, kReplace = 0x1E01, kAlways = 0x207, kMarkBits = 0xC0;
+    struct Marks {
+        uint32_t simple[6] = {}, enable = 0, fail = 0;
+        bool on = false, rides_ = false;
+        uint8_t mark_ = 0;  // the mark this draw writes
+        Marks() {
+            if (!gpu::g_outlines.load(std::memory_order_relaxed)) return;
+            OutlineTraceTick();
+            const bool test = g_state.rs[gpu::kRsStencilEnable] != 0;
+            if (!g_state.rs[gpu::kRsZEnable]) {  // writes no mark; a stencil test of its own kept off the marks
+                if (g_outline_mark) g_outline_counts.no_z++;  // (mark_ stays 0)
+                if (test) Keep(false);
+                return;
+            }
+            // the title's own test writing its ref where it passes and nothing where it fails (Conker's: always, ref
+            // 9 into the low four bits on every 3D draw): the mark rides along in the ref's top bits
+            const bool rides = test && g_state.simple[gpu::kMStencilPass >> 2] == kReplace &&
+                               g_state.simple[gpu::kMStencilZFail >> 2] == kKeep &&
+                               g_state.rs[gpu::kRsStencilFail] == kKeep;
+            const bool zwrite = g_state.simple[gpu::kMZWriteEnable >> 2] != 0;
+            // only the object's solid pieces carry its mark: what it draws see-through, writing no depth (a plane's
+            // thruster flames, exhaust ripples, fur's shells), leaves the stencil's marks as they are
+            mark_ = zwrite ? g_outline_mark : 0;
+            if (mark_) {
+                OutlineCounts& c = g_outline_counts;
+                if (rides) {
+                    c.marked++;
+                } else if (test) {
+                    c.own_test++;
+                    c.func = g_state.simple[gpu::kMStencilFunc >> 2], c.ref = g_state.simple[gpu::kMStencilRef >> 2];
+                    c.mask = g_state.simple[gpu::kMStencilMask >> 2];
+                    c.wmask = g_state.simple[gpu::kMStencilWriteMask >> 2];
+                    c.pass = g_state.simple[gpu::kMStencilPass >> 2];
+                    c.zfail = g_state.simple[gpu::kMStencilZFail >> 2], c.fail = g_state.rs[gpu::kRsStencilFail];
+                } else {
+                    c.marked++;
+                }
+            } else if (zwrite) {
+                g_outline_counts.unmarked_zwrite++;
+            }
+            if (!zwrite) {
+                if (test) Keep(false);  // nothing to write: the title's test kept off the marks alone
+                return;
+            }
+            Keep(rides);
+        }
+        // the title's states saved, the draw's set: with its own test, that test on the low six bits and, when rides,
+        // the mark (0 unmarked) written with its ref; without, a test that writes the mark alone
+        void Keep(bool rides) {
+            rides_ = rides;
+            on = true;
+            for (size_t i = 0; i < 6; i++) simple[i] = g_state.simple[kSimple[i] >> 2];
+            enable = g_state.rs[gpu::kRsStencilEnable], fail = g_state.rs[gpu::kRsStencilFail];
+            auto set = [](uint32_t m, uint32_t v) { g_state.simple.set(m >> 2, v); };
+            if (enable) {  // the title's own test, kept off the marks; its writes carry the mark when they can
+                const uint32_t mark = rides_ ? uint32_t(mark_) << 6 : 0;
+                set(gpu::kMStencilRef, (simple[1] & ~kMarkBits) | mark);
+                set(gpu::kMStencilMask, simple[2] & ~kMarkBits);
+                set(gpu::kMStencilWriteMask, (simple[3] & ~kMarkBits) | (rides_ ? kMarkBits : 0));
+                return;
+            }
+            g_state.rs.set(gpu::kRsStencilEnable, 1u);
+            g_state.rs.set(gpu::kRsStencilFail, kKeep);
+            set(gpu::kMStencilFunc, kAlways);
+            set(gpu::kMStencilRef, uint32_t(mark_) << 6);
+            set(gpu::kMStencilMask, 0xFFu);
+            set(gpu::kMStencilWriteMask, kMarkBits);
+            set(gpu::kMStencilZFail, kKeep);
+            set(gpu::kMStencilPass, kReplace);
+        }
+        ~Marks() {
+            if (!on) return;
+            for (size_t i = 0; i < 6; i++) g_state.simple.set(kSimple[i] >> 2, simple[i]);
+            g_state.rs.set(gpu::kRsStencilEnable, enable);
+            g_state.rs.set(gpu::kRsStencilFail, fail);
+        }
+    } marks;
     if (!g_chip_program) {
         g_backend->Draw(g_state, prim, start, count, indices);
         return;

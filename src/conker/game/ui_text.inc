@@ -291,6 +291,18 @@ constexpr Line kLines[] = {
      "Sopra gli altri giocatori in una partita: i loro nomi, o un indicatore, verde per i compagni e rosso per gli "
      "avversari.",
      "試合中、他のプレイヤーの上に名前かマーカーを表示します。味方は緑、敵は赤です。"},
+    {"Player outlines", "Spielerumrisse", "Contours des joueurs", "Contornos de jugadores", "Contorni dei giocatori",
+     "プレイヤーの輪郭"},
+    {"In a match, other players get an outline where they're in view, green for teammates and red for opponents.",
+     "In einem Match erhalten andere Spieler einen Umriss, wo sie zu sehen sind, grün für Teamkameraden und rot für "
+     "Gegner.",
+     "En match, les autres joueurs ont un contour là où ils sont visibles, vert pour les coéquipiers et rouge pour les "
+     "adversaires.",
+     "En una partida, los demás jugadores tienen un contorno donde se ven, verde para los compañeros y rojo para los "
+     "rivales.",
+     "In una partita, gli altri giocatori hanno un contorno dove sono visibili, verde per i compagni e rosso per gli "
+     "avversari.",
+     "試合中、見えている他のプレイヤーに輪郭を表示します。味方は緑、敵は赤です。"},
     {"Unstretched multiplayer HUD", "Ungedehntes Mehrspieler-HUD", "ATH multijoueur non étiré",
      "HUD multijugador sin estirar", "HUD multigiocatore non allungato", "マルチプレイのHUDを引き伸ばさない"},
     {"On a widescreen display, the HUD in a multiplayer match keeps its shape, each part at the left, the middle or "

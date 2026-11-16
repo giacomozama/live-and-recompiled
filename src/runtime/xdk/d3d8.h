@@ -66,6 +66,12 @@ void SetVertexConstant(uint32_t reg, const std::array<float, 4>& v);
 // title draws see-through, wanted opaque). The commands pushed before are read first. Game thread
 void OpaqueDraws(bool on);
 
+// While gpu::g_outlines is on, the draws the title pushes next carry this outline mark (1 green, 2 red, 3 light
+// blue, 0 none): each that tests and writes depth writes it into the stencil's top two bits where it passes, and every
+// other one that writes depth writes 0 there; see-through ones (no depth written) leave the marks. A draw testing the
+// stencil itself keeps its test, on the low six bits. The commands pushed before are read first. Game thread
+void OutlineMark(uint8_t mark);
+
 // Whether a title's loading screen, about to be drawn into the front buffer, should be drawn. Each one shown is a
 // Present the loader waits on, and those drawn unshown still cost the GPU their whole picture in the first frame
 // after, so none is: the first ask since the last Swap fades the picture to black, later ones keep the window black,

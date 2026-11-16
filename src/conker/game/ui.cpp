@@ -1991,6 +1991,9 @@ void Draw(double fps) {
                     if (Segmented("Player names", &tags, {"Names", "Markers", "Off"})) display::g_player_tags = uint32_t(tags);
                     Hint("Over other players in a match: their names, or a marker, green for teammates and red for "
                          "opponents.", true);
+                    Check("Player outlines", &display::g_player_outlines);
+                    Hint("In a match, other players get an outline where they're in view, green for teammates and red "
+                         "for opponents.", true);
                 }
 
                 if (Section("Menus")) {

@@ -62,6 +62,7 @@ const app::GameInfo app::kGame = {
                 {"look_up", nullptr, &display::g_look_up},  // degrees the third person camera tilts up past the console's (display.cpp)
                 {"hud_split", &display::g_hud_split, nullptr},  // a match's HUD unstretched, at the display's edges (display.cpp)
                 {"player_tags", nullptr, &display::g_player_tags},  // over other players: 0 names, 1 markers, 2 off (player_tags.cpp)
+                {"player_outlines", &display::g_player_outlines, nullptr},  // other players outlined in a match (player_tags.cpp)
                 {"skippable_cutscenes", &cutscenes::g_skippable, nullptr},  // LT skips any cutscene (hooks.cpp)
                 {"english_bubbles", &cutscenes::g_english_bubbles, nullptr},  // the throne monologues' bubbles in English (hooks.cpp)
                 {"fade_loads", &loading::g_fade, nullptr},  // a fade to black instead of loading screens (hooks.cpp)

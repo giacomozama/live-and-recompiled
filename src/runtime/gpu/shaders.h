@@ -201,6 +201,11 @@ inline ViewConstants g_view_constants;  // set before the title boots, unchanged
 // (d3d::HudScope, an element of its HUD) are drawn at the frame's shape as the scope's HudMode says. The game sets it
 // each frame, game thread
 inline std::atomic<bool> g_hud_split{false};
+// Outlines round marked objects (a game's players): while on, the draws that test and write depth write their mark
+// (d3d::OutlineMark: 1 green, 2 red, 0 none) into the stencil's top two bits, so a mark stays only where its object is
+// still in front, and the effects over the 3D picture draw a line round each marked shape. The game sets it each
+// frame, game thread
+inline std::atomic<bool> g_outlines{false};
 // how the draws of a HUD scope (d3d::HudScope) are placed: by the edge the element's box keeps nearest to (held),
 // unstretched where it is (about the element's box, or each draw's own), or as the frame has them. kHudInPlaceBars is
 // kHudInPlace with black down the sides of a draw that covers the frame (a sniper's scope, no longer to the edges)

@@ -454,6 +454,62 @@ float4 blur(O i) : SV_Target {
 }
 )";
 
+// outlines round the marked objects (g_outlines, ApplyPost after the motion blur, before SMAA smooths them): the
+// picture (t0), the stencil (t1) whose top two bits hold each pixel's mark (d3d::OutlineMark: 1 green, 2 red, 3
+// light blue), and
+// the depth (t2). An unmarked pixel takes the line's colour where the nearest marked one (looked for on rings of 16,
+// a pixel apart, out to px.z) lies within the line's width: px.z near the camera, down to 40% of it for a marked pixel
+// further than px.w units (opts: the depth's frame.z and frame.w as the motion blur's, opts.z 1 when known), solid but
+// for its outermost pixel. Only marks still in front show: no line through a wall
+const char* kOutlineHlsl = R"(
+cbuffer B : register(b1) { float4 px; float4 opts; };
+Texture2D a : register(t0);
+Texture2D<uint> sten : register(t1);
+Texture2D<float> depth : register(t2);
+struct O { float4 p : SV_Position; float2 uv : TEXCOORD0; };
+O vs(uint id : SV_VertexID) {
+    O o;
+    o.uv = float2((id << 1) & 2, id & 2);
+    o.p = float4(o.uv * float2(2, -2) + float2(-1, 1), 0, 1);
+    return o;
+}
+uint markat(int2 p, int2 size) { return (sten.Load(int3(clamp(p, 0, size - 1), 0)) >> 6) & 3; }
+float ViewW(float d) { return opts.y / min(d - opts.x, -1e-7); }
+float4 outline(O i) : SV_Target {
+    int2 p = int2(i.p.xy);
+    float4 c = a.Load(int3(p, 0));
+    uint2 dim;
+    sten.GetDimensions(dim.x, dim.y);
+    int2 size = int2(dim);
+    if (markat(p, size) != 0) return c;
+    uint mark = 0;
+    int2 at = p;
+    float dist = 1e9;
+    const int kMost = 4;
+    int rings = min(int(ceil(px.z)), kMost);
+    [loop] for (int r = 1; r <= rings && mark == 0; r++) {
+        [unroll] for (int k = 0; k < 16; k++) {
+            float ang = k * 0.39269908;
+            int2 off = int2(round(float2(cos(ang), sin(ang)) * r));
+            uint m = markat(p + off, size);
+            float d = length(float2(off));
+            if (m != 0 && d < dist) {
+                mark = m;
+                dist = d;
+                at = clamp(p + off, 0, size - 1);
+            }
+        }
+    }
+    if (mark == 0) return c;
+    float width = px.z;
+    if (opts.z > 0) width *= clamp(px.w / ViewW(depth.Load(int3(at, 0))), 0.4, 1.0);
+    width = max(width, 1.0);
+    float cover = saturate(width - dist + 1.0);
+    float3 col = mark == 2 ? float3(0.92, 0.12, 0.08) : mark == 1 ? float3(0.15, 0.88, 0.2) : float3(0.55, 0.75, 1.0);
+    return float4(lerp(c.rgb, col, cover * 0.82), c.a);
+}
+)";
+
 // SMAA (gpu/smaa_hlsl.h) in its custom shading language mode, a source per pass (SmaaHlsl). No texture is handed to a
 // function: SMAA's texture arguments become unused uints and its sampling macros read the global of the argument's
 // name, which the pass declares.
@@ -600,7 +656,8 @@ float depthof(int2 p) {
 }
 uint depthword(O i) {
     uint z = (uint)round(depthof(int2(i.p.xy)) * 16777215.0);
-    return z << 8 | (sten.Load(int3(i.p.xy, 0)) & 255);
+    // fur.w 1: the outlines' marks (g_outlines, the stencil's top two bits) left out, as the title wrote none
+    return z << 8 | (sten.Load(int3(i.p.xy, 0)) & (fur.w > 0 ? 63 : 255));
 }
 float4 psmain(O i) : SV_Target {
     uint d = depthword(i);
@@ -1731,13 +1788,17 @@ private:
         uint32_t flat_elsewhere = 0, flat_reads = 0, no_target = 0;
         const char* applied = nullptr;  // where ApplyPost was called
         const char* outcome = nullptr;  // how it ended
+        // g_outlines: what the outline pass did, the draws carrying a mark (d3d::OutlineMark), and the 3D and marked
+        // draws onto the frame after the effects were drawn (which they miss)
+        const char* outline = nullptr;
+        uint32_t marked = 0, solid_after = 0, marked_after = 0;
     } post_trace_;
     std::string post_trace_key_;
     uint32_t post_trace_lines_ = 0;
     void PostTraceEnd(const Target& front);
     // the copy of the picture, SMAA's result when grade follows, its edges and weights, the motion blur's result when
-    // more follows
-    ImageRef post_tmp_[5];
+    // more follows, the outlines' when more follows
+    ImageRef post_tmp_[6];
     // the motion blur's camera (g_view_constants.camera): its view (rows of view space's axes), the frame it came in
     // (seen: any yet), and the one of the frame before; the picture's 3D draws went through more than one viewport (a
     // split screen), which the blur leaves alone
@@ -3389,6 +3450,7 @@ Image* VulkanBackend::DepthBytes(Target& z, uint32_t format, Target* furred) {
     VkImageView src[3] = {z.res->depth_view, z.res->stencil_view, VK_NULL_HANDLE};
     float p[8] = {};
     DepthByteOrder(format, p);
+    p[7] = g_outlines.load(std::memory_order_relaxed) ? 1.0f : 0.0f;
     if (furred && furred->res && furred != &z && z.w && z.gw) {
         ResolveSamples(*furred);
         Transition(*furred->res, kRead);
@@ -4954,7 +5016,8 @@ bool VulkanBackend::PostWanted() const {
     const app::Settings& set = app::Get();
     return set.smaa || set.film_grain || set.chromatic_aberration ||
            (set.ambient_occlusion && g_view_constants.viewport >= 0) ||
-           (set.motion_blur && g_view_constants.camera >= 0) || HdrExpand();
+           (set.motion_blur && g_view_constants.camera >= 0) || HdrExpand() ||
+           g_outlines.load(std::memory_order_relaxed);
 }
 
 bool VulkanBackend::ScreenSpaceDraw(const State& s, const Assembled& a) {
@@ -5129,6 +5192,14 @@ bool VulkanBackend::ReadsTarget(const State& s) {
 // a 3D draw onto the frame-sized target marks it; the first screen space one after that draws the effects under it.
 // The occlusion goes before: at the first screen space draw onto the frame or reading it, under the title's own passes
 void VulkanBackend::TrackPost(const State& s, bool flat) {
+    // XBE_POST_TRACE: the outline marks' draws (stencil writing the top two bits a mark, d3d::OutlineMark)
+    if (g_outlines.load(std::memory_order_relaxed)) {
+        const bool marked = s.rs[kRsStencilEnable] && (SimpleState(s, kMStencilWriteMask) & 0xC0) == 0xC0 &&
+                            (SimpleState(s, kMStencilRef) & 0xC0);
+        if (marked) post_trace_.marked++;
+        if (post_done_ && marked) post_trace_.marked_after++;
+        if (post_done_ && !flat) post_trace_.solid_after++;
+    }
     if (post_done_ || !PostWanted()) return;
     PostTrace& pt = post_trace_;
     Target* rt = FindTarget(s.rt, false);
@@ -5333,15 +5404,28 @@ void VulkanBackend::ApplyPost(Target& t) {
         z = FindTarget(post_zs_, true);
         blur = z && z->res && z->res->depth_view && z->w == t.w && z->h == t.h;
     }
+    // the outlines round the players' marks in the stencil (g_outlines): the depth buffer's stencil, at the picture's size
+    Target* marks = nullptr;
+    bool outline = g_outlines.load(std::memory_order_relaxed);
+    if (outline) {
+        marks = FindTarget(post_zs_, true);
+        post_trace_.outline = !marks                        ? "outlines: no depth target"
+                              : !marks->res                 ? "outlines: depth target unmade"
+                              : !marks->res->stencil_view   ? "outlines: depth target has no stencil view"
+                              : marks->w != t.w || marks->h != t.h ? "outlines: depth target of another size"
+                                                                   : "outlines drawn";
+        outline = marks && marks->res && marks->res->stencil_view && marks->w == t.w && marks->h == t.h;
+    }
     post_trace_.outcome = "drawn";
-    if (!grade && !smaa && !blur) return KeepHdr3d(t);
+    if (!grade && !smaa && !blur && !outline) return KeepHdr3d(t);
     post_trace_.outcome = "stopped: no SMAA textures";
     if (smaa && !EnsureSmaaTextures()) return;
     post_trace_.outcome = "stopped: no copy of the picture";
     // the picture's copy, SMAA's result when grade follows, then its edges and blending weights, the blur's result
     // when more follows
-    for (size_t i = 0; i < 5; i++) {
-        const bool wanted = i == 0 || (i < 4 && smaa) || (i == 4 && blur && (smaa || grade));
+    for (size_t i = 0; i < 6; i++) {
+        const bool wanted = i == 0 || (i < 4 && smaa) || (i == 4 && blur && (smaa || grade || outline)) ||
+                            (i == 5 && outline && (smaa || grade));
         if (!wanted) continue;
         ImageRef& im = post_tmp_[i];
         if (im && im->w == t.w && im->h == t.h && im->format == t.fmt) continue;
@@ -5386,11 +5470,30 @@ void VulkanBackend::ApplyPost(Target& t) {
                         x[0], x[2], x[3], 0,
                         y[1], y[2], y[3], 0};
         std::copy(way, way + 12, bp + 20);
-        Image& dst = (smaa || grade) ? *post_tmp_[4] : *t.res;
+        Image& dst = (smaa || grade || outline) ? *post_tmp_[4] : *t.res;
         Transition(*src, kRead);
         Transition(*z->res, kRead);
         const VkImageView views[3] = {src->view, z->res->Sampled(), VK_NULL_HANDLE};
         Pass(kMotionBlurHlsl, "blur", t.fmt, dst, t.w, t.h, views, bp, -1, 32);
+        src = &dst;
+    }
+    if (outline) {
+        if (cap_) fprintf(cap_, "     note outlines over %08X by the stencil of %08X\n", t.data, marks->data);
+        ResolveSamples(*marks);
+        Image& dst = (smaa || grade) ? *post_tmp_[5] : *t.res;
+        Transition(*src, kRead);
+        Transition(*marks->res, kRead);
+        // the line's width: one of the console's pixels, at least one of the picture's; thinner past 600 units (6 m)
+        // where the frame's view is known, its depth taken to distance as the motion blur's
+        const float width = std::max(1.0f, float(t.w) / float(std::max<uint32_t>(t.gw, 1)));
+        const auto &vs = view_vp_[0], &vo = view_vp_[1], &vz = view_pr_[2];
+        const bool known = view_ok_ && post_zscale_ != 0 && marks->res->depth_view;
+        const float op[8] = {1.0f / t.w, 1.0f / t.h, width, 600.0f,
+                             known ? (vo[2] - vs[2] * vz[2]) / post_zscale_ : 0.0f,
+                             known ? vs[2] * vz[3] / post_zscale_ : 0.0f, known ? 1.0f : 0.0f, 0};
+        const VkImageView views[3] = {src->view, marks->res->stencil_view,
+                                      marks->res->depth_view ? marks->res->depth_view : src->view};
+        Pass(kOutlineHlsl, "outline", t.fmt, dst, t.w, t.h, views, op, -1);
         src = &dst;
     }
     if (smaa) {
@@ -6365,7 +6468,7 @@ void VulkanBackend::PostTraceEnd(const Target& front) {
     static const bool trace = std::getenv("XBE_POST_TRACE") != nullptr;
     PostTrace pt = std::exchange(post_trace_, {});
     if (!trace || post_trace_lines_ >= 400) return;
-    char why[96];
+    char why[256];
     if (!PostWanted())
         snprintf(why, sizeof(why), "effects off");
     else if (pt.applied)
@@ -6374,16 +6477,23 @@ void VulkanBackend::PostTraceEnd(const Target& front) {
         snprintf(why, sizeof(why), "not applied: no 3D on a %ux%u target", guest_w_, guest_h_);
     else
         snprintf(why, sizeof(why), "not applied: 3D there, no 2D after it there");
+    if (g_outlines.load(std::memory_order_relaxed)) {
+        const size_t n = strlen(why);
+        snprintf(why + n, sizeof(why) - n, "; %s, marked draws %s, after the effects: 3D %s, marked %s",
+                 pt.outline ? pt.outline : "outline pass not reached", pt.marked ? "some" : "none",
+                 pt.solid_after ? "some" : "none", pt.marked_after ? "some" : "none");
+    }
     // the addresses left out too: the game flips between two front buffers
-    char key[192];
+    char key[320];
     snprintf(key, sizeof(key), "%s 3D on the front %d", why, post_rt_ == front.data);
     if (key == post_trace_key_) return;
     post_trace_key_ = key;
     post_trace_lines_++;
     LOGR("post: picture %llu, %s; front %08X %ux%u; 3D draws %u on %08X, %u on other sizes (last %08X %ux%u); 2D "
-         "draws %u on other targets, %u reading a target, %u on none",
+         "draws %u on other targets, %u reading a target, %u on none; marked draws %u (%u after), 3D after %u",
          (unsigned long long)presents_, why, front.data, front.gw, front.gh, pt.solid, post_rt_, pt.other,
-         pt.other_rt, pt.ow, pt.oh, pt.flat_elsewhere, pt.flat_reads, pt.no_target);
+         pt.other_rt, pt.ow, pt.oh, pt.flat_elsewhere, pt.flat_reads, pt.no_target, pt.marked, pt.marked_after,
+         pt.solid_after);
 }
 
 // frame generation: the front buffer's picture copied into gen_pics_[slot], the frame's pictures one per slot
