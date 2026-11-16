@@ -19,13 +19,14 @@
 //   camera zoom     right click       -           -           -            -
 //   crouch          RT (duck)         B (posture) B           B            B
 //   use             B                 -           -           -            -
-//   attack / fire RT, first person / weapon mode LT, ability X, cycle equipped Y, vote black, radio white: in all
-//   (out of a match ability, cycle, vote and radio keep Emily's buttons, for the menus)
+//   attack / fire RT, first person / weapon mode LT, ability X, cycle equipped Y, vote black: in all
+//   (out of a match ability, cycle and vote keep Emily's buttons, for the menus). No key presses white, Radio mode:
+//   the console's Xbox Live voice chat, which isn't here (chat.cpp is text)
 //
 // The default keys, around WASD and the mouse (mouse look is on by default):
 //
 //   move W A S D   look arrows and the mouse   jump space   crouch left ctrl, C   attack mouse 1   aim mouse 2
-//   use E   weapon mode Z   reload R   camera zoom mouse 3   ability Q   cycle equipped tab   vote V   radio B
+//   use E   weapon mode Z   reload R   camera zoom mouse 3   ability Q   cycle equipped tab   vote V
 //   chat T (system link: team chat, Shift + T everyone's; chat.cpp)
 //   walk left shift (52% stick tilt by default)   creep left alt (42%), both set in the menu   pause enter (and Escape)   quit backspace
 //
@@ -105,8 +106,7 @@ constexpr ActionInfo kInfo[kActions] = {
     {"weapon_mode", "First person / weapon mode", 'Z'},
     {"reload", "Reload", 'R'},              {"zoom", "Camera zoom", kMouse3},
     {"ability", "Abilities", 'Q'},          {"cycle", "Cycle equipped", kTab},
-    {"vote", "Vote", 'V'},                  {"radio", "Radio mode", 'B'},
-    {"chat", "Chat", 'T'},
+    {"vote", "Vote", 'V'},                  {"chat", "Chat", 'T'},
     {"walk", "Walk", kLShift},   {"creep", "Creep", kLAlt},
     {"pause", "Pause", kEnter},             {"quit", "Quit", kBackspace},
 };
@@ -292,7 +292,6 @@ int Drives(int scheme, int action) {
         case kAbility: return kButtonX;
         case kCycle: return kButtonY;
         case kVote: return kButtonBlack;
-        case kRadio: return kButtonWhite;
         case kPause: return kButtonStart;
         case kQuit: return kButtonBack;
         default: return -1;  // the sticks
@@ -413,10 +412,6 @@ void Load(const void* table) {
         if (p == 0 && !look) LoadMouse(t, 0);
         if (!player) continue;
         LoadKeys((*player)["keys"].as_table(), g_keys[p]);
-        // a file from before Chat took T (Radio's default then): Radio moves to its new default, Chat keeps T
-        if (const toml::table* k = (*player)["keys"].as_table(); k && !k->contains("chat") &&
-            g_keys[p][kRadio][0] == 'T' && !g_keys[p][kRadio][1])
-            g_keys[p][kRadio][0] = kInfo[kRadio].vk;
         LoadMouse(*player, p);
         // the pair keeps its order and gap, whatever the file says
         g_creep_percent[p] = std::clamp((*player)["creep_percent"].value_or(g_creep_percent[p]), kTiltMin, kTiltMax - kTiltGap);
@@ -458,6 +453,9 @@ void Pad(int port, input::Pad& pad) {
     if (port == 0 || input::Has(port, input::Kind::Keyboard) || input::Has(port, input::Kind::Mouse))
         pad.connected = true;
     if (port == 0 && !input::t_presence) chat::Tick();  // the session, this copy's name and team, for the chat
+    // a match's white is Radio mode, the console's Xbox Live voice chat, which isn't here: never the game's, from any
+    // controller, whatever the menu or the chat line is doing
+    if (warp::Multiplayer()) pad.analog[kButtonWhite] = 0;
 
     // the settings menu is up: hand the game neutral pads so every player stands still while one is in the UI. In
     // a multiplayer match the game runs on under the menu (ui.cpp), and only the players with a keyboard or mouse, which

@@ -22,7 +22,7 @@ enum Action : int {
     kWeaponMode,  // LT: single player's first person, a match's weapon mode
     kReload,
     kZoom,        // single player's camera zoom, the right stick's click
-    kAbility, kCycle, kVote, kRadio,  // multiplayer's own
+    kAbility, kCycle, kVote,  // multiplayer's own (no Radio mode: white, the console's Xbox Live voice)
     kChat,  // system link chat (chat.cpp): opens the team line, with Shift everyone's; no button
     kWalk, kCreep,  // held, the movement keys tilt the stick to g_walk_percent / g_creep_percent (keys are digital)
     kPause,

@@ -655,7 +655,6 @@ constexpr Line kLines[] = {
      "装備切り替え（長押しでアイテムホイール）"},
     {"Vote kick", "Rauswurf-Abstimmung", "Vote d'exclusion", "Votar expulsión", "Voto di espulsione",
      "キック投票"},
-    {"Radio mode", "Funkmodus", "Mode radio", "Modo radio", "Modalità radio", "ラジオモード"},
     {"Chat (Shift: everyone)", "Chat (Umschalt: alle)", "Chat (Maj : tout le monde)", "Chat (Mayús: todos)",
      "Chat (Maiusc: tutti)", "チャット（Shift：全員）"},
     // the chat line's prompt (chat.cpp): to the team, to everyone

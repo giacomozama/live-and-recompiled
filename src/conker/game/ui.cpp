@@ -1014,7 +1014,7 @@ void DrawKeys(int player) {
                      {kReload, "Reload"}, {kUse, "Use (story)"}}},
         {"Game", 0, 1, {{kPause, "Pause"}, {kQuit, "Quit (title menu)"}}},
         {"Multiplayer", 1, 1, {{kAbility, "Abilities"}, {kCycle, "Cycle equipped (hold for item wheel)"}, {kVote, "Vote kick"},
-                         {kRadio, "Radio mode"}, {kChat, "Chat (Shift: everyone)"}}},
+                         {kChat, "Chat (Shift: everyone)"}}},
     };
     // two columns and two rows (Weapons and Multiplayer line up), each cell its groups stacked
     // a wide gap between the columns (the padding falls on both sides of it)
