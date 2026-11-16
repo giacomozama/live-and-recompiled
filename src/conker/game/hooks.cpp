@@ -4,6 +4,7 @@
 // are the ones that drive the hardware directly (the per-frame buffer clear, which reads the miniport).
 //
 // A strong X86_FUNC replaces the recompiled function at that address.
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <bit>
@@ -789,8 +790,13 @@ static bool GuestPtr(uint32_t p) { return p >= 0x10000 && mem::IsCommitted(p) &&
 
 // A scene's parts ([scene+0x14]: a count, then 20-byte entries, the name's address at +0 and the bit at +8) are shown
 // or hidden by name on the player's copy in slot 0 (0x2F7A50, 0x81E60: bit n of the bytes at [copy+0xC], 0x80 >> n %
-// 8), the ears, head or tail shot off among them. The bits the two models' parts share a name in, by character select
-// model: (match bit, character select bit)
+// 8), the ears, head or tail shot off among them. The two models' parts are matched by name past the group (the first
+// "|name" unless it is a part's), ignoring case: the match model's are "|CombatTedizMultiDemolisher_group1|_PART_HEAD"
+// where character select's are "|group1|_PART_head", and so for the squirrel grunt's and the Tediz poisoner's and
+// sneaker's (XBE_MENU_PARTS_TRACE, 2026-11-16). Character select's have no stump, no force field and, the squirrels,
+// no tail: their LOWER holds the tail and its fur. So the pilot of a closed cockpit, its tail hidden (0x38BF7B: the
+// part "TAIL" by 0x2F7A50), drew the menu model's tail fur through the hull. While a part character select's lack is
+// out of its usual state (a stump or force field shown, any other hidden) the player keeps its match model
 static std::string GuestString(uint32_t at) {
     std::string out;
     for (uint32_t i = 0; GuestPtr(at) && i < 64; i++) {
@@ -801,8 +807,32 @@ static std::string GuestString(uint32_t at) {
     return out;
 }
 
-static void MirrorParts(const MenuDrawn& d) {
-    static std::unordered_map<uint64_t, std::vector<std::pair<uint32_t, uint32_t>>> maps;  // by both instances
+// XBE_MENU_PARTS_TRACE=1: each model pair's parts (name and bit) once, then the match copy's hidden parts by name each
+// time they change
+static std::string PartKey(std::string n) {
+    for (char& c : n) c = char(std::tolower(static_cast<unsigned char>(c)));
+    if (n.size() > 1 && n[0] == '|' && n.compare(1, 5, "_part") != 0) {
+        const size_t next = n.find('|', 1);
+        if (next != std::string::npos) n.erase(0, next);
+    }
+    return n;
+}
+
+static bool PartsTrace() {
+    static const bool on = [] {
+        const char* e = std::getenv("XBE_MENU_PARTS_TRACE");
+        return e && *e && *e != '0';
+    }();
+    return on;
+}
+
+// the bits mirrored, false when the match model must stand in (a part character select's lack out of its usual state)
+static bool MirrorParts(const MenuDrawn& d) {
+    struct Map {
+        std::vector<std::pair<uint32_t, uint32_t>> pairs;  // (match bit, character select bit)
+        std::vector<std::pair<uint32_t, bool>> lone;        // the match parts character select's lack: bit, usually shown
+    };
+    static std::unordered_map<uint64_t, Map> maps;  // by both instances
     auto parts = [](uint32_t inst) -> uint32_t {
         const uint32_t data = GuestPtr(inst) ? kernel::R32(inst + 0x24) : 0;
         const uint32_t scene = GuestPtr(data) ? kernel::R32(data + 0x8) : 0;
@@ -811,31 +841,70 @@ static void MirrorParts(const MenuDrawn& d) {
     const uint64_t key = uint64_t(d.match_inst) << 32 | d.inst;
     auto it = maps.find(key);
     if (it == maps.end()) {
-        std::vector<std::pair<uint32_t, uint32_t>> pairs;
+        Map map;
+        auto& pairs = map.pairs;
         const uint32_t a = parts(d.match_inst), b = parts(d.inst);
         if (GuestPtr(a) && GuestPtr(b)) {
             const uint32_t na = std::min(kernel::R32(a), 256u), nb = std::min(kernel::R32(b), 256u);
             const uint32_t ea = kernel::R32(a + 4), eb = kernel::R32(b + 4);
-            std::unordered_map<std::string, uint32_t> match_bits;
-            for (uint32_t i = 0; i < na && GuestPtr(ea + 20 * i); i++)
-                match_bits.emplace(GuestString(kernel::R32(ea + 20 * i)), kernel::R32(ea + 20 * i + 8));
-            for (uint32_t i = 0; i < nb && GuestPtr(eb + 20 * i); i++) {
-                const auto m = match_bits.find(GuestString(kernel::R32(eb + 20 * i)));
-                if (m != match_bits.end() && !m->first.empty())
-                    pairs.emplace_back(m->second, kernel::R32(eb + 20 * i + 8));
+            std::unordered_map<std::string, uint32_t> menu_bits;
+            for (uint32_t i = 0; i < nb && GuestPtr(eb + 20 * i); i++)
+                menu_bits.emplace(PartKey(GuestString(kernel::R32(eb + 20 * i))), kernel::R32(eb + 20 * i + 8));
+            for (uint32_t i = 0; i < na && GuestPtr(ea + 20 * i); i++) {
+                const std::string name = PartKey(GuestString(kernel::R32(ea + 20 * i)));
+                const uint32_t bit = kernel::R32(ea + 20 * i + 8);
+                if (name.empty()) continue;
+                const auto m = menu_bits.find(name);
+                if (m != menu_bits.end())
+                    pairs.emplace_back(bit, m->second);
+                else
+                    map.lone.emplace_back(bit, name.find("_part_stump") == std::string::npos &&
+                                                   name.find("_part_forcefield") == std::string::npos);
+            }
+            if (PartsTrace()) {
+                std::string la, lb;
+                for (uint32_t i = 0; i < na && GuestPtr(ea + 20 * i); i++)
+                    la += " " + GuestString(kernel::R32(ea + 20 * i)) + "=" + std::to_string(kernel::R32(ea + 20 * i + 8));
+                for (uint32_t i = 0; i < nb && GuestPtr(eb + 20 * i); i++)
+                    lb += " " + GuestString(kernel::R32(eb + 20 * i)) + "=" + std::to_string(kernel::R32(eb + 20 * i + 8));
+                LOGR("menu parts: match model %08X has %u parts:%s", d.match_inst, na, la.c_str());
+                LOGR("menu parts: %s has %u parts:%s", ModelName(d.model).c_str(), nb, lb.c_str());
             }
         }
-        LOGI("models: %s shares %zu parts with its match model", ModelName(d.model).c_str(), pairs.size());
-        it = maps.emplace(key, std::move(pairs)).first;
+        LOGI("models: %s shares %zu parts with its match model, lacks %zu", ModelName(d.model).c_str(), pairs.size(),
+             map.lone.size());
+        it = maps.emplace(key, std::move(map)).first;
     }
     const uint32_t from = kernel::R32(d.match_copy + 0xC), to = kernel::R32(d.copy + 0xC);
-    if (!GuestPtr(from) || !GuestPtr(to)) return;
-    for (const auto& [mb, cb] : it->second) {
+    if (!GuestPtr(from) || !GuestPtr(to)) return true;
+    if (PartsTrace()) {
+        // the match copy's hidden parts by name, each time they change
+        std::string hidden;
+        const uint32_t a = parts(d.match_inst);
+        if (GuestPtr(a)) {
+            const uint32_t na = std::min(kernel::R32(a), 256u), ea = kernel::R32(a + 4);
+            for (uint32_t i = 0; i < na && GuestPtr(ea + 20 * i); i++) {
+                const uint32_t bit = kernel::R32(ea + 20 * i + 8);
+                if (bit <= 0x7FF && !(kernel::G<uint8_t>(from + (bit >> 3)) & (0x80 >> (bit & 7))))
+                    hidden += " " + GuestString(kernel::R32(ea + 20 * i));
+            }
+        }
+        static std::unordered_map<uint32_t, std::string> last;  // by match copy
+        if (last[d.match_copy] != hidden) {
+            last[d.match_copy] = hidden;
+            LOGR("menu parts: match copy %08X (%s) hides:%s", d.match_copy, ModelName(d.model).c_str(),
+                 hidden.empty() ? " none" : hidden.c_str());
+        }
+    }
+    for (const auto& [bit, usual] : it->second.lone)
+        if (bit <= 0x7FF && bool(kernel::G<uint8_t>(from + (bit >> 3)) & (0x80 >> (bit & 7))) != usual) return false;
+    for (const auto& [mb, cb] : it->second.pairs) {
         if (mb > 0x7FF || cb > 0x7FF) continue;
         const bool on = kernel::G<uint8_t>(from + (mb >> 3)) & (0x80 >> (mb & 7));
         uint8_t& byte = kernel::G<uint8_t>(to + (cb >> 3));
         byte = on ? byte | (0x80 >> (cb & 7)) : byte & ~(0x80 >> (cb & 7));
     }
+    return true;
 }
 
 // The character select model's skeleton is the match model's, bone for bone (29 for the WWII classes, the same
@@ -933,8 +1002,7 @@ static bool SwapInMenu(X86Context& ctx, uint32_t player, uint32_t kind) {
     }
     const bool effect = EffectOn(player, kind, d.model);
     if (kind != 8) TraceMenuEffects(ctx, player, effect);
-    if (effect) return false;
-    MirrorParts(d);
+    if (effect || !MirrorParts(d)) return false;
     kernel::W32(player + 0x4B0, d.inst);
     kernel::W32(player + 0x4C4, d.copy);
     kernel::W32(player + 0x4EC, d.skel);
