@@ -676,7 +676,7 @@ void ConkerMenuSkeleton(X86Context& ctx, uint8_t* base) {
     std::string follows;
     for (const auto& [b, parent] : follow) follows += " " + std::to_string(b) + "<-" + std::to_string(parent);
     g_menu_drawn[player] = {model, inst, copy, match_inst, match_copy, skel, match_skel, std::move(follow), kernel::R32(0x7FA1F8)};
-    LOGR("models: player %08X draws %s (%u), instance %08X, scene %08X, bones following their parents:%s", player,
+    LOGI("models: player %08X draws %s (%u), instance %08X, scene %08X, bones following their parents:%s", player,
          ModelName(model).c_str(), model, inst, scene, follows.empty() ? " none" : follows.c_str());
 }
 
