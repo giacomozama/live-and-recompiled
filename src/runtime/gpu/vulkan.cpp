@@ -69,6 +69,7 @@
 #include "gpu/shaders.h"
 #include "gpu/smaa_hlsl.h"
 #include "gpu/smaa_tex.h"
+#include "gpu/cvd_hlsl.h"
 #include "gpu/fsr_hlsl.h"
 #include "gpu/texture.h"
 #include "gpu/vertex.h"
@@ -142,6 +143,7 @@ O vs(uint id : SV_VertexID) {
 }
 // the brightness setting: black raised to b (b > 0) or b taken down to black (b < 0), white kept
 float3 Level(float3 c, float b) { return b >= 0 ? b + c * (1 - b) : saturate((c + b) / (1 + b)); }
+)" GPU_CVD_HLSL R"(
 float4 psmain(O i) : SV_Target {
     float4 c = 0;
     int n = max((int)opts.z, 1);
@@ -153,6 +155,7 @@ float4 psmain(O i) : SV_Target {
     if (opts.x > 0) c.rgb = float3(lut.Sample(ps, float2(c.r, 0.5)).r, lut.Sample(ps, float2(c.g, 0.5)).g, lut.Sample(ps, float2(c.b, 0.5)).b);
     if (opts2.y != 0) c.rgb = Level(c.rgb, opts2.y);
     if (opts2.x != 1) c.rgb = pow(saturate(c.rgb), opts2.x);
+    c.rgb = CvdDisplay(c.rgb, opts2.z);
     return float4(c.rgb, opts.y > 0 ? c.a : 1);
 }
 )";
@@ -182,6 +185,7 @@ float3 Pq(float3 y) {
     return pow((c1 + c2 * ym) / (1 + c3 * ym), m2);
 }
 float Hash(float2 v) { return frac(sin(dot(v, float2(12.9898, 78.233))) * 43758.5453); }
+)" GPU_CVD_HLSL R"(
 // the brightest channel above the knee p.w bent up to p.z at white, as steep as below at the knee; the hue kept
 float3 Expand(float3 c) {
     float x = max(c.r, max(c.g, c.b));
@@ -206,6 +210,7 @@ float4 encode(O i) : SV_Target {
     const float3x3 to2020 = {0.627404, 0.329283, 0.043313,
                              0.069097, 0.919540, 0.011362,
                              0.016391, 0.088013, 0.895595};
+    lin = CvdLinear(lin, q.w);
     return float4(Pq(mul(to2020, lin) * p.x), 1);
 }
 float4 mask(O i) : SV_Target {
@@ -957,6 +962,7 @@ struct BlitOptions {
     VkFormat rtv = kBgra;     // the target's format
     bool over = false;        // premultiplied over the target, which keeps its alpha
     uint32_t samples = 1;     // the target's
+    uint32_t cvd = 0;         // a colour vision deficiency simulated (g_cvd_sim), the picture put on screen only
 };
 
 // Shrink's settings past the source and the size
@@ -3262,7 +3268,7 @@ void VulkanBackend::Blit(VkImageView src, const float uvrect[4], const BlitOptio
     Alloc cb = Upload(kPassCbBytes);
     float c[12] = {uvrect[0], uvrect[1], uvrect[2], uvrect[3],
                    o.gamma ? 1.0f : 0.0f, o.alpha ? 1.0f : 0.0f, float(o.taps), o.mul,
-                   o.power, o.level, 0.0f, 0.0f};
+                   o.power, o.level, float(o.cvd), 0.0f};
     std::memcpy(cb.cpu, c, sizeof(c));
     DrawFullScreen(EnsureBlitPipeline(o.rtv, o.over, o.samples), cb, {src, lut_->view, VK_NULL_HANDLE, VK_NULL_HANDLE});
 }
@@ -6381,6 +6387,9 @@ void VulkanBackend::DrawFrame(Image* picture, uint32_t bi, bool fsr, Image* mask
         DrawFullScreen(EnsurePassPipeline(kWelcomeHlsl, "ps", out_fmt, -1), cb, {});
     }
 
+    // a colour vision deficiency simulated over the finished picture, the settings menu left out (g_cvd_sim): in the
+    // HDR encode when the display takes HDR, else as the picture is put on screen
+    const uint32_t cvd = g_cvd_sim.load(std::memory_order_relaxed);
     if (final_src) {
         SetViewport((w - vw) / 2, (h - vh) / 2, vw, vh);
         SetScissor(0, 0, int32_t(bb_w_), int32_t(bb_h_));
@@ -6391,7 +6400,7 @@ void VulkanBackend::DrawFrame(Image* picture, uint32_t bi, bool fsr, Image* mask
                 1.0f / float(out_h),
                 sharpness,
                 gamma_ ? 1.0f : 0.0f,
-                float(set.fur_sharpness) / 100.0f, power, level, 0.0f
+                float(set.fur_sharpness) / 100.0f, power, level, swap_hdr_ ? 0.0f : float(cvd)
             };
             Alloc cb = Upload(kPassCbBytes);
             std::memcpy(cb.cpu, p, sizeof(p));
@@ -6399,7 +6408,8 @@ void VulkanBackend::DrawFrame(Image* picture, uint32_t bi, bool fsr, Image* mask
                            {final_src, lut_->view, VK_NULL_HANDLE, VK_NULL_HANDLE});
         } else {
             float uv[4] = {0, 0, 1, 1};
-            Blit(final_src, uv, {.gamma = gamma_, .power = power, .level = level, .rtv = out_fmt});
+            Blit(final_src, uv,
+                 {.gamma = gamma_, .power = power, .level = level, .rtv = out_fmt, .cvd = swap_hdr_ ? 0u : cvd});
         }
     }
 
@@ -6440,7 +6450,7 @@ void VulkanBackend::DrawFrame(Image* picture, uint32_t bi, bool fsr, Image* mask
     const float p[12] = {paper / 10000.0f, gamma, std::max(float(set.hdr_peak) / paper, 1.0f),
                          1.0f - 0.5f * float(set.hdr_highlights) / 100.0f,
                          (w - vw) / 2, (h - vh) / 2, 1.0f / vw, 1.0f / vh,
-                         expand ? 1.0f : 0.0f, ui ? 1.0f : 0.0f, float(presents_ % 1024), 0.0f};
+                         expand ? 1.0f : 0.0f, ui ? 1.0f : 0.0f, float(presents_ % 1024), float(cvd)};
     std::memcpy(cb.cpu, p, sizeof(p));
     DrawFullScreen(EnsurePassPipeline(kHdrHlsl, "encode", swap_fmt_, -1), cb,
                    {bb.view, expand ? mask->view : VK_NULL_HANDLE, ui ? hdr_ui_->view : VK_NULL_HANDLE,

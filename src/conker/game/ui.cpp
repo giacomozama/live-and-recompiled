@@ -2267,6 +2267,14 @@ void Draw(double fps) {
                          "F7 freezes the game on its frame, drawn again as settings change; F8 steps a frame.",
                          true);
                 }
+                if (Section("Color vision")) {
+                    int cvd = int(std::min<uint32_t>(gpu::g_cvd_sim.load(std::memory_order_relaxed), 4));
+                    if (Segmented("Simulate", &cvd, {"Off", "Protan", "Deutan", "Tritan", "Mono"}))
+                        gpu::g_cvd_sim.store(uint32_t(cvd), std::memory_order_relaxed);
+                    Hint("Shows the screen as seen with a color vision deficiency: no red cones (protanopia), no "
+                         "green cones (deuteranopia), no blue cones (tritanopia), or no color at all. This menu "
+                         "keeps its colors. Not saved.", true);
+                }
                 if (Section("Warp")) DrawWarp();
                 end_tab();
             }

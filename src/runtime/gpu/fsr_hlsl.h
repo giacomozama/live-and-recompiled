@@ -1,5 +1,7 @@
 #pragma once
 
+#include "gpu/cvd_hlsl.h"
+
 // AMD FidelityFX Super Resolution 1.0 (FSR 1.0)
 // EASU (Edge-Adaptive Spatial Upsampling) & RCAS (Robust Contrast-Adaptive Sharpening)
 // Adapted for HLSL 5.0 / Vulkan SPIR-V 1.6
@@ -159,6 +161,7 @@ float4 easu(O i) : SV_Target {
 // the brightness setting: black raised to b (b > 0) or b taken down to black (b < 0), white kept
 float3 Level(float3 c, float b) { return b >= 0 ? b + c * (1 - b) : saturate((c + b) / (1 + b)); }
 
+)FSR" GPU_CVD_HLSL R"FSR(
 float4 rcas(O i) : SV_Target {
     float2 texel = con0.xy;
     float sharpness = con0.z;
@@ -197,6 +200,7 @@ float4 rcas(O i) : SV_Target {
     }
     if (level != 0.0) rgb = Level(rgb, level);
     if (power != 1.0) rgb = pow(saturate(rgb), power);
+    rgb = CvdDisplay(rgb, con1.w);  // a colour vision deficiency simulated (gpu::g_cvd_sim)
 
     return float4(rgb, 1.0);
 }
