@@ -56,6 +56,9 @@ extern uint32_t g_player_tags;
 // from the hook before 0x3D3981 (menus.cpp ConkerTextQuad), a glyph's quad about to be sent: while a marker draws, its
 // one glyph made the marker's triangle. Game thread
 void PlayerMarkerQuad();
+// settings.toml player_ranks: the tag's rank emblem (one of the sprites 0x174..0x18B, by the player's rank 0..23,
+// drawn by 0x357CF0 from 0x34810A) beside the name; off, that call is skipped (player_tags.cpp). Read as each tag draws
+extern bool g_player_ranks;
 
 // settings.toml player_outlines: in a match the other players are outlined where they are in view, green for a
 // teammate and red for an opponent as the game's test (0x3488E0) has them for the view's player; never through a

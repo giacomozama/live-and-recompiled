@@ -1997,6 +1997,8 @@ void Draw(double fps) {
                     int tags = int(std::min<uint32_t>(display::g_player_tags, display::kTagOff));
                     if (Segmented("Player names", &tags, {"Names", "Markers", "Off"})) display::g_player_tags = uint32_t(tags);
                     Hint("Over other players in a match: their names, or a marker in the team colors.", true);
+                    Check("Player ranks", &display::g_player_ranks);
+                    Hint("The rank emblem beside other players' names in a match.", true);
                     Check("Player outlines", &display::g_player_outlines);
                     Hint("In a match, other players get an outline in the team colors where they're in view.", true);
                     int team = int(std::min<uint32_t>(display::g_team_colors, display::kTeamBlueOrange));

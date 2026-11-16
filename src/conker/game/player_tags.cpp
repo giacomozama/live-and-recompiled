@@ -41,6 +41,7 @@
 #include "xdk/d3d8.h"
 
 uint32_t display::g_player_tags = display::kTagNames;
+bool display::g_player_ranks = true;
 bool display::g_player_outlines = false;
 uint32_t display::g_team_colors = display::kTeamGreenRed;
 
@@ -245,11 +246,18 @@ X86_FUNC(sub_001CC500) {
     g_icon_team = was;
 }
 
+// The rank emblem over a player (0x347330's tag, 0x357CF0 from 0x34810A: the sprite 0x174 + the rank, 0..23, by
+// 0x761F0 from the table at 0x6BD440; shown on foot): skipped while display::g_player_ranks is off. cdecl, so the
+// caller pops the six arguments.
 // The team's icon over a player (0x347330's tag, 0x357CF0 from 0x347E8A, its texture [esp+0x14]): its name, made
 // at the tag's [esp+0xF0] (globaleffects\modeIcons\ and the team's), in the caller's frame past the six arguments
 X86_EXTERN_FUNC(__imp__sub_00357CF0);
 X86_FUNC(sub_00357CF0) {
-    constexpr uint32_t kTagIcon = 0x347E8F, kName = 4 + 0x18 + 0xF0;
+    constexpr uint32_t kTagIcon = 0x347E8F, kName = 4 + 0x18 + 0xF0, kRankIcon = 0x34810F;
+    if (!display::g_player_ranks && kernel::R32(ctx.esp) == kRankIcon) {
+        kernel::Return(ctx, ctx.eax, 0);
+        return;
+    }
     if (display::g_team_colors != display::kTeamGreenRed && kernel::R32(ctx.esp) == kTagIcon) {
         const uint32_t name = ctx.esp + kName;
         const int team = NameEnds(name, "modeIcons\\Squirrel_1") ? 0 : NameEnds(name, "modeIcons\\Tediz_1") ? 1 : -1;
