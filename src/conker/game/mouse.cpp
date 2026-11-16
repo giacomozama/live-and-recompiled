@@ -1175,11 +1175,14 @@ X86_FUNC(sub_002F9FC0) {
 }
 
 // 0x3F4E0 (the player in eax): the player's camera in a vehicle, among much else; the aim mode, a tank's or a zoomed
-// aim's (mouse::TankAim)
+// aim's (mouse::TankAim); a zoomed aim's camera eased to the scope (display::ScopeCameraBefore)
 X86_EXTERN_FUNC(__imp__sub_0003F4E0);
 X86_FUNC(sub_0003F4E0) {
-    mouse::TankAim(ctx.eax);
+    const uint32_t pc = ctx.eax;
+    mouse::TankAim(pc);
+    display::ScopeCameraBefore(pc);
     __imp__sub_0003F4E0(ctx, base);
+    display::ScopeCameraAfter(pc);
 }
 
 // 0x48510 (the springs in esi, the frame's time on the stack): eases a camera's view springs to their targets, or

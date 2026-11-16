@@ -31,6 +31,11 @@ float Aspect(float display);
 // The game's own, before g_fov scales it
 float CameraFov();
 
+// around 0x3F4E0 (the player camera P): a zoomed aim's camera moves to the scope as its distance eases in, rather
+// than all at once when the distance arrives
+void ScopeCameraBefore(uint32_t player_camera);
+void ScopeCameraAfter(uint32_t player_camera);
+
 // settings.toml fov: the view's height in degrees in play, the console's 50 (kFov) scaling every camera's (a scope's
 // zoom keeps its share of it); menus and cutscenes keep the console's
 constexpr uint32_t kFov = 50, kFovMin = 40, kFovMax = 100;

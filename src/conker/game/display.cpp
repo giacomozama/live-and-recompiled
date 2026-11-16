@@ -57,6 +57,7 @@
 
 #include "app/app.h"
 #include "core/log.h"
+#include "kernel/memory.h"
 #include "cpu/x86_ops.h"
 #include "xdk/d3d8.h"
 #include "xdk/hle.h"
@@ -190,6 +191,100 @@ float Aspect(float d) {
     (void)d;
     return 4.0f / 3.0f;  // the harness keeps the console's frame, which its captures are compared against
 #endif
+}
+
+// A zoomed aim on foot (a sniper's scope; [view+0x8CF] set, the weapon camera aim's +0x2B0 2) looks from the head,
+// but only once the view's distance (view+0x24C, P+4 the view, eased by 0x4A680 from the third person camera's some
+// 230 to 1 over about 13 frames) is exactly 1: until then 0x3F4E0 leaves the camera where the unzoomed view had it
+// (P+0x2F4 the eye, P+0x330 the target, copied to the aim's +0x234 and +0x228, and their difference to +0x21C, which
+// the weapon camera looks along), then puts it at the scope in one frame (0x40D71), well after the field of view has
+// eased in (6 frames): the jump reads as a sudden zoom. While the distance is on its way, 0x3F4E0 runs as if it had
+// arrived (the head's eye and target, the view springs onto the aim, the player hidden as at the scope), the distance
+// put back after, and the aim's eye and target are the frozen view's moved toward the scope's by the distance's share
+// of its way in, so the camera eases there with the distance and ends where the game puts it. Not on the frame the
+// aim starts (0x3F4E0 takes it up then and may set the distance itself), nor in a vehicle. XBE_ZOOM_TRACE=1 logs it
+namespace {
+constexpr uint32_t kPcView = 0x04, kPcPlayer = 0x3E0, kPcAim = 0x3E4;
+constexpr uint32_t kViewDistance = 0x24C, kViewAimMode = 0x8CF;
+constexpr uint32_t kAimMode = 0x2B0, kAimDir = 0x21C, kAimTarget = 0x228, kAimEye = 0x234;
+constexpr uint32_t kPlayerVehicle = 0x135;
+
+struct ScopeBlend {
+    uint32_t pc = 0;    // the player camera blended
+    float from = 0;     // the distance when it began
+    float eye[3] = {}, target[3] = {};  // the frozen view's
+    float distance = 0;  // the distance put back after the call, while forced
+    bool forced = false;
+};
+thread_local ScopeBlend g_scope;
+
+bool GuestPtr(uint32_t va) { return va >= 0x10000 && va < 0x4000000; }
+
+float GuestF(uint32_t va) {
+    float f;
+    std::memcpy(&f, mem::Base() + va, 4);
+    return f;
+}
+
+void PutF(uint32_t va, float f) { std::memcpy(mem::Base() + va, &f, 4); }
+
+bool ZoomTrace() {
+    static const bool on = std::getenv("XBE_ZOOM_TRACE") != nullptr;
+    return on;
+}
+}  // namespace
+
+void ScopeCameraBefore(uint32_t pc) {
+    g_scope.forced = false;
+    if (!GuestPtr(pc)) return;
+    const uint32_t view = kernel::R32(pc + kPcView), aim = kernel::R32(pc + kPcAim);
+    const uint32_t player = kernel::R32(pc + kPcPlayer);
+    const uint8_t* m = mem::Base();
+    const bool on = GuestPtr(view) && GuestPtr(aim) && GuestPtr(player) && m[view + kViewAimMode] &&
+                    kernel::R32(aim + kAimMode) == 2 && !m[player + kPlayerVehicle];
+    const float d = on ? GuestF(view + kViewDistance) : 1.0f;
+    if (!on || !std::isfinite(d) || d == 1.0f) {
+        g_scope.pc = 0;
+        return;
+    }
+    if (g_scope.pc != pc) {
+        // the view as it is frozen: what the aim had last frame
+        g_scope.pc = pc;
+        g_scope.from = d;
+        for (int i = 0; i < 3; i++) {
+            g_scope.eye[i] = GuestF(aim + kAimEye + 4 * i);
+            g_scope.target[i] = GuestF(aim + kAimTarget + 4 * i);
+        }
+        if (ZoomTrace()) LOGR("zoom: scope camera eases in from distance %.2f", d);
+    }
+    g_scope.distance = d;
+    g_scope.forced = true;
+    PutF(view + kViewDistance, 1.0f);
+}
+
+void ScopeCameraAfter(uint32_t pc) {
+    if (!g_scope.forced || g_scope.pc != pc) return;
+    g_scope.forced = false;
+    const uint32_t view = kernel::R32(pc + kPcView), aim = kernel::R32(pc + kPcAim);
+    if (!GuestPtr(view) || !GuestPtr(aim)) return;
+    PutF(view + kViewDistance, g_scope.distance);
+    const float span = g_scope.from - 1.0f;
+    const float s = span > 0.0f ? std::clamp((g_scope.from - g_scope.distance) / span, 0.0f, 1.0f) : 1.0f;
+    float eye[3], target[3];
+    for (int i = 0; i < 3; i++) {
+        const float he = GuestF(aim + kAimEye + 4 * i), ht = GuestF(aim + kAimTarget + 4 * i);
+        if (!std::isfinite(he) || !std::isfinite(ht)) return;
+        eye[i] = g_scope.eye[i] + (he - g_scope.eye[i]) * s;
+        target[i] = g_scope.target[i] + (ht - g_scope.target[i]) * s;
+    }
+    for (int i = 0; i < 3; i++) {
+        PutF(aim + kAimEye + 4 * i, eye[i]);
+        PutF(aim + kAimTarget + 4 * i, target[i]);
+        PutF(aim + kAimDir + 4 * i, eye[i] - target[i]);
+    }
+    if (ZoomTrace())
+        LOGR("zoom: t%u distance %.2f, %.0f%% to the scope, eye %.2f %.2f %.2f", Ticks(), g_scope.distance, s * 100.0f,
+             eye[0], eye[1], eye[2]);
 }
 
 }  // namespace display
