@@ -29,6 +29,7 @@
 #include "app/app.h"
 #include "audio/audio.h"
 #include "common/characters.h"
+#include "common/chat.h"
 #include "common/cutscenes.h"
 #include "common/display.h"
 #include "common/fur.h"
@@ -1013,7 +1014,7 @@ void DrawKeys(int player) {
                      {kReload, "Reload"}, {kUse, "Use (story)"}}},
         {"Game", 0, 1, {{kPause, "Pause"}, {kQuit, "Quit (title menu)"}}},
         {"Multiplayer", 1, 1, {{kAbility, "Abilities"}, {kCycle, "Cycle equipped (hold for item wheel)"}, {kVote, "Vote kick"},
-                         {kRadio, "Radio mode"}}},
+                         {kRadio, "Radio mode"}, {kChat, "Chat (Shift: everyone)"}}},
     };
     // two columns and two rows (Weapons and Multiplayer line up), each cell its groups stacked
     // a wide gap between the columns (the padding falls on both sides of it)
@@ -1397,6 +1398,7 @@ void Draw(double fps) {
     static bool last_title = !g_fps_title;
     static int last_look = -1;
     MenuStyle();
+    chat::Draw(T("Team"), T("All"));  // under the menu
     PadFrame(g_open.load(), g_quit.load());
     const bool open = g_open.load();
     const bool quit = g_quit.load();
@@ -2507,6 +2509,10 @@ bool Welcome() {
 
 bool Message(void* hwnd, uint32_t msg, uintptr_t wp, intptr_t lp, intptr_t* result) {
     if (app::Welcoming()) return false;  // before boot: no menu to open (the welcome screen is ImGui's alone)
+    if (chat::Message(msg, wp, lp)) {  // system link chat: Y opens its line, which takes the typing until it closes
+        if (result) *result = 0;
+        return true;
+    }
     switch (msg) {
         case app::kMsgKeyDown:
             // not on auto repeat; the menu window and the game both take the key, the menu only when open

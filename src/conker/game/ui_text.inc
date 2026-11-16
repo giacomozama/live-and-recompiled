@@ -656,6 +656,11 @@ constexpr Line kLines[] = {
     {"Vote kick", "Rauswurf-Abstimmung", "Vote d'exclusion", "Votar expulsión", "Voto di espulsione",
      "キック投票"},
     {"Radio mode", "Funkmodus", "Mode radio", "Modo radio", "Modalità radio", "ラジオモード"},
+    {"Chat (Shift: everyone)", "Chat (Umschalt: alle)", "Chat (Maj : tout le monde)", "Chat (Mayús: todos)",
+     "Chat (Maiusc: tutti)", "チャット（Shift：全員）"},
+    // the chat line's prompt (chat.cpp): to the team, to everyone
+    {"Team", "Team", "Équipe", "Equipo", "Squadra", "チーム"},
+    {"All", "Alle", "Tous", "Todos", "Tutti", "全員"},
     {"Game", "Spiel", "Jeu", "Juego", "Gioco", "ゲーム"},
     {"Pause", "Pause", "Pause", "Pausa", "Pausa", "ポーズ"},
     {"Quit (title menu)", "Beenden (Titelmenü)", "Quitter (menu titre)", "Salir (menú principal)",

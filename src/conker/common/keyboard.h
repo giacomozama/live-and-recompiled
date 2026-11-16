@@ -23,6 +23,7 @@ enum Action : int {
     kReload,
     kZoom,        // single player's camera zoom, the right stick's click
     kAbility, kCycle, kVote, kRadio,  // multiplayer's own
+    kChat,  // system link chat (chat.cpp): opens the team line, with Shift everyone's; no button
     kWalk, kCreep,  // held, the movement keys tilt the stick to g_walk_percent / g_creep_percent (keys are digital)
     kPause,
     kQuit,  // the console's Back, on the pub's pictures only, where it asks to quit (no Xbox Live here)

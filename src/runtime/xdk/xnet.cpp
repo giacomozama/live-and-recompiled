@@ -223,6 +223,23 @@ void Contacted(const Endpoint& e) {
     g_contacted[Key(e)] = std::chrono::steady_clock::now();
 }
 
+// The title's own session packets (SendSession, a chat line): kSessionMagic, the session's XNKID, then the title's
+// bytes. They never reach the game's sockets. They go to every endpoint the game sent a datagram to (not a broadcast)
+// in the last kSessionHold: in a session the game talks to each of its peers all the time, and only to them and to
+// whoever searches for its session, which is not in one (a receiver takes them only in a session, the title's test).
+// One comes in as the game's packets do (LetIn) and only with this copy's XNKID, the session's, which the host made
+// and the joining copy registered (XNetRegisterKey).
+constexpr uint16_t kSessionMagic = 0x4353;  // "CS"
+constexpr int kSessionHeader = 2 + 8;
+constexpr auto kSessionHold = std::chrono::seconds(10);
+std::unordered_map<uint64_t, std::pair<Endpoint, std::chrono::steady_clock::time_point>> g_sent;  // by Key, under g_contact_lock
+std::atomic<void (*)(const uint8_t*, int)> g_session_receiver{nullptr};
+
+void Sent(const Endpoint& e) {
+    std::lock_guard<std::mutex> lock(g_contact_lock);
+    g_sent[Key(e)] = {e, std::chrono::steady_clock::now()};
+}
+
 bool LetIn(const Endpoint& from) {
     if (Private(from.ip) || from.ip == g_local) return true;  // the LAN, this PC's other copies
     if (auto open = g_open_while.load(); open && open()) return true;
@@ -403,6 +420,22 @@ void LinkPump() {
         }
         uint16_t magic, from_vport, vport;
         std::memcpy(&magic, buf.data(), 2);
+        if (n >= kSessionHeader && magic == htons(kSessionMagic)) {  // the title's (SendSession), never the game's
+            Endpoint from{Fold(src.sin_addr.s_addr), src.sin_port};
+            if (from.ip == g_local && from.port == htons(g_port)) continue;
+            if (!LetIn(from)) continue;
+            bool ours;
+            {
+                std::lock_guard<std::mutex> lock(g_lock);
+                ours = std::memcmp(buf.data() + 2, g_kid.data(), 8) == 0;
+            }
+            if (!ours) {
+                LOG_FIRST(10, "xnet: a session packet from %s:%u of another session", Ip(from.ip).c_str(), ntohs(from.port));
+                continue;
+            }
+            if (auto receive = g_session_receiver.load()) receive(buf.data() + kSessionHeader, n - kSessionHeader);
+            continue;
+        }
         if (n < kWireHeader || magic != htons(kMagic)) continue;  // not one of ours, or an inbox's own header
         std::memcpy(&from_vport, buf.data() + 2, 2);
         std::memcpy(&vport, buf.data() + 4, 2);
@@ -487,6 +520,7 @@ int SendOnce(uint32_t sock, const Socket& k, const uint8_t* data, int len, const
     if (dest.sin_addr.s_addr != INADDR_BROADCAST) {
         const Endpoint to_real = ToReal(dest.sin_addr.s_addr);
         Contacted(to_real);
+        Sent(to_real);
         return send(to_real);
     }
     // a broadcast reaches the LAN's copies on the system link port; the join address and the peers it can't reach
@@ -649,6 +683,46 @@ uint16_t Port() { return g_ready ? g_port : 0; }
 int PortError() { return g_link_error; }  // why Port couldn't be bound (WSAEADDRINUSE: another program has it), 0 if it was
 // the title's test for hosting a session, when anyone past the LAN may reach it (LetIn); any thread
 void SetOpenWhile(bool (*hosting)()) { g_open_while = hosting; }
+
+// the title's bytes (at most 1200) to the peers of this copy's session, as kSessionMagic says; the count sent to. Any thread
+int SendSession(const uint8_t* data, int len) {
+    if (!g_ready || g_link == INVALID_SOCKET || len < 0 || len > 1200) return 0;
+    std::vector<Endpoint> to;
+    {
+        std::lock_guard<std::mutex> lock(g_contact_lock);
+        const auto now = std::chrono::steady_clock::now();
+        for (auto it = g_sent.begin(); it != g_sent.end();) {
+            if (now - it->second.second >= kSessionHold) {
+                it = g_sent.erase(it);
+                continue;
+            }
+            const Endpoint& e = it->second.first;
+            if (!(e.ip == g_local && e.port == htons(g_port))) to.push_back(e);
+            ++it;
+        }
+    }
+    std::vector<uint8_t> buf(size_t(kSessionHeader + len));
+    const uint16_t magic = htons(kSessionMagic);
+    std::memcpy(buf.data(), &magic, 2);
+    {
+        std::lock_guard<std::mutex> lock(g_lock);
+        std::memcpy(buf.data() + 2, g_kid.data(), 8);
+    }
+    if (len) std::memcpy(buf.data() + kSessionHeader, data, size_t(len));
+    int sent = 0;
+    for (const Endpoint& e : to) {
+        sockaddr_in a{};
+        a.sin_family = AF_INET;
+        a.sin_addr.s_addr = e.ip;
+        a.sin_port = e.port;
+        if (::sendto(g_link, reinterpret_cast<const char*>(buf.data()), int(buf.size()), 0,
+                     reinterpret_cast<const sockaddr*>(&a), sizeof(a)) >= 0)
+            sent++;
+    }
+    return sent;
+}
+// what comes for the title from its session's peers (SendSession's bytes), on the link's thread
+void SetSessionReceiver(void (*receive)(const uint8_t* data, int len)) { g_session_receiver = receive; }
 
 void CloseSockets() {
     std::lock_guard<std::mutex> lock(g_lock);
