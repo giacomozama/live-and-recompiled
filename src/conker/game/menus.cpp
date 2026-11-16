@@ -555,6 +555,28 @@ void LogPrompts(float x, float y, int face, int64_t now) {
     }
 }
 
+// Textures that are pictures, never a button's icon, though their colours could pass for one: the Live icons
+// (..\frontend\multiplayer\liveIcons\player and signedOut; player is the icon of a join's failure notice), which
+// 0x227450 finds by name through 0x75D90 (cdecl, the name at [esp+4], the resource written to [esi]). A texture
+// resource holds its D3D texture at +0x24 (A_BUTT's resource 0xA32F60, the texture the sprite draws 0xA32F84).
+// Game thread
+std::set<uint32_t> g_pictures;
+constexpr uint32_t kResourceTexture = 0x24;
+
+}  // namespace
+
+X86_EXTERN_FUNC(__imp__sub_00075D90);
+X86_FUNC(sub_00075D90) {
+    const uint32_t name = R32(ctx.esp + 4), out = ctx.esi;
+    __imp__sub_00075D90(ctx, base);
+    if (!out || !name || !R32(out)) return;
+    const char* s = static_cast<const char*>(kernel::HostPtr(name));  // a few thousand lookups a second: no copy
+    if (std::string_view(s, strnlen(s, 128)).find("liveIcons") != std::string_view::npos)
+        g_pictures.insert(R32(out) + kResourceTexture);
+}
+
+namespace {
+
 // the face button a texture is the icon of (0 A, 1 B, 2 X, 3 Y), -1 for any other: a 32 by 32 DXT texture (format
 // word +0xC: color 15:8, log2 sizes from bit 20) whose colored blocks average green, red, blue or yellow (a
 // yellowish green for A, an orange yellow for Y). Each block's two end colors (RGB565 at +8 and +0xA of DXT3 and
@@ -565,6 +587,7 @@ int Button(uint32_t tex) {
     if (const auto it = known.find(key); it != known.end()) return it->second;
     int& b = known[key];
     b = -1;
+    if (g_pictures.count(tex)) return b;
     const uint32_t format = R32(tex + 0xC), color = format >> 8 & 0xFF;
     if ((color != 0x0E && color != 0x0F) || (format >> 20 & 0xF) != 5 || (format >> 24 & 0xF) != 5) return b;
     const uint32_t texels = mem::VirtualFromPhysical(R32(tex + 4) & 0x0FFFFFFF);
