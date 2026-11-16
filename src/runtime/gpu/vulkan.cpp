@@ -263,7 +263,11 @@ float4 grade(O i) : SV_Target {
 // ambient occlusion over the 3D picture, before the title's own passes read it (ApplyOcclusion). occlusion, at half
 // the size, from the depth (t0 and t1): each pixel's view space position and its normal from its neighbours, then
 // samples on a spiral within the reach, each occluding by the cosine of its direction to the normal, less where it lies
-// farther than the reach; blurx and blury (the occlusion at t0, the depth at t1) blur it across like depths alone;
+// farther than the reach; blurx and blury (the occlusion at t0, the depth at t1) blur it across like depths alone. Every
+// depth is a texel's own, read at its centre, and a position is that centre's: a half size pixel's centre lies on the
+// corner of four depth texels, where which one a lookup took flipped with the coordinate's rounding (row by row, in
+// diagonal bands across the frame), and a tap's position off its texel's centre lay off the surface, both striping flat
+// ground (F3 capture 093203_0);
 // apply (the picture at t0, the occlusion at t1) darkens the picture by it. b1: px the picture's 1 / size, the reach,
 // the strength; frame the guest size and A, B of depth = A + B / w; vp the viewport's x y scale and offset; pr and pr2
 // the projection's x row (x, z, w) and y row (y, z, w)
@@ -334,15 +338,19 @@ O vs(uint id : SV_VertexID) {
     o.p = float4(o.uv * float2(2, -2) + float2(-1, 1), 0, 1);
     return o;
 }
-float DepthAt(float2 uv) { return b.SampleLevel(ps, uv, 0).r; }
+// the centre of the depth texel holding uv; Base: the top left texel of a half size pixel's four
+float2 Snap(float2 uv) { return (floor(uv / px.xy) + 0.5) * px.xy; }
+float2 Base(float4 p) { return (floor(p.xy) * 2 + 0.5) * px.xy; }
+float DepthAt(float2 uv) { return b.SampleLevel(ps, Snap(uv), 0).r; }
 float ViewW(float d) { return frame.w / min(d - frame.z, -1e-7); }
 float3 ViewAt(float2 uv) {
-    float w = ViewW(DepthAt(uv)), z = -w;
+    uv = Snap(uv);
+    float w = ViewW(b.SampleLevel(ps, uv, 0).r), z = -w;
     float2 clip = (uv * frame.xy - vp.zw) * w / vp.xy;
     return float3((clip.x - pr.y * z - pr.z) / pr.x, (clip.y - pr2.y * z - pr2.z) / pr2.x, z);
 }
 float4 occlusion(O i) : SV_Target {
-    float2 uv = i.uv;
+    float2 uv = Base(i.p);
     if (DepthAt(uv) >= 0.9999999) return 1;
     float3 p = ViewAt(uv);
     // the neighbour on the nearer side of each axis, so an edge doesn't bend the normal
@@ -362,23 +370,24 @@ float4 occlusion(O i) : SV_Target {
         float2 q = uv + rpx * f * float2(cos(ang), sin(ang)) / frame.xy;
         float3 v = ViewAt(q) - p;
         float vv = dot(v, v), fall = max(1 - vv / r2, 0);
-        sum += fall * fall * max(dot(v, n) * rsqrt(vv + 1e-4 * r2) - 0.1, 0);
+        sum += fall * max(dot(v, n) * rsqrt(vv + 1e-4 * r2) - 0.1, 0);
     }
-    float o = saturate(1 - px.w * 2 * sum / kTaps);
+    // a linear falloff and thrice the sum: with the square of it and twice, a contact shadow darkened by a fifth at most
+    float o = saturate(1 - px.w * 3 * sum / kTaps);
     return lerp(1, o, saturate(rpx / 2 - 1));
 }
-float4 Blur(float2 uv, float2 dir) {
-    float w0 = ViewW(DepthAt(uv)), sum = 0, weights = 0;
+// the half size occlusion at its own pixels' centres (uv), the depth at their top left texels' (zuv, as the occlusion's)
+float4 Blur(float2 uv, float2 zuv, float2 dir) {
+    float w0 = ViewW(DepthAt(zuv)), sum = 0, weights = 0;
     [unroll] for (int k = -3; k <= 3; k++) {
-        float2 q = uv + dir * k;
-        float wt = exp(-k * k / 8.0) * saturate(1 - 20 * abs(ViewW(DepthAt(q)) - w0) / w0);
-        sum += a.SampleLevel(ps, q, 0).r * wt;
+        float wt = exp(-k * k / 8.0) * saturate(1 - 20 * abs(ViewW(DepthAt(zuv + dir * k)) - w0) / w0);
+        sum += a.SampleLevel(ps, uv + dir * k, 0).r * wt;
         weights += wt;
     }
     return weights > 0 ? sum / weights : a.SampleLevel(ps, uv, 0).r;
 }
-float4 blurx(O i) : SV_Target { return Blur(i.uv, float2(px.x * 2, 0)); }
-float4 blury(O i) : SV_Target { return Blur(i.uv, float2(0, px.y * 2)); }
+float4 blurx(O i) : SV_Target { return Blur(i.uv, Base(i.p), float2(px.x * 2, 0)); }
+float4 blury(O i) : SV_Target { return Blur(i.uv, Base(i.p), float2(0, px.y * 2)); }
 float4 apply(O i) : SV_Target {
     float4 c = a.SampleLevel(ps, i.uv, 0);
     c.rgb *= b.SampleLevel(ls, i.uv, 0).r;

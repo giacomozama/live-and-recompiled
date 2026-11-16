@@ -115,7 +115,7 @@ void Apply(int preset) {
             s.aniso = 16;
             s.msaa = 4;
             s.smaa = false;
-            s.ambient_occlusion = 50;
+            s.ambient_occlusion = 100;
             s.smooth_lightmaps = true;
             fur::g_strands = true;
             fur::g_shading = false;  // strands or shaded shells, never both (ui.cpp)
