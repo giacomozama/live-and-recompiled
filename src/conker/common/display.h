@@ -59,6 +59,23 @@ void PlayerMarkerQuad();
 // wall (gpu::g_outlines, player_tags.cpp). Read each frame
 extern bool g_player_outlines;
 
+// settings.toml team_colors: the colours a match tells teammates from opponents by: the game's green and red
+// (kTeamGreenRed), or blue and orange (kTeamBlueOrange), which red-green colour blindness keeps apart; a neutral's light
+// blue then light grey. Each place the game picks green or red by team follows it (player_tags.cpp): by its test
+// 0x3488E0 the tags' text (0x800EF4) and the weapon's target colour (0x1D3CB0), the outlines (gpu::g_team_colors);
+// by the team itself the score (0x1CB330), the team icons (0x1CC500, and over a player 0x357CF0), the flag held
+// (0x1EC7F0 / 0x1EC870) and the flag over its carrier (0x34822F). Read as each draws
+enum : uint32_t { kTeamGreenRed = 0, kTeamBlueOrange = 1 };
+extern uint32_t g_team_colors;
+// 0x1F25F0 about to add a text entry from site (its return address): the team score's in the chosen team colours,
+// the text colour put back after (display.cpp's 0x1F25F0, player_tags.cpp). Game thread
+struct TeamText {
+    bool changed = false;
+    uint8_t was[3] = {};
+};
+TeamText TeamTextBegin(uint32_t site);
+void TeamTextEnd(const TeamText& t);
+
 // The camera the game's draws go through ([0x84B868], its view at +0x10) for the runtime's motion blur
 // (gpu::ViewConstants::camera): its view in the vertex constants kCameraRegister to kCameraRegister + 2, a row for each
 // of view space's axes, and the frame (d3d::Presents) in kCameraRegister + 3, which no program of the game reads (the

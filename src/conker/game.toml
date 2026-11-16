@@ -544,6 +544,26 @@ at = 0x3D3981  # a glyph's quad sent: the quit prompt's Yes and No, for the mous
 call = "ConkerTextQuad"
 
 [[hook]]
+at = 0x1D40A8  # 0x1D3CB0: the target's colour by team just picked, in the chosen team colours (player_tags.cpp)
+call = "ConkerTargetColour"
+
+[[hook]]
+at = 0x1CC5FC  # 0x1CC500, a sprite by name: a team icon's texture in the chosen team colours (player_tags.cpp)
+call = "ConkerTeamIcon"
+
+[[hook]]
+at = 0x1EC84E  # 0x1EC7F0, the squirrels' flag held: its colour (esi) in the chosen team colours (player_tags.cpp)
+call = "ConkerFlagColour"
+
+[[hook]]
+at = 0x1EC8CE  # 0x1EC870, the Tediz' flag held: its colour (esi) in the chosen team colours (player_tags.cpp)
+call = "ConkerFlagColour"
+
+[[hook]]
+at = 0x34822F  # 0x347330, the flag over its carrier: its colour by team in the chosen team colours (player_tags.cpp)
+call = "ConkerCarrierFlag"
+
+[[hook]]
 at = 0x203CE9  # the quit prompt's A: the word the mouse clicked
 call = "ConkerQuitChoice"
 

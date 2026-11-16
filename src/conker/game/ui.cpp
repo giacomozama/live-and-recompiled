@@ -1989,11 +1989,14 @@ void Draw(double fps) {
                          "the middle or the right of the screen. Off: it stretches across the screen.", true);
                     int tags = int(std::min<uint32_t>(display::g_player_tags, display::kTagOff));
                     if (Segmented("Player names", &tags, {"Names", "Markers", "Off"})) display::g_player_tags = uint32_t(tags);
-                    Hint("Over other players in a match: their names, or a marker, green for teammates and red for "
-                         "opponents.", true);
+                    Hint("Over other players in a match: their names, or a marker in the team colors.", true);
                     Check("Player outlines", &display::g_player_outlines);
-                    Hint("In a match, other players get an outline where they're in view, green for teammates and red "
-                         "for opponents.", true);
+                    Hint("In a match, other players get an outline in the team colors where they're in view.", true);
+                    int team = int(std::min<uint32_t>(display::g_team_colors, display::kTeamBlueOrange));
+                    if (Segmented("Team colors", &team, {"Green / red", "Blue / orange"}))
+                        display::g_team_colors = uint32_t(team);
+                    Hint("The colors a match tells the teams apart by: names, outlines, the score, team icons and "
+                         "flags. Blue / orange stays clear with red-green color blindness.", true);
                 }
 
                 if (Section("Menus")) {

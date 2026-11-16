@@ -206,6 +206,9 @@ inline std::atomic<bool> g_hud_split{false};
 // still in front, and the effects over the 3D picture draw a line round each marked shape. The game sets it each
 // frame, game thread
 inline std::atomic<bool> g_outlines{false};
+// the outlines' colours: 0 green teammates, red opponents, light blue neutrals; 1 blue, orange, light grey (for red-green
+// colour blindness). The game sets it each frame, game thread
+inline std::atomic<uint32_t> g_team_colors{0};
 // how the draws of a HUD scope (d3d::HudScope) are placed: by the edge the element's box keeps nearest to (held),
 // unstretched where it is (about the element's box, or each draw's own), or as the frame has them. kHudInPlaceBars is
 // kHudInPlace with black down the sides of a draw that covers the frame (a sniper's scope, no longer to the edges)

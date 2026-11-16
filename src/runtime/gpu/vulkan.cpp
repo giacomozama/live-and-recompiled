@@ -460,7 +460,8 @@ float4 blur(O i) : SV_Target {
 // the depth (t2). An unmarked pixel takes the line's colour where the nearest marked one (looked for on rings of 16,
 // a pixel apart, out to px.z) lies within the line's width: px.z near the camera, down to 40% of it for a marked pixel
 // further than px.w units (opts: the depth's frame.z and frame.w as the motion blur's, opts.z 1 when known), solid but
-// for its outermost pixel. Only marks still in front show: no line through a wall
+// for its outermost pixel, in the team colours opts.w picks (g_team_colors: 1 blue, orange and light grey). Only
+// marks still in front show: no line through a wall
 const char* kOutlineHlsl = R"(
 cbuffer B : register(b1) { float4 px; float4 opts; };
 Texture2D a : register(t0);
@@ -505,7 +506,9 @@ float4 outline(O i) : SV_Target {
     if (opts.z > 0) width *= clamp(px.w / ViewW(depth.Load(int3(at, 0))), 0.4, 1.0);
     width = max(width, 1.0);
     float cover = saturate(width - dist + 1.0);
-    float3 col = mark == 2 ? float3(0.92, 0.12, 0.08) : mark == 1 ? float3(0.15, 0.88, 0.2) : float3(0.55, 0.75, 1.0);
+    float3 col = opts.w > 0.5
+        ? (mark == 2 ? float3(1.0, 0.58, 0.0) : mark == 1 ? float3(0.1, 0.5, 1.0) : float3(0.88, 0.88, 0.88))
+        : (mark == 2 ? float3(0.92, 0.12, 0.08) : mark == 1 ? float3(0.15, 0.88, 0.2) : float3(0.55, 0.75, 1.0));
     return float4(lerp(c.rgb, col, cover * 0.82), c.a);
 }
 )";
@@ -5490,7 +5493,8 @@ void VulkanBackend::ApplyPost(Target& t) {
         const bool known = view_ok_ && post_zscale_ != 0 && marks->res->depth_view;
         const float op[8] = {1.0f / t.w, 1.0f / t.h, width, 600.0f,
                              known ? (vo[2] - vs[2] * vz[2]) / post_zscale_ : 0.0f,
-                             known ? vs[2] * vz[3] / post_zscale_ : 0.0f, known ? 1.0f : 0.0f, 0};
+                             known ? vs[2] * vz[3] / post_zscale_ : 0.0f, known ? 1.0f : 0.0f,
+                             float(g_team_colors.load(std::memory_order_relaxed))};
         const VkImageView views[3] = {src->view, marks->res->stencil_view,
                                       marks->res->depth_view ? marks->res->depth_view : src->view};
         Pass(kOutlineHlsl, "outline", t.fmt, dst, t.w, t.h, views, op, -1);

@@ -221,6 +221,7 @@ X86_FUNC(sub_002A7B60) {
     gpu::g_hud_split.store(display::HudSplit(), std::memory_order_relaxed);
     gpu::g_outlines.store(display::g_player_outlines && warp::Multiplayer() && !warp::Frontend(),
                           std::memory_order_relaxed);
+    gpu::g_team_colors.store(display::g_team_colors, std::memory_order_relaxed);
     using clock = std::chrono::steady_clock;
     static bool owned = false;
     static uint32_t shown = 0;
@@ -487,7 +488,9 @@ X86_FUNC(sub_001F2BC0) {
 X86_EXTERN_FUNC(__imp__sub_001F25F0);
 X86_FUNC(sub_001F25F0) {
     const uint32_t was = std::exchange(g_text_site, kernel::R32(ctx.esp));
+    const display::TeamText team = display::TeamTextBegin(g_text_site);
     __imp__sub_001F25F0(ctx, base);
+    display::TeamTextEnd(team);
     g_text_site = was;
 }
 
