@@ -315,8 +315,9 @@ void ConkerCameraFov(X86Context& ctx, uint8_t* base) {
 //   and stays as drawn.
 //   0x1C7C60 draws several widgets, each through a call of its own (HudCall): the scores 0x1CB330, the weapon panel
 //   0x1CC030, the weapon wheel 0x1CA190 (its pieces unstretched each in place, over the weapons' models, which the
-//   frame draws in 3D), the weapon icons 0x1CC770 and 0x1CAAA0, the button icons 0x1CB1A0 and 0x330AB0 (through a
-//   pointer); what it draws outside them (the bar at the top right) is the object's.
+//   frame draws in 3D), the weapon icons 0x1CC770 and 0x1CAAA0, the meters by the crosshair 0x1CB0E0 (in place), the
+//   button icons 0x1CB1A0 and 0x330AB0 (through a pointer); what it draws outside them (the bar at the top right) is
+//   the object's.
 // - The text list ([0x849794], entries of 0x102C bytes made by 0x1F27B0 through 0x1F25F0 or 0x1F26E0, drawn by
 //   0x1F2BC0: +0 an object it is drawn over, +8 and +0xA its x and y, the string at +0x28, the next at +0x24). An
 //   entry goes with the element whose scope made it (the clock's digits and kill messages, the scores'), or, made in one
@@ -442,7 +443,8 @@ void ConkerHudLayerObjectEnd(X86Context& ctx, uint8_t* base) {
 // 0x1C7C60's widgets: a call of its, made while it draws, is a scope by its return address
 namespace {
 // an element's id, for one drawn by several calls (0 for each call its own, by its return address)
-constexpr uint32_t kHudScores = 0xFE000001u, kHudWeapon = 0xFE000002u, kHudPrompt = 0xFE000003u;
+constexpr uint32_t kHudScores = 0xFE000001u, kHudWeapon = 0xFE000002u, kHudPrompt = 0xFE000003u,
+                   kHudMeters = 0xFE000004u;
 
 template <void (*Imp)(X86Context&, uint8_t*), uint8_t Mode, uint32_t Element>
 void HudCall(X86Context& ctx, uint8_t* base) {
@@ -472,6 +474,10 @@ CONKER_HUD_CALL(001CC770, kHudEdge, kHudWeapon)  // a weapon icon, the bar at th
 CONKER_HUD_CALL(001CAAA0, kHudEdge, kHudWeapon)  // a weapon picture
 CONKER_HUD_CALL(001CB1A0, kHudEdge, kHudWeapon)  // the panel's button icon
 CONKER_HUD_CALL(00330AB0, kHudEdge, kHudWeapon)  // another, through a pointer
+// a meter by the crosshair (the Thermophile's two fuel bars either side of it, 0x1C8BF1 and 0x1C8C25), drawn through
+// 0x1CAAA0: one element in place, about the pair's box, so they keep to the crosshair. Called from 0x1CC770 (the bar
+// at the top right) it stays that call's
+CONKER_HUD_CALL(001CB0E0, kHudInPlace, kHudMeters)
 #undef CONKER_HUD_CALL
 
 // a prompt of A ("exit" on a vehicle): its icon (0x1CAAA0) and label one element, centred (menus::ActionPrompt)
