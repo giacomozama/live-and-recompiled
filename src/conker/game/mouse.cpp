@@ -4,7 +4,7 @@
 // motion) up for the player whose mouse it came from (input::Owner). The third
 // person, first person and weapon cameras all turn by the stick in 0x2F99A0 (hooked at the end of the file): Turn
 // adds the motion, in degrees, to the turn it works out each frame, so each camera takes the mouse as it takes the
-// stick, inside its own limits. Not a match's sniper scope, which takes the mouse as right stick (see Turn).
+// stick, inside its own limits. A match's aircraft takes the mouse as right stick (see Turn).
 //
 // A tank's aim mode goes by the driver's camera instead, which TankAim turns (hooked on 0x3F4E0 at the end of the
 // file).
@@ -559,7 +559,7 @@ constexpr uint32_t kTankTurnReturn = 0x2BBB54, kWeaponTurnReturn = 0x2FBC10;
 std::atomic<int64_t> g_tank_us[kPorts] = {}, g_aim_us[kPorts] = {};
 constexpr int64_t kAimUs = 100000;
 
-// a match's weapon camera out of its scope, turned by the mouse: the game keeps where its scope looks for the next
+// a match's weapon camera, turned by the mouse (scoped or not): the game keeps where its scope looks for the next
 // time it comes up only while it sees the right stick move, so while the mouse turns it Pad holds the stick at its
 // first step in the mouse's direction (0.45 degrees a second, a turn too small to see) for kNudgeUs, and the
 // game keeps up
@@ -609,7 +609,7 @@ constexpr float kWheelPush = 0.35f;
 
 bool InTank(int port, int64_t now) { return now - g_tank_us[port].load(std::memory_order_relaxed) < kTurnedUs; }
 bool Aiming(int port, int64_t now) {
-    return InTank(port, now) && now - g_aim_us[port].load(std::memory_order_relaxed) < kAimUs;
+    return now - g_aim_us[port].load(std::memory_order_relaxed) < kAimUs;
 }
 
 // the mouse's own turn (Turn, TankAim) inverted: single player's by its setting, a match's by the player's profile,
@@ -792,13 +792,9 @@ void SnapSprings(uint32_t springs) {
 // (+0x10, +0x4C) as far, so the mouse turns at once while the stick's turn eases as the game has it. A caller takes
 // one or the other, never both. The motion is taken once a frame, and every camera turned in that frame gets it.
 //
-// Not the weapon camera (0x2FB960, which calls it from 0x2FBC0B; a sniper's scope): its turn adds to an aim off the
-// player's facing, and the game keeps where the scope looks for the next time it comes up (in the camera, at +0x124
-// among others) only from the stick's own turn, so a scope the mouse turned came up again where the stick last left
-// it. There, in a multiplayer match and while the view is zoomed in (display::CameraFov under kScopedFov), the mouse
-// drives the right stick (Pad), as for a camera that does not come here, and the game turns the scope, the player and
-// what it keeps as with a stick. So it does in an aircraft (the player in esi, their state an aircraft's), which flies by
-// the stick. Aiming out of the scope, and single player, keep the mouse's own turn.
+// The weapon camera (0x2FB960, which calls it from 0x2FBC0B; aiming, a sniper's scope, zoomed or not) takes the
+// mouse's own turn too, single player and matches alike. Not a match's aircraft (the same camera, the player in esi,
+// their state an aircraft's), which flies by the stick: there the mouse drives the right stick (Pad).
 void Turn(uint32_t actions, uint32_t turn, uint32_t ret, uint32_t player) {
     constexpr uint32_t kPlayer1Actions = 0x763260, kActionsSize = 0x1B0;
     constexpr uint32_t kYaw = 0x04, kYawTurn = 0x08, kYawEased = 0x10;
@@ -809,21 +805,19 @@ void Turn(uint32_t actions, uint32_t turn, uint32_t ret, uint32_t player) {
     if (port >= uint32_t(kPorts) || !g_look[port] || !g_held.load() || !Readable(turn, kPitchEased + 4)) return;
     if (WheelOpen(int(port), Now())) return;  // the mouse points the weapon wheel (Pad)
     if (ret == kWeaponTurnReturn && warp::Multiplayer()) {
-        // a match's scope (the view zoomed in), or an aircraft (the player's state at +0xA4 is in kAircraftFirst..
+        // a match's aircraft (the player's state at +0xA4 is in kAircraftFirst..
         // kAircraftLast from getting in to getting out: 0x429 flying straight, others on the ground, taking off,
         // banking, hovering, all seen in XBE_MOUSE_TRACE's state lines; only 0x429 used to count, so a flight that
         // stayed in the others never steered by the mouse; aiming on foot shares some of them, so the player must
         // also be in a vehicle: the byte at +0x135, 0 on foot, else 1 + the vehicle's index in the table at
         // [0x84A5F8], 0x6D0 each, its type at +0x64, as 0x3F4E0 reads it), and the plane steers by the stick: Pad
         // turns them by the stick
-        constexpr float kScopedFov = 45.0f;
         constexpr uint32_t kPlayerState = 0xA4, kAircraftFirst = 0x40F, kAircraftLast = 0x438, kVehicle = 0x135;
         constexpr uint32_t kVehicles = 0x84A5F8, kVehicleSize = 0x6D0, kVehicleType = 0x64;
         const float fov = display::CameraFov();
         const uint32_t state = Readable(player + kPlayerState, 4) ? R32(player + kPlayerState) : 0u;
         const uint32_t vehicle = Readable(player + kVehicle, 1) ? mem::Base()[player + kVehicle] : 0u;
         const bool flying = vehicle && state >= kAircraftFirst && state <= kAircraftLast;
-        const int stick = fov < kScopedFov ? 1 : flying ? 2 : 0;
         if (Trace()) {
             // every state the weapon camera's player goes through (getting in, flying, getting out)
             static std::atomic<uint32_t> seen[kPorts] = {};
@@ -835,12 +829,14 @@ void Turn(uint32_t actions, uint32_t turn, uint32_t ret, uint32_t player) {
         }
         if (Trace()) {
             static std::atomic<int> was[kPorts] = {};
-            if (stick != was[port].exchange(stick))
+            if (int(flying) != was[port].exchange(int(flying)))
                 LOGR("mouse trace: p%u weapon camera %s (fov %.1f, state %X)", port,
-                     stick == 1 ? "scoped, stick" : stick == 2 ? "aircraft, stick" : "mouse turn", fov, state);
+                     flying ? "aircraft, stick" : "mouse turn", fov, state);
         }
-        if (flying) g_fly_us[port].store(Now(), std::memory_order_relaxed);
-        if (stick) return;
+        if (flying) {
+            g_fly_us[port].store(Now(), std::memory_order_relaxed);
+            return;
+        }
     }
     if (warp::Multiplayer() && Flying(int(port), Now())) {
         if (Trace()) {
@@ -946,25 +942,32 @@ void AimAssist(uint32_t actions, uint32_t assist) {
 // turret's yaw from +0x258. That is aim mode, while [[player+0x04]+0x8CF] is set (0x3F4E0 sets it in a vehicle while
 // the aim button, actions+0x54, is held); out of it the tank's cameras turn by 0x2F99A0 and Turn. The mouse is added
 // before, so the game's wrap and limits hold it; right lowers the yaw, and up lowers the pitch (the tank's view
-// rises as it falls).
+// rises as it falls). On foot the zoomed aim (a sniper's scope, the zoomed shoulder aim) is the same mode: the flag
+// set, [camera+0x2B0] 2 while it holds, and the weapon camera (0x2FB960) aims from +0x258 then rather than calling
+// 0x2F99A0, so Turn never sees it and the stick's capped, squared turn was all it had; the mouse turns it here too.
 void TankAim(uint32_t player) {
     constexpr uint32_t kView = 0x04, kAimMode = 0x8CF;
-    constexpr uint32_t kActions = 0x3B4, kCamera = 0x3E4, kYaw = 0x260, kPitch = 0x264;
+    constexpr uint32_t kActions = 0x3B4, kCamera = 0x3E4, kYaw = 0x260, kPitch = 0x264, kAiming = 0x2B0;
+    constexpr uint32_t kAimingOn = 2;
     constexpr uint32_t kPlayer1Actions = 0x763260, kActionsSize = 0x1B0;
     if (!Readable(player + kActions, 4) || !Readable(player + kCamera, 4)) return;
     const uint32_t actions = R32(player + kActions);
     if (actions < kPlayer1Actions || (actions - kPlayer1Actions) % kActionsSize) return;
     const uint32_t port = (actions - kPlayer1Actions) / kActionsSize;
     const int64_t now = Now();
-    if (port >= uint32_t(kPorts) || !g_look[port] || !g_held.load() || !InTank(int(port), now) ||
-        WheelOpen(int(port), now))
-        return;
+    if (port >= uint32_t(kPorts) || !g_look[port] || !g_held.load() || WheelOpen(int(port), now)) return;
     if (!Readable(player + kView, 4)) return;
     const uint32_t view = R32(player + kView);
     if (!Readable(view + kAimMode, 1) || !mem::Base()[view + kAimMode]) return;
-    g_aim_us[port].store(now, std::memory_order_relaxed);
     const uint32_t cam = R32(player + kCamera);
-    if (!Readable(cam, kPitch + 4)) return;
+    if (!Readable(cam, kAiming + 4)) return;
+    // in a tank, or on foot while the zoomed aim holds (+0x2B0 is 2 from the frame 0x3F4E0 takes it up)
+    const bool tank = InTank(int(port), now);
+    if (!tank && R32(cam + kAiming) != kAimingOn) return;
+    if (Trace() && now - g_aim_us[port].load(std::memory_order_relaxed) >= kAimUs)
+        LOGR("mouse trace: p%u %s aim mode takes the mouse (yaw %.2f pitch %.2f)", port, tank ? "tank" : "on foot",
+             RF(cam + kYaw), RF(cam + kPitch));
+    g_aim_us[port].store(now, std::memory_order_relaxed);
     int64_t dx, dy;
     {
         std::lock_guard motion(g_lock);
@@ -972,7 +975,7 @@ void TankAim(uint32_t player) {
         g_motion[port].dx = g_motion[port].dy = 0;
     }
     if (!dx && !dy) return;
-    LOG_FIRST(1, "mouse: look aims the tank");
+    LOG_FIRST(1, "mouse: look turns the aim mode (a tank, a zoomed aim)");
     const float yaw = float(dx) * kDegreesPerCount * float(g_sensitivity[port]) / 100.0f;
     float pitch = float(-dy) * kDegreesPerCount * float(g_sensitivity_y[port]) / 100.0f;
     if (InvertTurn(int(port))) pitch = -pitch;
@@ -1161,7 +1164,8 @@ X86_FUNC(sub_002F9FC0) {
     mouse::AimAssist(g_turn_actions, assist);
 }
 
-// 0x3F4E0 (the player in eax): the player's camera in a vehicle, among much else; the tank's aim (mouse::TankAim)
+// 0x3F4E0 (the player in eax): the player's camera in a vehicle, among much else; the aim mode, a tank's or a zoomed
+// aim's (mouse::TankAim)
 X86_EXTERN_FUNC(__imp__sub_0003F4E0);
 X86_FUNC(sub_0003F4E0) {
     mouse::TankAim(ctx.eax);
