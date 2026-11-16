@@ -744,3 +744,11 @@ call = "ConkerLinkDeniedKey"
 [[hook]]
 at = 0x27CBFE  # its text found (eax): "Wrong version" made the frame rate's when that was why this copy refused
 call = "ConkerLinkDeniedText"
+
+[[hook]]
+at = 0x387FF7  # a jeep's or bike's AI drive (0x387FA0, esi the vehicle): the bearing past which it backs up, [esp+8], by the way it went last
+call = "ConkerBotReverseJeep"
+
+[[hook]]
+at = 0x3AAB53  # the flame jeep's (0x3AAB00, ecx the vehicle): the same, at [esp]
+call = "ConkerBotReverseFlameJeep"
