@@ -164,6 +164,21 @@ bool syslink::InSession() {
     return net >= 1 && net <= 5;
 }
 
+namespace xnet {
+void SetOpenWhile(bool (*hosting)());  // runtime xdk/xnet.cpp
+}
+
+namespace {
+
+// past the LAN, only the peers of this copy's session reach it, except while it hosts one, when a search or a join
+// request may come from anyone (xnet's LetIn)
+const bool g_open_while_set = [] {
+    xnet::SetOpenWhile([] { return kernel::G<uint8_t>(kIsHost) != 0 && syslink::InSession(); });
+    return true;
+}();
+
+}  // namespace
+
 // [[hook]] at 0x27CBF7 in JoinD's handling (0x27CB90): ecx the key of the notice's text about to be looked up
 void ConkerLinkDeniedKey(X86Context& ctx, uint8_t* base) {
     (void)base;

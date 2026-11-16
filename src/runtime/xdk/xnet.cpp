@@ -30,6 +30,8 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
+#include <chrono>
 #include <random>
 
 #include "app/app.h"
@@ -200,6 +202,50 @@ Endpoint JoinAddress() {
     return address;
 }
 
+// Who is let in from past the LAN (LinkPump). The link socket takes every address, and what it lets through reaches
+// the game's own receive, which trusts the packet; from a public address only these come in:
+//   - the join address;
+//   - an endpoint this copy sent to (a datagram, not a broadcast) in the last kContactHold, or whose XNADDR the game
+//     turned into an address (it is about to talk to it): the host it joined, the peers of its session;
+//   - anyone while the game hosts a session (g_open_while, set by the title: src/conker/game/link.cpp), as a search
+//     and a join request come from addresses it has never seen.
+// The LAN (private addresses, this PC's loopback) is always let in. What is dropped is logged once per address.
+constexpr auto kContactHold = std::chrono::seconds(60);
+std::mutex g_contact_lock;
+std::unordered_map<uint64_t, std::chrono::steady_clock::time_point> g_contacted;  // by Key
+std::atomic<bool (*)()> g_open_while{nullptr};
+
+uint64_t Key(const Endpoint& e) { return uint64_t(e.ip) << 16 | e.port; }
+
+void Contacted(const Endpoint& e) {
+    if (Private(e.ip)) return;
+    std::lock_guard<std::mutex> lock(g_contact_lock);
+    g_contacted[Key(e)] = std::chrono::steady_clock::now();
+}
+
+bool LetIn(const Endpoint& from) {
+    if (Private(from.ip) || from.ip == g_local) return true;  // the LAN, this PC's other copies
+    if (auto open = g_open_while.load(); open && open()) return true;
+    {
+        std::lock_guard<std::mutex> lock(g_contact_lock);
+        const auto now = std::chrono::steady_clock::now();
+        if (auto it = g_contacted.find(Key(from)); it != g_contacted.end()) {
+            if (now - it->second < kContactHold) return true;
+            g_contacted.erase(it);
+        }
+    }
+    if (Endpoint join = JoinAddress(); join.ip && join == from) return true;
+    static std::mutex m;
+    static std::vector<uint64_t> logged;
+    std::lock_guard<std::mutex> lock(m);
+    if (logged.size() < 64 && std::find(logged.begin(), logged.end(), Key(from)) == logged.end()) {
+        logged.push_back(Key(from));
+        LOGR("xnet: dropped system link packets from %s:%u (not in a session with this copy)", Ip(from.ip).c_str(),
+             ntohs(from.port));
+    }
+    return false;
+}
+
 uint32_t PrimaryAddress() {
     uint32_t addr = htonl(INADDR_LOOPBACK);
     SOCKET s = ::socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
@@ -362,6 +408,7 @@ void LinkPump() {
         std::memcpy(&vport, buf.data() + 4, 2);
         Endpoint from{Fold(src.sin_addr.s_addr), src.sin_port};
         if (from.ip == g_local && from.port == htons(g_port)) continue;  // its own broadcast
+        if (!LetIn(from)) continue;
         Deliver(from, from_vport, vport, buf.data() + kWireHeader, n - kWireHeader);
     }
 }
@@ -437,7 +484,11 @@ int SendOnce(uint32_t sock, const Socket& k, const uint8_t* data, int len, const
                          reinterpret_cast<const sockaddr*>(&a), sizeof(a));
         return n < 0 ? n : len;
     };
-    if (dest.sin_addr.s_addr != INADDR_BROADCAST) return send(ToReal(dest.sin_addr.s_addr));
+    if (dest.sin_addr.s_addr != INADDR_BROADCAST) {
+        const Endpoint to_real = ToReal(dest.sin_addr.s_addr);
+        Contacted(to_real);
+        return send(to_real);
+    }
     // a broadcast reaches the LAN's copies on the system link port; the join address and the peers it can't reach
     // (past the LAN, or on another port) are sent it one by one
     std::vector<Endpoint> also;
@@ -596,6 +647,8 @@ namespace xnet {
 std::string LocalAddress() { return Ip(g_ready ? g_local : PrimaryAddress()); }
 uint16_t Port() { return g_ready ? g_port : 0; }
 int PortError() { return g_link_error; }  // why Port couldn't be bound (WSAEADDRINUSE: another program has it), 0 if it was
+// the title's test for hosting a session, when anyone past the LAN may reach it (LetIn); any thread
+void SetOpenWhile(bool (*hosting)()) { g_open_while = hosting; }
 
 void CloseSockets() {
     std::lock_guard<std::mutex> lock(g_lock);
@@ -660,6 +713,7 @@ HLE_STDCALL(XNetXnAddrToInAddr, 3) {
     int i = PeerFor(x, join);
     if (i < 0) return WSAEINVAL;
     Peer& p = g_peers[size_t(i)];
+    Contacted(p.at);
     if (!p.has_xnaddr) {
         std::memcpy(p.xnaddr.data(), x, kXnAddrSize);
         p.has_xnaddr = true;
