@@ -705,6 +705,67 @@ void Wheel(uint32_t hud) {
     if (std::abs(g_scroll[port].load(std::memory_order_relaxed)) >= kNotch) Scroll(port, inventory, player, open, kind);
 }
 
+namespace {
+
+// The view a weapon camera's aim is drawn through: the player camera's springs. Each player's camera struct
+// ([0x8470DC], kPlayerSize apart, the game player at +0x3E0) has its view's springs at [+4] + 4 (0x48510 eases them
+// each frame), one an axis: the pitch's from +0x2C (current +0x30, target +0x34, velocity +0x38) and the yaw's from
+// +0x54 (current +0x58, target +0x5C, velocity +0x60). After the turn the weapon camera's aim becomes their targets
+// (0x3A3A5, 0x3A3F1). An axis whose flag is set (+0x90 the pitch's, +0x91 the yaw's) locks (+0x8D, +0x8E) once it
+// comes within a small step of its target and follows it exactly from then on; in weapon mode those flags are set only
+// while the yaw is that close (0x39E70), and 0x48510 clears the locks while they are not. A weapon taken out while the
+// camera still moved starts the springs behind their targets, and a mouse turning all the while kept them from ever
+// catching up: the aim stayed eased, slow and short, until the mouse rested. While the mouse turns a weapon camera
+// (Turn notes its player's springs, kSnapUs), the hook on 0x48510 puts each unlocked axis on its target, as the game
+// has set it, with no velocity before the update runs: the view is on the aim at once, whatever limits the game held
+// the target to, and once the mouse rests the springs lock as the game has them.
+constexpr uint32_t kPlayerSize = 0x770, kPlayerGame = 0x3E0;
+constexpr uint32_t kSprings = 0x04, kFrozen = 0x92;
+struct SpringAxis {
+    uint32_t locked, current, target, velocity;
+};
+constexpr SpringAxis kSpringPitch{0x8D, 0x30, 0x34, 0x38}, kSpringYaw{0x8E, 0x58, 0x5C, 0x60};
+constexpr int64_t kSnapUs = 50000;
+std::atomic<uint32_t> g_snap_springs[kPorts] = {};
+std::atomic<int64_t> g_snap_us[kPorts] = {};
+
+// the springs the player's weapon camera aim is drawn through, or 0
+uint32_t WeaponSprings(uint32_t player) {
+    if (!Readable(kPlayer, 4)) return 0;
+    const uint32_t first = R32(kPlayer);
+    for (int p = 0; p < kPorts; p++) {
+        const uint32_t pc = first + uint32_t(p) * kPlayerSize;
+        if (!Readable(pc + kPlayerGame, 4) || R32(pc + kPlayerGame) != player) continue;
+        const uint32_t cam = R32(pc + kPlayerCamera);
+        return Readable(cam + kSprings, kFrozen + 1) ? cam + kSprings : 0;
+    }
+    return 0;
+}
+
+}  // namespace
+
+// 0x48510 (the springs in esi), before it runs: springs the mouse turns a weapon camera through go onto their targets
+void SnapSprings(uint32_t springs) {
+    const int64_t now = Now();
+    for (int p = 0; p < kPorts; p++) {
+        if (g_snap_springs[p].load(std::memory_order_relaxed) != springs ||
+            now - g_snap_us[p].load(std::memory_order_relaxed) >= kSnapUs)
+            continue;
+        if (!Readable(springs, kFrozen + 1)) return;
+        const uint8_t* m = mem::Base();
+        if (m[springs + kFrozen]) return;
+        for (const SpringAxis& a : {kSpringPitch, kSpringYaw}) {
+            if (m[springs + a.locked]) continue;
+            const float to = RF(springs + a.target);
+            if (!std::isfinite(to)) continue;
+            WF(springs + a.current, to);
+            WF(springs + a.velocity, 0.0f);
+            LOG_FIRST(1, "mouse: the mouse puts the weapon view on the aim");
+        }
+        return;
+    }
+}
+
 // 0x2F99A0, the camera's turn by the stick (see the hook at the end of the file), after it has run: this frame's
 // motion of the player whose actions they are (the first four of the actions structs, one a port), added to the turn
 // it worked out. The callers take that turn two ways. Most apply
@@ -797,6 +858,13 @@ void Turn(uint32_t actions, uint32_t turn, uint32_t ret, uint32_t player) {
     const float now = lo <= hi ? std::clamp(was + pitch, std::min(lo, was), std::max(hi, was)) : was + pitch;
     WF(turn + kPitch, now);
     WF(turn + kPitchEased, RF(turn + kPitchEased) + (now - was));
+    // the weapon camera's aim is drawn through the player camera's springs, which may not have locked on it yet
+    if (ret == kWeaponTurnReturn) {
+        if (const uint32_t springs = WeaponSprings(player)) {
+            g_snap_springs[port].store(springs, std::memory_order_relaxed);
+            g_snap_us[port].store(Now(), std::memory_order_relaxed);
+        }
+    }
 }
 
 // 0x3F4E0 (the player in eax), before it runs. In a tank the driver aims it: their camera, [player+0x3E4], keeps
@@ -951,6 +1019,8 @@ void TankAim(uint32_t) {}
 
 void Wheel(uint32_t) {}
 
+void SnapSprings(uint32_t) {}
+
 }  // namespace mouse
 
 #endif
@@ -987,4 +1057,16 @@ X86_EXTERN_FUNC(__imp__sub_0003F4E0);
 X86_FUNC(sub_0003F4E0) {
     mouse::TankAim(ctx.eax);
     __imp__sub_0003F4E0(ctx, base);
+}
+
+// 0x48510 (the springs in esi, the frame's time on the stack): eases a camera's view springs to their targets, or
+// holds a locked axis on its target; a weapon camera the mouse turns gets its springs on the targets first
+// (mouse::SnapSprings)
+namespace mouse {
+void SnapSprings(uint32_t springs);
+}
+X86_EXTERN_FUNC(__imp__sub_00048510);
+X86_FUNC(sub_00048510) {
+    mouse::SnapSprings(ctx.esi);
+    __imp__sub_00048510(ctx, base);
 }
