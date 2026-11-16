@@ -802,6 +802,10 @@ struct Target {
     std::vector<uint8_t> read;    // what Sync left in guest memory
     ImageRef fb;                  // copy read by draws that sample the target they render to
     uint64_t fb_draw = 0;         // the draw fb was copied for, which its other stages reading the target share
+    // the last draw that read fb, its pixel shader and writes_ then: the next draw, same shader, nothing between,
+    // reads the same copy (Feedback's run)
+    uint64_t fb_reader = 0, fb_writes = 0;
+    uint32_t fb_ps = 0;
     // a depth target read as a 32 bit color texture: its bytes as color, R the top depth byte (DepthBytes)
     ImageRef zb;
     VkFormat fmt = kBgra;
@@ -1745,6 +1749,7 @@ private:
     std::unordered_map<uint64_t, int> pos_w_;
     uint64_t presents_ = 0;
     uint64_t draw_serial_ = 0;  // draws so far, Target::fb_draw
+    uint64_t writes_ = 0;       // clears, uploads, copies and passes into images so far, Target::fb_writes
     uint64_t fur_marked_ = ~0ull;  // the frame_ a draw last marked fur in its target's alpha (ProgramShading::unsharpened)
     // the target a ProgramShading::glow_capped draw last went into, and the frame_ it did (kTexFurGlow)
     const Target* fur_glow_rt_ = nullptr;
@@ -3148,6 +3153,7 @@ ImageRef VulkanBackend::CreatePixelTexture(const std::vector<uint8_t>& px, uint3
 // CPU pixels of a color surface into its host target, scaled
 void VulkanBackend::UploadTarget(Target& t, const Surface& s) {
     g_perf.rtups++;
+    writes_++;
     TextureDesc d;
     if (!Describe(s.header, d) || Format(d.format).depth) return;
     std::vector<uint8_t> px;
@@ -3351,6 +3357,7 @@ VkPipeline VulkanBackend::EnsurePassPipeline(const char* hlsl, const char* entry
 // a full screen pass into target: src are t0 to t2, p's floats (8 unless said) are b1, blend >= 0 blends by that factor
 void VulkanBackend::Pass(const char* hlsl, const char* entry, VkFormat rtv, Image& target, uint32_t w, uint32_t h,
                          const VkImageView src[3], const float* p, float blend, uint32_t floats) {
+    writes_++;
     VkPipeline pso = EnsurePassPipeline(hlsl, entry, rtv, blend);
     if (!pso) return;
     Alloc cb = Upload(kPassCbBytes);
@@ -3703,12 +3710,21 @@ Image* VulkanBackend::BindTargetTexture(const State& s, int stage, const Texture
     if (!t.depth && &t == fur_glow_rt_ && fur_glow_frame_ == frame_) info.flags |= kTexFurGlow;  // kept on stage 0 alone
     // left bound but never read (particles over a pass that read the frame): the same shader, no copy or resolve
     if (!((stages.sampled >> stage) & 1)) return nullptr;
-    // the console reads the pixels it is about to overwrite: give the draw a copy, one for all its stages
+    // the console reads the pixels it is about to overwrite: give the draw a copy, one for all its stages. A run of
+    // draws of one pixel shader reading it, nothing else drawn or written between, shares the first one's: a jet's
+    // exhaust ripples (CHAREFFECTS_TYPE_PERTURBATION, ~40 quads an aircraft) each read the frame's alpha, and a copy
+    // of the whole upscaled frame apiece, the pass ended and the samples resolved, took the GPU 15-25 ms a frame
+    // with two aircraft in view. Each misses only the ripples before it in the run, where they overlap
     if (feedback) {
+        uint32_t ps = s.ps ? s.ps->handle : 0;
         if (!t.fb || t.fb_draw != draw_serial_) {
+            bool run = t.fb && t.fb_reader + 1 == draw_serial_ && t.fb_writes == writes_ && t.fb_ps == ps;
             t.fb_draw = draw_serial_;
-            if (!Feedback(t)) return nullptr;
+            if (!run && !Feedback(t)) return nullptr;
         }
+        t.fb_reader = draw_serial_;
+        t.fb_writes = writes_;
+        t.fb_ps = ps;
         stages.view[stage] = t.fb->view;
         return t.fb.get();
     }
@@ -5858,6 +5874,7 @@ void PushScaledRect(const Target& t, int x0, int y0, int x1, int y1, std::vector
 
 // rs: the rects buffer, reused across targets
 void VulkanBackend::ClearTarget(Target& t, const State& s, const ClearArgs& c, std::vector<VkClearRect>& rs) {
+    writes_++;
     rs.clear();
     if (c.count && c.rects) {
         for (uint32_t i = 0; i < c.count; i++) {
@@ -5916,6 +5933,7 @@ void VulkanBackend::Clear(const State& s, uint32_t count, const uint8_t* rects, 
 
 // one Blit per rect: for formats that differ
 void VulkanBackend::CopyByDraw(const Target& src_t, Image& src, Target& dst_t, const CopyList& l) {
+    writes_++;
     WriteRes(dst_t, false);
     Transition(src, kRead);
     SetTargets(dst_t.res.get(), nullptr);
@@ -5949,6 +5967,7 @@ void VulkanBackend::CopyByDraw(const Target& src_t, Image& src, Target& dst_t, c
 
 // one image copy per rect, clamped to both targets
 void VulkanBackend::CopyByRegion(const Target& src_t, Image& src, Target& dst_t, const CopyList& l) {
+    writes_++;
     WriteRes(dst_t, false);
     Transition(src, kSrc);
     Transition(*dst_t.res, kDst);
