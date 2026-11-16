@@ -436,8 +436,13 @@ constexpr const char* kStrandVs = R"(
             v.xy += rod.xy + lean.xy;
             sways = true;
         }
+        // only a vertex that moved is projected again: one of length 0 (the palms' bare skin) lies on the skin in every
+        // shell, at the program's own position bit for bit, and the round trip's rounding put it a hair off, which on a
+        // triangle seen edge on (depth steep across the screen) passed or failed the depth test against the skin and the
+        // other shells the whole triangle at once, frame by frame: thin triangles on the palms lit up
         float pw = -v.z;
-        if ((hangs || grow > 0 || sways) && pw > 1e-3) {
+        bool moved = grow > 0 || v.x != x || v.y != y;
+        if (moved && pw > 1e-3) {
             float px = (c[99].x * v.x + c[99].z * v.z + c[99].w) / pw * c[58].x + c[59].x;
             float py = (c[100].y * v.y + c[100].z * v.z + c[100].w) / pw * c[58].y + c[59].y;
             if (grow > 0) {
