@@ -1743,6 +1743,9 @@ private:
     uint64_t presents_ = 0;
     uint64_t draw_serial_ = 0;  // draws so far, Target::fb_draw
     uint64_t fur_marked_ = ~0ull;  // the frame_ a draw last marked fur in its target's alpha (ProgramShading::unsharpened)
+    // the target a ProgramShading::glow_capped draw last went into, and the frame_ it did (kTexFurGlow)
+    const Target* fur_glow_rt_ = nullptr;
+    uint64_t fur_glow_frame_ = ~0ull;
     State sprite_;              // a fixed function point sprite's state as the console draws it (SpriteStage)
     double fps_ = 0;
     // frame generation (app::Settings::frame_generation): the frame's pictures (Keep, Between), its own last, and a
@@ -3694,6 +3697,7 @@ Image* VulkanBackend::BindTargetTexture(const State& s, int stage, const Texture
         info.flags |= kTexWide;
     }
     if (t.depth) info.shadow = ShadowDepthKind(d.format);
+    if (!t.depth && &t == fur_glow_rt_ && fur_glow_frame_ == frame_) info.flags |= kTexFurGlow;  // kept on stage 0 alone
     // left bound but never read (particles over a pass that read the frame): the same shader, no copy or resolve
     if (!((stages.sampled >> stage) & 1)) return nullptr;
     // the console reads the pixels it is about to overwrite: give the draw a copy, one for all its stages
@@ -5543,6 +5547,9 @@ void VulkanBackend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t
     DrawTextures stages{};  // zeroed: KeptDraw compares it whole
     if (!BindStageTexturesAndTargets(s, stages, sh.shading && g_program_shading[sh.shading - 1].screen))
         return CountedSkip(s, "textures");
+    // kTexFurGlow: only the glow gather's frame, stage 0 beside a depth buffer's bytes on stage 1
+    for (int i = 0; i < 4; i++)
+        if (i != 0 || !(stages.info[1].flags & kTexDepthBytes)) stages.info[i].flags &= uint8_t(~kTexFurGlow);
     lap = PerfClock::now();  // bind times itself
     PixelKey pk = MakePixelKey(s, stages.info);
     pk.quad = sh.quad;
@@ -5561,6 +5568,10 @@ void VulkanBackend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t
     const ProgramShading* zps = sh.shading ? &g_program_shading[sh.shading - 1] : nullptr;
     // ProgramShading::unsharpened: what the draw covers marked in the target's alpha for FSR to leave soft, and for
     // the depth of field to blur by fur's depth (DepthBytes)
+    if (zps && zps->glow_capped && k.has_rt && (k.wmask & 8)) {
+        fur_glow_rt_ = draw_rt_;
+        fur_glow_frame_ = frame_;
+    }
     if (zps && zps->unsharpened && k.has_rt && (k.wmask & 7) && (app::Get().fsr || DepthOfFieldLately())) {
         k.wmask |= 8 | kWmaskAlphaMax;
         fur_marked_ = frame_;

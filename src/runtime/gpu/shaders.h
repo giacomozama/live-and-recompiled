@@ -25,7 +25,15 @@ enum : uint8_t {
     // a depth buffer's bytes read as color (stage 0 of a programmable draw: a depth of field's focus mask), bits 5
     // and 6 the DepthByteLayout: nearer pixels around lend the draw their output (DepthSpread)
     kTexDepthBytes = 16,
+    // the frame a ProgramShading::glow_capped draw went into this frame, read by a pass with a depth buffer's bytes
+    // on stage 1 (the title's glow gather): its alpha read capped at kFurGlowAlpha
+    kTexFurGlow = 8,
 };
+// The title's laser glow (F3 capture 084853_0, 2026-11-16) gathers the frame where the beams' sprites marked it, each
+// pixel by the frame's alpha: the sprites' own a quarter or so at most, opaque draws none, but fur's skin pass and
+// shells write theirs, near 1, so a tail crossing a beam glows in full. The console's did too; super fur's coat, fuller
+// and upscaled, made it a splat of light many times the beam's. Fur reads no higher than the sprites' strongest
+constexpr float kFurGlowAlpha = 0.3f;
 constexpr int kTexDepthLayoutShift = 5;
 
 struct PixelKey {
@@ -125,6 +133,8 @@ struct ProgramShading {
     // their output alpha into the target's alpha, the largest kept (kWmaskAlphaMax), the frame's otherwise 0 (the
     // title clears it so and blends no draw by it), and EASU upscales those pixels plainly and RCAS leaves them be
     bool unsharpened = false;
+    // when set, the title's glow gather reads the alpha of the frame its draws went into capped (kTexFurGlow)
+    bool glow_capped = false;
 };
 inline std::vector<ProgramShading> g_program_shading;  // filled before the title boots, unchanged after
 

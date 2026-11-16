@@ -1056,6 +1056,7 @@ std::string PixelHlsl(const PixelKey& k) {
             body += TexFetch(k, i);
             body += Unoffset(k.tex[i], i);
             body += Hooks().Fetched(k.tex[i], i);
+            if (k.tex[i].flags & kTexFurGlow) body += F("t%d.a = min(t%d.a, %g);\n", i, i, kFurGlowAlpha);
         }
         for (int i = 0; i < 4; i++) {
             uint32_t m = (k.tex_modes >> (i * 5)) & 0x1F;
