@@ -567,6 +567,22 @@ std::atomic<int64_t> g_nudge_us[kPorts] = {};
 std::atomic<int> g_nudge_x[kPorts] = {};
 constexpr int64_t kNudgeUs = 60000;
 
+// when Turn last saw a player flying an aircraft (their weapon camera's turn, state kFlying): the plane steers by the
+// stick, so while they fly no camera's turn takes the motion (another camera turned in the same frame refreshed
+// g_turned_us and Pad never pushed the stick)
+std::atomic<int64_t> g_fly_us[kPorts] = {};
+constexpr int64_t kFlyUs = 150000;
+bool Flying(int port, int64_t now) { return now - g_fly_us[port].load(std::memory_order_relaxed) < kFlyUs; }
+
+// XBE_MOUSE_TRACE=1: while a player flies, the turns Turn sees and what Pad does with the motion
+bool Trace() {
+    static const bool on = [] {
+        const char* e = std::getenv("XBE_MOUSE_TRACE");
+        return e && *e && *e != '0';
+    }();
+    return on;
+}
+
 // A match's weapon or items wheel, held open: it picks the slot the left stick points at, so the mouse points the left
 // stick instead of turning the camera. The HUD (0x1C7C60, its object hud) keeps three wheels, each a state at
 // [hud+0x48] (the weapons, Y held, the slot at [[hud+0x38]+0x34]), [hud+0x4C] (the chosen slot's own choices, the one
@@ -800,7 +816,23 @@ void Turn(uint32_t actions, uint32_t turn, uint32_t ret, uint32_t player) {
         const float fov = display::CameraFov();
         const bool flying = Readable(player + kPlayerState, 4) && R32(player + kPlayerState) == kFlying;
         const int stick = fov < kScopedFov ? 1 : flying ? 2 : 0;
+        if (Trace()) {
+            static std::atomic<int> was[kPorts] = {};
+            if (stick != was[port].exchange(stick))
+                LOGR("mouse trace: p%u weapon camera %s (fov %.1f, state %X)", port,
+                     stick == 1 ? "scoped, stick" : stick == 2 ? "aircraft, stick" : "mouse turn", fov,
+                     Readable(player + kPlayerState, 4) ? R32(player + kPlayerState) : 0u);
+        }
+        if (flying) g_fly_us[port].store(Now(), std::memory_order_relaxed);
         if (stick) return;
+    }
+    if (warp::Multiplayer() && Flying(int(port), Now())) {
+        if (Trace()) {
+            static std::atomic<uint32_t> seen[kPorts] = {};
+            if (seen[port].exchange(ret) != ret)
+                LOGR("mouse trace: p%u flying, left the turn from %06X to the stick", port, ret);
+        }
+        return;
     }
     if (ret == kTankTurnReturn) g_tank_us[port].store(Now(), std::memory_order_relaxed);
     if (Aiming(int(port), Now())) return;
@@ -954,8 +986,19 @@ void Pad(int port, input::Pad& pad) {
         return;
     }
     g_wheel[port] = {};
-    // a camera Turn reaches takes the motion itself, the tank's aim TankAim; the stick is for the rest
-    if (Aiming(port, now) || now - g_turned_us[port].load(std::memory_order_relaxed) < kTurnedUs) {
+    const bool flying = warp::Multiplayer() && Flying(port, now);
+    if (flying && Trace()) {
+        static int64_t last[kPorts] = {};
+        if (now - last[port] >= 250000) {
+            last[port] = now;
+            LOGR("mouse trace: p%d pad flying: turned %lld ms ago, aiming %d, debt %.2f/%.2f, step %d/%d", port,
+                 (long long)((now - g_turned_us[port].load(std::memory_order_relaxed)) / 1000), int(Aiming(port, now)),
+                 l.x.debt, l.y.debt, l.x.step, l.y.step);
+        }
+    }
+    // a camera Turn reaches takes the motion itself, the tank's aim TankAim; the stick is for the rest (an aircraft's
+    // too, whatever turned before it)
+    if (!flying && (Aiming(port, now) || now - g_turned_us[port].load(std::memory_order_relaxed) < kTurnedUs)) {
         l.x.Reset(), l.y.Reset();
         if (warp::Multiplayer() && now - g_nudge_us[port].load(std::memory_order_relaxed) < kNudgeUs)
             Stick(pad, g_nudge_x[port].load(std::memory_order_relaxed), 0, southpaw);
