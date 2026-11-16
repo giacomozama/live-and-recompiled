@@ -504,7 +504,7 @@ void ConkerPageHintAlpha(X86Context& ctx, uint8_t* base) {
 // The prompts of single player's pause screen ("A Quit?", "B Resume", "Y Options") are the pause UI's: each button's
 // icon an image the sprite routines (0x356000..0x35A000) draw as a quad already in the back buffer's pixels, by
 // DrawVerticesUP from one of kSpriteDraws (the vertices on the stack: count, then data and stride). The icons are the
-// UI's own copies of a_butt, b_butt, x_butt and y_butt: 32 by 32 DXT textures, told apart by their color (Button).
+// UI's own copies of a_butt, b_butt, x_butt and y_butt, told apart by the names they were loaded under (Button).
 // ConkerSpriteDraw keeps the box of each quad drawn with one of them on stage 0, the shadow's drawn just before it in
 // with it; a prompt reaches from its icon to the next icon right of it, its label between. menus::Paused, from the
 // pause screen's input each frame, says the screen is up.
@@ -555,60 +555,73 @@ void LogPrompts(float x, float y, int face, int64_t now) {
     }
 }
 
-// Textures that are pictures, never a button's icon, though their colours could pass for one: the Live icons
-// (..\frontend\multiplayer\liveIcons\player and signedOut; player is the icon of a join's failure notice), which
-// 0x227450 finds by name through 0x75D90 (cdecl, the name at [esp+4], the resource written to [esi]). A texture
-// resource holds its D3D texture at +0x24 (A_BUTT's resource 0xA32F60, the texture the sprite draws 0xA32F84).
-// Game thread
-std::set<uint32_t> g_pictures;
-constexpr uint32_t kResourceTexture = 0x24;
-
 }  // namespace
 
-X86_EXTERN_FUNC(__imp__sub_00075D90);
-X86_FUNC(sub_00075D90) {
-    const uint32_t name = R32(ctx.esp + 4), out = ctx.esi;
-    __imp__sub_00075D90(ctx, base);
-    if (!out || !name || !R32(out)) return;
-    const char* s = static_cast<const char*>(kernel::HostPtr(name));  // a few thousand lookups a second: no copy
-    if (std::string_view(s, strnlen(s, 128)).find("liveIcons") != std::string_view::npos)
-        g_pictures.insert(R32(out) + kResourceTexture);
+// The face buttons' icons, known by the name each was loaded under: every texture resource the game uses comes from
+// 0x75E90 (cdecl: the name at [esp+4], a bare one like "a_butt" from a table or a path like
+// "..\\frontend\\pause\\a_butt"; the resource written to the word at [esp+8]; 0x75D90 is its cached front). A resource
+// holds its D3D texture at +0x24 (A_BUTT's resource 0xA32F60, the texture the sprite draws 0xA32F84). An icon is
+// a_butt, b_butt, x_butt or y_butt, wherever it lives; any other load at the same address drops the address, and a
+// texture whose texels moved since is not taken either, so a freed icon's memory reused by some other picture is
+// not drawn as a key
+namespace {
+struct ButtonIcon {
+    int face;        // 0 A, 1 B, 2 X, 3 Y
+    uint32_t texels;  // the texture's data word (+4) when loaded
+};
+std::mutex g_button_icon_lock;
+std::unordered_map<uint32_t, ButtonIcon> g_button_icons;  // by the D3D texture, under g_button_icon_lock
+constexpr uint32_t kResourceTexture = 0x24;
+
+// the face button an icon's resource name is (its last path part, before any extension, any case), -1 none
+int FaceOfName(std::string_view name) {
+    if (const size_t slash = name.find_last_of("\\/"); slash != std::string_view::npos) name.remove_prefix(slash + 1);
+    if (const size_t dot = name.find('.'); dot != std::string_view::npos) name = name.substr(0, dot);
+    if (name.size() != 6) return -1;
+    char lower[6];
+    for (int i = 0; i < 6; i++) lower[i] = char(std::tolower(static_cast<unsigned char>(name[i])));
+    if (std::string_view(lower + 1, 5) != "_butt") return -1;
+    switch (lower[0]) {
+        case 'a': return 0;
+        case 'b': return 1;
+        case 'x': return 2;
+        case 'y': return 3;
+        default: return -1;
+    }
+}
+}  // namespace
+
+X86_EXTERN_FUNC(__imp__sub_00075E90);
+X86_FUNC(sub_00075E90) {
+    const uint32_t name = R32(ctx.esp + 4), out = R32(ctx.esp + 8);
+    __imp__sub_00075E90(ctx, base);
+    if (!out || !name) return;
+    const uint32_t res = R32(out);
+    if (!res) return;
+    const uint32_t tex = res + kResourceTexture;
+    const char* s = static_cast<const char*>(kernel::HostPtr(name));
+    const int face = FaceOfName(std::string_view(s, strnlen(s, 256)));
+    std::lock_guard lock(g_button_icon_lock);
+    if (face < 0) {
+        g_button_icons.erase(tex);
+        return;
+    }
+    g_button_icons[tex] = {face, R32(tex + 4)};
+    if (TraceMouse()) LOGR("menu mouse: button %d icon %s, texture %08X", face, s, tex);
 }
 
 namespace {
 
-// the face button a texture is the icon of (0 A, 1 B, 2 X, 3 Y), -1 for any other: a 32 by 32 DXT texture (format
-// word +0xC: color 15:8, log2 sizes from bit 20) whose colored blocks average green, red, blue or yellow (a
-// yellowish green for A, an orange yellow for Y). Each block's two end colors (RGB565 at +8 and +0xA of DXT3 and
-// DXT5's 16 bytes) count, greys and blacks not.
+// the face button a texture is the icon of (0 A, 1 B, 2 X, 3 Y), -1 for any other (ButtonIcon)
 int Button(uint32_t tex) {
-    static std::unordered_map<uint64_t, int> known;  // by the texture and its texels, game thread
-    const uint64_t key = uint64_t(tex) << 32 | R32(tex + 4);
-    if (const auto it = known.find(key); it != known.end()) return it->second;
-    int& b = known[key];
-    b = -1;
-    if (g_pictures.count(tex)) return b;
-    const uint32_t format = R32(tex + 0xC), color = format >> 8 & 0xFF;
-    if ((color != 0x0E && color != 0x0F) || (format >> 20 & 0xF) != 5 || (format >> 24 & 0xF) != 5) return b;
-    const uint32_t texels = mem::VirtualFromPhysical(R32(tex + 4) & 0x0FFFFFFF);
-    constexpr uint32_t kBytes = 8 * 8 * 16;
-    if (!texels || !mem::IsCommitted(texels) || !mem::IsCommitted(texels + kBytes - 1)) return b;
-    float r = 0, g = 0, bl = 0;
-    for (uint32_t k = 0; k < 64; k++)
-        for (uint32_t e = 0; e < 2; e++) {
-            const uint16_t c = kernel::G<uint16_t>(texels + k * 16 + 8 + e * 2);
-            const float cr = float(c >> 11) / 31, cg = float(c >> 5 & 63) / 63, cb = float(c & 31) / 31;
-            if (std::max({cr, cg, cb}) - std::min({cr, cg, cb}) < 0.25f) continue;
-            r += cr, g += cg, bl += cb;
-        }
-    if (r + g + bl <= 0) return b;
-    // green over red is about 1.2 for A, 0.8 for Y and 0.4 for B
-    if (bl > r && bl > g) b = 2;
-    else if (g > r && g > bl) b = 0;
-    else if (r > g * 1.8f && r > bl) b = 1;
-    else if (r > bl && g > bl) b = 3;
-    if (TraceMouse()) LOGR("menu mouse: texture %08X color %.2f %.2f %.2f, button %d", tex, r, g, bl, b);
-    return b;
+    std::lock_guard lock(g_button_icon_lock);
+    const auto it = g_button_icons.find(tex);
+    if (it == g_button_icons.end()) return -1;
+    if (R32(tex + 4) != it->second.texels) {
+        g_button_icons.erase(it);
+        return -1;
+    }
+    return it->second.face;
 }
 
 }  // namespace
