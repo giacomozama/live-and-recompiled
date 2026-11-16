@@ -346,7 +346,7 @@ X86_FUNC(sub_002A7B60) {
     uint32_t rate = Rate();
     if (!display::g_frame_rate && display::Shown() / rate != app::Get().frame_generation) display::SetFrameRate(0);  // the monitor changed
     if (rate != shown) {
-        LOGR("display: %u FPS%s", rate, rate > 30 ? ", ticks from the frame time" : " (the console's)");
+        LOGI("display: %u FPS%s", rate, rate > 30 ? ", ticks from the frame time" : " (the console's)");
         shown = rate;
     }
     if (rate > 30) {
@@ -397,7 +397,7 @@ void ConkerCameraAspect(X86Context& ctx, uint8_t* base) {
     std::memcpy(&vfov, &v, 4);
     if (std::isfinite(vfov) && vfov > 0.0f) display::g_camera_fov.store(vfov, std::memory_order_relaxed);
     if (frame != shown) {
-        LOGR("display: camera fov %.2f x %.2f degrees, drawn %.2f wide", ctx.xmm[1].f[0], vfov,
+        LOGI("display: camera fov %.2f x %.2f degrees, drawn %.2f wide", ctx.xmm[1].f[0], vfov,
              ctx.xmm[1].f[0] * frame * 0.75f);
         shown = frame;
     }

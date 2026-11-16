@@ -269,7 +269,7 @@ const char* SchemeName(int scheme) {
 void SetScheme(int port, int scheme) {
     if (port < 0 || port >= input::kPorts || scheme < 0 || scheme >= kSchemes) return;
     if (g_scheme[port].exchange(scheme) != scheme)
-        LOGR("input: player %d's keys follow the %s controls", port + 1, SchemeName(scheme));
+        LOGI("input: player %d's keys follow the %s controls", port + 1, SchemeName(scheme));
 }
 
 bool Southpaw(int scheme) { return scheme == 3 || scheme == 4; }

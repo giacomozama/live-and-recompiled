@@ -780,7 +780,7 @@ void ConkerHudQuad(X86Context& ctx, uint8_t* base) {
               kTriggerKey);
     for (uint32_t c = 0; c < 4; c++) W32(ctx.esp + 0xC + c * 4, g_trigger_corners + c * 8);
     static bool told = false;
-    if (!std::exchange(told, true)) LOGR("prompts: the weapon panel's trigger shows its key");
+    if (!std::exchange(told, true)) LOGI("prompts: the weapon panel's trigger shows its key");
 }
 
 // [[hook]] at 0x1CB052, 0x1CAD90's quad drawn (its corners still pushed, ebx the color, esi the texture): the trigger's
@@ -807,7 +807,7 @@ void ConkerHudQuadDrawn(X86Context& ctx, uint8_t* base) {
         SetTexture(ctx, ctx.esi);
         ctx.eax = eax, ctx.ebx = ebx;
         static bool told = false;
-        if (!std::exchange(told, true)) LOGR("prompts: the weapon panel's icons show their keys");
+        if (!std::exchange(told, true)) LOGI("prompts: the weapon panel's icons show their keys");
         return;
     }
 }
