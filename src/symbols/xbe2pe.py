@@ -35,7 +35,7 @@ for i in range(u32(0x11C)):
     img[va - base:va - base + n] = d[raw:raw + n]
 
 names = {}
-mapping = root / cfg['xbe']['out'] / 'x86_func_mapping.cpp'
+mapping = Path('.') / cfg['xbe']['out'] / 'x86_func_mapping.cpp'
 if mapping.exists():
     for a in re.findall(r'\{0x([0-9A-F]+)u, sub_', mapping.read_text()):
         names[int(a, 16)] = 'sub_%08X' % int(a, 16)
