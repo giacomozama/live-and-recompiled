@@ -72,6 +72,13 @@ void OpaqueDraws(bool on);
 // stencil itself keeps its test, on the low six bits. The commands pushed before are read first. Game thread
 void OutlineMark(uint8_t mark);
 
+// While gpu::g_outlines is on: one object's draws begin (true) or end (false). Once a draw of the object writes the
+// title's brightest glow into the stencil (bits 4..5 both set, as 0xDB6F0 does for a bullet's hit flash), it and the
+// object's later draws leave the outline marks as they are when they carry none, as see-through ones do, so a hit
+// flash on a player or vehicle doesn't cut holes in its outline. Returns the scope it replaced, to be passed back at
+// the end. The commands pushed before are read first. Game thread
+uint8_t OutlineObject(uint8_t scope);
+
 // Whether a title's loading screen, about to be drawn into the front buffer, should be drawn. Each one shown is a
 // Present the loader waits on, and those drawn unshown still cost the GPU their whole picture in the first frame
 // after, so none is: the first ask since the last Swap fades the picture to black, later ones keep the window black,

@@ -1027,6 +1027,8 @@ void d3d::SetVertexConstant(uint32_t reg, const std::array<float, 4>& v) {
 namespace {
 bool g_opaque = false;  // d3d::OpaqueDraws
 uint8_t g_outline_mark = 0;  // d3d::OutlineMark
+// d3d::OutlineObject: 0 outside an object, 1 in one, 2 in one whose draws leave the marks (a glowing effect)
+uint8_t g_outline_object = 0;
 // XBE_OUTLINE_TRACE: the draws under a mark this second, by what the marks made of them: depth test off, the title's
 // own stencil test kept, marked; and the stencil states the kept ones had
 struct OutlineCounts {
@@ -1067,6 +1069,12 @@ void d3d::OutlineMark(uint8_t mark) {
         std::snprintf(text, sizeof(text), "outline mark %u", unsigned(g_outline_mark));
         g_backend->Note(text);
     }
+}
+
+uint8_t d3d::OutlineObject(uint8_t scope) {
+    std::lock_guard<std::recursive_mutex> lock(g_lock);
+    Walk(Dev(kDevPush));
+    return std::exchange(g_outline_object, scope);
 }
 
 bool d3d::LoadingScreenWanted() {
@@ -1878,6 +1886,21 @@ void BackendDraw(uint32_t prim, uint32_t start, uint32_t count, const uint8_t* i
             // only the object's solid pieces carry its mark: what it draws see-through, writing no depth (a plane's
             // thruster flames, exhaust ripples, fur's shells), leaves the stencil's marks as they are
             mark_ = zwrite ? g_outline_mark : 0;
+            // a glowing effect's object (OutlineObject): from its first draw writing the brightest glow (the
+            // stencil's bits 4..5, 0xDB6F0's level 3: a bullet's hit flash) its unmarked draws are see-through to
+            // the marks, or the flash on a plane cut holes in its outline, each edged as one
+            if (g_outline_object == 1 && test && rides) {
+                constexpr uint32_t kGlow = 0x30;
+                if ((g_state.simple[gpu::kMStencilRef >> 2] & kGlow) == kGlow &&
+                    (g_state.simple[gpu::kMStencilWriteMask >> 2] & kGlow) == kGlow) {
+                    g_outline_object = 2;
+                    if (g_backend) g_backend->Note("outline: a glowing object, its draws leave the marks");
+                }
+            }
+            if (g_outline_object == 2 && !mark_) {
+                if (test) Keep(false);
+                return;
+            }
             if (mark_) {
                 OutlineCounts& c = g_outline_counts;
                 if (rides) {

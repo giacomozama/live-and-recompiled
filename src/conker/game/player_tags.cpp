@@ -398,6 +398,18 @@ uint32_t Viewer(uint32_t view) {
 
 }  // namespace
 
+// The world's objects are drawn one at a time by 0x13DB70 ([esp+4] the object, [esp+8] the view; called through
+// the object list's entry from 0xD9AAF), a bullet's hit flash among them: a star of 96 vertices writing depth and the
+// brightest glow (0xDB6F0: the stencil's bits 4..5 set), then a see-through cap of 66 that writes depth too. Each
+// call is one object to d3d::OutlineObject, so the flash leaves the outline of the plane it hits whole
+X86_EXTERN_FUNC(__imp__sub_0013DB70);
+X86_FUNC(sub_0013DB70) {
+    if (!gpu::g_outlines.load(std::memory_order_relaxed)) return __imp__sub_0013DB70(ctx, base);
+    const uint8_t outer = d3d::OutlineObject(1);
+    __imp__sub_0013DB70(ctx, base);
+    d3d::OutlineObject(outer);
+}
+
 X86_EXTERN_FUNC(sub_003488E0);
 X86_EXTERN_FUNC(__imp__sub_0007F4D0);
 X86_FUNC(sub_0007F4D0) {
