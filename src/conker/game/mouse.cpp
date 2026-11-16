@@ -976,8 +976,18 @@ void TankAim(uint32_t player) {
     }
     if (!dx && !dy) return;
     LOG_FIRST(1, "mouse: look turns the aim mode (a tank, a zoomed aim)");
-    const float yaw = float(dx) * kDegreesPerCount * float(g_sensitivity[port]) / 100.0f;
-    float pitch = float(-dy) * kDegreesPerCount * float(g_sensitivity_y[port]) / 100.0f;
+    // a zoomed aim turns slower the more the view is zoomed in: the view's height (display::CameraFov, 50 degrees
+    // unzoomed) against the unzoomed one, as the tangents of their halves, would move the picture as far at any zoom,
+    // which felt sluggish zoomed far in; taken to kZoomPower it slows less
+    float zoom = 1.0f;
+    if (!tank) {
+        constexpr float kUnzoomedFov = 50.0f, kHalfRadians = 3.14159265f / 360.0f, kZoomPower = 0.7f;
+        const float fov = display::CameraFov();
+        if (fov > 0.0f && fov < kUnzoomedFov)
+            zoom = std::pow(std::tan(fov * kHalfRadians) / std::tan(kUnzoomedFov * kHalfRadians), kZoomPower);
+    }
+    const float yaw = float(dx) * kDegreesPerCount * float(g_sensitivity[port]) / 100.0f * zoom;
+    float pitch = float(-dy) * kDegreesPerCount * float(g_sensitivity_y[port]) / 100.0f * zoom;
     if (InvertTurn(int(port))) pitch = -pitch;
     WF(cam + kYaw, RF(cam + kYaw) - yaw);
     WF(cam + kPitch, RF(cam + kPitch) - pitch);
