@@ -364,7 +364,7 @@ void TraceOutline(uint32_t site, uint32_t kind, uint32_t view, uint32_t index, u
     lines++;
     LOGR("outlines: from %06X kind %u, view %u draws player %u (%08X), the view's player %08X: %s", site, kind, view,
          index, player, viewer,
-         mark < 0 ? "none (no viewer, itself, dead, or not a player)" : mark == 1 ? "teammate, green"
+         mark < 0 ? "none (no viewer, itself or its vehicle, dead, or not a player)" : mark == 1 ? "teammate, green"
          : mark == 2 ? "opponent, red" : "neutral vehicle, light blue");
 }
 
@@ -428,7 +428,11 @@ X86_FUNC(sub_0007F4D0) {
     // a player dead (health 0) keeps state 1 through the dying animation until the respawn wait (0x36), so its
     // corpse lost the outline only seconds after the kill; health 0 drops it at once
     const bool dead = player && !vehicle && kernel::G<int16_t>(player + kPlayerHealth) <= 0;
-    if (!player || !viewer || player == viewer || dead ||
+    // the vehicle the view's player is in (the byte at +0x135: 0 on foot, else 1 + the vehicle's index in these
+    // records, as 0x3F4E0 reads it) is part of the view's player, never outlined
+    constexpr uint32_t kPlayerVehicle = 0x135;
+    const bool own = vehicle && viewer && kernel::G<uint8_t>(viewer + kPlayerVehicle) == index + 1;
+    if (!player || !viewer || player == viewer || dead || own ||
         (kernel::R32(player + kPlayerKind) != kKindPlayer && !vehicle)) {
         TraceOutline(site, kind, view, index, player, viewer, -1);
         return __imp__sub_0007F4D0(ctx, base);
