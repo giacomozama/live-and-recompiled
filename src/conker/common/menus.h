@@ -76,4 +76,8 @@ void HudTextMade(uint32_t entry);
 void HudTextDrawing(uint32_t entry);
 void HudTextDrawn();
 
+// from a hook before 0x3D3981, as the text drawing 0x3D3D00 sends a glyph's quad (the four 28-byte vertices at
+// 0x807230): each vertex where it lands in the back buffer's pixels; false if it can't be placed. Game thread
+bool GlyphScreen(float sx[4], float sy[4]);
+
 }  // namespace menus

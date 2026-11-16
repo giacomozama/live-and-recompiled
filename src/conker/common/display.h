@@ -44,6 +44,16 @@ extern uint32_t g_look_up;
 // each frame
 extern bool g_hud_split;
 
+// settings.toml player_tags: what a match shows over the other players, the game's tag (0x347330): their names
+// (kTagNames, as on the console), a marker in place of the name (kTagMarkers: a triangle pointing down at them, green
+// for a teammate, red for an opponent, the game's own colours made solid), or no name (kTagOff). The tag's icons and a
+// waiting player's name with the time to their respawn stay. Read as each tag draws (player_tags.cpp)
+enum : uint32_t { kTagNames = 0, kTagMarkers = 1, kTagOff = 2 };
+extern uint32_t g_player_tags;
+// from the hook before 0x3D3981 (menus.cpp ConkerTextQuad), a glyph's quad about to be sent: while a marker draws, its
+// one glyph made the marker's triangle. Game thread
+void PlayerMarkerQuad();
+
 // The camera the game's draws go through ([0x84B868], its view at +0x10) for the runtime's motion blur
 // (gpu::ViewConstants::camera): its view in the vertex constants kCameraRegister to kCameraRegister + 2, a row for each
 // of view space's axes, and the frame (d3d::Presents) in kCameraRegister + 3, which no program of the game reads (the

@@ -26,6 +26,7 @@
 #include "xdk/d3d8.h"
 #include "xdk/hle.h"
 
+#include "common/display.h"
 #include "common/gamepad.h"
 #include "common/keyboard.h"
 #include "common/menus.h"
@@ -957,12 +958,10 @@ X86_FUNC(sub_003D3D00) {
     g_word = 0;
 }
 
-namespace {
-// the glyph's quad being sent (0x3D3981) in the back buffer's pixels; false if it can't be placed
-bool GlyphBox(float& x0, float& y0, float& x1, float& y1) {
+// the glyph's quad being sent (0x3D3981): each vertex in the back buffer's pixels; false if it can't be placed
+bool menus::GlyphScreen(float sx[4], float sy[4]) {
     constexpr uint32_t kQuad = 0x807230, kVertex = 0x1C;
     constexpr size_t kC0 = 96, kScale = 96 - 38, kOffset = 96 - 37;  // c0, c-38, c-37 in hardware order
-    x0 = 1e9f, y0 = 1e9f, x1 = -1e9f, y1 = -1e9f;
     d3d::FlushPending();
     std::lock_guard lock(d3d::Lock());
     const gpu::State& st = d3d::State();
@@ -981,8 +980,18 @@ bool GlyphBox(float& x0, float& y0, float& x1, float& y1) {
             x = c[0] / c[3] * st.vsc[kScale][0] + st.vsc[kOffset][0];
             y = c[1] / c[3] * st.vsc[kScale][1] + st.vsc[kOffset][1];
         }
-        x0 = std::min(x0, x), x1 = std::max(x1, x), y0 = std::min(y0, y), y1 = std::max(y1, y);
+        sx[i] = x, sy[i] = y;
     }
+    return true;
+}
+
+namespace {
+// the glyph's quad being sent (0x3D3981) in the back buffer's pixels; false if it can't be placed
+bool GlyphBox(float& x0, float& y0, float& x1, float& y1) {
+    float sx[4], sy[4];
+    if (!menus::GlyphScreen(sx, sy)) return false;
+    x0 = std::min({sx[0], sx[1], sx[2], sx[3]}), x1 = std::max({sx[0], sx[1], sx[2], sx[3]});
+    y0 = std::min({sy[0], sy[1], sy[2], sy[3]}), y1 = std::max({sy[0], sy[1], sy[2], sy[3]});
     return true;
 }
 
@@ -991,6 +1000,7 @@ bool GlyphBox(float& x0, float& y0, float& x1, float& y1) {
 // [[hook]] before 0x3D3981, a glyph's quad sent: into Yes's or No's box, or the HUD prompt's label's
 void ConkerTextQuad(X86Context& ctx, uint8_t* base) {
     (void)ctx, (void)base;
+    display::PlayerMarkerQuad();
     if (!g_word && !g_label_drawing) return;
     constexpr uint32_t kQuad = 0x807230;
     float x0, y0, x1, y1;

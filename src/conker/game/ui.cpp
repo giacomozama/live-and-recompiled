@@ -1987,6 +1987,10 @@ void Draw(double fps) {
                     Check("Unstretched multiplayer HUD", &display::g_hud_split);
                     Hint("On a widescreen display, the HUD in a multiplayer match keeps its shape, each part at the left, "
                          "the middle or the right of the screen. Off: it stretches across the screen.", true);
+                    int tags = int(std::min<uint32_t>(display::g_player_tags, display::kTagOff));
+                    if (Segmented("Player names", &tags, {"Names", "Markers", "Off"})) display::g_player_tags = uint32_t(tags);
+                    Hint("Over other players in a match: their names, or a marker, green for teammates and red for "
+                         "opponents.", true);
                 }
 
                 if (Section("Menus")) {
