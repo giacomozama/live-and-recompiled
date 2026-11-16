@@ -64,7 +64,8 @@ extern bool g_player_outlines;
 // blue then light grey. Each place the game picks green or red by team follows it (player_tags.cpp): by its test
 // 0x3488E0 the tags' text (0x800EF4) and the weapon's target colour (0x1D3CB0), the outlines (gpu::g_team_colors);
 // by the team itself the score (0x1CB330), the team icons (0x1CC500, and over a player 0x357CF0), the flag held
-// (0x1EC7F0 / 0x1EC870) and the flag over its carrier (0x34822F). Read as each draws
+// (0x1EC7F0 / 0x1EC870), the flag over its carrier (0x34822F) and the message log's colour table (0x1ED983). Read as
+// each draws
 enum : uint32_t { kTeamGreenRed = 0, kTeamBlueOrange = 1 };
 extern uint32_t g_team_colors;
 // 0x1F25F0 about to add a text entry from site (its return address): the team score's in the chosen team colours,

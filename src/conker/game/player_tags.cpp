@@ -299,6 +299,21 @@ void ConkerCarrierFlag(X86Context& ctx, uint8_t* base) {
     SetF(r, c[0] / 255.0f), SetF(g, c[1] / 255.0f), SetF(b, c[2] / 255.0f);
 }
 
+// The message log (kills, the flag taken; 0x1ECF40 draws it by 0x1ECEB0, whose lines take their colour (0x1ECDEB,
+// 0x1ECE68) from a table the caller builds on its stack, three bytes red green blue an entry: 0 the HUD's blue, 1
+// purple, 2 green 0x00 0xE1 0x0A, 3 red 0xFF 0x32 0x32, 4 white, 5 amber 0xF0 0xB9 0x32, 6 a dim green 0x32 0xB9 0x32.
+// [[hook]] at 0x1ED983, the call made (two arguments pushed, the table at [esp+0x4C]): its green and red in the chosen
+// team colours, the dim green a dim blue
+void ConkerMessageColours(X86Context& ctx, uint8_t* base) {
+    if (display::g_team_colors == display::kTeamGreenRed) return;
+    uint8_t* table = base + ctx.esp + 0x4C;
+    static constexpr uint8_t kGreen[3] = {0x00, 0xE1, 0x0A}, kRed[3] = {0xFF, 0x32, 0x32}, kDim[3] = {0x32, 0xB9, 0x32};
+    static constexpr uint8_t kDimBlue[3] = {0x46, 0x8C, 0xD2};
+    if (std::memcmp(table + 6, kGreen, 3) == 0) std::memcpy(table + 6, TeamColour(0, true), 3);
+    if (std::memcmp(table + 9, kRed, 3) == 0) std::memcpy(table + 9, TeamColour(1, true), 3);
+    if (std::memcmp(table + 18, kDim, 3) == 0) std::memcpy(table + 18, kDimBlue, 3);
+}
+
 void display::PlayerMarkerQuad() {
     if (!g_marking) return;
     float sx[4], sy[4];
