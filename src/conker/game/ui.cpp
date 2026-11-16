@@ -1788,9 +1788,14 @@ void Draw(double fps) {
                     int rate = 0;
                     for (int i = 0; i < 6; i++)
                         if (kRates[i] == display::g_frame_rate) rate = i;
+                    // fixed in a system link session: every player's game must run at the same rate (link.cpp)
+                    const bool locked = display::FrameRateLocked();
+                    ImGui::BeginDisabled(locked);
                     if (Segmented("Frame rate", &rate, {"30 (original)", " 60", " 120", " 180", " 240", " Highest"}))
                         display::SetFrameRate(kRates[rate]);
-                    Hint("Highest picks the most the monitor's refresh rate allows (120 at 165 Hz).", true);
+                    ImGui::EndDisabled();
+                    Hint(locked ? "Can't be changed during an online game." :
+                                  "Highest picks the most the monitor's refresh rate allows (120 at 165 Hz).", true);
 
                     constexpr uint32_t kAniso[] = {0, 2, 4, 8, 16};
                     int aniso = 0;

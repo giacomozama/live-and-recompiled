@@ -80,4 +80,8 @@ void HudTextDrawn();
 // 0x807230): each vertex where it lands in the back buffer's pixels; false if it can't be placed. Game thread
 bool GlyphScreen(float sx[4], float sy[4]);
 
+// a text of the runtime's own for the game to show, in the language the game picked at boot: a UTF-16 string in guest
+// memory, written once per text and language; 0 in Japanese, where the game's own text is to stay. Game thread
+uint32_t GameText(const char* en, const char* de, const char* fr, const char* es, const char* it);
+
 }  // namespace menus

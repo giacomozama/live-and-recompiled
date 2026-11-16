@@ -1771,3 +1771,12 @@ X86_FUNC(sub_002563E0) {
     if (buttons) W32(buttons, was);
     if (ctx.eax == kOskCreate || ctx.eax == kOskCancel) OskGone();
 }
+
+uint32_t menus::GameText(const char* en, const char* de, const char* fr, const char* es, const char* it) {
+    const char* s = InLanguage(en, de, fr, es, it);
+    if (!s) return 0;
+    static std::unordered_map<const char*, uint32_t> written;  // by the text picked, game thread
+    uint32_t& va = written[s];
+    if (!va) va = GuestText(s);
+    return va;
+}
