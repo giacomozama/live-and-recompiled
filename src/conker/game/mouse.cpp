@@ -567,7 +567,7 @@ std::atomic<int64_t> g_nudge_us[kPorts] = {};
 std::atomic<int> g_nudge_x[kPorts] = {};
 constexpr int64_t kNudgeUs = 60000;
 
-// when Turn last saw a player flying an aircraft (their weapon camera's turn, state kFlying): the plane steers by the
+// when Turn last saw a player in an aircraft (their weapon camera's turn, an aircraft state): the plane steers by the
 // stick, so while they fly no camera's turn takes the motion (another camera turned in the same frame refreshed
 // g_turned_us and Pad never pushed the stick)
 std::atomic<int64_t> g_fly_us[kPorts] = {};
@@ -797,7 +797,7 @@ void SnapSprings(uint32_t springs) {
 // among others) only from the stick's own turn, so a scope the mouse turned came up again where the stick last left
 // it. There, in a multiplayer match and while the view is zoomed in (display::CameraFov under kScopedFov), the mouse
 // drives the right stick (Pad), as for a camera that does not come here, and the game turns the scope, the player and
-// what it keeps as with a stick. So it does in an aircraft (the player in esi, their state kFlying), which flies by
+// what it keeps as with a stick. So it does in an aircraft (the player in esi, their state an aircraft's), which flies by
 // the stick. Aiming out of the scope, and single player, keep the mouse's own turn.
 void Turn(uint32_t actions, uint32_t turn, uint32_t ret, uint32_t player) {
     constexpr uint32_t kPlayer1Actions = 0x763260, kActionsSize = 0x1B0;
@@ -809,19 +809,35 @@ void Turn(uint32_t actions, uint32_t turn, uint32_t ret, uint32_t player) {
     if (port >= uint32_t(kPorts) || !g_look[port] || !g_held.load() || !Readable(turn, kPitchEased + 4)) return;
     if (WheelOpen(int(port), Now())) return;  // the mouse points the weapon wheel (Pad)
     if (ret == kWeaponTurnReturn && warp::Multiplayer()) {
-        // a match's scope (the view zoomed in), or an aircraft (the player's state at +0xA4 is kFlying while they
-        // fly one, and the plane steers by the stick): Pad turns them by the stick
+        // a match's scope (the view zoomed in), or an aircraft (the player's state at +0xA4 is in kAircraftFirst..
+        // kAircraftLast from getting in to getting out: 0x429 flying straight, others on the ground, taking off,
+        // banking, hovering, all seen in XBE_MOUSE_TRACE's state lines; only 0x429 used to count, so a flight that
+        // stayed in the others never steered by the mouse; aiming on foot shares some of them, so the player must
+        // also be in a vehicle: the byte at +0x135, 0 on foot, else 1 + the vehicle's index in the table at
+        // [0x84A5F8], 0x6D0 each, its type at +0x64, as 0x3F4E0 reads it), and the plane steers by the stick: Pad
+        // turns them by the stick
         constexpr float kScopedFov = 45.0f;
-        constexpr uint32_t kPlayerState = 0xA4, kFlying = 0x429;
+        constexpr uint32_t kPlayerState = 0xA4, kAircraftFirst = 0x40F, kAircraftLast = 0x438, kVehicle = 0x135;
+        constexpr uint32_t kVehicles = 0x84A5F8, kVehicleSize = 0x6D0, kVehicleType = 0x64;
         const float fov = display::CameraFov();
-        const bool flying = Readable(player + kPlayerState, 4) && R32(player + kPlayerState) == kFlying;
+        const uint32_t state = Readable(player + kPlayerState, 4) ? R32(player + kPlayerState) : 0u;
+        const uint32_t vehicle = Readable(player + kVehicle, 1) ? mem::Base()[player + kVehicle] : 0u;
+        const bool flying = vehicle && state >= kAircraftFirst && state <= kAircraftLast;
         const int stick = fov < kScopedFov ? 1 : flying ? 2 : 0;
+        if (Trace()) {
+            // every state the weapon camera's player goes through (getting in, flying, getting out)
+            static std::atomic<uint32_t> seen[kPorts] = {};
+            if (seen[port].exchange(state | vehicle << 16) != (state | vehicle << 16)) {
+                const uint32_t v = vehicle ? R32(kVehicles) + (vehicle - 1) * kVehicleSize : 0u;
+                LOGR("mouse trace: p%u weapon camera's player %06X state %X, vehicle %u type %X (fov %.1f)", port,
+                     player, state, vehicle, v && Readable(v + kVehicleType, 4) ? R32(v + kVehicleType) : 0u, fov);
+            }
+        }
         if (Trace()) {
             static std::atomic<int> was[kPorts] = {};
             if (stick != was[port].exchange(stick))
                 LOGR("mouse trace: p%u weapon camera %s (fov %.1f, state %X)", port,
-                     stick == 1 ? "scoped, stick" : stick == 2 ? "aircraft, stick" : "mouse turn", fov,
-                     Readable(player + kPlayerState, 4) ? R32(player + kPlayerState) : 0u);
+                     stick == 1 ? "scoped, stick" : stick == 2 ? "aircraft, stick" : "mouse turn", fov, state);
         }
         if (flying) g_fly_us[port].store(Now(), std::memory_order_relaxed);
         if (stick) return;
@@ -833,6 +849,12 @@ void Turn(uint32_t actions, uint32_t turn, uint32_t ret, uint32_t player) {
                 LOGR("mouse trace: p%u flying, left the turn from %06X to the stick", port, ret);
         }
         return;
+    }
+    if (Trace() && warp::Multiplayer()) {
+        // out of the aircraft: the turn that takes the motion (a gap in flying shows as one of these)
+        static std::atomic<uint32_t> took[kPorts] = {};
+        if (took[port].exchange(ret) != ret)
+            LOGR("mouse trace: p%u not flying, the turn from %06X takes the motion", port, ret);
     }
     if (ret == kTankTurnReturn) g_tank_us[port].store(Now(), std::memory_order_relaxed);
     if (Aiming(int(port), Now())) return;
@@ -1005,6 +1027,16 @@ void Pad(int port, input::Pad& pad) {
     }
     g_wheel[port] = {};
     const bool flying = warp::Multiplayer() && Flying(port, now);
+    if (Trace() && warp::Multiplayer()) {
+        static bool was[kPorts] = {};
+        if (flying != was[port]) {
+            was[port] = flying;
+            LOGR("mouse trace: p%d pad %s flying (weapon camera's flying turn %lld ms ago, a turn %lld ms ago)", port,
+                 flying ? "starts" : "stops",
+                 (long long)((now - g_fly_us[port].load(std::memory_order_relaxed)) / 1000),
+                 (long long)((now - g_turned_us[port].load(std::memory_order_relaxed)) / 1000));
+        }
+    }
     if (flying && Trace()) {
         static int64_t last[kPorts] = {};
         if (now - last[port] >= 250000) {
