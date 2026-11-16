@@ -343,6 +343,7 @@ void display::PlayerMarkerQuad() {
 namespace {
 
 constexpr uint32_t kPlayers = 0x84A5F8, kPlayerSize = 0x6D0, kPlayerKind = 0x64, kKindPlayer = 1;
+constexpr uint32_t kPlayerHealth = 0x3AE;  // a signed word, 0 dead (the game's own test, cmp word [p+0x3AE], 0)
 constexpr uint32_t kCameras = 0x8470DC, kCameraSize = 0x770, kCameraPlayer = 0x3E0, kCameraView = 0x2A8;
 
 // XBE_OUTLINE_TRACE=1: a line each time a view's player's outline changes (the viewer found, the mark)
@@ -363,7 +364,7 @@ void TraceOutline(uint32_t site, uint32_t kind, uint32_t view, uint32_t index, u
     lines++;
     LOGR("outlines: from %06X kind %u, view %u draws player %u (%08X), the view's player %08X: %s", site, kind, view,
          index, player, viewer,
-         mark < 0 ? "none (no viewer, itself, or not a player)" : mark == 1 ? "teammate, green"
+         mark < 0 ? "none (no viewer, itself, dead, or not a player)" : mark == 1 ? "teammate, green"
          : mark == 2 ? "opponent, red" : "neutral vehicle, light blue");
 }
 
@@ -412,7 +413,11 @@ X86_FUNC(sub_0007F4D0) {
     // blue), nothing else
     const bool vehicle = player && kernel::R32(player + kPlayerKind) != kKindPlayer &&
                          Vehicle(kernel::R32(player + kPlayerModel));
-    if (!player || !viewer || player == viewer || (kernel::R32(player + kPlayerKind) != kKindPlayer && !vehicle)) {
+    // a player dead (health 0) keeps state 1 through the dying animation until the respawn wait (0x36), so its
+    // corpse lost the outline only seconds after the kill; health 0 drops it at once
+    const bool dead = player && !vehicle && kernel::G<int16_t>(player + kPlayerHealth) <= 0;
+    if (!player || !viewer || player == viewer || dead ||
+        (kernel::R32(player + kPlayerKind) != kKindPlayer && !vehicle)) {
         TraceOutline(site, kind, view, index, player, viewer, -1);
         return __imp__sub_0007F4D0(ctx, base);
     }
