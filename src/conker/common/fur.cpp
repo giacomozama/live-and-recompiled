@@ -68,7 +68,7 @@ constexpr const char* kVs = R"(    {
 // shaded, about as bright as before on the whole. The strands are thickened first: the test then cuts them where their
 // alpha is 60% of its reference at the roots, 80% at the tips, so they taper, with alpha stretched from there to 1 over
 // the reference to 1 so their middles blend as before. The skin pass under the fur only takes the blob shadows: the
-// program's sum at the pixel, each blob coming in across its radius about the plane it clips at, as per-pixel
+// program's sum at the pixel, each blob coming in about the plane it clips at (narrower near its axis), as per-pixel
 // lighting's do (a hard step there left a solid edge across a cheek), out of the key light's share. Capped at 40% of
 // it, a character standing in another's shadow came out lit beside the game's own draws of her: Berri's eye in a
 // Don Weaso cutscene, its program shadowed, dark in a cheek super fur had lit
@@ -85,8 +85,9 @@ constexpr const char* kPs = R"({
         float sx = dot(p, c[159]), sy = dot(p, c[160]), sz = dot(p, c[161]), blobs = 0;
         [unroll] for (int g = 0; g < 3; g++) {
             float4 dx = c[146 + 4 * g] - sx, dy = c[147 + 4 * g] - sy, st = c[149 + 4 * g];
-            float4 above = smoothstep(-1, 1, (sz - c[148 + 4 * g]) / max(sqrt(abs(st)), 1e-4));
-            blobs += dot(above * st, 1 / max(dx * dx + dy * dy, 1e-6));
+            float4 d2 = max(dx * dx + dy * dy, 1e-6);
+            float4 w = max(min(sqrt(d2), sqrt(abs(st))), 1e-4);  // lighting.cpp LightBlobRamp: narrower near the axis
+            blobs += dot(smoothstep(-w, w, sz - c[148 + 4 * g]), clamp(st / d2, -2, 2));
         }
         float lit = saturate(1 - 0.5 * blobs);  // the knee per-pixel lighting takes (lighting.cpp LightShadow)
         r0.rgb *= 1 - (1 - lit * lit) * i.x1.w;
@@ -522,8 +523,9 @@ constexpr const char* kStrandPs = R"({
         float sx = dot(p, c[159]), sy = dot(p, c[160]), sz = dot(p, c[161]), blobs = 0;
         [unroll] for (int g = 0; g < 3; g++) {
             float4 dx = c[146 + 4 * g] - sx, dy = c[147 + 4 * g] - sy, st = c[149 + 4 * g];
-            float4 above = smoothstep(-1, 1, (sz - c[148 + 4 * g]) / max(sqrt(abs(st)), 1e-4));
-            blobs += dot(above * st, 1 / max(dx * dx + dy * dy, 1e-6));
+            float4 d2 = max(dx * dx + dy * dy, 1e-6);
+            float4 w = max(min(sqrt(d2), sqrt(abs(st))), 1e-4);  // lighting.cpp LightBlobRamp: narrower near the axis
+            blobs += dot(smoothstep(-w, w, sz - c[148 + 4 * g]), clamp(st / d2, -2, 2));
         }
         float lit = saturate(1 - 0.5 * blobs);  // the knee per-pixel lighting takes (lighting.cpp LightShadow)
         shade = lit * lit;

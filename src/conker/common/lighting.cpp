@@ -39,15 +39,23 @@ float3 LightAmbient(float3 n) {
 // soft: the program's steps, spread at a vertex over its triangles, would lie as hard edged flat bands at each pixel.
 // Each blob comes in across its own radius (sqrt of its strength, where it alone darkens fully) about the plane it
 // clips at, and the sum of them darkens by a knee, (1 - b / 2)^2, that leaves 1 - b's slope at the light and reaches
-// the dark flat.
+// the dark flat. The ramp narrows toward the blob's axis, as wide as the distance from it (a cone about the blob)
+// out to the radius: the same ramp everywhere put the lit side of a character's own blob, where the axis leaves the
+// surface toward the light, a little inside it, and the s / d^2 that climbs without bound there darkened a spot in
+// the middle of the lit side (Conker's forehead under its head's blob). Each blob's s / d^2 also stops at the dark
+// flat before the ramp scales it.
+float4 LightBlobRamp(float4 dz, float4 d2, float4 s) {
+    float4 w = max(min(sqrt(d2), sqrt(abs(s))), 1e-4);
+    return smoothstep(-w, w, dz);
+}
 float LightBlobs(float3 p, bool soft) {
     float4 q = float4(p, 1);
     float sx = dot(q, c[159]), sy = dot(q, c[160]), sz = dot(q, c[161]), b = 0;
     [unroll] for (int g = 0; g < LIGHT_GROUPS; g++) {
         float4 dx = c[146 + 4 * g] - sx, dy = c[147 + 4 * g] - sy, s = c[149 + 4 * g];
-        float4 r = max(sqrt(abs(s)), 1e-4);
-        float4 above = soft ? smoothstep(-r, r, sz - c[148 + 4 * g]) : (float4)(sz >= c[148 + 4 * g]);
-        b += dot(above * s, 1 / max(dx * dx + dy * dy, 1e-6));
+        float4 d2 = max(dx * dx + dy * dy, 1e-6), e = s / d2, dz = sz - c[148 + 4 * g];
+        if (soft) b += dot(LightBlobRamp(dz, d2, s), clamp(e, -2, 2));
+        else b += dot((float4)(dz >= 0), e);
     }
     return b;
 }
