@@ -5689,13 +5689,15 @@ void VulkanBackend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t
     const ProgramShading* zps = sh.shading ? &g_program_shading[sh.shading - 1] : nullptr;
     // ProgramShading::unsharpened: what the draw covers marked in the target's alpha for FSR to leave soft, and for
     // the depth of field to blur by fur's depth (DepthBytes)
-    if (zps && zps->glow_capped && k.has_rt && (k.wmask & 8)) {
-        fur_glow_rt_ = draw_rt_;
-        fur_glow_frame_ = frame_;
-    }
     if (zps && zps->unsharpened && k.has_rt && (k.wmask & 7) && (app::Get().fsr || DepthOfFieldLately())) {
         k.wmask |= 8 | kWmaskAlphaMax;
         fur_marked_ = frame_;
+    }
+    // ProgramShading::glow_capped: after the mark, which is most of what super fur leaves in the frame's alpha (the
+    // strands write none themselves)
+    if (zps && zps->glow_capped && k.has_rt && (k.wmask & 8)) {
+        fur_glow_rt_ = draw_rt_;
+        fur_glow_frame_ = frame_;
     }
     float zalpha = 0;
     int surface = -1;  // g_surface_depth's answer for the draw, -1 not asked
