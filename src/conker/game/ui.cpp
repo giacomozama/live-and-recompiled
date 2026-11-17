@@ -1990,28 +1990,7 @@ void Draw(double fps) {
                     Hint("Lets the third person camera tilt further up, in degrees. 0 is the original limit.");
                 }
 
-                if (Section("HUD")) {
-                    Check("Unstretched multiplayer HUD", &display::g_hud_split);
-                    Hint("On a widescreen display, the HUD in a multiplayer match keeps its shape, each part at the left, "
-                         "the middle or the right of the screen. Off: it stretches across the screen.", true);
-                    int tags = int(std::min<uint32_t>(display::g_player_tags, display::kTagOff));
-                    if (Segmented("Player names", &tags, {"Names", "Markers", "Off"})) display::g_player_tags = uint32_t(tags);
-                    Hint("Over other players in a match: their names, or a marker in the team colors.", true);
-                    Check("Player ranks", &display::g_player_ranks);
-                    Hint("The rank emblem beside other players' names in a match.", true);
-                    Check("Player outlines", &display::g_player_outlines);
-                    Hint("In a match, other players get an outline in the team colors where they're in view.", true);
-                    int team = int(std::min<uint32_t>(display::g_team_colors, display::kTeamBlueOrange));
-                    if (Segmented("Team colors", &team, {"Green / red", "Blue / orange"}))
-                        display::g_team_colors = uint32_t(team);
-                    Hint("The colors a match tells the teams apart by: names, outlines, the score, team icons and "
-                         "flags. Blue / orange stays clear with red-green color blindness.", true);
-                }
-
                 if (Section("Menus")) {
-                    Check("Readable menu hints", &menus::g_bright_hints);
-                    Hint("The hints above and below the multiplayer menus (R Configure) show as clearly as the menu's "
-                         "title. Off: faint and flickering, as on the console.", true);
                     bool no_attract = !menus::g_attract;
                     if (Check("Disable attract video", &no_attract)) menus::g_attract = !no_attract;
                     Hint("The main menu no longer plays its video after two minutes without input.", true);
@@ -2196,6 +2175,27 @@ void Draw(double fps) {
                            "A change starts from the next launch."});
                     static const uint32_t start_port = s.system_link_port;
                     if (s.system_link_port != start_port) WarningCard("Restart the game for this change to take effect.");
+                }
+
+                if (Section("UI")) {
+                    Check("Unstretched HUD", &display::g_hud_split);
+                    Hint("On a widescreen display, the HUD in a multiplayer match keeps its shape, each part at the left, "
+                         "the middle or the right of the screen. Off: it stretches across the screen.", true);
+                    int tags = int(std::min<uint32_t>(display::g_player_tags, display::kTagOff));
+                    if (Segmented("Player names", &tags, {"Names", "Markers", "Off"})) display::g_player_tags = uint32_t(tags);
+                    Hint("Over other players in a match: their names, or a marker in the team colors.", true);
+                    Check("Player ranks", &display::g_player_ranks);
+                    Hint("The rank emblem beside other players' names in a match.", true);
+                    Check("Player outlines", &display::g_player_outlines);
+                    Hint("In a match, other players get an outline in the team colors where they're in view.", true);
+                    int team = int(std::min<uint32_t>(display::g_team_colors, display::kTeamBlueOrange));
+                    if (Segmented("Team colors", &team, {"Green / red", "Blue / orange"}))
+                        display::g_team_colors = uint32_t(team);
+                    Hint("The colors a match tells the teams apart by: names, outlines, the score, team icons and "
+                         "flags. Blue / orange stays clear with red-green color blindness.", true);
+                    Check("Readable menu hints", &menus::g_bright_hints);
+                    Hint("The hints above and below the multiplayer menus (R Configure) show as clearly as the menu's "
+                         "title. Off: faint and flickering, as on the console.", true);
                 }
                 if (Section("This PC")) {
                     SubHeading("LAN IP");

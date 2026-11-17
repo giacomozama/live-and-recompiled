@@ -281,7 +281,6 @@ constexpr Line kLines[] = {
      "Corrige le flou sur les sols brillants et réfléchissants.",
      "Corrige el desenfoque en suelos brillantes y reflectantes.",
      "Corregge la sfocatura sui pavimenti lucidi e riflettenti.", "光沢のある反射する床のぼやけを修正します。"},
-    {"HUD", "HUD", "ATH", "HUD", "HUD", "HUD"},
     {"Player names", "Spielernamen", "Noms des joueurs", "Nombres de jugadores", "Nomi dei giocatori", "プレイヤー名"},
     {"Names", "Namen", "Noms", "Nombres", "Nomi", "名前"},
     {"Markers", "Markierungen", "Marqueurs", "Marcadores", "Indicatori", "マーカー"},
@@ -314,8 +313,8 @@ constexpr Line kLines[] = {
      "In una partita, gli altri giocatori hanno un contorno dove sono visibili, verde per i compagni e rosso per gli "
      "avversari.",
      "試合中、見えている他のプレイヤーに輪郭を表示します。味方は緑、敵は赤です。"},
-    {"Unstretched multiplayer HUD", "Ungedehntes Mehrspieler-HUD", "ATH multijoueur non étiré",
-     "HUD multijugador sin estirar", "HUD multigiocatore non allungato", "マルチプレイのHUDを引き伸ばさない"},
+    {"Unstretched HUD", "Ungedehntes HUD", "ATH non étiré",
+     "HUD sin estirar", "HUD non allungato", "HUDを引き伸ばさない"},
     {"On a widescreen display, the HUD in a multiplayer match keeps its shape, each part at the left, the middle or "
      "the right of the screen. Off: it stretches across the screen.",
      "Auf einem Breitbildschirm behält das HUD in einem Mehrspieler-Match seine Form, jeder Teil links, in der Mitte "
