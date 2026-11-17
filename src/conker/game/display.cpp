@@ -294,6 +294,12 @@ void ScopeCameraAfter(uint32_t pc) {
 
 using display::Rate;
 
+namespace {
+// The camera settings (fov, look_up) are the story's alone: a multiplayer match keeps the console's view and pitch
+// limits, alike for every player
+uint32_t LookUp() { return warp::Multiplayer() ? 0 : std::min(display::g_look_up, display::kLookUpMax); }
+}  // namespace
+
 // 0x47DC0 (the player in ecx, the pitch's floor out at [esi], its ceiling at [edx]): the third person camera's pitch
 // limits, which 0x47730 holds its pitch ([camera+0x8EC], degrees, the stick's turn taken off it) inside. The near
 // camera -45..-2, the far one (player+0x220 == 3) -30..-5, some cameras -65..65; nothing written while player+0xC0
@@ -303,7 +309,7 @@ X86_EXTERN_FUNC(__imp__sub_00047DC0);
 X86_FUNC(sub_00047DC0) {
     const uint32_t floor_at = ctx.esi, ceiling_at = ctx.edx;
     __imp__sub_00047DC0(ctx, base);
-    const uint32_t up = std::min(display::g_look_up, display::kLookUpMax);
+    const uint32_t up = LookUp();
     if (!up) return;
     float lo, hi;
     std::memcpy(&lo, base + floor_at, 4);
@@ -318,7 +324,7 @@ X86_FUNC(sub_00047DC0) {
 // ceiling again, a pitch look_up let above it keeps the top's distance, and the rest keep theirs
 void ConkerFarCameraCeiling(X86Context& ctx, uint8_t* base) {
     (void)base;
-    const uint32_t up = std::min(display::g_look_up, display::kLookUpMax);
+    const uint32_t up = LookUp();
     if (up && ctx.xmm[5].f[0] == -30.0f && ctx.xmm[0].f[0] == -5.0f + float(up)) ctx.xmm[0].f[0] = -5.0f;
 }
 
@@ -412,7 +418,7 @@ void ConkerCameraAspect(X86Context& ctx, uint8_t* base) {
 void ConkerCameraFov(X86Context& ctx, uint8_t* base) {
     constexpr uint32_t kCutsceneState = 0x76F0E0, kCutsceneSlots = 4;
     const uint32_t fov = std::clamp(display::g_fov, display::kFovMin, display::kFovMax);
-    if (fov == display::kFov || warp::Frontend()) return;
+    if (fov == display::kFov || warp::Frontend() || warp::Multiplayer()) return;
     for (uint32_t i = 0; i < kCutsceneSlots; i++)
         if (base[kCutsceneState + i]) return;
     // 0x645C0 keeps xmm1 / xmm0 as the view's aspect: both scale alike, or a taller view would come out squeezed

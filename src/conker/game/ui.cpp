@@ -1987,7 +1987,8 @@ void Draw(double fps) {
                 if (Section("Camera")) {
                     Slider("Field of view", &display::g_fov, display::kFovMin, display::kFovMax, display::kFov);
                     Slider("Extra look up", &display::g_look_up, 0, display::kLookUpMax, 0);
-                    Hint("Lets the third person camera tilt further up, in degrees. 0 is the original limit.");
+                    Hint("Lets the third person camera tilt further up, in degrees. 0 is the original limit. Both camera "
+                         "settings are single player only.");
                 }
 
                 if (Section("Menus")) {
