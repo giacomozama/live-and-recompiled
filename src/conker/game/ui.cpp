@@ -1481,23 +1481,25 @@ void Draw(double fps) {
                     IM_COL32(255, 255, 255, 235), label);
         // along the outline from the top's middle, clockwise: half the top, the right cap, the bottom, the left cap,
         // half the top
-        const float s = w - h, pi = 3.14159265f, cap = pi * r, total = 2.0f * s + 2.0f * cap;
+        // the ring runs just outside the pill, so its stroke never covers the content
+        const float out = thick * 0.5f, rr = r + out, top = lo.y - out, bot = hi.y + out;
+        const float s = w - h, pi = 3.14159265f, cap = pi * rr, total = 2.0f * s + 2.0f * cap;
         auto at = [&](float t) {
-            if (t < s * 0.5f) return ImVec2(c.x + t, lo.y);
+            if (t < s * 0.5f) return ImVec2(c.x + t, top);
             t -= s * 0.5f;
             if (t < cap) {
-                const float a = -pi * 0.5f + t / r;
-                return ImVec2(c.x + s * 0.5f + r * std::cos(a), c.y + r * std::sin(a));
+                const float a = -pi * 0.5f + t / rr;
+                return ImVec2(c.x + s * 0.5f + rr * std::cos(a), c.y + rr * std::sin(a));
             }
             t -= cap;
-            if (t < s) return ImVec2(c.x + s * 0.5f - t, hi.y);
+            if (t < s) return ImVec2(c.x + s * 0.5f - t, bot);
             t -= s;
             if (t < cap) {
-                const float a = pi * 0.5f + t / r;
-                return ImVec2(c.x - s * 0.5f + r * std::cos(a), c.y + r * std::sin(a));
+                const float a = pi * 0.5f + t / rr;
+                return ImVec2(c.x - s * 0.5f + rr * std::cos(a), c.y + rr * std::sin(a));
             }
             t -= cap;
-            return ImVec2(c.x - s * 0.5f + t, lo.y);
+            return ImVec2(c.x - s * 0.5f + t, top);
         };
         // the track and the fill walk the same outline, so they overlap exactly
         auto stroke = [&](float length, ImU32 color) {
