@@ -752,3 +752,8 @@ call = "ConkerBotReverseJeep"
 [[hook]]
 at = 0x3AAB53  # the flame jeep's (0x3AAB00, ecx the vehicle): the same, at [esp]
 call = "ConkerBotReverseFlameJeep"
+
+# the medgun's beam (medbeam.cpp): drawn into each view after its world effects (0x0D9950, category 0)
+[[hook]]
+at = 0x2A52FA  # 0x0D9950 returned, [esp+4] the view
+call = "ConkerMedBeams"
