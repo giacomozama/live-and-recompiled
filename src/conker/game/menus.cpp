@@ -288,7 +288,9 @@ X86_FUNC(sub_00240570) {
 // turns the list's cursor to it by presses of up or down, one at a time while the list's cursor answers (a frontend
 // list's goes there in one frame, JumpBegin), a left click on one does the same and then presses A, and each notch of the wheel presses up or down (menus::Wheel). With
 // no list, in the pub, each notch presses left (away from the player) or right, from picture to picture (zoomed into
-// Chapters, up or down through a page's scenes first, ChapterStep), and a click presses A on the one in front. XBE_TRACE_MENU_MOUSE logs the list and its panel as they change, and
+// Chapters, up or down through a page's scenes first, ChapterStep), and a click presses A on the one in front; on a
+// game's page asking Play or Erase, or Yes or No, the wheel and the cursor move between the words and a click on one
+// answers with it (ShownSlotChoice). XBE_TRACE_MENU_MOUSE logs the list and its panel as they change, and
 // each click.
 namespace {
 
@@ -591,15 +593,12 @@ int FaceOfName(std::string_view name) {
 }
 }  // namespace
 
-X86_EXTERN_FUNC(__imp__sub_00075E90);
-X86_FUNC(sub_00075E90) {
-    const uint32_t name = R32(ctx.esp + 4), out = R32(ctx.esp + 8);
-    __imp__sub_00075E90(ctx, base);
-    if (!out || !name) return;
-    const uint32_t res = R32(out);
-    if (!res) return;
+namespace {
+// a resource res loaded under the name at name_va: its texture tagged as a face button's icon, or untagged
+void TagIcon(uint32_t name_va, uint32_t res) {
+    if (!name_va || !res) return;
     const uint32_t tex = res + kResourceTexture;
-    const char* s = static_cast<const char*>(kernel::HostPtr(name));
+    const char* s = static_cast<const char*>(kernel::HostPtr(name_va));
     const int face = FaceOfName(std::string_view(s, strnlen(s, 256)));
     std::lock_guard lock(g_button_icon_lock);
     if (face < 0) {
@@ -609,19 +608,66 @@ X86_FUNC(sub_00075E90) {
     g_button_icons[tex] = {face, R32(tex + 4)};
     if (TraceMouse()) LOGR("menu mouse: button %d icon %s, texture %08X", face, s, tex);
 }
+}  // namespace
+
+X86_EXTERN_FUNC(__imp__sub_00075E90);
+X86_FUNC(sub_00075E90) {
+    const uint32_t name = R32(ctx.esp + 4), out = R32(ctx.esp + 8);
+    __imp__sub_00075E90(ctx, base);
+    if (out) TagIcon(name, R32(out));
+}
 
 namespace {
 
-// the face button a texture is the icon of (0 A, 1 B, 2 X, 3 Y), -1 for any other (ButtonIcon)
+// The resource table 0x84D458 holds every resource loaded by path, whichever way: 0x75E90's requests and the loads
+// that go to its loader 0x63680 directly (the pause UI's icons among them, loaded so before any 0x75E90). 0x65
+// buckets of 8 bytes from +8, each the first entry's link; an entry (0x61ED0, made by 0x63550) has its path at +8
+// (a string), its hash at +0xC, its link at +0x10 (the next entry's link at +0x14) and its resource at +0x18 (what
+// 0x75E90 returns), whose D3D texture is at +0x24.
+// The path of the resource whose texture tex is, empty if none in the table
+std::string ResourcePath(uint32_t tex) {
+    constexpr uint32_t kTable = 0x84D458, kBuckets = 0x65, kLinkNext = 4, kEntryPath = 8, kEntryLink = 0x10;
+    constexpr uint32_t kEntryResource = 0x18;
+    if (tex < kResourceTexture) return {};
+    const uint32_t res = tex - kResourceTexture;
+    int left = 20000;  // links walked at most
+    for (uint32_t b = 0; b < kBuckets; b++) {
+        for (uint32_t link = R32(kTable + 8 + b * 8); link && left-- > 0; link = R32(link + kLinkNext)) {
+            if (!mem::IsCommitted(link) || !mem::IsCommitted(link + 7)) break;
+            const uint32_t entry = link - kEntryLink;
+            if (R32(entry + kEntryResource) != res) continue;
+            const uint32_t path = R32(entry + kEntryPath);
+            std::string out;
+            for (uint32_t i = 0; path && i < 256 && mem::IsCommitted(path + i); i++) {
+                const char c = char(mem::Base()[path + i]);
+                if (!c) return out;
+                out += c;
+            }
+            return {};
+        }
+    }
+    return {};
+}
+
+// the face button a texture is the icon of (0 A, 1 B, 2 X, 3 Y), -1 for any other (ButtonIcon). An icon the loader
+// hook did not see is known by its path in the resource table (ResourcePath, looked up once while its texels stay)
 int Button(uint32_t tex) {
     std::lock_guard lock(g_button_icon_lock);
-    const auto it = g_button_icons.find(tex);
-    if (it == g_button_icons.end()) return -1;
-    if (R32(tex + 4) != it->second.texels) {
+    const uint32_t texels = R32(tex + 4);
+    if (const auto it = g_button_icons.find(tex); it != g_button_icons.end()) {
+        if (texels == it->second.texels) return it->second.face;
         g_button_icons.erase(it);
-        return -1;
     }
-    return it->second.face;
+    const std::string path = ResourcePath(tex);
+    // the path is aid\texture\<folder>\<name>\default.xpr (0x5E4E0): the name the part before the last, or the last
+    // if it is the name
+    std::string_view parent = path;
+    if (const size_t last = parent.find_last_of("\\/"); last != std::string_view::npos) parent = parent.substr(0, last);
+    int face = path.empty() ? -1 : FaceOfName(path);
+    if (face < 0 && !parent.empty() && parent.size() < path.size()) face = FaceOfName(parent);
+    if (TraceMouse()) LOGR("menu mouse: texture %08X resource path '%s', face %d", tex, path.c_str(), face);
+    g_button_icons[tex] = {face, texels};  // -1 kept too, so the table is walked once a texture
+    return face;
 }
 
 }  // namespace
@@ -983,6 +1029,106 @@ int Highlighted(int64_t now) {
     return -1;
 }
 
+// The frontend's UI page ([[0x85E550]]: [page+0x14] the elements' ids, to [page+0x18], [page+4] the elements): the
+// element of the id, 0 none
+uint32_t UiElement(int id) {
+    constexpr uint32_t kUi = 0x85E550;
+    const uint32_t ui = R32(kUi);
+    if (!ui) return 0;
+    const uint32_t page = R32(ui), ids = R32(page + 0x14), ids_end = R32(page + 0x18), elements = R32(page + 4);
+    for (uint32_t at = ids; at && elements && at < ids_end && at - ids < 64 * 4; at += 4)
+        if (int32_t(R32(at)) == id) return R32(elements + (at - ids));
+    return 0;
+}
+
+// A game's picture in the pub zoomed into ([0x776220] past [0x648D10], [0x776278] 0, picture [0x77625E] 3 to 5), run
+// by 0x1FB430 by its page's state [0x849874], which is also the id of the UI element holding the page's choice, at
+// +0x14 (0x205130). A saved game asks Play or Erase (state 0x1B, a game in progress, the slot's type +0xC 5; 0x14
+// for type 4: 0 Play, else Erase), Erase then Erase Game? Yes or
+// No (0x1A: 1 Yes, else No). The UI's choice goes up to 0 and down to 1 (as the pause screen's quit prompt, by the
+// same UI code), though the two words sit side by side; Play / Erase the other way round (SlotPress). Play is left
+// of Erase, Yes left of No. The words are the
+// frontend's strings PLAY, ERASE, ERASE_YES and ERASE_NO (UIFrontend), kept from the string lookup 0x3F9CB0.
+enum SlotWord { kSlotPlay, kSlotErase, kSlotYes, kSlotNo, kSlotWords };
+constexpr int kSlotValue[kSlotWords] = {0, 1, 1, 0};  // the choice's value each word stands for
+std::u16string g_slot_text[kSlotWords] = {u"play", u"erase", u"yes", u"no"};  // under g_yes_no_lock
+Prompt g_slot_boxes[kSlotWords];  // under g_prompt_lock
+int g_slot_word = -1;  // the string drawing is this word, game thread
+
+struct SlotChoice {
+    int state = 0;
+    uint32_t element = 0;
+    int left = -1, right = -1;  // the words, -1 when the page asks neither choice
+};
+
+SlotChoice ShownSlotChoice() {
+    constexpr int kFrontend = 29;
+    constexpr uint32_t kZoom = 0x776220, kZoomIn = 0x648D10, kZoomState = 0x776278, kPicture = 0x77625E;
+    constexpr uint32_t kState = 0x849874;
+    constexpr int kPlayErase = 0x14, kPlayEraseSaved = 0x1B, kEraseConfirm = 0x1A;
+    SlotChoice c;
+    const uint8_t* b = mem::Base();
+    const int picture = int8_t(b[kPicture]);
+    if (warp::CurrentLevel() != kFrontend || b[kZoomState] || picture < 3 || picture > 5 ||
+        kernel::G<float>(kZoom) < kernel::G<float>(kZoomIn))
+        return c;
+    c.state = int32_t(R32(kState));
+    if (c.state == kPlayErase || c.state == kPlayEraseSaved) c.left = kSlotPlay, c.right = kSlotErase;
+    else if (c.state == kEraseConfirm) c.left = kSlotYes, c.right = kSlotNo;
+    else {
+        static int told = -1;
+        if (TraceMouse() && std::exchange(told, c.state) != c.state) LOGR("menu mouse: game page %02X", c.state);
+        return c;
+    }
+    c.element = UiElement(c.state);
+    if (!c.element) c.left = c.right = -1;
+    return c;
+}
+
+// the press that moves the page's choice to want. The UI's list (0x249D00) steps its cursor by up and down alone (left
+// and right tick a box), and a list can take them the other way round (+0x2C): Yes / No goes down to 1, Play / Erase
+// did not, so it starts the other way round, and a press that left the choice where it was turns its page's way
+// (SlotChecked)
+bool g_slot_flip[2] = {true, false};  // Play / Erase, Yes / No: up steps to 1. Game thread
+struct SlotCheck {
+    int pair = -1, want = 0;
+};
+SlotCheck g_slot_check;  // the press last made, game thread
+int SlotPair(const SlotChoice& c) { return c.left == kSlotPlay ? 0 : 1; }
+
+uint16_t SlotPress(const SlotChoice& c, int want) {
+    constexpr uint16_t kUp = 1 << 0, kDown = 1 << 1;  // the pad's d-pad bits
+    g_slot_check = {SlotPair(c), want};
+    return (want != 0) != g_slot_flip[SlotPair(c)] ? kDown : kUp;
+}
+
+// once the last press has run its course: the choice not where it went turns the page's way round
+void SlotChecked(const SlotChoice& c, int value) {
+    const SlotCheck check = std::exchange(g_slot_check, SlotCheck{});
+    if (check.pair != SlotPair(c) || value == check.want) return;
+    g_slot_flip[check.pair] = !g_slot_flip[check.pair];
+    if (TraceMouse()) LOGR("menu mouse: game page %02X choice stayed at %d, the other way round", c.state, value);
+}
+
+// the word of the page's two under the point, -1 none
+int SlotWordAt(const SlotChoice& c, float x, float y, int64_t now) {
+    std::lock_guard lock(g_prompt_lock);
+    for (const int w : {c.left, c.right}) {
+        if (w < 0) continue;
+        const Prompt& pr = g_slot_boxes[w];
+        if (now - pr.seen_us <= kShownUs && x >= pr.x0 - kSlack && x <= pr.x1 + kSlack && y >= pr.y0 - kSlack &&
+            y <= pr.y1 + kSlack)
+            return w;
+    }
+    return -1;
+}
+
+bool SlotWordsSeen(const SlotChoice& c, int64_t now) {
+    std::lock_guard lock(g_prompt_lock);
+    return c.left >= 0 && now - g_slot_boxes[c.left].seen_us <= kShownUs &&
+           now - g_slot_boxes[c.right].seen_us <= kShownUs;
+}
+
 }  // namespace
 
 X86_EXTERN_FUNC(__imp__sub_003D3D00);
@@ -990,8 +1136,18 @@ X86_FUNC(sub_003D3D00) {
     const uint32_t text = R32(ctx.esp + 4);
     const bool pause = NowUs() - g_pause_us.load(std::memory_order_relaxed) <= kShownUs;
     g_word = pause && text ? Word(text + ctx.ecx * 2) : 0;
+    g_slot_word = -1;
+    if (!pause && text) {
+        if (const SlotChoice c = ShownSlotChoice(); c.left >= 0) {
+            const std::u16string w = WordKey(text + ctx.ecx * 2);
+            std::lock_guard hold(g_yes_no_lock);
+            for (const int s : {c.left, c.right})
+                if (!w.empty() && w == g_slot_text[s]) g_slot_word = s;
+        }
+    }
     __imp__sub_003D3D00(ctx, base);
     g_word = 0;
+    g_slot_word = -1;
 }
 
 // the glyph's quad being sent (0x3D3981): each vertex in the back buffer's pixels; false if it can't be placed
@@ -1037,10 +1193,23 @@ bool GlyphBox(float& x0, float& y0, float& x1, float& y1) {
 void ConkerTextQuad(X86Context& ctx, uint8_t* base) {
     (void)ctx, (void)base;
     display::PlayerMarkerQuad();
-    if (!g_word && !g_label_drawing) return;
+    if (!g_word && !g_label_drawing && g_slot_word < 0) return;
     constexpr uint32_t kQuad = 0x807230;
     float x0, y0, x1, y1;
     if (!GlyphBox(x0, y0, x1, y1)) return;
+    if (g_slot_word >= 0) {  // a game's page's Play, Erase, Yes or No
+        const int64_t now = NowUs();
+        std::lock_guard lock(g_prompt_lock);
+        Prompt& pr = g_slot_boxes[g_slot_word];
+        if (now - pr.seen_us <= kSameFrameUs) {
+            pr.x0 = std::min(pr.x0, x0), pr.y0 = std::min(pr.y0, y0);
+            pr.x1 = std::max(pr.x1, x1), pr.y1 = std::max(pr.y1, y1);
+        } else {
+            pr = {x0, y0, x1, y1, now};
+        }
+        pr.seen_us = now;
+        return;
+    }
     if (g_label_drawing) {
         g_label_x0 = std::min(g_label_x0, x0), g_label_x1 = std::max(g_label_x1, x1);
         if (!g_word) return;
@@ -1201,13 +1370,8 @@ int ChapterStep(bool up) {
         if (b[progress + (bit >> 3)] & (1 << (bit & 7))) unlocked++;
     }
     // the list's cursor
-    const uint32_t page = R32(ui), ids = R32(page + 0x14), ids_end = R32(page + 0x18), elements = R32(page + 4);
-    int cursor = -1;
-    for (uint32_t at = ids; at && elements && at < ids_end && at - ids < 64 * 4; at += 4)
-        if (int32_t(R32(at)) == chapter + kPageId) {
-            if (const uint32_t element = R32(elements + (at - ids))) cursor = int32_t(R32(element + 0x14));
-            break;
-        }
+    const uint32_t element = UiElement(chapter + kPageId);
+    const int cursor = element ? int32_t(R32(element + 0x14)) : -1;
     if (cursor < 0 || cursor >= unlocked) return side;
     const int step = up ? (cursor > 0 ? kPadUp : side) : (cursor < unlocked - 1 ? kPadDown : side);
     if (TraceMouse())
@@ -1416,7 +1580,22 @@ void menus::Pad(int port, input::Pad& pad) {
 
     // a notch of the wheel: a step, over where the cursor points
     // (on the Chapters picture: through its scenes, then to the next page, ChapterStep)
+    // (on a game's page asking Play or Erase, or Yes or No: away to the left one, toward to the right one)
     if (const int w = g_wheel.load(); std::abs(w) >= kNotch) {
+        if (const SlotChoice slot = pub ? ShownSlotChoice() : SlotChoice{}; slot.left >= 0) {
+            g_wheel.fetch_sub(w > 0 ? kNotch : -kNotch);
+            const int want = kSlotValue[w > 0 ? slot.left : slot.right];
+            const int value = R32(slot.element + 0x14) ? 1 : 0;
+            SlotChecked(slot, value);
+            if (TraceMouse()) LOGR("menu mouse: game page %02X choice %d, wheel to %d", slot.state, value, want);
+            if (value == want) return;
+            p.target = -1, p.pick = false, p.word = 0;
+            p.press = SlotPress(slot, want);
+            p.from = -1;
+            p.press_us = now;
+            pad.buttons |= p.press;
+            return;
+        }
         const int chapter_step = pub ? ChapterStep(w > 0) : -1;
         if (chapter_step == 0) {  // a page turning: at most a notch each way waits for it
             g_wheel.store(w > 0 ? kNotch : -kNotch);
@@ -1457,6 +1636,52 @@ void menus::Pad(int port, input::Pad& pad) {
 
     // the pub: a click anywhere picks the picture in front (gamepad::Pad takes A on Options for the settings menu)
     if (pub) {
+        // a game's page asking Play or Erase, or Yes or No: the cursor moved over a word lights it (by the presses
+        // that move the choice, at most two), a click on one answers with it (its value into the choice, then A), and
+        // a click elsewhere does nothing
+        if (const SlotChoice slot = ShownSlotChoice(); slot.left >= 0 && SlotWordsSeen(slot, now)) {
+            float x = -1, y = -1, wx = -1, wy = -1, bw = 640, bh = 480;
+            const bool button = app::KeyDown(1), clicked = button && !p.button;
+            p.button = button;
+            const bool in = CursorInFrame(x, y, wx, wy, bw, bh);
+            const bool moved = wx != p.x || wy != p.y;
+            p.x = wx, p.y = wy;
+            const int over = in ? SlotWordAt(slot, x, y, now) : -1;
+            if (clicked) {
+                p.word = 0;
+                if (TraceMouse()) {
+                    std::lock_guard lock(g_prompt_lock);
+                    const Prompt &l = g_slot_boxes[slot.left], &r = g_slot_boxes[slot.right];
+                    LOGR("menu mouse: game page %02X click at %.1f,%.1f on word %d (left %.1f,%.1f to %.1f,%.1f, right "
+                         "%.1f,%.1f to %.1f,%.1f)",
+                         slot.state, x, y, over, l.x0, l.y0, l.x1, l.y1, r.x0, r.y0, r.x1, r.y1);
+                }
+                if (over < 0) return;
+                W32(slot.element + 0x14, uint32_t(kSlotValue[over]));
+                p.face = 0;
+                p.press_us = now;
+                pad.analog[0] = 0xFF;
+                return;
+            }
+            if (p.word && p.word - 1 != slot.left && p.word - 1 != slot.right) p.word = 0;  // the page moved on
+            if (moved && over >= 0 && over + 1 != p.word) p.word = over + 1, p.steps = 0;
+            if (!p.word) return;
+            const int want = kSlotValue[p.word - 1], value = R32(slot.element + 0x14) ? 1 : 0;
+            SlotChecked(slot, value);
+            if (value == want || p.steps >= 2) {
+                p.word = 0;
+                return;
+            }
+            p.steps++;
+            p.press = SlotPress(slot, want);
+            if (TraceMouse())
+                LOGR("menu mouse: game page %02X over word %d, choice %d, presses %s", slot.state, p.word - 1, value,
+                     p.press == kPadDown ? "down" : p.press == kPadUp ? "up" : p.press == kPadLeft ? "left" : "right");
+            p.from = -1;
+            p.press_us = now;
+            pad.buttons |= p.press;
+            return;
+        }
         float wx, wy, ww, wh;
         const bool button = app::KeyDown(1), clicked = button && !p.button && app::Cursor(wx, wy, ww, wh);
         p.button = button;
@@ -1639,6 +1864,17 @@ X86_FUNC(sub_003F9CB0) {
     const int word = name == "YES" ? 0 : name == "NO" ? 1 : -1;
     if (word >= 0 && out && int32_t(ctx.eax) >= 0)  // -1: not found, or found empty
         if (const uint32_t text = R32(out)) KeepYesNo(word, text);
+    // a game's page's words (UIFrontend)
+    const int slot = name == "PLAY"        ? kSlotPlay
+                     : name == "ERASE"     ? kSlotErase
+                     : name == "ERASE_YES" ? kSlotYes
+                     : name == "ERASE_NO"  ? kSlotNo
+                                           : -1;
+    if (slot >= 0 && out && int32_t(ctx.eax) >= 0)
+        if (const uint32_t text = R32(out)) {
+            std::lock_guard hold(g_yes_no_lock);
+            g_slot_text[slot] = WordKey(text);
+        }
 }
 
 // The multiplayer menus' on-screen keyboard (a profile's name: Rename Profile, a new profile), run by 0x256C90 each
