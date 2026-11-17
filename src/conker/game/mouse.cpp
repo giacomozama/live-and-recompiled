@@ -4,7 +4,7 @@
 // motion) up for the player whose mouse it came from (input::Owner). The third
 // person, first person and weapon cameras all turn by the stick in 0x2F99A0 (hooked at the end of the file): Turn
 // adds the motion, in degrees, to the turn it works out each frame, so each camera takes the mouse as it takes the
-// stick, inside its own limits. A match's aircraft takes the mouse as right stick (see Turn).
+// stick, inside its own limits. A match's aircraft and the Sneeker's drone take the mouse as right stick (see Turn).
 //
 // A tank's aim mode goes by the driver's camera instead, which TankAim turns (hooked on 0x3F4E0 at the end of the
 // file).
@@ -552,6 +552,8 @@ void WF(uint32_t va, float f) { std::memcpy(mem::Base() + va, &f, 4); }
 // when Turn last turned a player's camera; while it does, Pad leaves their stick alone
 std::atomic<int64_t> g_turned_us[kPorts] = {};
 constexpr int64_t kTurnedUs = 250000;
+// the return address of the last turn that took a player's motion (XBE_MOUSE_TRACE)
+std::atomic<uint32_t> g_turned_ret[kPorts] = {};
 // when the tank (0x2BAEC0, which calls 0x2F99A0 from 0x2BBB4F) last ran for a player, and when TankAim last saw
 // them aiming it; while they aim, the cameras' turns leave the motion alone and TankAim turns the aim (the driver
 // aims it, see there). Out of aim mode the mouse turns the cameras in the tank as anywhere.
@@ -758,6 +760,24 @@ uint32_t WeaponSprings(uint32_t player) {
     return 0;
 }
 
+// A match's drone (the Sneeker's): its tick (0x3ABA60) steers it by its pilot's sticks (actions +0x12C/+0x130 the
+// left, +0x138/+0x140 the right, as the control scheme 0x4D6E0 fills them) while the pilot's short at +0x3AE is set,
+// which it clears once their state ([player+0xA4]) is none of 0x50F, 0x510 and 0x752. Their weapon camera still turns
+// all the while, so Turn would take the motion there: while they pilot it, Pad drives the right stick as for an
+// aircraft.
+bool Piloting(int port) {
+    constexpr uint32_t kState = 0xA4, kPiloting = 0x3AE;
+    if (!Readable(kPlayer, 4)) return false;
+    const uint32_t pc = R32(kPlayer) + uint32_t(port) * kPlayerSize;
+    if (!Readable(pc + kPlayerGame, 4)) return false;
+    const uint32_t player = R32(pc + kPlayerGame);
+    if (!Readable(player + kState, 4) || !Readable(player + kPiloting, 2)) return false;
+    const uint32_t state = R32(player + kState);
+    uint16_t piloting;
+    std::memcpy(&piloting, mem::Base() + player + kPiloting, 2);
+    return piloting && (state == 0x50F || state == 0x510 || state == 0x752);
+}
+
 }  // namespace
 
 // 0x48510 (the springs in esi), before it runs: springs the mouse turns a weapon camera through go onto their targets
@@ -838,6 +858,17 @@ void Turn(uint32_t actions, uint32_t turn, uint32_t ret, uint32_t player) {
             return;
         }
     }
+    // the Sneeker's drone steers by the sticks while its pilot's weapon camera still turns each frame
+    const bool piloting = warp::Multiplayer() && Piloting(int(port));
+    if (Trace() && warp::Multiplayer()) {
+        static std::atomic<int> was[kPorts] = {};
+        if (int(piloting) != was[port].exchange(int(piloting)))
+            LOGR("mouse trace: p%u %s the drone", port, piloting ? "pilots" : "stops piloting");
+    }
+    if (piloting) {
+        g_fly_us[port].store(Now(), std::memory_order_relaxed);
+        return;
+    }
     if (warp::Multiplayer() && Flying(int(port), Now())) {
         if (Trace()) {
             static std::atomic<uint32_t> seen[kPorts] = {};
@@ -872,6 +903,7 @@ void Turn(uint32_t actions, uint32_t turn, uint32_t ret, uint32_t player) {
         Frame& f = frames[port];
         const int64_t now = Now();
         g_turned_us[port].store(now, std::memory_order_relaxed);
+        g_turned_ret[port].store(ret, std::memory_order_relaxed);
         if (now - f.us >= 4000) {
             std::lock_guard motion(g_lock);
             f.dx = g_motion[port].dx, f.dy = g_motion[port].dy;
@@ -1057,6 +1089,27 @@ void Pad(int port, input::Pad& pad) {
             LOGR("mouse trace: p%d pad flying: turned %lld ms ago, aiming %d, debt %.2f/%.2f, step %d/%d", port,
                  (long long)((now - g_turned_us[port].load(std::memory_order_relaxed)) / 1000), int(Aiming(port, now)),
                  l.x.debt, l.y.debt, l.x.step, l.y.step);
+        }
+    }
+    if (Trace() && warp::Multiplayer()) {
+        // who takes this player's motion (a turn, the aim mode, the stick), with their game player's state and vehicle
+        const bool turned = now - g_turned_us[port].load(std::memory_order_relaxed) < kTurnedUs;
+        const int mode = flying ? 3 : Aiming(port, now) ? 2 : turned ? 1 : 0;
+        const uint32_t ret = turned ? g_turned_ret[port].load(std::memory_order_relaxed) : 0u;
+        uint32_t player = 0, state = 0, vehicle = 0;
+        if (Readable(kPlayer, 4)) {
+            const uint32_t pc = R32(kPlayer) + uint32_t(port) * kPlayerSize;
+            if (Readable(pc + kPlayerGame, 4)) player = R32(pc + kPlayerGame);
+            if (Readable(player + 0xA4, 4)) state = R32(player + 0xA4);
+            if (Readable(player + 0x135, 1)) vehicle = mem::Base()[player + 0x135];
+        }
+        static uint64_t was[kPorts] = {};
+        const uint64_t key = uint64_t(mode) | uint64_t(ret) << 2 | uint64_t(state) << 32 | uint64_t(vehicle) << 56;
+        if (key != was[port]) {
+            was[port] = key;
+            static const char* const kModes[] = {"the stick", "a turn", "the aim mode", "the stick (flying)"};
+            LOGR("mouse trace: p%d motion to %s (turn from %06X), player %06X state %X vehicle %u", port,
+                 kModes[mode], ret, player, state, vehicle);
         }
     }
     // a camera Turn reaches takes the motion itself, the tank's aim TankAim; the stick is for the rest (an aircraft's
