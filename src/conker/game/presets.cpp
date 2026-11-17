@@ -20,13 +20,13 @@ namespace presets {
 namespace {
 
 struct Info {
-    const char* name;
+    const char* name;         // IDs of the overlay text (ui_text.inc)
     const char* description;
 };
 constexpr Info kInfo[kCount] = {
-    {"Nostalgic", "As close as possible to the original console."},
-    {"Modern", "Faithful to the original, with some small improvements."},
-    {"Enhanced", "Takes advantage of modern hardware to push the game's visuals even further."},
+    {"nostalgic", "hint_as_close_as_possible_to"},
+    {"modern", "hint_faithful_to_the_original_with"},
+    {"enhanced", "hint_takes_advantage_of_modern_hardware"},
 };
 
 }  // namespace

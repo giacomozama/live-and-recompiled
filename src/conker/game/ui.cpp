@@ -21,6 +21,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include <imgui.h>
@@ -319,25 +320,37 @@ int Column() {
     return 0;
 }
 
-// the text in the overlay's language; English where there is no translation. Its English text is also the ID of
-// the widget that shows it, so a widget keeps its ID, and its focus, across languages
-__attribute__((format_arg(1))) const char* T(const char* en) {
+// the text for an ID in the overlay's language, English where a line has none. The ID is also the ID of the widget
+// that shows it, so a widget keeps its ID, and its focus, across languages. A string that is no ID (a number, a
+// name) shows as it is; an ID-shaped one with no line shows as it is too, and is logged once
+const char* T(const char* id) {
     static const std::unordered_map<std::string_view, const Line*> lines = [] {
         std::unordered_map<std::string_view, const Line*> map;
-        for (const Line& line : kLines) map.emplace(line.en, &line);
+        for (const Line& line : kLines) map.emplace(line.id, &line);
         return map;
     }();
-    const auto it = lines.find(en);
-    if (it == lines.end()) return en;
+    const auto it = lines.find(id);
+    if (it == lines.end()) {
+        static std::unordered_set<std::string> reported;
+        const bool id_shaped = id[0] >= 'a' && id[0] <= 'z' && std::strpbrk(id, " %") == nullptr;
+        if (id_shaped && reported.insert(id).second) LOGR("ui: no text for '%s'", id);
+        return id;
+    }
     const Line& l = *it->second;
     const char* const text[] = {l.en, l.de, l.fr, l.es, l.it, l.ja};
     return text[Column()];
 }
 
-// a dropdown's items, each in the overlay's language, as ImGui wants them
+// a dropdown's items, each in the overlay's language, as ImGui wants them. Leading spaces (which line up numbers)
+// stay in front of the ID's text
 std::string Items(std::initializer_list<const char*> items) {
     std::string out;
-    for (const char* item : items) out += T(item), out += '\0';
+    for (const char* item : items) {
+        const char* id = item;
+        while (*id == ' ') id++;
+        out.append(id - item, ' ');
+        out += T(id), out += '\0';
+    }
     out += '\0';
     return out;
 }
@@ -702,8 +715,9 @@ bool Segmented(const char* label, int* v, std::initializer_list<const char*> ite
     const float pad = st.FramePadding.x * 1.2f;
     float total = 0.0f;
     for (const char* item : items) {
-        const char* name = T(item);
-        while (*name == ' ') name++;
+        const char* id = item;
+        while (*id == ' ') id++;
+        const char* name = T(id);
         names.push_back(name);
         widths.push_back(std::round(ImGui::CalcTextSize(name).x + pad * 2.0f));
         total += widths.back();
@@ -795,7 +809,7 @@ bool Segmented(const char* label, int* v, std::initializer_list<const char*> ite
 // div > 1 shows v / div with two decimals (a setting kept in hundredths)
 void Slider(const char* label, uint32_t* v, uint32_t min, uint32_t max, uint32_t def, uint32_t div = 1) {
     ImGui::PushID(label);
-    const float reset = ImGui::CalcTextSize(T("Reset")).x + ImGui::GetStyle().FramePadding.x * 2.0f;
+    const float reset = ImGui::CalcTextSize(T("reset")).x + ImGui::GetStyle().FramePadding.x * 2.0f;
     Beside(label, reset + ImGui::GetStyle().ItemInnerSpacing.x);
     if (div > 1) {
         float f = float(*v) / float(div);
@@ -806,7 +820,7 @@ void Slider(const char* label, uint32_t* v, uint32_t min, uint32_t max, uint32_t
     }
     ImGui::SameLine(0, ImGui::GetStyle().ItemInnerSpacing.x);
     ImGui::BeginDisabled(*v == def);
-    if (ImGui::Button(T("Reset"))) *v = def;
+    if (ImGui::Button(T("reset"))) *v = def;
     ImGui::EndDisabled();
     ImGui::PopID();
 }
@@ -814,12 +828,12 @@ void Slider(const char* label, uint32_t* v, uint32_t min, uint32_t max, uint32_t
 // a signed one, shown with its sign
 void Slider(const char* label, int32_t* v, int32_t min, int32_t max, int32_t def) {
     ImGui::PushID(label);
-    const float reset = ImGui::CalcTextSize(T("Reset")).x + ImGui::GetStyle().FramePadding.x * 2.0f;
+    const float reset = ImGui::CalcTextSize(T("reset")).x + ImGui::GetStyle().FramePadding.x * 2.0f;
     Beside(label, reset + ImGui::GetStyle().ItemInnerSpacing.x);
     ImGui::SliderScalar("##slider", ImGuiDataType_S32, v, &min, &max, "%+d");
     ImGui::SameLine(0, ImGui::GetStyle().ItemInnerSpacing.x);
     ImGui::BeginDisabled(*v == def);
-    if (ImGui::Button(T("Reset"))) *v = def;
+    if (ImGui::Button(T("reset"))) *v = def;
     ImGui::EndDisabled();
     ImGui::PopID();
 }
@@ -830,7 +844,7 @@ void RangeSlider(const char* label, uint32_t* lo, uint32_t* hi, uint32_t min, ui
                  uint32_t def_lo, uint32_t def_hi, float column = -1.0f, float track = 0.0f, float reset_w = 0.0f) {
     ImGui::PushID(label);
     const ImGuiStyle& st = ImGui::GetStyle();
-    const float reset = ImGui::CalcTextSize(T("Reset")).x + st.FramePadding.x * 2.0f;
+    const float reset = ImGui::CalcTextSize(T("reset")).x + st.FramePadding.x * 2.0f;
     float w;
     if (column >= 0.0f) {  // in a row of buttons (the keys): the label, the track as wide as the keys, a Reset as theirs
         ImGui::AlignTextToFramePadding();
@@ -874,7 +888,7 @@ void RangeSlider(const char* label, uint32_t* lo, uint32_t* hi, uint32_t min, ui
     }
     ImGui::SameLine(0, st.ItemInnerSpacing.x);
     ImGui::BeginDisabled(*lo == def_lo && *hi == def_hi);
-    if (ImGui::Button(T("Reset"), ImVec2(column >= 0.0f ? reset_w : 0.0f, 0))) *lo = def_lo, *hi = def_hi;
+    if (ImGui::Button(T("reset"), ImVec2(column >= 0.0f ? reset_w : 0.0f, 0))) *lo = def_lo, *hi = def_hi;
     ImGui::EndDisabled();
     ImGui::Dummy(ImVec2(0.0f, ImGui::GetTextLineHeight() + 2.0f));  // room for the numbers under the track
     ImGui::PopID();
@@ -894,15 +908,15 @@ void DeviceCombo(int player, input::Kind kind) {
     using input::Kind;
     const std::vector<input::Device> devices = input::Devices(kind);
     const std::string held = input::Assigned(player, kind);
-    const char* all = kind == Kind::Keyboard ? T("All other keyboards") : T("All other mice");
+    const char* all = kind == Kind::Keyboard ? T("all_other_keyboards") : T("all_other_mice");
     // a device no longer connected keeps its name, without the #n
     auto label = [&](const std::string& key) -> std::string {
-        if (key.empty()) return T("None");
+        if (key.empty()) return T("none");
         if (key == input::kAll) return all;
         for (const input::Device& d : devices)
             if (d.key == key) return d.label;
         char text[512];
-        std::snprintf(text, sizeof text, T("%s (not connected)"), key.substr(0, key.rfind('#')).c_str());
+        std::snprintf(text, sizeof text, T("s_not_connected"), key.substr(0, key.rfind('#')).c_str());
         return text;
     };
     // whose it is now, when another player's
@@ -910,7 +924,7 @@ void DeviceCombo(int player, input::Kind kind) {
         const int p = input::Holder(kind, key);
         if (p < 0 || p == player) return "";
         char text[64];
-        std::snprintf(text, sizeof text, T("  (player %d)"), p + 1);
+        std::snprintf(text, sizeof text, T("player_d2"), p + 1);
         return text;
     };
     ImGui::PushID(int(kind));
@@ -919,7 +933,7 @@ void DeviceCombo(int player, input::Kind kind) {
         auto option = [&](const std::string& key, const std::string& text) {
             if (ImGui::Selectable((text + whose(key) + "##" + key).c_str(), held == key)) input::Assign(player, kind, key);
         };
-        option("", T("None"));
+        option("", T("none"));
         if (kind != Kind::Controller) option(input::kAll, all);
         for (const input::Device& d : devices) option(d.key, d.label);
         ImGui::EndCombo();
@@ -933,8 +947,8 @@ void DeviceCombo(int player, input::Kind kind) {
             ImGui::PushStyleColor(ImGuiCol_PopupBg, dark);
         }
         ImGui::SetNextWindowBgAlpha(0.85f);
-        ImGui::SetTooltip("%s", kind == Kind::Keyboard ? T("Uses every keyboard not given to another player")
-                                                    : T("Uses every mouse not given to another player"));
+        ImGui::SetTooltip("%s", kind == Kind::Keyboard ? T("hint_uses_every_keyboard_not_given")
+                                                    : T("uses_every_mouse"));
         ImGui::PopStyleVar();
         ImGui::PopStyleColor();
     }
@@ -943,42 +957,41 @@ void DeviceCombo(int player, input::Kind kind) {
 
 // a player's devices, and whether new controllers find a player on their own (shared by all, under each tab)
 void DrawDevices(int player) {
-    if (!Section("Devices")) return;
+    if (!Section("devices")) return;
     const float x0 = ImGui::GetCursorScreenPos().x, label_width = LabelWidth();
     for (input::Kind kind : {input::Kind::Keyboard, input::Kind::Mouse, input::Kind::Controller}) {
         SettingGap();
         ImGui::AlignTextToFramePadding();
-        ImGui::TextUnformatted(T(kind == input::Kind::Keyboard ? "Keyboard" : kind == input::Kind::Mouse ? "Mouse" : "Controller"));
+        ImGui::TextUnformatted(T(kind == input::Kind::Keyboard ? "keyboard" : kind == input::Kind::Mouse ? "mouse" : "controller"));
         ToValueColumn(x0, label_width);  // the column of the other settings
         DeviceCombo(player, kind);
     }
     bool auto_assign = input::AutoAssign();
-    if (Check("New controllers go to the first player without one", &auto_assign))
+    if (Check("hint_new_controllers_go_to_the", &auto_assign))
         input::SetAutoAssign(auto_assign);
 }
 
 // a player's controller options, the game's own two (they replace its Options menu's)
 void DrawController(int player) {
-    if (!Section("Controller")) return;
-    Check("Invert aim", &gamepad::g_invert_aim[player]);
-    Hint("Up on the right stick aims down while aiming. The camera and the mouse aren't affected.", true);
-    Check("Vibration", &gamepad::g_vibration[player]);
+    if (!Section("controller")) return;
+    Check("invert_aim", &gamepad::g_invert_aim[player]);
+    Hint("hint_up_on_the_right_stick", true);
+    Check("vibration", &gamepad::g_vibration[player]);
     ImGui::BeginDisabled(!gamepad::g_vibration[player]);
-    Slider("Vibration %", &gamepad::g_vibration_percent[player], 0, 100, 100);
+    Slider("vibration2", &gamepad::g_vibration_percent[player], 0, 100, 100);
     ImGui::EndDisabled();
-    Hint("How hard the controller shakes. NOTE: These Invert aim and Vibration settings are single player only: "
-         "in multiplayer, the profile's own in-engine settings decide.");
+    Hint("hint_how_hard_the_controller_shakes");
 }
 
 // a player's mouse look
 void DrawMouse(int player) {
-    if (!Section("Mouse")) return;
-    Check("Mouse look", &mouse::g_look[player]);
-    Hint("Move the mouse to look around. Open this menu (F1) or press Alt+Tab to get the cursor back.", true);
-    Slider("Horizontal %", &mouse::g_sensitivity[player], 10, 500, mouse::kDefaultSensitivity);
-    Slider("Vertical %", &mouse::g_sensitivity_y[player], 10, 500, mouse::kDefaultSensitivity);
-    Check("Invert Y", &mouse::g_invert_y[player]);
-    Hint("Single player only: in a match the mouse follows the profile's Invert.", true);
+    if (!Section("mouse")) return;
+    Check("mouse_look", &mouse::g_look[player]);
+    Hint("hint_move_the_mouse_to_look", true);
+    Slider("horizontal", &mouse::g_sensitivity[player], 10, 500, mouse::kDefaultSensitivity);
+    Slider("vertical", &mouse::g_sensitivity_y[player], 10, 500, mouse::kDefaultSensitivity);
+    Check("invert_y", &mouse::g_invert_y[player]);
+    Hint("hint_single_player_only_in_a", true);
 }
 
 // a player's keys
@@ -987,13 +1000,13 @@ void DrawKeys(int player) {
     if (g_rebind >= 0 && g_rebind_player != player) g_rebind = -1;
     PollRebind();
     g_cancel_hovered = false;  // the waiting row sets it again as it draws
-    if (!Section("Keyboard")) {
+    if (!Section("keyboard")) {
         g_rebind = -1;  // folded away: no key waits
         return;
     }
-    Hint("Right-click a slot (Y on a controller) to clear it. Picking a key that is already used swaps the two.");
+    Hint("hint_right_click_a_slot_y");
     if (const int scheme = keyboard::Scheme(player))
-        ImGui::Text(T("In use now: %s's controls"), keyboard::SchemeName(scheme));
+        ImGui::Text(T("in_use_now"), keyboard::SchemeName(scheme));
     // a frame per kind of action; the frame names it, so a row only names its action
     struct Row {
         int action;
@@ -1006,15 +1019,15 @@ void DrawKeys(int player) {
     };
     using namespace keyboard;
     static const Group kGroups[] = {
-        {"Movement", 0, 0, {{kMoveUp, "Forward"}, {kMoveDown, "Back"}, {kMoveLeft, "Left"}, {kMoveRight, "Right"},
-                      {kJump, "Jump"}, {kCrouch, "Crouch"}, {kWalk, "Walk"}, {kCreep, "Creep"}}},
-        {"Camera", 0, 1, {{kLookUp, "Look up"}, {kLookDown, "Look down"}, {kLookLeft, "Look left"},
-                    {kLookRight, "Look right"}, {kZoom, "Zoom (story)"}}},
-        {"Weapons", 1, 0, {{kAttack, "Attack / fire"}, {kAim, "Aim / equip weapon"}, {kWeaponMode, "First person / mode"},
-                     {kReload, "Reload"}, {kUse, "Use (story)"}}},
-        {"Game", 0, 1, {{kPause, "Pause"}, {kQuit, "Quit (title menu)"}}},
-        {"Multiplayer", 1, 1, {{kAbility, "Abilities"}, {kCycle, "Cycle equipped (hold for item wheel)"}, {kVote, "Vote kick"},
-                         {kChat, "Chat (Shift: everyone)"}}},
+        {"movement", 0, 0, {{kMoveUp, "forward"}, {kMoveDown, "back"}, {kMoveLeft, "left"}, {kMoveRight, "right"},
+                      {kJump, "jump"}, {kCrouch, "crouch"}, {kWalk, "walk"}, {kCreep, "creep"}}},
+        {"camera", 0, 1, {{kLookUp, "look_up"}, {kLookDown, "look_down"}, {kLookLeft, "look_left"},
+                    {kLookRight, "look_right"}, {kZoom, "zoom_story"}}},
+        {"weapons", 1, 0, {{kAttack, "attack_fire"}, {kAim, "aim_equip_weapon"}, {kWeaponMode, "first_person_mode"},
+                     {kReload, "reload"}, {kUse, "use_story"}}},
+        {"game", 0, 1, {{kPause, "pause"}, {kQuit, "quit_title_menu"}}},
+        {"multiplayer", 1, 1, {{kAbility, "abilities"}, {kCycle, "cycle_equipped_hold"}, {kVote, "vote_kick"},
+                         {kChat, "chat_shift_everyone"}}},
     };
     // two columns and two rows (Weapons and Multiplayer line up), each cell its groups stacked
     // a wide gap between the columns (the padding falls on both sides of it)
@@ -1032,7 +1045,7 @@ void DrawKeys(int player) {
             ImGui::SeparatorText(T(g.title));
             // label, the action's keys side by side, then its Reset; the keys line up down the frame
             const float spacing = ImGui::GetStyle().ItemInnerSpacing.x;
-            const float reset = std::max(ImGui::CalcTextSize(T("Reset")).x, ImGui::CalcTextSize(T("Cancel")).x) +
+            const float reset = std::max(ImGui::CalcTextSize(T("reset")).x, ImGui::CalcTextSize(T("cancel")).x) +
                                 ImGui::GetStyle().FramePadding.x * 2.0f;  // the same button, either label
             const float avail = ImGui::GetContentRegionAvail().x;
             const float column = ImGui::GetCursorPosX() + avail * 0.3f;
@@ -1046,7 +1059,7 @@ void DrawKeys(int player) {
                     if (s) ImGui::SameLine(0, spacing);
                     ImGui::PushID(s);
                     const bool waiting = g_rebind == r.action && g_rebind_slot == s;
-                    if (ImGui::Button(waiting ? T("press...") : KeyName(g_keys[player][r.action][s]),
+                    if (ImGui::Button(waiting ? T("hint_press") : KeyName(g_keys[player][r.action][s]),
                                       ImVec2(key_w, 0)) &&
                         !g_rebind_settle) {
                         g_rebind = r.action;
@@ -1065,11 +1078,11 @@ void DrawKeys(int player) {
                 ImGui::SameLine(0, spacing);
                 if (g_rebind == r.action) {
                     // waiting: Reset becomes Cancel, which PollRebind honours when the left click lands on it
-                    ImGui::Button(T("Cancel"), ImVec2(reset, 0));
+                    ImGui::Button(T("cancel"), ImVec2(reset, 0));
                     g_cancel_hovered = ImGui::IsItemHovered();
                 } else {
                     ImGui::BeginDisabled(IsDefault(player, r.action));
-                    if (ImGui::Button(T("Reset"), ImVec2(reset, 0))) ResetKey(player, r.action);
+                    if (ImGui::Button(T("reset"), ImVec2(reset, 0))) ResetKey(player, r.action);
                     ImGui::EndDisabled();
                     if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
                         const ImGuiStyle& ts = ImGui::GetStyle();
@@ -1080,7 +1093,7 @@ void DrawKeys(int player) {
             ImGui::PushStyleColor(ImGuiCol_PopupBg, dark);
         }
         ImGui::SetNextWindowBgAlpha(0.85f);
-                        ImGui::SetTooltip(T("Default: %s"), ActionDefault(r.action).c_str());
+                        ImGui::SetTooltip(T("default_s"), ActionDefault(r.action).c_str());
                         ImGui::PopStyleVar();
                         ImGui::PopStyleColor();
                     }
@@ -1090,7 +1103,7 @@ void DrawKeys(int player) {
             if (g.rows[0].action == kMoveUp) {  // the Walk and Creep tilts, under the movement keys
                 ImGui::Spacing();
                 g_first_row = true;  // no separator over it: it belongs to the movement keys above
-                RangeSlider("Creep / Walk %", &g_creep_percent[player], &g_walk_percent[player], kTiltMin, kTiltMax, kTiltGap,
+                RangeSlider("creep_walk", &g_creep_percent[player], &g_walk_percent[player], kTiltMin, kTiltMax, kTiltGap,
                             kDefaultCreep, kDefaultWalk, column, key_w * kSlots + spacing * (kSlots - 1), reset);
             }
             ImGui::Dummy(ImVec2(0.0f, 2.0f));  // the last row's buttons were clipped by the frame's bottom edge
@@ -1102,7 +1115,7 @@ void DrawKeys(int player) {
         }
     }
     ImGui::EndTable();
-    if (ImGui::Button(T("Default keys"))) {
+    if (ImGui::Button(T("default_keys"))) {
         keyboard::ResetKeys(player);
         g_rebind = -1;
     }
@@ -1144,7 +1157,7 @@ void DrawWarp() {
     };
 
     {
-        SubHeading("Current level");
+        SubHeading("current_level");
         const int current = warp::CurrentLevel();
         const char* current_name = warp::LevelName(current);
         ImGui::Text("%d %s", current, current_name ? current_name : "");
@@ -1153,10 +1166,10 @@ void DrawWarp() {
     }
 
     {
-        SubHeading("Checkpoints");
-        WarningCard("Warning: these start a new game. Don't save afterwards over a save you want to keep.");
+        SubHeading("checkpoints");
+        WarningCard("hint_warning_these_start_a_new");
         ImGui::SetNextItemWidth(-FLT_MIN);
-        ImGui::InputTextWithHint("##filter", T("filter by name or level"), filter, sizeof filter);
+        ImGui::InputTextWithHint("##filter", T("filter_by_name"), filter, sizeof filter);
         const std::vector<warp::Checkpoint>& list = warp::Checkpoints();
         auto matches = [](const std::string& s) {
             std::string a = s, b = filter;
@@ -1189,27 +1202,27 @@ void DrawWarp() {
             ImGui::EndListBox();
         }
         ImGui::BeginDisabled(checkpoint < 0);
-        if (ImGui::Button(T("Start at checkpoint")) && warp::GoCheckpoint(checkpoint)) Close();
+        if (ImGui::Button(T("start_at_checkpoint")) && warp::GoCheckpoint(checkpoint)) Close();
         ImGui::EndDisabled();
     }
 
     {
-        SubHeading("Cutscenes");
+        SubHeading("cutscenes");
         int found_level = -1;
         const std::vector<int> found = warp::Cutscenes(&found_level);
         if (found_level >= 0) {
             const char* fn = warp::LevelName(found_level);
-            ImGui::Text(T("In %s:"), fn ? fn : T("this level"));
-            if (found.empty()) ImGui::TextDisabled("%s", T("none"));
+            ImGui::Text(T("in_s"), fn ? fn : T("this_level"));
+            if (found.empty()) ImGui::TextDisabled("%s", T("none2"));
             for (size_t i = 0; i < found.size(); i++) {
                 if (i % 10) ImGui::SameLine();
                 if (ImGui::Button(std::to_string(found[i]).c_str()) && warp::PlayCutscene(found_level, found[i])) Close();
             }
         }
-        level_combo("Level", "cut", &cut_level);
-        ImGui::InputInt(T("Cutscene"), &cut_index);
+        level_combo("level", "cut", &cut_level);
+        ImGui::InputInt(T("cutscene"), &cut_index);
         cut_index = std::clamp(cut_index, 0, 255);
-        if (ImGui::Button(T("Play cutscene")) && warp::PlayCutscene(cut_level, cut_index)) Close();
+        if (ImGui::Button(T("play_cutscene")) && warp::PlayCutscene(cut_level, cut_index)) Close();
     }
 }
 
@@ -1367,13 +1380,13 @@ void FeedNav(const Buttons& drive) {
 
 // the quit prompt's body. Cancel is where the pad starts, and B is Cancel too (ImGui's own back out leaves a modal up)
 bool QuitBody() {
-    ImGui::TextUnformatted(T("Quit the game? Progress since the last save is lost."));
+    ImGui::TextUnformatted(T("hint_quit_the_game_progress_since"));
     ImGui::Dummy(ImVec2(0.0f, ImGui::GetFontSize() * 0.8f));
     const ImGuiStyle& st = ImGui::GetStyle();
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(st.FramePadding.x * 2.0f, st.FramePadding.y * 1.5f));
-    if (ImGui::Button(T("Quit"))) app::Quit();  // only posts: the window thread closes
+    if (ImGui::Button(T("quit"))) app::Quit();  // only posts: the window thread closes
     ImGui::SameLine();
-    const bool cancel = ImGui::Button(T("Cancel"));
+    const bool cancel = ImGui::Button(T("cancel"));
     ImGui::SetItemDefaultFocus();
     ImGui::PopStyleVar();
     return !cancel && !g_pad.b;
@@ -1398,7 +1411,7 @@ void Draw(double fps) {
     static bool last_title = !g_fps_title;
     static int last_look = -1;
     MenuStyle();
-    chat::Draw(T("Team"), T("All"));  // under the menu
+    chat::Draw(T("team"), T("all"));  // under the menu
     PadFrame(g_open.load(), g_quit.load());
     const bool open = g_open.load();
     const bool quit = g_quit.load();
@@ -1456,7 +1469,7 @@ void Draw(double fps) {
     // F7's freeze (gpu::g_freeze): a note at the top's middle while the game waits on its last frame
     if (gpu::g_freeze.load()) {
         ImDrawList* dl = ImGui::GetForegroundDrawList();
-        const char* label = T("Frozen: F7 resumes, F8 steps a frame");
+        const char* label = T("frozen_f7_resumes");
         const float font = ImGui::GetFontSize();
         const ImVec2 text = ImGui::GetFont()->CalcTextSizeA(font, FLT_MAX, 0.0f, label);
         const float pad = font * 0.5f, x = (ImGui::GetIO().DisplaySize.x - text.x) * 0.5f, y = font * 0.6f;
@@ -1470,7 +1483,7 @@ void Draw(double fps) {
         ImDrawList* dl = ImGui::GetForegroundDrawList();
         const ImVec2 display = ImGui::GetIO().DisplaySize;
         const float unit = ImGui::GetFontSize() * 1.35f;  // the widget and its text, larger than the menu's
-        const char* label = T("Hold to skip");
+        const char* label = T("hold_to_skip");
         const float font = unit;
         const ImVec2 text = ImGui::GetFont()->CalcTextSizeA(font, FLT_MAX, 0.0f, label);
         const float h = unit * 2.4f, w = text.x + h * 1.1f, r = h * 0.5f, margin = unit * 1.6f, thick = unit * 0.2f;
@@ -1657,8 +1670,8 @@ void Draw(double fps) {
                 ImGui::EndTabItem();
             };
 
-            if (tab("General")) {
-                if (Section("Language")) {
+            if (tab("general")) {
+                if (Section("language")) {
                     {
                         // the languages the game has text for (aid/text), in XC_LANGUAGE order; the menu has the same six
                         static const char* const kKeys[] = {"english", "japanese", "german", "french", "spanish", "italian"};
@@ -1670,16 +1683,16 @@ void Draw(double fps) {
                             // segments, or a dropdown where the six names don't fit the room
                             if (Segmented(label, &lang, {"English", "日本語", "Deutsch", "Français", "Español", "Italiano"})) setting = kKeys[lang];
                         };
-                        pick("UI", s.ui_language);
-                        pick("Game text", s.language);
-                        Hint("Text only, requires restart. Voices stay in English.");
+                        pick("ui", s.ui_language);
+                        pick("game_text", s.language);
+                        Hint("hint_text_only_requires_restart_voices");
                         static const std::string start_language = s.language;
-                        if (s.language != start_language) WarningCard("Restart the game for this change to take effect.");
+                        if (s.language != start_language) WarningCard("hint_restart_the_game_for_this");
                     }
                 }
-                if (Section("Appearance")) {
+                if (Section("appearance")) {
                     {
-                        Beside("UI accent color");  // its label (with the hint under it), the swatches in the value column
+                        Beside("ui_accent_color");  // its label (with the hint under it), the swatches in the value column
                         const float size = ImGui::GetFrameHeight() * 1.1f, gap = size * 0.4f;
                         for (uint32_t i = 0; i < 7; i++) {
                             if (i) ImGui::SameLine(0.0f, gap);
@@ -1698,24 +1711,24 @@ void Draw(double fps) {
                                 dl->AddRect(p, ImVec2(p.x + size, p.y + size), IM_COL32(255, 255, 255, 120), size * 0.25f, 0, 1.5f);
                             ImGui::PopID();
                         }
-                        Hint("The color of the selection and the sliders in this menu.");
+                        Hint("hint_the_color_of_the_selection");
                     }
-                    Check("Menu decorations", &g_decorations);
-                    Hint("A fine light and dark outline round the settings' sections, buttons, sliders and menus.", true);
+                    Check("menu_decorations", &g_decorations);
+                    Hint("hint_a_fine_light_and_dark", true);
                 }
                 end_tab();
             }
 
-            if (tab("Graphics")) {
-                if (Section("Display")) {
+            if (tab("graphics")) {
+                if (Section("display")) {
                     int mode = int(s.display_mode);
-                    if (Segmented("Mode", &mode, {"Fullscreen", "Borderless", "Windowed"})) {
+                    if (Segmented("mode", &mode, {"fullscreen", "borderless", "windowed"})) {
                         s.display_mode = app::DisplayMode(mode);
                         app::ApplyDisplay();
                     }
 
                     const std::vector<app::Mode>& modes = Modes();
-                    std::string res = T("Desktop");
+                    std::string res = T("desktop");
                     int res_idx = 0;
                     for (size_t i = 0; i < modes.size(); i++) {
                         res += '\0';
@@ -1723,7 +1736,7 @@ void Draw(double fps) {
                         if (modes[i].width == s.width && modes[i].height == s.height) res_idx = int(i) + 1;
                     }
                     res += '\0';
-                    if (ImGui::Combo(Beside("Resolution"), &res_idx, res.c_str())) {
+                    if (ImGui::Combo(Beside("resolution"), &res_idx, res.c_str())) {
                         if (res_idx == 0) s.width = s.height = 0;
                         else s.width = modes[res_idx - 1].width, s.height = modes[res_idx - 1].height;
                         app::ApplyDisplay();
@@ -1738,13 +1751,13 @@ void Draw(double fps) {
                     for (int i = 0; i < kAspects; i++) items += std::string(i ? aspects[i] : T("auto")) + '\0';
                     if (aspect < 0) items += s.aspect + '\0', aspect = kAspects;  // a custom W:H from settings.toml
                     items += '\0';
-                    if (ImGui::Combo(Beside("Aspect ratio"), &aspect, items.c_str()) && aspect < kAspects) s.aspect = aspects[aspect];
+                    if (ImGui::Combo(Beside("aspect_ratio"), &aspect, items.c_str()) && aspect < kAspects) s.aspect = aspects[aspect];
 
                     {
                         const std::vector<std::string>& adapters = gpu::Adapters();
                         if (adapters.size() > 1 || !s.gpu.empty()) {
-                            if (ImGui::BeginCombo(Beside("Graphics adapter"), s.gpu.empty() ? T("Automatic") : s.gpu.c_str())) {
-                                if (ImGui::Selectable(T("Automatic"), s.gpu.empty())) s.gpu.clear();
+                            if (ImGui::BeginCombo(Beside("graphics_adapter"), s.gpu.empty() ? T("automatic") : s.gpu.c_str())) {
+                                if (ImGui::Selectable(T("automatic"), s.gpu.empty())) s.gpu.clear();
                                 for (const std::string& a : adapters)
                                     if (ImGui::Selectable(a.c_str(), a == s.gpu)) s.gpu = a;
                                 ImGui::EndCombo();
@@ -1752,41 +1765,41 @@ void Draw(double fps) {
                         }
                     }
 
-                    Check("V-Sync", &s.vsync);
-                    Hint("Waits for the display to refresh before showing each frame. Stops screen tearing; turn it off for the lowest latency.", true);
+                    Check("v_sync", &s.vsync);
+                    Hint("hint_waits_for_the_display_to", true);
                     {
                         // offered once the swap chain found an HDR10 format; kept clickable while on, to turn it off
                         bool can = gpu::HdrAvailable() || s.hdr;
                         ImGui::BeginDisabled(!can);
-                        Check("HDR", &s.hdr);
+                        Check("hdr", &s.hdr);
                         ImGui::EndDisabled();
-                        Hint(can ? "Sends the picture to the display as HDR10. Needs HDR turned on in the system's display settings."
-                                 : "The display or desktop offers no HDR output.", true);
+                        Hint(can ? "hint_sends_the_picture_to_the"
+                                 : "hint_the_display_or_desktop_offers", true);
                         if (s.hdr) {
-                            Slider("Paper white (nits)", &s.hdr_paper_white, 80, 500, app::Settings{}.hdr_paper_white);
-                            Hint("How bright white is shown.", true);
-                            Slider("Highlights %", &s.hdr_highlights, 0, 100, app::Settings{}.hdr_highlights);
-                            Hint("Makes the brightest parts of the 3D picture brighter than white. The HUD and menus stay at paper white. 0 turns it off.", true);
+                            Slider("paper_white_nits", &s.hdr_paper_white, 80, 500, app::Settings{}.hdr_paper_white);
+                            Hint("hint_how_bright_white_is_shown", true);
+                            Slider("highlights", &s.hdr_highlights, 0, 100, app::Settings{}.hdr_highlights);
+                            Hint("hint_makes_the_brightest_parts_of", true);
                             if (s.hdr_highlights) {
-                                Slider("Peak brightness (nits)", &s.hdr_peak, 300, 4000, app::Settings{}.hdr_peak);
-                                Hint("How bright the brightest highlights get. Set it to your display's peak.", true);
+                                Slider("peak_brightness_nits", &s.hdr_peak, 300, 4000, app::Settings{}.hdr_peak);
+                                Hint("hint_how_bright_the_brightest_highlights", true);
                             }
                         }
                     }
-                    Slider("Gamma", &s.gamma, 180, 260, app::Settings{}.gamma, 100);
-                    Hint("Higher darkens shadows and midtones, lower brightens them. 2.20 shows the picture as drawn.", true);
-                    Slider("Brightness", &s.brightness, -20, 20, app::Settings{}.brightness);
-                    Hint("Raises or lowers the black level. White stays the same.", true);
+                    Slider("gamma", &s.gamma, 180, 260, app::Settings{}.gamma, 100);
+                    Hint("hint_higher_darkens_shadows_and_midtones", true);
+                    Slider("brightness", &s.brightness, -20, 20, app::Settings{}.brightness);
+                    Hint("hint_raises_or_lowers_the_black", true);
                 }
 
-                if (Section("Quality")) {
-                    Slider("Render %", &s.render_percent, 25, 200, app::Settings{}.render_percent);
-                    Check("AMD FSR 1.0", &s.fsr);
-                    Hint("AMD FidelityFX Super Resolution: edge-adaptive spatial upscaling & contrast-adaptive sharpening.", true);
+                if (Section("quality")) {
+                    Slider("render", &s.render_percent, 25, 200, app::Settings{}.render_percent);
+                    Check("amd_fsr_1", &s.fsr);
+                    Hint("hint_amd_fidelityfx_super_resolution_edge", true);
                     if (s.fsr) {
-                        Slider("FSR sharpness %", &s.fsr_sharpness, 0, 100, app::Settings{}.fsr_sharpness);
-                        Slider("Fur sharpness %", &s.fur_sharpness, 0, 100, app::Settings{}.fur_sharpness);
-                        Hint("How much of FSR's sharpening fur takes. 0 keeps it soft.", true);
+                        Slider("fsr_sharpness", &s.fsr_sharpness, 0, 100, app::Settings{}.fsr_sharpness);
+                        Slider("fur_sharpness", &s.fur_sharpness, 0, 100, app::Settings{}.fur_sharpness);
+                        Hint("hint_how_much_of_fsr_s", true);
                     }
                     constexpr uint32_t kRates[] = {30, 60, 120, 180, 240, 0};
                     int rate = 0;
@@ -1795,77 +1808,75 @@ void Draw(double fps) {
                     // fixed while a system link session has another machine in it: every player's game must run at the same rate (link.cpp)
                     const bool locked = display::FrameRateLocked();
                     ImGui::BeginDisabled(locked);
-                    if (Segmented("Frame rate", &rate, {"30 (original)", " 60", " 120", " 180", " 240", " Highest"}))
+                    if (Segmented("frame_rate", &rate, {"30_original", " 60", " 120", " 180", " 240", " highest"}))
                         display::SetFrameRate(kRates[rate]);
                     ImGui::EndDisabled();
-                    Hint(locked ? "Can't be changed during an online game." :
-                                  "Highest picks the most the monitor's refresh rate allows (120 at 165 Hz).", true);
+                    Hint(locked ? "hint_can_t_be_changed_during" :
+                                  "hint_highest_picks_the_most_the", true);
 
                     constexpr uint32_t kAniso[] = {0, 2, 4, 8, 16};
                     int aniso = 0;
                     for (int i = 0; i < 5; i++)
                         if (kAniso[i] == s.aniso) aniso = i;
-                    if (Segmented("Anisotropic", &aniso, {"Game default", " 2x", " 4x", " 8x", " 16x"}))
+                    if (Segmented("anisotropic", &aniso, {"game_default", " 2x", " 4x", " 8x", " 16x"}))
                         s.aniso = kAniso[aniso];
 
                     // one choice: no anti-aliasing, SMAA, or MSAA at a sample count (the two never run together)
                     constexpr uint32_t kAa[] = {0, 1, 2, 4, 8};  // 0 off, 1 SMAA, else MSAA samples
                     int aa = s.smaa ? 1 : s.msaa >= 8 ? 4 : s.msaa >= 4 ? 3 : s.msaa >= 2 ? 2 : 0;
-                    if (Segmented("Anti-aliasing", &aa, {"Off", "SMAA", "MSAA 2x", "MSAA 4x", "MSAA 8x"})) {
+                    if (Segmented("anti_aliasing", &aa, {"off", "SMAA", "MSAA 2x", "MSAA 4x", "MSAA 8x"})) {
                         s.smaa = aa == 1;
                         s.msaa = aa >= 2 ? kAa[aa] : 1;
                     }
                 }
 
-                if (Section("Post-processing")) {
-                    Check("Vignette", &vignette::g_on);
-                    Hint("The game's darkened screen edges.", true);
-                    Slider("Film grain %", &s.film_grain, 0, 100, app::Settings{}.film_grain);
-                    Slider("Chromatic aberration %", &s.chromatic_aberration, 0, 100, app::Settings{}.chromatic_aberration);
-                    Slider("Ambient occlusion %", &s.ambient_occlusion, 0, 100, app::Settings{}.ambient_occlusion);
+                if (Section("post_processing")) {
+                    Check("vignette", &vignette::g_on);
+                    Hint("hint_the_game_s_darkened_screen", true);
+                    Slider("film_grain", &s.film_grain, 0, 100, app::Settings{}.film_grain);
+                    Slider("chromatic_aberration", &s.chromatic_aberration, 0, 100, app::Settings{}.chromatic_aberration);
+                    Slider("ambient_occlusion", &s.ambient_occlusion, 0, 100, app::Settings{}.ambient_occlusion);
                     if (s.ambient_occlusion)
-                        Slider("Ambient occlusion reach", &s.ambient_occlusion_radius, 5, 200,
+                        Slider("ambient_occlusion_reach", &s.ambient_occlusion_radius, 5, 200,
                                app::Settings{}.ambient_occlusion_radius);
-                    Slider("Motion blur %", &s.motion_blur, 0, 100, app::Settings{}.motion_blur);
-                    Hint("Blurs the picture as the camera turns and moves.");
+                    Slider("motion_blur", &s.motion_blur, 0, 100, app::Settings{}.motion_blur);
+                    Hint("hint_blurs_the_picture_as_the");
                 }
 
-                if (Section("Lighting")) {
-                    Check("Per-pixel lighting", &lighting::g_per_pixel);
-                    Hint("Smoother light and shadows on characters and objects.", true);
-                    Check("Smooth baked shadows", &s.smooth_lightmaps);
-                    Hint("Straightens the jagged edges of the levels' painted-on light and shadow.", true);
+                if (Section("lighting")) {
+                    Check("per_pixel_lighting", &lighting::g_per_pixel);
+                    Hint("hint_smoother_light_and_shadows_on", true);
+                    Check("smooth_baked_shadows", &s.smooth_lightmaps);
+                    Hint("hint_straightens_the_jagged_edges_of", true);
                     if (s.smooth_lightmaps) {
-                        Slider("Baked shadow smoothing", &s.lightmap_smoothing, 1, 10, app::Settings{}.lightmap_smoothing);
-                        Hint("How far along an edge the smoothing reaches. Higher is smoother and takes longer.", true);
+                        Slider("baked_shadow_smoothing", &s.lightmap_smoothing, 1, 10, app::Settings{}.lightmap_smoothing);
+                        Hint("hint_how_far_along_an_edge", true);
                         constexpr uint32_t kSizes[] = {256, 512, 1024, 2048};
                         int size = 1;
                         for (int i = 0; i < 4; i++)
                             if (kSizes[i] == s.lightmap_size) size = i;
-                        if (Segmented("Baked shadow size", &size, {"256", " 512", " 1024", " 2048"}))
+                        if (Segmented("baked_shadow_size", &size, {"256", " 512", " 1024", " 2048"}))
                             s.lightmap_size = kSizes[size];
-                        Hint("The largest a smoothed shadow texture gets. Larger is sharper but takes longer and uses "
-                             "much more video memory.", true);
+                        Hint("hint_the_largest_a_smoothed_shadow", true);
                     }
                     int fog = int(s.fog);
-                    if (Segmented("Fog", &fog, {"Enabled", "Disabled", "Tint only"})) s.fog = app::Fog(fog);
-                    Hint("Disabled clears the haze over faraway scenery but distorts colors pretty much everywhere. "
-                         "Tint only clears the haze and keeps the fog's color on faraway scenery.", true);
+                    if (Segmented("fog", &fog, {"enabled", "disabled", "tint_only"})) s.fog = app::Fog(fog);
+                    Hint("hint_disabled_clears_the_haze_over", true);
                 }
 
-                if (Section("Fur")) {
+                if (Section("fur")) {
                     // kept in settings.toml as fur_strands (Super) and fur_shading (the legacy shading, Vanilla only): super
                     // fur lights its strands its own way (and takes the draws first anyway)
                     int fur_tech = fur::g_strands ? 1 : 0;
-                    if (Segmented("Fur tech", &fur_tech, {"Vanilla", "Super"})) {
+                    if (Segmented("fur_tech", &fur_tech, {"vanilla", "super"})) {
                         fur::g_strands = fur_tech == 1;
                         if (fur::g_strands) fur::g_shading = false;
                     }
                     if (fur::g_strands) fur::g_shading = false;
-                    Hint("Vanilla keeps the game's fur. Super draws it as fine, tapered strands in tufts, lit as hair.");
+                    Hint("hint_vanilla_keeps_the_game_s");
                     if (!fur::g_strands) {
-                        Check("Improved fur shading", &fur::g_shading);
-                        Hint("Makes fur look more voluminous and improves its shading.", true);
+                        Check("improved_fur_shading", &fur::g_shading);
+                        Hint("hint_makes_fur_look_more_voluminous", true);
                     }
                     if (fur::g_strands) {
                         // the model whose look the sliders change: the furry models the game's table names, those
@@ -1893,34 +1904,32 @@ void Draw(double fps) {
                             return name + (changed(type) ? " *" : "") + "##" + std::to_string(type);
                         };
                         if (named.empty()) {
-                            Hint("The game's models show up here once it has started.");
+                            Hint("hint_the_game_s_models_show");
                         } else {
                             std::string current;
                             for (const auto& [name, type] : named)
                                 if (type == model) current = label(name, type);
-                            if (ImGui::BeginCombo(Beside("Model"), current.c_str())) {
+                            if (ImGui::BeginCombo(Beside("model"), current.c_str())) {
                                 for (const auto& [name, type] : named)
                                     if (ImGui::Selectable(label(name, type).c_str(), type == model)) model = type;
                                 ImGui::EndCombo();
                             }
-                            Hint("Each model has its own settings; those changed are marked *. Multiplayer models are "
-                                 "listed once the game has loaded them.", true);
+                            Hint("hint_each_model_has_its_own", true);
                         }
                         if (fur::ModelLook* own = fur::ModelLookOf(model)) {
                             const fur::Look& d = fur::DefaultLook(model);
                             fur::Look& l = own->look;
                             ImGui::PushID(int(model));  // each model's sliders their own widgets, so a drag doesn't carry over
-                            Check("Vanilla fur", &own->game);
+                            Check("vanilla_fur", &own->game);
                             if (fur::IsHair(model))
-                                Hint("The hair keeps the game's fur, with super fur on; otherwise it has a look of its own.", true);
+                                Hint("hint_the_hair_keeps_the_game", true);
                             else
-                                Hint("This model keeps the game's fur, with super fur on.", true);
+                                Hint("hint_this_model_keeps_the_game", true);
                             if (fur::IsHair(model)) {  // its motion, whichever fur it has
-                                Slider("Sway %", &l.sway, 0u, 200u, d.sway);
-                                Hint("How much the hair moves in the air.", true);
-                                Slider("Follows motion %", &l.motion, 0u, 200u, d.motion);
-                                Hint("How far the hair trails behind when the character moves or turns, and swings back "
-                                     "as it stops.", true);
+                                Slider("sway", &l.sway, 0u, 200u, d.sway);
+                                Hint("hint_how_much_the_hair_moves", true);
+                                Slider("follows_motion", &l.motion, 0u, 200u, d.motion);
+                                Hint("hint_how_far_the_hair_trails", true);
                             }
                             // the look in two columns, a pair to a row: each slider in the next cell
                             ImGui::PushStyleVar(ImGuiStyleVar_CellPadding,
@@ -1932,107 +1941,101 @@ void Draw(double fps) {
                                     ImGui::TableNextColumn();
                                     Slider(args...);
                                 };
-                                cell("Extra shells", &own->shells, 0u, fur::kMaxExtraShells, fur::DefaultShells(model));
-                                cell("Length %", &l.length, 20u, 100u, d.length);
-                                cell("Strands", &l.strands, 8u, 64u, d.strands);
-                                cell("Tufts", &l.tufts, 1u, 16u, d.tufts);
-                                cell("Tufting %", &l.tufting, 0u, 100u, d.tufting);
-                                cell("Droop %", &l.droop, 0u, 200u, d.droop);
-                                cell("Thickness %", &l.thickness, 30u, 100u, d.thickness);
-                                cell("Taper %", &l.taper, 20u, 150u, d.taper);
-                                cell("Root shade %", &l.root_shade, 0u, fur::kMaxShade, d.root_shade);
-                                cell("Tuft shade %", &l.gap_shade, 0u, fur::kMaxShade, d.gap_shade);
-                                cell("Sheen %", &l.sheen, 0u, 200u, d.sheen);
-                                cell("Back glow %", &l.back_glow, 0u, 200u, d.back_glow);
-                                cell("Bare skin fill %", &l.fill, 0u, 100u, d.fill);
-                                cell("Fur brightness %", &l.tone, 50u, 200u, d.tone);
-                                cell("Strays %", &l.stray, 0u, 30u, d.stray);
-                                cell("Stray length %", &l.stray_length, 100u, 250u, d.stray_length);
+                                cell("extra_shells", &own->shells, 0u, fur::kMaxExtraShells, fur::DefaultShells(model));
+                                cell("length", &l.length, 20u, 100u, d.length);
+                                cell("strands", &l.strands, 8u, 64u, d.strands);
+                                cell("tufts", &l.tufts, 1u, 16u, d.tufts);
+                                cell("tufting", &l.tufting, 0u, 100u, d.tufting);
+                                cell("droop", &l.droop, 0u, 200u, d.droop);
+                                cell("thickness", &l.thickness, 30u, 100u, d.thickness);
+                                cell("taper", &l.taper, 20u, 150u, d.taper);
+                                cell("root_shade", &l.root_shade, 0u, fur::kMaxShade, d.root_shade);
+                                cell("tuft_shade", &l.gap_shade, 0u, fur::kMaxShade, d.gap_shade);
+                                cell("sheen", &l.sheen, 0u, 200u, d.sheen);
+                                cell("back_glow", &l.back_glow, 0u, 200u, d.back_glow);
+                                cell("bare_skin_fill", &l.fill, 0u, 100u, d.fill);
+                                cell("fur_brightness", &l.tone, 50u, 200u, d.tone);
+                                cell("strays", &l.stray, 0u, 30u, d.stray);
+                                cell("stray_length", &l.stray_length, 100u, 250u, d.stray_length);
                                 ImGui::EndTable();
                             }
                             ImGui::PopID();
                         }
                     }
-                    Check("Full distant fur", &fur::g_distant);
-                    Hint("Keeps fur on far-away characters.", true);
+                    Check("full_distant_fur", &fur::g_distant);
+                    Hint("hint_keeps_fur_on_far_away", true);
                 }
 
-                if (Section("Characters")) {
-                    Check("Force max character LoD", &characters::g_max_lod);
-                    Hint("Characters keep their full model and smooth animation however far away.", true);
-                    Check("Detailed multiplayer characters", &characters::g_menu_models);
-                    Hint("Multiplayer classes use their more detailed character select models in matches; squirrels get "
-                         "fur on the body. Takes effect from the next match.", true);
+                if (Section("characters")) {
+                    Check("force_max_character", &characters::g_max_lod);
+                    Hint("hint_characters_keep_their_full_model", true);
+                    Check("detailed_multiplayer_characters", &characters::g_menu_models);
+                    Hint("hint_multiplayer_classes_use_their_more", true);
                 }
 
-                if (Section("Grass")) {
-                    Check("Wind on distant grass", &grass::g_wind);
-                    Hint("Faraway grass sways in the wind too.", true);
-                    Check("Force max grass LoD", &grass::g_max_lod);
-                    Hint("Faraway grass stays as thick as nearby grass instead of thinning out.", true);
+                if (Section("grass")) {
+                    Check("wind_on_distant", &grass::g_wind);
+                    Hint("hint_faraway_grass_sways_in_the", true);
+                    Check("force_max_grass", &grass::g_max_lod);
+                    Hint("hint_faraway_grass_stays_as_thick", true);
                     bool solid = !grass::g_fade;  // the setting is the console's fade, which this checkbox turns off
-                    if (Check("Don't fade distant grass", &solid)) grass::g_fade = !solid;
-                    Hint("Faraway grass stays solid, however far, instead of fading away as on the console.", true);
+                    if (Check("don_t_fade", &solid)) grass::g_fade = !solid;
+                    Hint("hint_faraway_grass_stays_solid_however", true);
                 }
 
-                if (Section("Water and reflections")) {
-                    Check("Dynamic water", &water::g_dynamic);
-                    Hint("Water ripples and makes waves as things move through it.", true);
-                    Check("Floor depth of field", &reflection::g_floor_depth);
-                    Hint("Fixes the blur on shiny, reflective floors.", true);
+                if (Section("water_and_reflections")) {
+                    Check("dynamic_water", &water::g_dynamic);
+                    Hint("hint_water_ripples_and_makes_waves", true);
+                    Check("floor_depth_of", &reflection::g_floor_depth);
+                    Hint("hint_fixes_the_blur_on_shiny", true);
                 }
                 end_tab();
             }
 
-            if (tab("Tweaks")) {
-                if (Section("Camera")) {
-                    Slider("Field of view", &display::g_fov, display::kFovMin, display::kFovMax, display::kFov);
-                    Slider("Extra look up", &display::g_look_up, 0, display::kLookUpMax, 0);
-                    Hint("Lets the third person camera tilt further up, in degrees. 0 is the original limit. Both camera "
-                         "settings are single player only.");
+            if (tab("tweaks")) {
+                if (Section("camera")) {
+                    Slider("field_of_view", &display::g_fov, display::kFovMin, display::kFovMax, display::kFov);
+                    Slider("extra_look_up", &display::g_look_up, 0, display::kLookUpMax, 0);
+                    Hint("hint_lets_the_third_person_camera");
                 }
 
-                if (Section("Menus")) {
+                if (Section("menus")) {
                     bool no_attract = !menus::g_attract;
-                    if (Check("Disable attract video", &no_attract)) menus::g_attract = !no_attract;
-                    Hint("The main menu no longer plays its video after two minutes without input.", true);
+                    if (Check("disable_attract_video", &no_attract)) menus::g_attract = !no_attract;
+                    Hint("hint_the_main_menu_no_longer", true);
                 }
 
-                if (Section("Keyboard and mouse")) {
-                    Check("Keyboard button prompts", &prompts::g_on);
-                    Hint("While you play with the keyboard and mouse, the game's button icons show the keys they are "
-                         "bound to. Off: the controller's buttons, as on the console.", true);
+                if (Section("keyboard_and_mouse")) {
+                    Check("keyboard_button_prompts", &prompts::g_on);
+                    Hint("hint_while_you_play_with_the", true);
                 }
 
-                if (Section("Gameplay")) {
-                    Check("Skippable cutscenes", &cutscenes::g_skippable);
-                    Hint("Hold any button, but pause, for a second to skip any cutscene, even ones you haven't seen. Off: "
-                         "LT skips the ones you have.", true);
-                    Check("Speech bubbles in Intro and Ending cutscenes", &cutscenes::g_english_bubbles);
-                    Hint("Conker's monologues on the throne show speech bubbles in English too, as they do in every other "
-                         "language. Off: no bubbles there in English, as on the console.", true);
-                    Check("Fade instead of loading screens", &loading::g_fade);
-                    Hint("Loads fade to black and back instead of showing the loading screen, which also makes them much "
-                         "faster.", true);
-                    Check("Rope physics", &rope::g_physics);
-                    Hint("Ropes swing realistically when Conker hangs on them.", true);
+                if (Section("gameplay")) {
+                    Check("skippable_cutscenes", &cutscenes::g_skippable);
+                    Hint("hint_hold_any_button_but_pause", true);
+                    Check("speech_bubbles_in", &cutscenes::g_english_bubbles);
+                    Hint("hint_conker_s_monologues_on_the", true);
+                    Check("fade_instead_of", &loading::g_fade);
+                    Hint("hint_loads_fade_to_black_and", true);
+                    Check("rope_physics", &rope::g_physics);
+                    Hint("hint_ropes_swing_realistically_when_conker", true);
                 }
                 end_tab();
             }
 
-            if (tab("Audio")) {
-                if (Section("General")) {
-                    Slider("Volume %", &s.volume, 0, 100, app::Settings{}.volume);
+            if (tab("audio")) {
+                if (Section("general")) {
+                    Slider("volume", &s.volume, 0, 100, app::Settings{}.volume);
                     {
                         static std::vector<audio::Device> devices;
                         if (devices.empty() || ImGui::IsWindowAppearing()) devices = audio::Devices();
-                        const std::string system_default = T("System default");
+                        const std::string system_default = T("system_default");
                         std::string current = system_default;
                         for (const audio::Device& d : devices)
                             if (d.id == s.audio_device) current = d.name;
                         if (!s.audio_device.empty() && current == system_default)
-                            current += std::string(" ") + T("(selected device missing)");
-                        if (ImGui::BeginCombo(Beside("Output device"), current.c_str())) {
+                            current += std::string(" ") + T("selected_device_missing");
+                        if (ImGui::BeginCombo(Beside("output_device"), current.c_str())) {
                             if (ImGui::Selectable(system_default.c_str(), s.audio_device.empty())) {
                                 s.audio_device.clear();
                                 audio::SelectDevice(s.audio_device);
@@ -2047,56 +2050,52 @@ void Draw(double fps) {
                     }
                     {
                         int speakers = s.surround ? 1 : 0;
-                        if (Segmented("Speakers", &speakers, {"Stereo", "5.1 surround"})) s.surround = speakers == 1;
-                        Hint("Stereo mixes for two speakers or headphones. 5.1 surround mixes for six speakers and "
-                             "plays on as many as the output device has. Starts from the next launch.");
+                        if (Segmented("speakers", &speakers, {"stereo", "5_1_surround"})) s.surround = speakers == 1;
+                        Hint("hint_stereo_mixes_for_two_speakers");
                         static const bool start_surround = s.surround;
-                        if (s.surround != start_surround) WarningCard("Restart the game for this change to take effect.");
+                        if (s.surround != start_surround) WarningCard("hint_restart_the_game_for_this");
                     }
-                    Check("Mute in background", &s.mute_in_background);
-                    Hint("No sound while you are in another window.", true);
-                    Check("Menu sounds", &s.menu_sounds);
-                    Hint("The sounds of changing tabs and settings and of moving around this menu with the keyboard or a pad.", true);
+                    Check("mute_in_background", &s.mute_in_background);
+                    Hint("hint_no_sound_while_you_are", true);
+                    Check("menu_sounds", &s.menu_sounds);
+                    Hint("hint_the_sounds_of_changing_tabs", true);
                 }
                 // the mixer's choices, where how the console sounds isn't settled
-                if (Section("Mix")) {
+                if (Section("mix")) {
                     {
                         const app::Settings def{};
                         // a warning card, not a dimmed hint: it is the first thing to read in this section
-                        WarningCard("If the game already sounds good to you, leave these as they are.");
+                        WarningCard("hint_if_the_game_already_sounds");
                         ImGui::BeginDisabled(s.surround);
                         int backs = s.stereo_full_backs ? 1 : 0;
-                        if (Segmented("Back speakers in stereo", &backs, {"-3 dB", "Full level"}))
+                        if (Segmented("back_speakers_in", &backs, {"3_db", "full_level"}))
                             s.stereo_full_backs = backs == 1;
-                        Hint("How loud the back speakers' sounds are when folded into the left and right ones.");
-                        Check("Subwoofer in stereo", &s.stereo_sub);
-                        Hint("Folds the subwoofer channel into both speakers.", true);
+                        Hint("hint_how_loud_the_back_speakers");
+                        Check("subwoofer_in_stereo", &s.stereo_sub);
+                        Hint("hint_folds_the_subwoofer_channel_into", true);
                         ImGui::EndDisabled();
-                        Slider("Reverb %", &s.reverb, 0, 200, def.reverb);
-                        Hint("The room echo in caves, halls and the like.");
+                        Slider("reverb", &s.reverb, 0, 200, def.reverb);
+                        Hint("hint_the_room_echo_in_caves");
                         int resampler = int(std::min<uint32_t>(s.resampler, 2));
-                        if (Segmented("Resampling", &resampler, {"Linear", "Cubic", "Sinc"}))
+                        if (Segmented("resampling", &resampler, {"linear", "cubic", "sinc"}))
                             s.resampler = uint32_t(resampler);
-                        Hint("How sounds recorded at lower rates are played at 48 kHz. Cubic and Sinc are sharper than "
-                             "Linear.");
-                        Check("Crosstalk cancellation", &s.crosstalk);
-                        Hint("Widens positioned sounds over two speakers.", true);
-                        Check("Doppler effect", &s.doppler);
-                        Hint("Moving sounds rise and fall in pitch as they pass.", true);
-                        Check("Distance muffling", &s.distance_filters);
-                        Hint("Far and blocked sounds lose their highs.", true);
-                        Check("Voice headroom", &s.voice_headroom);
-                        Hint("Lowers some sounds to leave room in the mix. Off plays every sound at full level, which "
-                             "changes the balance between music, voices and effects.", true);
-                        Check("Sound envelopes", &s.envelopes);
-                        Hint("Sounds fade in, swell and fade out, and looping sounds play out their endings when they "
-                             "stop.", true);
-                        Check("Sound wobble (LFO)", &s.lfo);
-                        Hint("Vibrato and tremolo on the sounds that ask for them.", true);
-                        Check("Sound filters", &s.voice_filters);
-                        Hint("Muffled or resonant sounds keep their filtering.", true);
-                        Check("Soft clipping", &s.soft_clip);
-                        Hint("When the mix gets too loud it is rounded off instead of cut flat, which crackles less.", true);
+                        Hint("hint_how_sounds_recorded_at_lower");
+                        Check("crosstalk_cancellation", &s.crosstalk);
+                        Hint("hint_widens_positioned_sounds_over_two", true);
+                        Check("doppler_effect", &s.doppler);
+                        Hint("hint_moving_sounds_rise_and_fall", true);
+                        Check("distance_muffling", &s.distance_filters);
+                        Hint("hint_far_and_blocked_sounds_lose", true);
+                        Check("voice_headroom", &s.voice_headroom);
+                        Hint("hint_lowers_some_sounds_to_leave", true);
+                        Check("sound_envelopes", &s.envelopes);
+                        Hint("hint_sounds_fade_in_swell_and", true);
+                        Check("sound_wobble_lfo", &s.lfo);
+                        Hint("hint_vibrato_and_tremolo_on_the", true);
+                        Check("sound_filters", &s.voice_filters);
+                        Hint("hint_muffled_or_resonant_sounds_keep", true);
+                        Check("soft_clipping", &s.soft_clip);
+                        Hint("hint_when_the_mix_gets_too", true);
                         // every Mix setting back to its default; greyed out while they already are
                         const bool same = s.stereo_full_backs == def.stereo_full_backs && s.stereo_sub == def.stereo_sub &&
                                           s.reverb == def.reverb && s.crosstalk == def.crosstalk &&
@@ -2106,7 +2105,7 @@ void Draw(double fps) {
                                           s.lfo == def.lfo && s.voice_filters == def.voice_filters;
                         ImGui::Dummy(ImVec2(0.0f, ImGui::GetStyle().ItemSpacing.y * 0.75f));
                         ImGui::BeginDisabled(same);
-                        if (ImGui::Button(T("Reset mix to defaults"))) {
+                        if (ImGui::Button(T("reset_mix_to"))) {
                             s.stereo_full_backs = def.stereo_full_backs;
                             s.stereo_sub = def.stereo_sub;
                             s.reverb = def.reverb;
@@ -2126,15 +2125,15 @@ void Draw(double fps) {
                 end_tab();
             }
 
-            if (tab("Controls")) {
+            if (tab("controls")) {
                 // whose controls: a card of its own above the sections, not a second row of tabs
-                if (Section("Player", false)) {
+                if (Section("player", false)) {
                     {
                         // Segmented takes names it can keep for the frame
                         char names[input::kPorts][64];
-                        for (int p = 0; p < input::kPorts; p++) std::snprintf(names[p], sizeof names[p], T("Player %d"), p + 1);
+                        for (int p = 0; p < input::kPorts; p++) std::snprintf(names[p], sizeof names[p], T("player_d"), p + 1);
                         static_assert(input::kPorts == 4, "the segments below are one per port");
-                        Segmented("Player", &g_player_now, {names[0], names[1], names[2], names[3]});
+                        Segmented("player", &g_player_now, {names[0], names[1], names[2], names[3]});
                     }
                 }
                 const int p = g_player_now;
@@ -2148,75 +2147,72 @@ void Draw(double fps) {
                 end_tab();
             }
 
-            if (tab("Multiplayer")) {
+            if (tab("multiplayer")) {
                 static std::string lan;
                 static uint16_t in_use = 0;
                 static int error = 0;
                 if (lan.empty() || ImGui::IsWindowAppearing())
                     lan = xnet::LocalAddress(), in_use = xnet::Port(), error = xnet::PortError();
-                if (Section("Online play")) {
+                if (Section("online_play")) {
                     // edited in a copy and set as the field is left or Enter pressed: system link resolves the address
                     // each time it changes (xnet.cpp JoinAddress), and a half typed name is a DNS lookup
                     static char host[256];
                     if (ImGui::IsWindowAppearing()) std::snprintf(host, sizeof host, "%s", s.join_ip.c_str());
-                    ImGui::InputTextWithHint(Beside("Host address"), T("leave empty to host or find local games"), host, sizeof host);
+                    ImGui::InputTextWithHint(Beside("host_address"), T("leave_empty_to"), host, sizeof host);
                     if (ImGui::IsItemDeactivatedAfterEdit()) s.join_ip = host;
-                    if (!app::JoinArg().empty()) ImGui::Text(T("This copy joins %s (--join)"), app::JoinArg().c_str());
-                    Hints({"Leave empty to host, or to find games on your home network.",
-                           "For LAN hosts outside your subnet, enter their local IP.",
-                           "For hosts over the internet, enter their public IP.",
-                           "For hosts on a port other than 3074, append the port after the IP (1.2.3.4:3075)."});
+                    if (!app::JoinArg().empty()) ImGui::Text(T("this_copy_joins"), app::JoinArg().c_str());
+                    Hints({"hint_leave_empty_to_host_or",
+                           "hint_for_lan_hosts_outside_your",
+                           "hint_for_hosts_over_the_internet",
+                           "hint_for_hosts_on_a_port"});
                     int port = int(s.system_link_port);
                     ImGui::BeginDisabled(app::PortArg() != 0);
-                    if (ImGui::InputInt(Beside("Online play port"), &port, 0, 0)) s.system_link_port = uint32_t(std::clamp(port, 1, 65535));
+                    if (ImGui::InputInt(Beside("online_play_port"), &port, 0, 0)) s.system_link_port = uint32_t(std::clamp(port, 1, 65535));
                     ImGui::EndDisabled();
-                    if (app::PortArg()) ImGui::Text(T("This copy uses %d (--port)"), app::PortArg());
-                    Hints({"UDP, 3074 as on the console.",
-                           "Hosting for players past the LAN: forward it on your router.",
-                           "Each extra copy on this PC needs its own: launch it with --port N.",
-                           "A change starts from the next launch."});
+                    if (app::PortArg()) ImGui::Text(T("this_copy_uses"), app::PortArg());
+                    Hints({"hint_udp_3074_as_on_the",
+                           "hint_hosting_for_players_past_the",
+                           "hint_each_extra_copy_on_this",
+                           "hint_a_change_starts_from_the"});
                     static const uint32_t start_port = s.system_link_port;
-                    if (s.system_link_port != start_port) WarningCard("Restart the game for this change to take effect.");
+                    if (s.system_link_port != start_port) WarningCard("hint_restart_the_game_for_this");
                 }
 
-                if (Section("UI")) {
-                    Check("Unstretched HUD", &display::g_hud_split);
-                    Hint("On a widescreen display, the HUD in a multiplayer match keeps its shape, each part at the left, "
-                         "the middle or the right of the screen. Off: it stretches across the screen.", true);
+                if (Section("ui")) {
+                    Check("unstretched_hud", &display::g_hud_split);
+                    Hint("hint_on_a_widescreen_display_the", true);
                     int tags = int(std::min<uint32_t>(display::g_player_tags, display::kTagOff));
-                    if (Segmented("Player names", &tags, {"Names", "Markers", "Off"})) display::g_player_tags = uint32_t(tags);
-                    Hint("Over other players in a match: their names, or a marker in the team colors.", true);
-                    Check("Player ranks", &display::g_player_ranks);
-                    Hint("The rank emblem beside other players' names in a match.", true);
-                    Check("Player outlines", &display::g_player_outlines);
-                    Hint("In a match, other players get an outline in the team colors where they're in view.", true);
+                    if (Segmented("player_names", &tags, {"names", "markers", "off"})) display::g_player_tags = uint32_t(tags);
+                    Hint("hint_over_other_players_in_a", true);
+                    Check("player_ranks", &display::g_player_ranks);
+                    Hint("hint_the_rank_emblem_beside_other", true);
+                    Check("player_outlines", &display::g_player_outlines);
+                    Hint("hint_in_a_match_other_players", true);
                     int team = int(std::min<uint32_t>(display::g_team_colors, display::kTeamBlueOrange));
-                    if (Segmented("Team colors", &team, {"Green / red", "Blue / orange"}))
+                    if (Segmented("team_colors", &team, {"green_red", "blue_orange"}))
                         display::g_team_colors = uint32_t(team);
-                    Hint("The colors a match tells the teams apart by: names, outlines, the score, team icons and "
-                         "flags. Blue / orange stays clear with red-green color blindness.", true);
-                    Check("Readable menu hints", &menus::g_bright_hints);
-                    Hint("The hints above and below the multiplayer menus (R Configure) show as clearly as the menu's "
-                         "title. Off: faint and flickering, as on the console.", true);
+                    Hint("hint_the_colors_a_match_tells", true);
+                    Check("readable_menu_hints", &menus::g_bright_hints);
+                    Hint("hint_the_hints_above_and_below", true);
                 }
-                if (Section("This PC")) {
-                    SubHeading("LAN IP");
+                if (Section("this_pc")) {
+                    SubHeading("lan_ip");
                     ImGui::TextUnformatted(lan.c_str());
-                    SubHeading("Port");
-                    if (!in_use) ImGui::TextUnformatted(T("Not open yet (it opens with Online)"));
-                    else if (!error) ImGui::Text(T("UDP %u"), in_use);
-                    else ImGui::TextColored(ImVec4(1.0f, 0.45f, 0.35f, 1.0f), T("UDP %u couldn't be opened (%s)"), in_use,
-                                            error == 10048 ? T("another program or copy has it") : T("blocked"));
+                    SubHeading("port");
+                    if (!in_use) ImGui::TextUnformatted(T("not_open_yet"));
+                    else if (!error) ImGui::Text(T("udp_u"), in_use);
+                    else ImGui::TextColored(ImVec4(1.0f, 0.45f, 0.35f, 1.0f), T("udp_u_couldn"), in_use,
+                                            error == 10048 ? T("another_program_or") : T("blocked"));
                 }
                 end_tab();
             }
 
-            if (tab("Mods")) {
+            if (tab("mods")) {
                 // the folders are looked at again each time the tab opens, and on Rescan
                 if (ImGui::IsWindowAppearing()) app::ScanMods();
-                if (Section("Mods")) {
+                if (Section("mods")) {
                     std::vector<app::ModEntry>& mods = s.mods;
-                    if (mods.empty()) ImGui::TextDisabled("%s", T("No mods installed."));
+                    if (mods.empty()) ImGui::TextDisabled("%s", T("hint_no_mods_installed"));
                     int move = -1, to = -1;
                     const float arrow = ImGui::GetFrameHeight();
                     for (int i = 0; i < int(mods.size()); i++) {
@@ -2242,12 +2238,12 @@ void Draw(double fps) {
                         ImGui::PopID();
                     }
                     if (move >= 0) std::swap(mods[move], mods[to]);
-                    Hints({"Ticked mods are in use. One higher in the list wins where two replace the same file.",
-                           "A change starts from the next launch."});
+                    Hints({"hint_ticked_mods_are_in_use",
+                           "hint_a_change_starts_from_the"});
                     if (app::ModsChanged())
-                        WarningCard("Restart the game to use these mods.");
+                        WarningCard("hint_restart_the_game_to_use");
                 }
-                if (Section("Installing")) {
+                if (Section("installing")) {
                     static std::string dir;
                     if (dir.empty()) dir = app::ModsDir().string();
                     {
@@ -2260,45 +2256,42 @@ void Draw(double fps) {
                         ImGui::PopTextWrapPos();
                         ImGui::Unindent(side);
                     }
-                    Hints({"Put each mod in its own folder here, laid out like the game's disc (dvddata\\...).",
-                           "The game's own files are left as they are."});
-                    if (ImGui::Button(T("Rescan"))) app::ScanMods();
+                    Hints({"hint_put_each_mod_in_its",
+                           "hint_the_game_s_own_files"});
+                    if (ImGui::Button(T("rescan"))) app::ScanMods();
                 }
                 end_tab();
             }
 
-            if (tab("Debug")) {
-                if (Section("FPS")) {
-                    Check("Overlay", &g_fps_overlay);
-                    Check("Window title", &g_fps_title);
+            if (tab("debug")) {
+                if (Section("fps")) {
+                    Check("overlay", &g_fps_overlay);
+                    Check("window_title", &g_fps_title);
                 }
-                if (Section("Menu")) {
-                    Check("Resizable menu", &g_menu_resizable);
-                    Hint("Drag the menu's edges to size it, or an empty part of it to move it, to see the game beside it. "
-                         "F7 freezes the game on its frame, drawn again as settings change; F8 steps a frame.",
+                if (Section("menu")) {
+                    Check("resizable_menu", &g_menu_resizable);
+                    Hint("hint_drag_the_menu_s_edges",
                          true);
                 }
-                if (Section("Color vision")) {
+                if (Section("color_vision")) {
                     int cvd = int(std::min<uint32_t>(gpu::g_cvd_sim.load(std::memory_order_relaxed), 4));
-                    if (Segmented("Simulate", &cvd, {"Off", "Protan", "Deutan", "Tritan", "Mono"}))
+                    if (Segmented("simulate", &cvd, {"off", "protan", "deutan", "tritan", "Mono"}))
                         gpu::g_cvd_sim.store(uint32_t(cvd), std::memory_order_relaxed);
-                    Hint("Shows the screen as seen with a color vision deficiency: no red cones (protanopia), no "
-                         "green cones (deuteranopia), no blue cones (tritanopia), or no color at all. This menu "
-                         "keeps its colors. Not saved.", true);
+                    Hint("hint_shows_the_screen_as_seen", true);
                 }
-                if (Section("Warp")) DrawWarp();
+                if (Section("warp")) DrawWarp();
                 end_tab();
             }
-            if (tab("Quit")) {
-                if (Section("Quit", false)) {
+            if (tab("quit")) {
+                if (Section("quit", false)) {
                     SettingGap();  // the room under the card's top, as before a settings row
-                    ImGui::TextUnformatted(T("Quit the game? Progress since the last save is lost."));
+                    ImGui::TextUnformatted(T("hint_quit_the_game_progress_since"));
                     ImGui::Dummy(ImVec2(0.0f, ImGui::GetStyle().ItemSpacing.y * 0.75f));  // set apart from the button
                     const auto shade = [](float f) { return ImVec4(kDanger.x * f, kDanger.y * f, kDanger.z * f, 1.0f); };
                     ImGui::PushStyleColor(ImGuiCol_Button, shade(0.75f));
                     ImGui::PushStyleColor(ImGuiCol_ButtonHovered, kDanger);
                     ImGui::PushStyleColor(ImGuiCol_ButtonActive, shade(0.6f));
-                    if (ImGui::Button(T("Quit game"))) app::Quit();  // the tab is the prompt: no second one
+                    if (ImGui::Button(T("quit_game"))) app::Quit();  // the tab is the prompt: no second one
                     ImGui::PopStyleColor(3);
                 }
                 end_tab();
@@ -2344,14 +2337,14 @@ void Draw(double fps) {
             // pad's cursor never lands on it
             const ImVec2 after = ImGui::GetCursorPos();
             const ImGuiStyle& st = ImGui::GetStyle();
-            const float width = ImGui::CalcTextSize(T("Close")).x + st.FramePadding.x * 2.0f;
+            const float width = ImGui::CalcTextSize(T("close")).x + st.FramePadding.x * 2.0f;
             ImGui::SetCursorPos(ImVec2(after.x + ImGui::GetContentRegionAvail().x - width, row_y));
             ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
             ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(1.0f, 1.0f, 1.0f, 0.07f));
             ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(1.0f, 1.0f, 1.0f, 0.12f));
             ImGui::PushItemFlag(ImGuiItemFlags_NoNav, true);
             ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, ImGui::GetFrameHeight() * 0.5f);  // a pill like the tabs
-            if (ImGui::Button(T("Close"))) Close();
+            if (ImGui::Button(T("close"))) Close();
             ImGui::PopStyleVar();
             ImGui::PopItemFlag();
             ImGui::PopStyleColor(3);
@@ -2376,8 +2369,7 @@ void Draw(double fps) {
         const ImVec2 line = ImGui::GetCursorScreenPos();
         ImGui::PushClipRect(line, ImVec2(ImGui::GetWindowPos().x + version_x - ImGui::GetStyle().ItemSpacing.x * 2.0f,
                                          line.y + ImGui::GetFrameHeight()), true);
-        ImGui::TextDisabled("%s", T("Stick or d-pad move, LB / RB turn the tabs, A select, B back. F1 or Start + Back open and close this menu. "
-                                    "Changes are saved automatically."));
+        ImGui::TextDisabled("%s", T("hint_stick_or_d_pad_move"));
         ImGui::PopClipRect();
         ImGui::SameLine(version_x);
         ImGui::TextDisabled("%s", XBE_VERSION);
@@ -2464,12 +2456,12 @@ bool Welcome() {
         };
 
         ImGui::PushFont(nullptr, std::round(base.FontSizeBase * 1.7f));
-        ImGui::TextUnformatted(T("Welcome to Live & Recompiled"));
+        ImGui::TextUnformatted(T("welcome_to_live"));
         ImGui::PopFont();
-        Hint("Pick a language and a graphics preset. The language and each individual graphics setting can be changed later in the settings menu (F1, or Start and Back on a controller).");
+        Hint("hint_pick_a_language_and_a");
         gap(1.0f);
 
-        heading("Language");
+        heading("language");
         {
             // the languages the game has text for, as on the General tab; the menu's and the game's text both
             static const char* const kKeys[] = {"english", "japanese", "german", "french", "spanish", "italian"};
@@ -2478,11 +2470,11 @@ bool Welcome() {
                 if (s.language == kKeys[i]) lang = i;
             if (Segmented("##language", &lang, {"English", "日本語", "Deutsch", "Français", "Español", "Italiano"}))
                 s.language = s.ui_language = kKeys[lang];
-            Hint("Text only. Voices stay in English.");
+            Hint("hint_text_only_voices_stay_in");
         }
         gap(0.8f);
 
-        heading("Graphics");
+        heading("graphics");
         Segmented("##preset", &preset,
                   {presets::Name(presets::kNostalgic), presets::Name(presets::kModern), presets::Name(presets::kEnhanced)});
         Hint(presets::Description(preset));
@@ -2494,7 +2486,7 @@ bool Welcome() {
         ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(accent.x, accent.y, accent.z, 0.92f));
         ImGui::PushStyleColor(ImGuiCol_ButtonActive, accent);
         ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 0.0f);  // its lines are drawn below, as the segments' track has
-        if (ImGui::Button(T("Start"), ImVec2(-FLT_MIN, std::round(ImGui::GetFrameHeight() * 1.3f))) && start_at < 0.0) {
+        if (ImGui::Button(T("start"), ImVec2(-FLT_MIN, std::round(ImGui::GetFrameHeight() * 1.3f))) && start_at < 0.0) {
             presets::Apply(preset);
             start_at = now;
         }
