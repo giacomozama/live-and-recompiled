@@ -287,8 +287,8 @@ X86_FUNC(sub_00240570) {
 // goes through the quad under it back to the texture, where it hits an item or not. The cursor moved over an item
 // turns the list's cursor to it by presses of up or down, one at a time while the list's cursor answers (a frontend
 // list's goes there in one frame, JumpBegin), a left click on one does the same and then presses A, and each notch of the wheel presses up or down (menus::Wheel). With
-// no list, in the pub, each notch presses left (away from the player) or right, from picture to picture, and a click
-// presses A on the one in front. XBE_TRACE_MENU_MOUSE logs the list and its panel as they change, and
+// no list, in the pub, each notch presses left (away from the player) or right, from picture to picture (zoomed into
+// Chapters, up or down through a page's scenes first, ChapterStep), and a click presses A on the one in front. XBE_TRACE_MENU_MOUSE logs the list and its panel as they change, and
 // each click.
 namespace {
 
@@ -1170,6 +1170,52 @@ int MenuPort() {
     return 0;
 }
 
+// The pub's Chapters picture, zoomed into ([0x776220] past [0x648D10], [0x776278] 0, picture [0x77625E] 2): 0x1FAF70
+// runs it, a page a chapter (byte [0x8498B2], 0 to 8), left and right turning the page ([0x77655F] 0xFF when none is
+// turning). The page's scenes are the UI page's element whose id ([ui+0x14] ids, [ui+4] elements, ui = [[0x85E550]])
+// is the chapter + 7, its cursor at +0x14 counting only the unlocked scenes (0x1FAE70; 0x1FAEE0 fills it): a
+// chapter's scenes are [0x59B3A8 + chapter] - 1 entries of 4 bytes at [0x74CD44 + chapter * 4], each unlocked while
+// the progress bit of its word +2 is set ([0x84B290]). The rows of + above and below are past the list's ends.
+// A notch of the wheel steps the list up (away) or down, and past its first or last scene turns the page left or right;
+// 0 while a page turns (the notch waits), -1 when the chapters are not shown
+int ChapterStep(bool up) {
+    constexpr uint32_t kZoom = 0x776220, kZoomIn = 0x648D10, kZoomState = 0x776278, kPicture = 0x77625E;
+    constexpr uint32_t kChapter = 0x8498B2, kTurning = 0x77655F, kUi = 0x85E550;
+    constexpr uint32_t kSceneCounts = 0x59B3A8, kScenes = 0x74CD44, kProgress = 0x84B290;
+    constexpr int kChapters = 9, kPictureChapters = 2, kPageId = 7;
+    const uint8_t* b = mem::Base();
+    const uint32_t ui = R32(kUi);
+    if (!ui || b[kZoomState] || int8_t(b[kPicture]) != kPictureChapters ||
+        kernel::G<float>(kZoom) < kernel::G<float>(kZoomIn))
+        return -1;
+    if (b[kTurning] != 0xFF) return 0;
+    const int chapter = int8_t(b[kChapter]);
+    if (chapter < 0 || chapter >= kChapters) return -1;
+    const int side = up ? kPadLeft : kPadRight;
+    // the scenes unlocked
+    const uint32_t scenes = R32(kScenes + uint32_t(chapter) * 4), progress = R32(kProgress);
+    const int entries = int8_t(b[kSceneCounts + uint32_t(chapter)]) - 1;
+    int unlocked = 0;
+    for (int i = 0; i < entries && scenes && progress; i++) {
+        const uint16_t bit = kernel::G<uint16_t>(scenes + uint32_t(i) * 4 + 2);
+        if (b[progress + (bit >> 3)] & (1 << (bit & 7))) unlocked++;
+    }
+    // the list's cursor
+    const uint32_t page = R32(ui), ids = R32(page + 0x14), ids_end = R32(page + 0x18), elements = R32(page + 4);
+    int cursor = -1;
+    for (uint32_t at = ids; at && elements && at < ids_end && at - ids < 64 * 4; at += 4)
+        if (int32_t(R32(at)) == chapter + kPageId) {
+            if (const uint32_t element = R32(elements + (at - ids))) cursor = int32_t(R32(element + 0x14));
+            break;
+        }
+    if (cursor < 0 || cursor >= unlocked) return side;
+    const int step = up ? (cursor > 0 ? kPadUp : side) : (cursor < unlocked - 1 ? kPadDown : side);
+    if (TraceMouse())
+        LOGR("menu mouse: chapter %d scene %d of %d, wheel %s", chapter, cursor, unlocked,
+             step == kPadUp ? "up" : step == kPadDown ? "down" : step == kPadLeft ? "left" : "right");
+    return step;
+}
+
 // the cursor in the back buffer's pixels, false when it is off the picture
 bool CursorInFrame(float& x, float& y, float& wx, float& wy, float& bw, float& bh) {
     float ww, wh;
@@ -1369,10 +1415,18 @@ void menus::Pad(int port, input::Pad& pad) {
     }
 
     // a notch of the wheel: a step, over where the cursor points
+    // (on the Chapters picture: through its scenes, then to the next page, ChapterStep)
     if (const int w = g_wheel.load(); std::abs(w) >= kNotch) {
+        const int chapter_step = pub ? ChapterStep(w > 0) : -1;
+        if (chapter_step == 0) {  // a page turning: at most a notch each way waits for it
+            g_wheel.store(w > 0 ? kNotch : -kNotch);
+            return;
+        }
         g_wheel.fetch_sub(w > 0 ? kNotch : -kNotch);
         p.target = -1, p.pick = false;
-        p.press = pub ? (w > 0 ? kPadLeft : kPadRight) : w > 0 ? kPadUp : kPadDown;
+        p.press = chapter_step > 0 ? uint16_t(chapter_step)
+                  : pub            ? (w > 0 ? kPadLeft : kPadRight)
+                                   : w > 0 ? kPadUp : kPadDown;
         p.from = -1;  // a step past the end is no reason to stop anything
         p.press_us = now;
         pad.buttons |= p.press;
