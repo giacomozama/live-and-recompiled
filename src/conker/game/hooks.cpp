@@ -16,6 +16,7 @@
 #include <mutex>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 #include "xdk/hle.h"
 #include "kernel/memory.h"
@@ -1379,6 +1380,190 @@ void ConkerChocoBob(X86Context& ctx, uint8_t* base) {
     const float exact = float(first) + 10.0f + 10.0f * std::cos(2.0f * phase);
     const float frac = exact - float(int16_t(ctx.ecx & 0xFFFF));
     std::memcpy(base + ctx.edi + 0x1C, &frac, 4);
+}
+
+// Level object type 29, "Platform Move 3D" (0x6D1A0, the object on the stack): a platform that, once stood on (the
+// byte [+0x9F] bit 4), moves from its first place (the int16s [+0xDA] x, [+0xD8] y, [+0xDC] z, kept at its first
+// call) by the offsets in [+0x8C] (bytes: x, z, the frames to take, y; each x 64) and back. Its phase, the byte
+// [+0xDF], goes 0..255 by 255 / frames a call, the place is the first place plus phase / 255 of the offsets cut to
+// whole units, and the signed byte [+0xDE] counts the 100 calls it waits at the far end (then back) and the 100 it
+// rests after coming home. All of it once a call, and 0x6A390 calls it once a frame whatever the ticks, so at 60 FPS
+// it went twice as fast and waited half as long; the Bats Tower lift rose in 128 frames, 2.1 s, by 6, 7, 6, 7
+// (XBE_OBJ_TRACE, 832 units at 2 phase a call). Above 30 the game's call runs once every two ticks, as on the
+// console, from where its last one ended; the frames between show the platform part way along that move, its
+// fraction of y in the float [+0x1C] that the matrix (0x6AD30) adds. The move is taken from the phase before the
+// game's cut (ExactPos): part way along the cut 6, 7 it went 3.5, 3.5, 3, 3, and a generated picture, which blends
+// the platform half a frame back but not the shadow's receiver the game builds on it, left the receiver 1.75 behind
+// the planks on the long steps and Conker's shadow vanished there (capture 174001). Now 3.26 a frame, evenly. At
+// rest at home it's called every frame, so a step onto it starts it at once. Riders are carried by the whole move
+// [+0xAC/AE/B0] (0x6A720); the change of the fraction is added to them there.
+namespace {
+struct Mover {
+    int16_t from[3] = {}, to[3] = {}, shown[3] = {};
+    float from_at[3] = {}, to_at[3] = {};  // the same before the game cut them to whole units
+    uint32_t ticks = 2;   // ticks of the game's last move shown, out of its 2
+    float frac = 0;       // the fraction of y in [+0x1C]
+    float carry = 0;      // the fraction's change this frame, for riders
+    uint32_t frame = 0;   // g_object_frame when it moved
+};
+std::unordered_map<uint32_t, Mover> g_movers;
+uint32_t g_object_frame = 0;  // 0x6A390's runs
+
+void ReadPos(uint32_t o, int16_t* p) {
+    for (uint32_t k = 0; k < 3; k++) p[k] = int16_t(kernel::R16(o + 0x14 + 2 * k));
+}
+void WritePos(uint8_t* base, uint32_t o, const int16_t* p) {
+    std::memcpy(base + o + 0x14, p, 6);
+}
+// The place 0x6D1A0 works out from the phase [+0xDF] before it cuts it to whole units, as it does it: the offsets
+// (bytes of [+0x8C]: x, z, -, y; each x 64) times phase x 1/255 ([0x648CEC]) plus the first place.
+void ExactPos(uint8_t* base, uint32_t o, const int16_t* fallback, float* at) {
+    if (kernel::R32(o + 0xD8) == 0) {
+        for (uint32_t k = 0; k < 3; k++) at[k] = float(fallback[k]);
+        return;
+    }
+    const int32_t first[3] = {int16_t(kernel::R16(o + 0xDA)), int16_t(kernel::R16(o + 0xD8)),
+                              int16_t(kernel::R16(o + 0xDC))};
+    const int32_t offset[3] = {int8_t(base[o + 0x8C]), int8_t(base[o + 0x8F]), int8_t(base[o + 0x8D])};
+    float step;
+    std::memcpy(&step, base + 0x648CEC, 4);
+    const float part = float(base[o + 0xDF]) * step;
+    for (uint32_t k = 0; k < 3; k++) at[k] = float(offset[k] * 64) * part + float(first[k]);
+}
+}  // namespace
+
+X86_EXTERN_FUNC(__imp__sub_0006D1A0);
+X86_FUNC(sub_0006D1A0) {
+    const uint32_t o = kernel::R32(ctx.esp + 4);
+    if (display::GameRate() <= 30) {
+        g_movers.erase(o);
+        __imp__sub_0006D1A0(ctx, base);
+        return;
+    }
+    const uint32_t esp = ctx.esp;
+    // The game's ret pops the return address; put it back for the next call. The handler also uses its argument's
+    // slot as scratch ([esp+0x50] = 0 at 0x6D1F8 clears its low byte), so the object goes back in before each call:
+    // a second call in one frame (a long frame after an F4 capture) got 00E1AB00 for 00E1AB70 and wrote 0x70 bytes
+    // early, its [+0xD8] over the lift's list pointer [+0x68], which 0x68C70 then crashed on.
+    auto call = [&] {
+        std::memcpy(base + esp + 4, &o, 4);
+        __imp__sub_0006D1A0(ctx, base);
+        ctx.esp = esp;
+    };
+    int16_t entry[3];
+    ReadPos(o, entry);
+    Mover& m = g_movers[o];
+    if (kernel::R32(o + 0xD8) == 0 || std::memcmp(entry, m.shown, 6) != 0) {
+        // first call, or placed by someone else: start from where it is, the last move done
+        m = Mover{};
+        std::memcpy(m.from, entry, 6);
+        std::memcpy(m.to, entry, 6);
+        std::memcpy(m.shown, entry, 6);
+        ExactPos(base, o, entry, m.to_at);
+        std::memcpy(m.from_at, m.to_at, sizeof m.to_at);
+        float f1c;
+        std::memcpy(&f1c, base + o + 0x1C, 4);
+        m.frac = f1c;
+    }
+    const float frac_entry = m.frac;
+    const uint32_t ticks = std::clamp(kernel::R32(0x7FA20C), 1u, 8u);
+    for (uint32_t t = 0; t < ticks; t++) {
+        const bool still = std::memcmp(m.from, m.to, 6) == 0 && *(base + o + 0xDE) == 0;
+        if (m.ticks >= 2 || still) {
+            WritePos(base, o, m.to);
+            std::memcpy(m.from, m.to, 6);
+            call();
+            ReadPos(o, m.to);
+            std::memcpy(m.from_at, m.to_at, sizeof m.to_at);
+            ExactPos(base, o, m.to, m.to_at);
+            m.ticks = 0;
+        }
+        m.ticks++;
+    }
+    const float part = float(m.ticks) * 0.5f;
+    float at[3];
+    int16_t now[3];
+    for (uint32_t k = 0; k < 3; k++) {
+        at[k] = m.from_at[k] + (m.to_at[k] - m.from_at[k]) * part;
+        now[k] = int16_t(k == 1 ? std::floor(at[k]) : std::lround(at[k]));
+    }
+    WritePos(base, o, now);
+    std::memcpy(m.shown, now, 6);
+    m.frac = at[1] - float(now[1]);
+    std::memcpy(base + o + 0x1C, &m.frac, 4);
+    m.carry = m.frac - frac_entry;
+    m.frame = g_object_frame;
+    for (uint32_t k = 0; k < 3; k++) {
+        const int16_t move = int16_t(now[k] - entry[k]);
+        std::memcpy(base + o + 0xAC + 2 * k, &move, 2);
+    }
+    std::memcpy(base + esp + 4, &o, 4);
+    ctx.esp = esp + 4;  // the return address, as the game's ret pops it
+}
+
+// 0x6A720 carries a rider by a level object's move (eax the object's number, ebx the rider's y): the fraction a
+// "Platform Move 3D" platform moved in [+0x1C] goes with it.
+X86_EXTERN_FUNC(__imp__sub_0006A720);
+X86_FUNC(sub_0006A720) {
+    const uint32_t o = kernel::R32(0x8471B8) + ctx.eax * 0x150;
+    const uint32_t y_at = ctx.ebx;
+    __imp__sub_0006A720(ctx, base);
+    if (g_movers.empty()) return;
+    const auto it = g_movers.find(o);
+    if (it == g_movers.end() || it->second.carry == 0 || it->second.frame != g_object_frame) return;
+    float y;
+    std::memcpy(&y, base + y_at, 4);
+    y += it->second.carry;
+    std::memcpy(base + y_at, &y, 4);
+}
+
+// 0x6A390 runs every level object's handler ([obj+0x88]) once a frame: the array [0x8471B8], [0x76FD10] of them,
+// 0x150 apiece, the position int16s at +0x14/16/18, the float [+0x1C] added to y by the matrix (0x6AD30), the frame's
+// move at +0xAC/AE/B0 (what riders are carried by). XBE_OBJ_TRACE=1 logs each object whose position changed in a
+// frame, with its type's name from the table 0x58C1F0 (0x24 apiece: handler, ..., name pointer at +0x10), to tell
+// which type moves a platform.
+X86_EXTERN_FUNC(__imp__sub_0006A390);
+X86_FUNC(sub_0006A390) {
+    g_object_frame++;
+    static const bool trace = std::getenv("XBE_OBJ_TRACE") != nullptr;
+    if (!trace) {
+        __imp__sub_0006A390(ctx, base);
+        return;
+    }
+    static std::vector<int16_t> before;
+    static uint32_t frame = 0;
+    frame++;
+    const uint32_t objs = kernel::R32(0x8471B8);
+    const uint32_t count = std::min(kernel::R32(0x76FD10), 4096u);
+    before.resize(size_t(count) * 3);
+    for (uint32_t i = 0; i < count; i++)
+        for (uint32_t k = 0; k < 3; k++) before[i * 3 + k] = int16_t(kernel::R16(objs + i * 0x150 + 0x14 + 2 * k));
+    __imp__sub_0006A390(ctx, base);
+    auto type_name = [&](uint32_t handler, uint32_t& index) -> const char* {
+        for (index = 1; index < 90; index++) {
+            const uint32_t e = 0x58C1F0 + index * 0x24;
+            if (kernel::R32(e) == handler && kernel::R32(e + 0x10)) return reinterpret_cast<const char*>(base + kernel::R32(e + 0x10));
+        }
+        index = 0;
+        return "?";
+    };
+    for (uint32_t i = 0; i < count; i++) {
+        const uint32_t o = objs + i * 0x150;
+        int16_t now[3];
+        for (uint32_t k = 0; k < 3; k++) now[k] = int16_t(kernel::R16(o + 0x14 + 2 * k));
+        if (now[0] == before[i * 3] && now[1] == before[i * 3 + 1] && now[2] == before[i * 3 + 2]) continue;
+        const uint32_t handler = kernel::R32(o + 0x88);
+        uint32_t index;
+        const char* name = type_name(handler, index);
+        float f1c;
+        std::memcpy(&f1c, base + o + 0x1C, 4);
+        LOGR("objtrace: frame %u ticks %u obj %u (%08X) type %u '%s' handler %06X pos %d %d %d step %d %d %d move %d %d %d "
+             "f1c %.3f p8c %08X d8 %08X dc %08X e0 %08X",
+             frame, kernel::R32(0x7FA20C), i, o, index, name, handler, now[0], now[1], now[2], now[0] - before[i * 3],
+             now[1] - before[i * 3 + 1], now[2] - before[i * 3 + 2], int16_t(kernel::R16(o + 0xAC)),
+             int16_t(kernel::R16(o + 0xAE)), int16_t(kernel::R16(o + 0xB0)), double(f1c), kernel::R32(o + 0x8C),
+             kernel::R32(o + 0xD8), kernel::R32(o + 0xDC), kernel::R32(o + 0xE0));
+    }
 }
 
 // 0x2EBAD0 (esi the character) moves an airborne character up and down in fixed substeps: as many as the time scale
