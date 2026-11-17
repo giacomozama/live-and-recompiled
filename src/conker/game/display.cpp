@@ -431,7 +431,7 @@ void ConkerCameraFov(X86Context& ctx, uint8_t* base) {
 // - The effect layers' objects: 0x0D9950 calls each layer's draw routine for each of its objects at 0x0D9AAF (ebx the
 //   layer, esi the object, ebp the routine). The HUD's layers, each one element: 122 the crosshair (five objects,
 //   unstretched in place: it is carried onto a target; the sniper's scope over the frame is one of its draws, with
-//   black at the sides), 127 the HUD (0x1C7C60), 130 the clock and the kill messages, 131 a banner, 134 the bars at the
+//   black at the sides; the markers over players are each in place on their own), 127 the HUD (0x1C7C60), 130 the clock and the kill messages, 131 a banner, 134 the bars at the
 //   right (made again each frame); the rest (112 the drops on the lens, particles, smoke) is 3D or lies over the 3D,
 //   and stays as drawn.
 //   0x1C7C60 draws several widgets, each through a call of its own (HudCall): the scores 0x1CB330, the weapon panel
@@ -468,6 +468,12 @@ constexpr uint32_t kHudLayerCrosshair = 122, kHudLayerHud = 127;
 constexpr uint32_t kHudLayers[] = {kHudLayerCrosshair, kHudLayerHud, 130, 131, 134};
 // a HUD layer's objects as one element (the crosshair's five), but 127's: some layers make theirs again each frame
 constexpr uint32_t kHudLayerId = 0xFF000000u;
+// A layer object's kind (+0x17C, set by its maker). 0x1D3CB0 makes one kPlayerMarker a frame in the crosshair's layer
+// for each other player (the viewer at +0x180, the player at +0x184), at the player's place on screen: the hexagons
+// over enemies (a sniper's infravision shows them through walls). In the crosshair's element they were placed about its
+// middle, and moved it: the sniper's scope jumped sideways as markers came and went
+constexpr uint32_t kLayerObjectKind = 0x17C;
+constexpr uint8_t kKindPlayerMarker = 0x1A;
 constexpr uint32_t kHudAmmoText = 0x1C8813;  // its text under the crosshair (0x1F25F0's return address)
 constexpr uint8_t kTextCentred = 0x01;  // a text entry's flags (+0xC): centred on its x
 
@@ -536,13 +542,16 @@ X86_FUNC(sub_0037E230) {
 
 // [[hook]] before 0x0D9AAF, an effect layer's object drawn: ebx the layer, esi the object, ebp its draw routine
 void ConkerHudLayerObject(X86Context& ctx, uint8_t* base) {
-    (void)base;
     if (!HudScopes()) return;
     g_layer_scoped = true;
-    if (HudTrace()) HudNoteF("hud layer %u object %08X draw %06X", ctx.ebx, ctx.esi, ctx.ebp);
+    if (HudTrace())
+        HudNoteF("hud layer %u object %08X kind %02X draw %06X", ctx.ebx, ctx.esi, base[ctx.esi + kLayerObjectKind],
+                 ctx.ebp);
     const bool hud = std::find(std::begin(kHudLayers), std::end(kHudLayers), ctx.ebx) != std::end(kHudLayers);
     if (!hud) {
         d3d::HudScope(ctx.esi, gpu::kHudStretched);
+    } else if (ctx.ebx == kHudLayerCrosshair && base[ctx.esi + kLayerObjectKind] == kKindPlayerMarker) {
+        d3d::HudScope(ctx.esi, gpu::kHudInPlaceEach);  // over its player, wherever the crosshair is
     } else if (ctx.ebx == kHudLayerCrosshair) {
         d3d::HudScope(kHudLayerId | ctx.ebx, gpu::kHudInPlaceBars);  // the sniper's scope covers the frame
     } else if (ctx.ebx == kHudLayerHud) {
