@@ -1366,6 +1366,21 @@ void ConkerCensorMove(X86Context& ctx, uint8_t* base) {
     }
 }
 
+// The chocolate pickup ("Choco", object handler 0x707F0, edi the object) spins and bobs on a phase [+0xD8] stepped by
+// [0x7FA24C]: its angles are floats, but its height, the word [+0x16], is its first height [+0xDC] plus 10 plus 10 x
+// cos(2 x phase) cut to a whole number, so it rose and fell in steps of a unit, every few frames at 60 FPS. The object's
+// matrix (0x6AD30) adds the float [+0x1C] to that height, zero for the chocolate (level load, 0x6BA48), so the cut-off
+// fraction goes there; the word, which the pickup's reach is measured from, stays as the game made it.
+// [[hook]] before 0x708B2: cx the new height, about to go into [+0x16]
+void ConkerChocoBob(X86Context& ctx, uint8_t* base) {
+    float phase;
+    std::memcpy(&phase, base + ctx.edi + 0xD8, 4);
+    const int32_t first = int32_t(kernel::R32(ctx.edi + 0xDC));
+    const float exact = float(first) + 10.0f + 10.0f * std::cos(2.0f * phase);
+    const float frac = exact - float(int16_t(ctx.ecx & 0xFFFF));
+    std::memcpy(base + ctx.edi + 0x1C, &frac, 4);
+}
+
 // 0x2EBAD0 (esi the character) moves an airborne character up and down in fixed substeps: as many as the time scale
 // [0x7FDB8C] (the slow motion factor times ticks / 2) times 10, truncated (0x2EBB32), each taking [+0xD4] x 0.1 off the
 // vertical speed [+0xD0] and adding the speed x 0.05 to y [+0x7C]. Heist's slow motion dive across the bank hall
