@@ -5252,8 +5252,11 @@ void VulkanBackend::TrackView(const State& s) {
     std::array<float, 4> vp[2] = {s.vsc[size_t(vc.viewport)], s.vsc[size_t(vc.viewport + 1)]};
     std::array<float, 4> pr[4];
     for (int i = 0; i < 4; i++) pr[i] = s.vsc[size_t(vc.projection + i)];
-    bool perspective = pr[0][0] != 0 && pr[1][1] != 0 && pr[2][3] != 0 && pr[3][0] == 0 && pr[3][1] == 0 &&
-                       pr[3][2] == -1 && pr[3][3] == 0 && vp[0][0] != 0 && vp[0][1] != 0 && vp[0][2] != 0;
+    // the off-diagonal zeros too: a program keeping other things in the first row (Frankie's 16-vertex line draw in
+    // BarnInside, B01DA311, its c3 -92.7 -20.7 -37.3 928) leaves the other three rows a projection's
+    bool perspective = pr[0][0] != 0 && pr[0][1] == 0 && pr[1][0] == 0 && pr[1][1] != 0 && pr[2][0] == 0 &&
+                       pr[2][1] == 0 && pr[2][3] != 0 && pr[3][0] == 0 && pr[3][1] == 0 && pr[3][2] == -1 &&
+                       pr[3][3] == 0 && vp[0][0] != 0 && vp[0][1] != 0 && vp[0][2] != 0;
     if (!perspective) return;
     if (view_ok_ && (vp[0] != view_vp_[0] || vp[1] != view_vp_[1])) many_views_ = true;
     // the camera: a new frame's turns the one before's into the frame before's
