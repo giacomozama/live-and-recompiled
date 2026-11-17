@@ -737,9 +737,29 @@ static void TraceShield(uint32_t player, uint32_t owner) {
     LOGR("shield: player %08X owner %08X %s", player, owner, line);
 }
 
-static bool EffectOn(uint32_t player, uint32_t kind, uint32_t model) {
+// Infravision (the sniper's scope and the Poisoner's mask): 0x82730 asks 0x2C38C0 of the viewport's own player
+// ([[0x8470dc] + viewport * 0x770 + 0x3E0]), on when the byte at +8 of [[[viewer+0x568]+0x444]+0x280] is set, and
+// then draws every other player with its model's effect entry +0x1C through 0x82690: the global effect texture 0 (a
+// 64x1 heat ramp) in stage 0 on generated coordinates, the living body glow (F3 captures 031301_0, 031304_0). The
+// character select models have no such entry and drew as they are. 0x2C38C0 also turns it off for one target near
+// its viewer (0x2C3DA0, 0x36E70); that player keeps the match model too, drawn plain
+static bool Infravision(uint32_t viewport) {
+    const uint32_t views = kernel::R32(0x8470dc);
+    if (views < 0x10000 || viewport > 3) return false;
+    const uint32_t viewer = kernel::R32(views + viewport * 0x770 + 0x3E0);
+    if (viewer < 0x10000) return false;
+    const uint32_t owner = kernel::R32(viewer + 0x568);
+    if (owner < 0x10000) return false;
+    const uint32_t item = kernel::R32(owner + 0x444);
+    if (item < 0x10000) return false;
+    const uint32_t state = kernel::R32(item + 0x280);
+    return state >= 0x10000 && kernel::G<uint8_t>(state + 8) != 0;
+}
+
+static bool EffectOn(uint32_t player, uint32_t kind, uint32_t model, uint32_t viewport) {
     const uint32_t owner = kernel::R32(player + 0x568), act = kernel::R32(player + 0x64);
     if (kind == 10 || act == 0x3D || act == 0x3F) return true;
+    if (Infravision(viewport)) return true;
     if (owner < 0x10000) return false;
     if (kernel::G<uint8_t>(owner + 0x624)) return true;
     static std::unordered_map<uint32_t, bool> sneaker;  // by model
@@ -985,8 +1005,9 @@ static void SlotMatch(uint32_t player, const MenuDrawn& d) {
 }
 
 // The character select model into slot 0 for one draw of the player (kind [ebp+0x18] of 0x7FB00's, 8 for the
-// shine pass): unless cloaked or shielded, its parts' bits mirrored first. True when swapped
-static bool SwapInMenu(X86Context& ctx, uint32_t player, uint32_t kind) {
+// shine pass, viewport the one drawn into): unless cloaked, shielded or seen through infravision, its parts' bits
+// mirrored first. True when swapped
+static bool SwapInMenu(X86Context& ctx, uint32_t player, uint32_t kind, uint32_t viewport) {
     const auto it = g_menu_drawn.find(player);
     if (it == g_menu_drawn.end() || kernel::G<uint8_t>(player + 0x3A8) != 0) return false;
     const MenuDrawn& d = it->second;
@@ -1000,7 +1021,7 @@ static bool SwapInMenu(X86Context& ctx, uint32_t player, uint32_t kind) {
         }
         return false;
     }
-    const bool effect = EffectOn(player, kind, d.model);
+    const bool effect = EffectOn(player, kind, d.model, viewport);
     if (kind != 8) TraceMenuEffects(ctx, player, effect);
     if (effect || !MirrorParts(d)) return false;
     kernel::W32(player + 0x4B0, d.inst);
@@ -1019,7 +1040,8 @@ static void RestoreMatch(uint32_t& player) {
 // [[hook]] at 0x7FC6E, the effect flags set, before the model's own are read; ebx the player
 void ConkerMenuEffects(X86Context& ctx, uint8_t* base) {
     (void)base;
-    if (SwapInMenu(ctx, ctx.ebx, kernel::R32(ctx.ebp + 0x18))) g_effect_player = ctx.ebx;
+    if (SwapInMenu(ctx, ctx.ebx, kernel::R32(ctx.ebp + 0x18), kernel::R32(ctx.ebp + 0xC) & 0xFFFF))
+        g_effect_player = ctx.ebx;
 }
 
 // [[hook]] at 0x805A6, the draw's end: the match model back in slot 0
@@ -1039,7 +1061,7 @@ static uint32_t g_shine_player = 0;
 void ConkerMenuShine(X86Context& ctx, uint8_t* base) {
     (void)base;
     RestoreMatch(g_shine_player);
-    if (SwapInMenu(ctx, ctx.edi, 8)) g_shine_player = ctx.edi;
+    if (SwapInMenu(ctx, ctx.edi, 8, ctx.esi & 0xFFFF)) g_shine_player = ctx.edi;
 }
 
 // [[hook]] at 0x7F709, the kind 8 pass's end
