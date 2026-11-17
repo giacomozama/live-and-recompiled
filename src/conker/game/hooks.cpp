@@ -230,6 +230,75 @@ X86_FUNC(sub_0004FF00) {
     __imp__sub_0004FF00(ctx, base);
 }
 
+// 0x52B50 (the slot on the stack) hands the tracks to what they move; a level object (kind 3, its id the byte at
+// [0x76EF2C + slot * 4] + entry * 8 + 2, matched against [obj+0xC6] by 0x6ADD0) gets its place cut to whole units,
+// (short)(int) of x, y + [+0x38], z, and its matrix built (0x6AD30, the object in edx, the matrix at +0x20). The
+// InsideSafe platform rose and sank in unit steps under its roll. Above 30 the part the cut dropped is kept per object
+// and added to the matrix's translation whenever 0x6AD30 builds it at that place while the cutscene plays. (Its roll,
+// angles the tracks read at whole frames of a jittery clock, looked smooth already: reading them at an even frame
+// was tried and made no difference.)
+namespace {
+struct CutFraction {
+    int16_t pos[3];
+    float frac[3];
+};
+std::unordered_map<uint32_t, CutFraction> g_cut_fractions;
+bool CutscenePlaying() { return kernel::g_base[0x76EC82] == 1 || kernel::g_base[0x76F0E0] == 1; }
+}  // namespace
+
+X86_EXTERN_FUNC(__imp__sub_00052B50);
+X86_FUNC(sub_00052B50) {
+    using kernel::R32;
+    const uint32_t slot = R32(ctx.esp + 4);
+    __imp__sub_00052B50(ctx, base);
+    if (display::GameRate() <= 30 || slot > 1) return;
+    const uint32_t count = base[0x76EF28 + slot];
+    const uint32_t entries = R32(0x76E884 + slot * 4), kinds = R32(0x76EF2C + slot * 4);
+    const uint32_t objs = R32(0x8471B8), nobjs = std::min(R32(0x76FD10), 4096u);
+    if (!entries || !kinds || !objs || count > 30) return;
+    for (uint32_t i = 0; i < count; i++) {
+        if (kernel::R16(kinds + i * 8) != 3) continue;
+        const uint8_t id = base[kinds + i * 8 + 2];
+        if (!id) continue;
+        uint32_t o = 0;
+        for (uint32_t k = 0; k < nobjs && !o; k++)
+            if (base[objs + k * 0x150 + 0xC6] == id) o = objs + k * 0x150;
+        if (!o) continue;
+        float e[17];
+        std::memcpy(e, base + entries + i * 0x44, sizeof e);
+        const float exact[3] = {e[0], e[1] + e[14], e[2]};
+        CutFraction f;
+        bool placed = true;
+        for (uint32_t k = 0; k < 3; k++) {
+            f.pos[k] = int16_t(kernel::R16(o + 0x14 + 2 * k));
+            f.frac[k] = exact[k] - float(f.pos[k]);
+            if (!(std::fabs(f.frac[k]) < 1.0f)) placed = false;  // not this entry's place (its track not running)
+        }
+        if (placed) g_cut_fractions[o] = f;
+    }
+}
+
+X86_EXTERN_FUNC(__imp__sub_0006AD30);
+X86_FUNC(sub_0006AD30) {
+    const uint32_t o = ctx.edx, m = kernel::R32(ctx.esp + 4);
+    __imp__sub_0006AD30(ctx, base);
+    if (g_cut_fractions.empty()) return;
+    if (!CutscenePlaying()) {
+        g_cut_fractions.clear();
+        return;
+    }
+    const auto it = g_cut_fractions.find(o);
+    if (it == g_cut_fractions.end()) return;
+    for (uint32_t k = 0; k < 3; k++)
+        if (int16_t(kernel::R16(o + 0x14 + 2 * k)) != it->second.pos[k]) return;  // moved since
+    for (uint32_t k = 0; k < 3; k++) {
+        float t;
+        std::memcpy(&t, base + m + 0x30 + 4 * k, 4);
+        t += it->second.frac[k];
+        std::memcpy(base + m + 0x30 + 4 * k, &t, 4);
+    }
+}
+
 // 0x1A9540: draws one grass patch (a node renderer, [patch+0x5C] its fade). A patch at full strength binds the wind
 // program (handle at 0x6B89A4: blades bend with time and away from the player, by (1 - v)^2 up the blade); a fading
 // one binds a plain transform (0x6B89DC) and fades it with the texture factor and a scaled alpha reference. The two
@@ -1519,7 +1588,7 @@ X86_FUNC(sub_0006A720) {
 
 // 0x6A390 runs every level object's handler ([obj+0x88]) once a frame: the array [0x8471B8], [0x76FD10] of them,
 // 0x150 apiece, the position int16s at +0x14/16/18, the float [+0x1C] added to y by the matrix (0x6AD30), the frame's
-// move at +0xAC/AE/B0 (what riders are carried by). XBE_OBJ_TRACE=1 logs each object whose position changed in a
+// move at +0xAC/AE/B0 (what riders are carried by). XBE_OBJ_TRACE=1 logs each object whose position, angles or scale changed in a
 // frame, with its type's name from the table 0x58C1F0 (0x24 apiece: handler, ..., name pointer at +0x10), to tell
 // which type moves a platform.
 X86_EXTERN_FUNC(__imp__sub_0006A390);
@@ -1530,15 +1599,40 @@ X86_FUNC(sub_0006A390) {
         __imp__sub_0006A390(ctx, base);
         return;
     }
-    static std::vector<int16_t> before;
+    static std::vector<uint8_t> before;
     static uint32_t frame = 0;
     frame++;
     const uint32_t objs = kernel::R32(0x8471B8);
     const uint32_t count = std::min(kernel::R32(0x76FD10), 4096u);
-    before.resize(size_t(count) * 3);
-    for (uint32_t i = 0; i < count; i++)
-        for (uint32_t k = 0; k < 3; k++) before[i * 3 + k] = int16_t(kernel::R16(objs + i * 0x150 + 0x14 + 2 * k));
+    before.resize(size_t(count) * 0x150);
+    // changes since the last frame's handlers ran: the cutscene player (0x52B50, track kind 3) places objects, angles
+    // and scale too, outside this loop
+    static std::vector<uint8_t> after;
+    static uint32_t after_objs = 0;
+    const bool cutscene = base[0x76EC82] == 1 || base[0x76F0E0] == 1;
+    if (cutscene)
+        LOGR("objtrace: frame %u ticks %u cutscene clock %d end %d", frame, kernel::R32(0x7FA20C),
+             int32_t(kernel::R32(0x76F0F8)), int32_t(kernel::R32(0x76F0E8)));
+    if (after_objs == objs && after.size() == size_t(count) * 0x150) {
+        for (uint32_t i = 0; i < count; i++) {
+            const uint8_t* was = after.data() + size_t(i) * 0x150;
+            const uint8_t* now = base + objs + i * 0x150;
+            if (std::memcmp(was, now, 0x20) == 0 && std::memcmp(was + 0x7C, now + 0x7C, 0xC) == 0) continue;
+            float a[6], m[3];
+            std::memcpy(a, now + 4, 12);
+            std::memcpy(a + 3, was + 4, 12);
+            std::memcpy(m, now + 0x20 + 0x30, 12);  // the matrix's translation (0x6AD30 builds it at +0x20)
+            LOGR("objtrace: frame %u outside obj %u pos %d %d %d ang %.3f %.3f %.3f (was %.3f %.3f %.3f) mtx t %.2f %.2f %.2f",
+                 frame, i, int(int16_t(kernel::R16(objs + i * 0x150 + 0x14))),
+                 int(int16_t(kernel::R16(objs + i * 0x150 + 0x16))), int(int16_t(kernel::R16(objs + i * 0x150 + 0x18))),
+                 double(a[0]), double(a[1]), double(a[2]), double(a[3]), double(a[4]), double(a[5]), double(m[0]),
+                 double(m[1]), double(m[2]));
+        }
+    }
+    if (count) std::memcpy(before.data(), base + objs, size_t(count) * 0x150);
     __imp__sub_0006A390(ctx, base);
+    after_objs = objs;
+    after.assign(base + objs, base + objs + size_t(count) * 0x150);
     auto type_name = [&](uint32_t handler, uint32_t& index) -> const char* {
         for (index = 1; index < 90; index++) {
             const uint32_t e = 0x58C1F0 + index * 0x24;
@@ -1547,22 +1641,32 @@ X86_FUNC(sub_0006A390) {
         index = 0;
         return "?";
     };
+    auto f32 = [&](const uint8_t* p) {
+        float f;
+        std::memcpy(&f, p, 4);
+        return double(f);
+    };
+    auto s16 = [&](const uint8_t* p) {
+        int16_t v;
+        std::memcpy(&v, p, 2);
+        return int(v);
+    };
     for (uint32_t i = 0; i < count; i++) {
         const uint32_t o = objs + i * 0x150;
-        int16_t now[3];
-        for (uint32_t k = 0; k < 3; k++) now[k] = int16_t(kernel::R16(o + 0x14 + 2 * k));
-        if (now[0] == before[i * 3] && now[1] == before[i * 3 + 1] && now[2] == before[i * 3 + 2]) continue;
+        const uint8_t* was = before.data() + size_t(i) * 0x150;
+        const uint8_t* now = base + o;
+        // the angles [+4..+0xC] (radians x [0x648E18], 0x6AC90), the place +0x14..+0x1C and the scale +0x7C..+0x84
+        if (std::memcmp(was, now, 0x20) == 0 && std::memcmp(was + 0x7C, now + 0x7C, 0xC) == 0) continue;
         const uint32_t handler = kernel::R32(o + 0x88);
         uint32_t index;
         const char* name = type_name(handler, index);
-        float f1c;
-        std::memcpy(&f1c, base + o + 0x1C, 4);
         LOGR("objtrace: frame %u ticks %u obj %u (%08X) type %u '%s' handler %06X pos %d %d %d step %d %d %d move %d %d %d "
-             "f1c %.3f p8c %08X d8 %08X dc %08X e0 %08X",
-             frame, kernel::R32(0x7FA20C), i, o, index, name, handler, now[0], now[1], now[2], now[0] - before[i * 3],
-             now[1] - before[i * 3 + 1], now[2] - before[i * 3 + 2], int16_t(kernel::R16(o + 0xAC)),
-             int16_t(kernel::R16(o + 0xAE)), int16_t(kernel::R16(o + 0xB0)), double(f1c), kernel::R32(o + 0x8C),
-             kernel::R32(o + 0xD8), kernel::R32(o + 0xDC), kernel::R32(o + 0xE0));
+             "f1c %.3f ang %.3f %.3f %.3f (was %.3f %.3f %.3f) scale %.3f %.3f %.3f p8c %08X d8 %08X dc %08X e0 %08X",
+             frame, kernel::R32(0x7FA20C), i, o, index, name, handler, s16(now + 0x14), s16(now + 0x16), s16(now + 0x18),
+             s16(now + 0x14) - s16(was + 0x14), s16(now + 0x16) - s16(was + 0x16), s16(now + 0x18) - s16(was + 0x18),
+             s16(now + 0xAC), s16(now + 0xAE), s16(now + 0xB0), f32(now + 0x1C), f32(now + 4), f32(now + 8),
+             f32(now + 0xC), f32(was + 4), f32(was + 8), f32(was + 0xC), f32(now + 0x7C), f32(now + 0x80),
+             f32(now + 0x84), kernel::R32(o + 0x8C), kernel::R32(o + 0xD8), kernel::R32(o + 0xDC), kernel::R32(o + 0xE0));
     }
 }
 

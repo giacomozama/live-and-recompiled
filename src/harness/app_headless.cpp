@@ -15,6 +15,7 @@ Settings& Get() {
 }
 void Load() {}
 void Save() {}
+bool SaveChanged() { return false; }
 void ApplyDisplay() {}
 Mode Desktop() { return {1280, 720}; }
 Mode Output() { return Desktop(); }
