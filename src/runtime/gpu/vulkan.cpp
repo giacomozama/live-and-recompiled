@@ -4346,12 +4346,14 @@ void VulkanBackend::UploadConstants(const State& s, const DrawShaders& sh, const
         c.ptpx[1] = ps.y;
         FillPointConstants(s, sh.prog, &s == &sprite_, c);
     }
-    // the fog setting off: no fog constants, so every draw evaluates to unfogged, as with the title's fog off
-    if (app::Get().fog) FillFogConstants(s, sh.prog, c);
+    // the fog setting Disabled: no fog constants, so every draw evaluates to unfogged, as with the title's fog off;
+    // Tint only keeps them for the factor the tint goes by (PixelKey::fog_tint)
+    const bool fog_factor = app::Get().fog != app::Fog::Disabled;
+    if (fog_factor) FillFogConstants(s, sh.prog, c);
     if (c.fog[3] >= 4 && s.chip_fog) {
         std::memcpy(world_fog_, c.fog, sizeof(world_fog_));
         world_fog_seen_ = true;
-    } else if (sh.shading && g_program_shading[sh.shading - 1].world_fog && c.fog[3] == 0 && app::Get().fog) {
+    } else if (sh.shading && g_program_shading[sh.shading - 1].world_fog && c.fog[3] == 0 && fog_factor) {
         std::memcpy(c.fog, world_fog_, sizeof(world_fog_));
     }
     FillCombinerConstants(s, c);

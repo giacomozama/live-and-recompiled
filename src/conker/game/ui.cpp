@@ -1845,10 +1845,10 @@ void Draw(double fps) {
                         Hint("The largest a smoothed shadow texture gets. Larger is sharper but takes longer and uses "
                              "much more video memory.", true);
                     }
-                    bool no_fog = !s.fog;
-                    if (Check("Disable fog", &no_fog)) s.fog = !no_fog;
-                    Hint("Clears the haze over faraway scenery. Enabling this distorts colors pretty much everywhere "
-                         "in the game, leaving it off is recommended.", true);
+                    int fog = int(s.fog);
+                    if (Segmented("Fog", &fog, {"Enabled", "Disabled", "Tint only"})) s.fog = app::Fog(fog);
+                    Hint("Disabled clears the haze over faraway scenery but distorts colors pretty much everywhere. "
+                         "Tint only clears the haze and keeps the fog's color on faraway scenery.", true);
                 }
 
                 if (Section("Fur")) {

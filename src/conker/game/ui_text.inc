@@ -193,19 +193,21 @@ constexpr Line kLines[] = {
      "Luz y sombras más suaves en personajes y objetos.",
      "Luci e ombre più morbide su personaggi e oggetti.",
      "キャラクターやオブジェクトの光と影がなめらかになります。"},
-    {"Disable fog", "Nebel deaktivieren", "Désactiver le brouillard", "Desactivar la niebla", "Disattiva la nebbia",
-     "霧を無効にする"},
-    {"Clears the haze over faraway scenery. Enabling this distorts colors pretty much everywhere in the game, leaving "
-     "it off is recommended.",
-     "Entfernt den Dunst über entfernter Landschaft. Das verfälscht fast überall im Spiel die Farben, daher wird "
-     "empfohlen, es ausgeschaltet zu lassen.",
-     "Supprime la brume sur les décors lointains. Cela déforme les couleurs presque partout dans le jeu : il est "
-     "recommandé de le laisser désactivé.",
-     "Elimina la bruma sobre el paisaje lejano. Distorsiona los colores casi en todo el juego, así que se recomienda "
-     "dejarlo desactivado.",
-     "Elimina la foschia sui paesaggi lontani. Altera i colori quasi ovunque nel gioco, quindi si consiglia di "
-     "lasciarlo disattivato.",
-     "遠景のもやを消します。ゲームのほぼ全域で色が不自然になるため、オフのままを推奨します。"},
+    {"Fog", "Nebel", "Brouillard", "Niebla", "Nebbia", "霧"},
+    {"Enabled", "Aktiviert", "Activé", "Activada", "Attivata", "有効"},
+    {"Disabled", "Deaktiviert", "Désactivé", "Desactivada", "Disattivata", "無効"},
+    {"Tint only", "Nur Farbton", "Teinte seule", "Solo tono", "Solo tinta", "色味のみ"},
+    {"Disabled clears the haze over faraway scenery but distorts colors pretty much everywhere. Tint only clears the "
+     "haze and keeps the fog's color on faraway scenery.",
+     "Deaktiviert entfernt den Dunst über entfernter Landschaft, verfälscht aber fast überall die Farben. Nur Farbton "
+     "entfernt den Dunst und behält die Farbe des Nebels auf entfernter Landschaft.",
+     "Désactivé supprime la brume sur les décors lointains mais déforme les couleurs presque partout. Teinte seule "
+     "supprime la brume et garde la couleur du brouillard sur les décors lointains.",
+     "Desactivada elimina la bruma sobre el paisaje lejano, pero distorsiona los colores casi en todas partes. Solo "
+     "tono elimina la bruma y mantiene el color de la niebla en el paisaje lejano.",
+     "Disattivata elimina la foschia sui paesaggi lontani ma altera i colori quasi ovunque. Solo tinta elimina la "
+     "foschia e mantiene il colore della nebbia sui paesaggi lontani.",
+     "無効は遠景のもやを消しますが、ほぼ全域で色が不自然になります。色味のみはもやを消し、遠景に霧の色を残します。"},
     {"Fur", "Fell", "Fourrure", "Pelaje", "Pelliccia", "毛皮"},
     {"Fur tech", "Fell-Technik", "Technologie de fourrure", "Tecnología de pelaje", "Tecnologia della pelliccia",
      "毛皮の技術"},

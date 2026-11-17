@@ -50,6 +50,9 @@ struct PixelKey {
     uint32_t quad = 0;       // a screen quad: QuadHlsl
     uint32_t shading = 0;    // g_program_shading's entry for the draw's vertex program, 1 based, 0 none
     uint32_t depth_pass = 0; // a depth pass: discards what blends in fainter than the float these are the bits of
+    // the fog's tint in place of its haze (app::Fog::TintOnly): fogtint on outc by the fog factor, 1 read as D3D's
+    // (1 unfogged), 2 as Conker's raw final combiner's (the share of fog color)
+    uint32_t fog_tint = 0;
     bool operator==(const PixelKey& o) const;
 };
 

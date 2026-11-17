@@ -503,6 +503,15 @@ const char* kPsTail = R"(void alphatest(float a) {
     bool ok = f == 0 ? false : f == 1 ? v < r : f == 2 ? v == r : f == 3 ? v <= r : f == 4 ? v > r : f == 5 ? v != r : f == 6 ? v >= r : true;
     if (!ok) discard;
 }
+// the fog setting's Tint only (PixelKey::fog_tint): in place of the blend to the fog color by the fog factor, the color times
+// the fog color's hue at unit brightness, as far as the blend would go; a fog color too dark for a hue (the black fog
+// of glows) leaves it alone
+float3 fogtint(float3 c, float amt) {
+    float l = dot(fogcolor.rgb, float3(0.2126, 0.7152, 0.0722));
+    if (l < 0.02) return c;
+    float3 t = min(fogcolor.rgb / l, 2.0);
+    return saturate(c * lerp(1, t, 1 - saturate(amt)));
+}
 )";
 
 // ProgramShading::soft: a greater (or equal) test passes in full past half a pixel's change of alpha above the
@@ -703,7 +712,12 @@ PixelKey MakePixelKey(const State& s, const TexInfo tex[4]) {
         }
         k.final_abcd = m(kMPsFinalAbcd);
         k.final_efg = m(kMPsFinalEfgh);
-        if (!app::Get().fog) k.final_abcd = Unfogged(k.final_abcd);
+        if (app::Get().fog != app::Fog::Enabled) {
+            uint32_t fogged = k.final_abcd;
+            k.final_abcd = Unfogged(fogged);
+            // Conker's raw final combiner (B the fog) blends by the share of fog color, D3D's (C the fog) by the share kept
+            if (app::Get().fog == app::Fog::TintOnly && k.final_abcd != fogged) k.fog_tint = ((fogged >> 16) & 0xF) == 3 ? 2 : 1;
+        }
         // the stage modes follow the bound textures, as D3D's lazy shader stage setup does
         uint32_t modes = s.rs[kRsPsTextureModes];
         for (int i = 0; i < 4; i++) {
@@ -719,6 +733,8 @@ PixelKey MakePixelKey(const State& s, const TexInfo tex[4]) {
         k.compare_mode = m(kMPsCompareMode);
         return k;
     }
+    // the fixed function's output always blends by the fog factor (1 for a draw without fog)
+    k.fog_tint = app::Get().fog == app::Fog::TintOnly;
     // the console's stages divide by q; a vertex program's q is its own
     bool program = (s.vs_handle & 1) && s.vs && !s.vs->program.empty();
     for (int i = 0; i < 4; i++) {
@@ -1039,6 +1055,8 @@ std::string PixelHlsl(const PixelKey& k) {
     s += k.two_sided ? "    float4 v0 = front ? i.d0 : i.b0, v1 = front ? i.d1 : i.b1;\n" : "    float4 v0 = i.d0, v1 = i.d1;\n";
     s += "    if (misc.w == 0) v1 = float4(0, 0, 0, 1);\n";
     s += "    float4 fogin = float4(fogcolor.rgb, saturate(i.fogamt));\n";
+    // the tint: the fixed function's blend by fogin keeps the color, the programmable final combiner is Unfogged
+    if (k.fog_tint) s += k.fog_tint == 2 ? "    float fogt = 1 - fogin.a;\n    fogin.a = 1;\n" : "    float fogt = fogin.a;\n    fogin.a = 1;\n";
     // DEPTH_PASS is 1 in depth_alpha's (and a g_surface_depth surface's) depth pass, 0 otherwise, for all its hooks
     if (k.shading) s += F("#define DEPTH_PASS %d\n", k.depth_pass ? 1 : 0);
     if (k.shading && *Shading(k.shading).coords) s += std::string(Shading(k.shading).coords) + "\n";
@@ -1142,6 +1160,7 @@ std::string PixelHlsl(const PixelKey& k) {
         body += "cur.rgb = saturate(cur.rgb + v1.rgb);\n";
         body += "float4 outc = float4(lerp(fogin.rgb, cur.rgb, fogin.a), cur.a);\n";
     }
+    if (k.fog_tint) body += "outc.rgb = fogtint(outc.rgb, fogt);\n";
     if (k.shading && *Shading(k.shading).post)
         body += std::string(Shading(k.shading).post) + "\n";
     body += soft ? "outc.a = softalphatest(outc.a);\n" : "alphatest(outc.a);\n";

@@ -58,7 +58,7 @@ void Apply(int preset) {
             s.chromatic_aberration = 0;
             s.motion_blur = 0;
             s.ambient_occlusion_radius = 50;
-            s.fog = true;
+            s.fog = app::Fog::Enabled;
             s.lightmap_smoothing = 5;
             s.lightmap_size = 512;
             vignette::g_on = true;
@@ -94,7 +94,7 @@ void Apply(int preset) {
             s.chromatic_aberration = 0;
             s.motion_blur = 0;
             s.ambient_occlusion_radius = 50;
-            s.fog = true;
+            s.fog = app::Fog::Enabled;
             s.lightmap_smoothing = 5;
             s.lightmap_size = 512;
             vignette::g_on = true;
@@ -130,7 +130,7 @@ void Apply(int preset) {
             s.chromatic_aberration = 0;
             s.motion_blur = 0;
             s.ambient_occlusion_radius = 50;
-            s.fog = true;
+            s.fog = app::Fog::Enabled;
             s.lightmap_smoothing = 5;
             s.lightmap_size = 1024;
             vignette::g_on = true;

@@ -17,6 +17,7 @@ namespace app {
 namespace {
 
 const char* kModes[] = {"fullscreen", "borderless", "windowed"};
+const char* kFogModes[] = {"enabled", "disabled", "tint_only"};  // Fog
 // a player's devices: [player1] to [player4], keyboard, mouse and controller (input.h), the game adding its own
 const char* kSlotKeys[input::kKinds] = {"keyboard", "mouse", "controller"};
 
@@ -80,7 +81,13 @@ void Load() {
     s.ambient_occlusion = t["ambient_occlusion"].value_or(s.ambient_occlusion);
     s.ambient_occlusion_radius = t["ambient_occlusion_radius"].value_or(s.ambient_occlusion_radius);
     s.motion_blur = std::min<uint32_t>(t["motion_blur"].value_or(s.motion_blur), 100);
-    s.fog = t["fog"].value_or(s.fog);
+    // fog was a bool before the tint (and fog_tint a bool beside it for a while)
+    if (std::optional<bool> fog = t["fog"].value<bool>()) {
+        s.fog = *fog ? Fog::Enabled : t["fog_tint"].value_or(false) ? Fog::TintOnly : Fog::Disabled;
+    } else if (std::optional<std::string> fog = t["fog"].value<std::string>()) {
+        for (uint32_t i = 0; i < 3; i++)
+            if (*fog == kFogModes[i]) s.fog = Fog(i);
+    }
     s.fsr = t["fsr"].value_or(s.fsr);
     s.smooth_lightmaps = t["smooth_lightmaps"].value_or(s.smooth_lightmaps);
     s.lightmap_smoothing = std::clamp<uint32_t>(t["lightmap_smoothing"].value_or(s.lightmap_smoothing), 1, 10);
@@ -160,7 +167,7 @@ toml::table Table() {
                   {"ambient_occlusion", int64_t(s.ambient_occlusion)},
                   {"ambient_occlusion_radius", int64_t(s.ambient_occlusion_radius)},
                   {"motion_blur", int64_t(s.motion_blur)},
-                  {"fog", s.fog},
+                  {"fog", kFogModes[uint32_t(s.fog)]},
                   {"fsr", s.fsr},
                   {"smooth_lightmaps", s.smooth_lightmaps},
                   {"lightmap_smoothing", int64_t(s.lightmap_smoothing)},

@@ -14,6 +14,9 @@ struct Pad;
 namespace app {
 
 enum class DisplayMode : uint32_t { Fullscreen, Borderless, Windowed };
+// the title's distance fog: as the title draws it, every surface unfogged, or the haze gone and the fogged draws
+// tinted by the fog color's hue as far as the fog would reach (gpu::PixelKey::fog_tint)
+enum class Fog : uint32_t { Enabled, Disabled, TintOnly };
 
 // a folder in ModsDir and whether it is in use
 struct ModEntry {
@@ -55,7 +58,7 @@ struct Settings {
     // motion blur from the camera's turning and moving (the picture's depth through the camera's view now and a frame
     // before, gpu::ViewConstants::camera): the blur's length as a % of the camera's motion between two pictures, 0 off
     uint32_t motion_blur = 0;
-    bool fog = true;                 // the title's distance fog; off draws every surface unfogged
+    Fog fog = Fog::Enabled;
     // the levels' baked lightmaps made larger, their aliased light and shadow edges smoothed along themselves
     // (gpu::SmoothLightmap)
     bool smooth_lightmaps = true;
