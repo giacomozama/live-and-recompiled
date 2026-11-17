@@ -275,6 +275,7 @@ void ConkerGrassNear(X86Context& ctx, uint8_t* base) {
 // [[hook]] at 0x1A968F, where the near and fading paths join with the count and alpha set
 void ConkerGrassFull(X86Context& ctx, uint8_t* base) {
     (void)base;
+    grass::Update();
     if (grass::g_max_lod) kernel::W32(ctx.ebx + 0x64, kernel::R32(ctx.ebx + 0x60));
     if (!grass::g_fade) kernel::G<uint8_t>(ctx.ebx + 0x5C) = 0xFF;
 }

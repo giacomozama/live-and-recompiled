@@ -19,4 +19,8 @@ extern bool g_fade;
 // the screen as on the console; hands the renderer the wake's limit, after the settings load, before boot
 void Init();
 
+// patches drawn past where the console fades them out take the level's fog (g_max_lod or !g_fade): called as the
+// patches draw, so the F1 menu applies it live
+void Update();
+
 }  // namespace grass

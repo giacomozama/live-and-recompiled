@@ -1,5 +1,7 @@
 #include "common/grass.h"
 
+#include <string>
+
 #include "gpu/shaders.h"
 
 namespace {
@@ -32,8 +34,25 @@ constexpr const char* kVs = R"(    o.x0 = 0;
         }
     })";
 
+// The grass patches leave fog off and the wind program writes no oFog: on the console they fade out from 800 and are
+// gone by 2500, where the level's fog is still faint (the capture's level: linear fog of 8.95e-5 a unit, a fifth
+// at 2500), so they never needed it. Drawn solid or past the cull (grass::g_max_lod, !grass::g_fade) they stood out
+// unfogged against walls three times as far, more than half fog (F3 capture 125940_0). They take the level's fog as
+// its own programs work it out: oFog = min(depth * c103.x - c103.y, c103.z) (every fogged program of the title's), the
+// depth the view's, clip w, through the chip's fog of the frame's fogged draws (ProgramShading::world_fog); the fog
+// unit's figure is the share of fog color, and the plain pixel shader blends by the share of the draw's own
+constexpr const char* kFog = R"(
+    if (fogp.w >= 4) o.fogamt = 1 - saturate(fogfactor(min(o.pos.w * c[103].x - c[103].y, c[103].z)));)";
+
 const bool kOn = true;
+bool g_fogged = true;
 
 }  // namespace
 
-void grass::Init() { gpu::g_program_shading.push_back({.match = kMatch, .on = &kOn, .vs = kVs}); }
+void grass::Init() {
+    static const std::string fogged = std::string(kVs) + kFog;
+    gpu::g_program_shading.push_back({.match = kMatch, .on = &g_fogged, .vs = fogged.c_str(), .world_fog = true});
+    gpu::g_program_shading.push_back({.match = kMatch, .on = &kOn, .vs = kVs});
+}
+
+void grass::Update() { g_fogged = g_max_lod || !g_fade; }

@@ -135,6 +135,10 @@ struct ProgramShading {
     bool unsharpened = false;
     // when set, the title's glow gather reads the alpha of the frame its draws went into capped (kTexFurGlow)
     bool glow_capped = false;
+    // when set, its draws with no fog of their own take the level's: the fog constants (fogp) of the last draw that
+    // had the chip's fog on, this frame or the one before, zero once a frame had none (or the fog setting is off),
+    // for its vs to fog by what the title's own fogged draws would have
+    bool world_fog = false;
 };
 inline std::vector<ProgramShading> g_program_shading;  // filled before the title boots, unchanged after
 
