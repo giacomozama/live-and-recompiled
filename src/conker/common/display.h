@@ -13,8 +13,8 @@ extern uint32_t g_frame_rate;
 // the frame rate set, the runtime's fps cap and frame generation with it: the one limit (GameInfo::init applies the
 // loaded one)
 void SetFrameRate(uint32_t rate);
-// in a system link session: the frame rate setting can't change, and the game's rate stays as it was when the session
-// began (peers must tick alike, link.cpp). Any thread
+// in a system link session with another machine: the frame rate setting can't change, and the game's rate stays as it
+// was when the other came in (peers must tick alike, link.cpp). Any thread
 bool FrameRateLocked();
 // the frames the game itself runs a second: 30 or 60
 uint32_t GameRate();

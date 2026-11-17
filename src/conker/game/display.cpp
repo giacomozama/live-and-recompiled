@@ -103,10 +103,13 @@ uint32_t Shown() {
 }
 
 // Online sessions. Copies in a system link session must tick alike (link.cpp: a join is refused at another rate), so
-// while this copy is in one the game's rate stays what it was as the session began: the frame rate setting does not
-// change (SetFrameRate), nor does Highest follow a new monitor's refresh rate. The game's net state [0x863D08]: 0 none,
-// 1 joining, 2 waiting room, 3 playing, 4 leaving, 5 creating (its writes store no other). Game thread sets it
+// while this copy shares one with another machine the game's rate stays what it was as the other came in: the frame
+// rate setting does not change (SetFrameRate), nor does Highest follow a new monitor's refresh rate. Out of a session
+// (split screen, Dumbots, the story) or alone in one, the rate is free: a host alone advertises its current rate to
+// each search. The game's net state [0x863D08]: 0 none, 1 joining, 2 waiting room, 3 playing, 4 leaving, 5 creating
+// (its writes store no other); the byte [0x864EC1] the machines in the session, this one included. Game thread sets it
 constexpr uint32_t kNetState = 0x863D08;
+constexpr uint32_t kMachineCount = 0x864EC1;
 std::atomic<uint32_t> g_pinned{0};  // the game's rate while in a session, 0 outside one
 
 // the game's: 30 (the console's) or 60, past which the runtime draws the frames between
@@ -334,12 +337,13 @@ X86_FUNC(sub_002A7B60) {
     static bool owned = false;
     static uint32_t shown = 0;
     static clock::time_point next = clock::now();
-    // in a system link session or out of one: the game's rate pinned as it is, or let go
+    // sharing a system link session with another machine or not: the game's rate pinned as it is, or let go
     const uint32_t net = kernel::R32(display::kNetState);
-    if (const bool session = net >= 1 && net <= 5; session != display::FrameRateLocked()) {
+    if (const bool session = net >= 1 && net <= 5 && kernel::G<uint8_t>(display::kMachineCount) > 1;
+        session != display::FrameRateLocked()) {
         const uint32_t was = Rate();
         display::g_pinned.store(session ? was : 0, std::memory_order_relaxed);
-        LOGR("display: %s a system link session, the game at %u FPS%s", display::g_pinned.load() ? "in" : "out of", was,
+        LOGR("display: %s a shared system link session, the game at %u FPS%s", display::g_pinned.load() ? "in" : "out of", was,
              display::g_pinned.load() ? " until it ends" : "");
         display::SetFrameRate(display::g_frame_rate);
     }
