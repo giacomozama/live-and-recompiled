@@ -1456,7 +1456,7 @@ void Draw(double fps) {
     // F7's freeze (gpu::g_freeze): a note at the top's middle while the game waits on its last frame
     if (gpu::g_freeze.load()) {
         ImDrawList* dl = ImGui::GetForegroundDrawList();
-        const char* label = "Frozen: F7 resumes, F8 steps a frame";
+        const char* label = T("Frozen: F7 resumes, F8 steps a frame");
         const float font = ImGui::GetFontSize();
         const ImVec2 text = ImGui::GetFont()->CalcTextSizeA(font, FLT_MAX, 0.0f, label);
         const float pad = font * 0.5f, x = (ImGui::GetIO().DisplaySize.x - text.x) * 0.5f, y = font * 0.6f;
