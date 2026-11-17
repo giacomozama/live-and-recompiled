@@ -1960,10 +1960,9 @@ void Draw(double fps) {
                 if (Section("Characters")) {
                     Check("Force max character LoD", &characters::g_max_lod);
                     Hint("Characters keep their full model and smooth animation however far away.", true);
-                    Check("Detailed multiplayer characters (experimental)", &characters::g_menu_models);
+                    Check("Detailed multiplayer characters", &characters::g_menu_models);
                     Hint("Multiplayer classes use their more detailed character select models in matches; squirrels get "
-                         "fur on the body. Experimental: some effects and animations may look wrong. Takes effect from "
-                         "the next match.", true);
+                         "fur on the body. Takes effect from the next match.", true);
                 }
 
                 if (Section("Grass")) {
