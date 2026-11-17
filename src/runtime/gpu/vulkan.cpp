@@ -5719,6 +5719,8 @@ void VulkanBackend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t
     if (zps && zps->depth_alpha > 0 && k.blend && k.zen && k.zwrite &&
         (zps->top < 0 || s.vsc[size_t(zps->top)][0] > 0))
         zalpha = zps->depth_alpha;
+    else if (zps && zps->surface_alpha > 0 && k.blend && k.zen && !k.zwrite)
+        zalpha = zps->surface_alpha;
     else if (k.blend && k.zen && !k.zwrite && (surface = SurfaceDepth(s, start, count, indices)))
         zalpha = g_surface_depth.alpha;
     if (zalpha > 0) {

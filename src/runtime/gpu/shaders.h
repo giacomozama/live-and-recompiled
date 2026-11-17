@@ -109,6 +109,10 @@ struct ProgramShading {
     ShadingField (*field)() = nullptr;
     const char* functions = "";
     float depth_alpha = 0;
+    // surface_alpha, when above 0: its draws that blend and test depth but don't write it (water laid over what lies
+    // under it) write their depth in a pass of their own after the color, where the output's alpha reaches
+    // surface_alpha, so what the title draws after them under the surface (fur shells) stays under it
+    float surface_alpha = 0;
     const char* also[3] = {};
     const char* without = nullptr;
     const char* pre = "";

@@ -170,6 +170,11 @@ constexpr float kPoolMurk = 0.35f;   // how far what lies under the surface is c
 constexpr float kPoolBlur = 0.003f;  // screen widths what lies under it is softened over
 constexpr float kPoolGain = 2.5f;    // the sheet's ripples on a pool, seen from above, against a river's
 constexpr float kPoolRipple = 24;    // units, about the shortest ripple the sheet holds
+// The pools write no depth, and the game draws Conker's fur shells after them: under the murk the body was laid over
+// is clouded, the fur after it was drawn on top, the tail showing whole above the water (F3 capture 143954_0, the
+// War Boss pool, draw 0108 then the shells 0117..0156). Their depth goes in a pass after their color where the game's
+// alpha reaches this, the shore's fade left open.
+constexpr float kPoolDepthAlpha = 0.25f;
 
 // the level's position (the game's waves in) in x0, and how much the surface faces up (1 flat, 0 from 25 degrees off)
 // in x1.x
@@ -703,6 +708,7 @@ void water::Init() {
                                       .tess = kPoolDs,
                                       .field = Field,
                                       .functions = pool_functions.c_str(),
+                                      .surface_alpha = kPoolDepthAlpha,
                                       .also = {kPoolScale},
                                       .screen = true,
                                       .post = kPoolPost,

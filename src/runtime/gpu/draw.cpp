@@ -549,6 +549,7 @@ uint64_t RecordLayout() {
         const int ints[] = {e.top, e.between, e.soft, e.fill != nullptr, e.field != nullptr, e.plain};
         mix(ints, sizeof(ints));
         mix(&e.depth_alpha, sizeof(e.depth_alpha));
+        mix(&e.surface_alpha, sizeof(e.surface_alpha));
     }
     return h == 0xCBF29CE484222325ull ? kRecordLayout : kRecordLayout ^ h;
 }
