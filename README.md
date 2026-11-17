@@ -13,18 +13,20 @@ trademarks of their respective owners.
 > [!WARNING]
 > **AI disclaimer**
 >
-> ALL first-party code here is LLM generated and was NOT reviewed line-by-line.
+> ALL first-party code here is LLM-generated and was NOT reviewed line-by-line.
 
 ## Features
 
 - **High frame rates** - 60, 120, 180 or 240 FPS instead of the original 30.
 - **Any aspect ratio** - Play the game at any aspect ratio.
-- **Better graphics** - Vulkan rendering at any resolution, SMAA or MSAA anti-aliasing, AMD FSR 1.0 upscaling and sharpening, per-pixel lighting, ambient occlusion, and toggles for fog, vignette and more.
-- **Controls** - Full gamepad and keyboard + mouse support.
-- **Multiplayer** - Full multiplayer support, with local split-screen, LAN autodiscovery and direct IP over the internet.
+- **Better graphics** - Vulkan rendering at any resolution, SMAA or MSAA anti-aliasing, AMD FSR 1.0 upscaling and sharpening, per-pixel lighting, ambient occlusion, smooth baked shadows, dynamic water, motion blur, HDR10 output, and toggles for fog, vignette and more.
+- **Redone fur** - Optional strand-based fur with hair lighting, tuned per character.
+- **Controls** - Full gamepad and keyboard + mouse support, with key prompts in place of button icons, mouse aim for scopes, aircraft and the Sneeker's drone, rebindable Walk and Creep keys, adjustable field of view and extra look up.
+- **Multiplayer** - Full multiplayer support, with local split-screen, LAN autodiscovery and direct IP over the internet. It adds text chat, a Friendly Fire match option, player names, outlines and rank emblems, netcode fixes, a visible medgun beam, high quality character models, and color-blind-friendly blue / orange team colors.
 - **Mods** - Convenient, plug-and-play modding layer to easily install mods, such as the [Decensor Patch/Mod](https://github.com/nastys/conker-live-and-reloaded-decensor) by nastys.
-- **Quality of life** - Bypass loading screens and skip any cutscene without having seen it once first, by holding any button.
-- **Settings menu** - A comprehensive settings menu worthy of a PC game.
+- **Quality of life** - Bypass loading screens and skip any cutscene without having seen it once first, by holding any button. Optional English speech bubbles in the throne monologues.
+- **Fixes to the original game** - Fixed animation and rendering glitches and improved rope physics.
+- **Settings menu** - A comprehensive settings menu worthy of a PC game, translated into the game's languages, with a first-launch welcome screen offering graphics presets.
 
 The settings are in the Esc menu and in `settings.toml`.
 
@@ -47,7 +49,7 @@ Releases contain neither the game's code nor its assets. Setup performs the enti
 
 **Supported versions**
 - The USA disc release (`default.xbe` SHA-1 = `2232a1b3874d67b4bb4cf53a940420d2dab59535`)
-- The digital XBOX Backwards Compatibility release from the Microsoft Store (equivalent to the USA version).
+- The digital XBOX Backwards Compatibility release from the XBOX Store (equivalent to the USA version).
 
 Download the release for your system, `LiveAndRecompiled-<version>-windows-x86_64.zip` or `LiveAndRecompiled-<version>-linux-x86_64.tar.gz`, and unpack it.
 Then it is two steps: run Setup, run the game.
@@ -56,12 +58,12 @@ Then it is two steps: run Setup, run the game.
    Its window asks for three things; the last two are already filled in:
    - **The game**: your `DefaultPackage` (the digital XBOX Backwards Compatibility release, with its
      `DefaultPackage.data` folder beside it), your disc image (`.iso`), or the folder with the extracted files
-     (`default.xbe` with the game's folders beside it). Setup unpacks a package (a few seconds, about 5 GB free) and
+     (`default.xbe` with the game's folders beside it). Setup unpacks a package (a few seconds; it needs about 5 GB free) and
      puts the game's files in an `assets` folder in the game folder, where the game looks for them.
-     - **Windows:** if it is installed from the Microsoft Store in its default place
+     - **Windows:** if it is installed from the XBOX Store in its default place
        (`C:\XboxGames\Conker- Live and Reloaded\Content\Game`, not encrypted), pick that folder.
        - **NOTE:** You have to run the original app and let it extract the game once first, otherwise the files will not decode correctly.
-     - **Linux:** if you bought it on the Microsoft Store, download its package with the
+     - **Linux:** if you bought it on the XBOX Store, download its package with the
        [Xodus project](https://github.com/xodus-gaming/xodus) or copy it from a Windows install. You can use streaming mode to extract the files automatically.
    - **Working folder**: `work` beside Setup by default (made if it's missing). The compiler that comes inside Setup is unpacked into it (once) and the
      game is built there. Setup removes the temporary files and the unpacked compiler when done.
@@ -79,7 +81,7 @@ Then it is two steps: run Setup, run the game.
      or `libx11-6 libxft2` (X11); on Arch, `sudo pacman -S wayland libxkbcommon cairo pango` or `libx11 libxft`.
 
    Without a display, or with any option, Setup runs in the terminal instead: `./setup-linux --cli --source
-   path/to/DefaultPackage --work /tmp/conker-work --game-dir ~/Games/Conker`, `--source` is required and the other
+   path/to/DefaultPackage --work /tmp/conker-work --game-dir ~/Games/Conker`. `--source` is required and the other
    options default to the same as the window (`--help` lists them).
 2. **Run `Game.exe`** (Windows) **or `./Game`** (Linux), in the game folder chosen during Setup.
 
@@ -96,11 +98,11 @@ See [BUILDING.md](BUILDING.md).
 ## Credits
 
 - [Xbox XBE Recomp](https://github.com/TGP482/XboxXBERecomp), the recompiler and runtime this is built on.
-- [xemu](https://github.com/xemu-project/xemu) and [Cxbx-Reloaded](https://github.com/Cxbx-Reloaded/Cxbx-Reloaded) as references for the Xbox's hardware and API behaviour.
+- [xemu](https://github.com/xemu-project/xemu) and [Cxbx-Reloaded](https://github.com/Cxbx-Reloaded/Cxbx-Reloaded) as references for the Xbox's hardware and API behavior.
 - [SMAA](http://www.iryoku.com/smaa/) by Jorge Jimenez, Jose I. Echevarria, Belen Masia, Fernando Navarro and Diego Gutierrez (MIT).
 - [toml++](https://github.com/marzer/tomlplusplus) for the configs.
 - [Dear ImGui](https://github.com/ocornut/imgui) for the settings overlay.
-- [FLTK](https://www.fltk.org) for Setup UI.
+- [FLTK](https://www.fltk.org) for the Setup UI.
 - [SDL](https://github.com/libsdl-org/SDL) for the window, input and controllers.
 - [Zig](https://ziglang.org) (`zig c++`: Clang, LLD, mingw-w64 and glibc stubs, libc++), the compiler Setup builds the game with, on both systems.
 - [The ConkerXbox60FPSWidescreen patch](https://www.moddb.com/downloads/conkerxbox60fpswidescreen) for important information about game code.
