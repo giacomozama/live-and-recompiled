@@ -168,7 +168,7 @@ constexpr const char* kPoolScale = "mac_mul(((c[132]).xxxw), ((i.v1).xyzw))";
 constexpr float kPoolShift = 30;     // units the textures are read off by per unit of slope
 constexpr float kPoolMurk = 0.35f;   // how far what lies under the surface is clouded toward its color
 constexpr float kPoolBlur = 0.003f;  // screen widths what lies under it is softened over
-constexpr float kPoolGain = 2.5f;    // the sheet's ripples on a pool, seen from above, against a river's
+constexpr float kPoolGain = 1.5f;    // the sheet's ripples on a pool, seen from above, against a river's
 constexpr float kPoolRipple = 24;    // units, about the shortest ripple the sheet holds
 // The pools write no depth, and the game draws Conker's fur shells after them: under the murk the body was laid over
 // is clouded, the fur after it was drawn on top, the tail showing whole above the water (F3 capture 143954_0, the
