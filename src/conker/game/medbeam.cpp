@@ -1,20 +1,28 @@
 // The medgun's beam. A match's Long Ranger heals teammates with the medgun, and the console draws nothing for it: the
 // fire state (0x323E70) plays medigun_active (sound 0xC0F) and a voice, and the heal tick (0x323BC0, every
 // [weapon table +0x20] seconds of [player+0x568]+0x604) picks the nearest hurt teammate in a cone ahead and hits it by
-// 0x323BA0: 0x2F0470 (eax the healer, the target pushed) with damage type 0x64, which reaches the hit function
-// 0x2EDDD0 as its fourth argument. 0x2EDDD0 runs on every machine for every player's hits (a remote one by the HitMsg's
-// receive 0x282720 through 0x2EF1D0), so its hook (friendly_fire.cpp) tells Heal who heals whom, wherever they play:
-// the healer is the record that dealt the hit (0x2F0470's scratch record, +0x23C its owner's ref) followed to its
-// owner. Its fifth argument is the victim's own index + 1, not the dealer's. A local heal also comes from the heal
-// tick's 0x323BA0 hook (eax the healer, [esp+4] the target); the same heal from both is taken once. Nothing else pushes
-// type 0x64. Trace (2026-11-17): a type 0x64 hit on the target after each tick, about 1.03 s apart.
+// 0x323BA0: 0x2F0470 (eax the target, the healer pushed) with damage type 0x64, which reaches the hit function
+// 0x2EDDD0 as its fourth argument. Trace (2026-11-17): a type 0x64 hit on the target after each tick, about 1.03 s apart.
+//
+// Who sees it. The heal tick returns at once for a remote player (controller +0xBC == 2), and the heal's hit reaches no
+// other machine but the target's (read from the code: 0x2EDDD0 hands 0x281B80 a flag that sends the HitMsg to the
+// victim's machine alone for this type), so the first build drew the beam only on the healer's machine (user: no one
+// else saw it). Here the tick runs for a remote healer too (sub_00323BC0): its own
+// timer at controller +0x604 and its own choice of target (the nearest hurt teammate in a cone ahead, 0x3252E0), the
+// controller's +0xBC let to 0 for the call, the heal's hit (0x323BA0's 0x2F0470) and its score event (0x242A80, type
+// 0x1D) skipped: no machine but the healer's heals. A healer's heal from 0x2EDDD0 (friendly_fire.cpp, the healer the
+// record that dealt it followed to its owner; its fifth argument is the victim's own index + 1) is taken only when this
+// machine has seen no tick of that healer lately (HealHit). A copy's +0x3AA (the medgun's overheal) is never sent, so a
+// remote tick takes a teammate at full health for hurt, as the healer's own machine does.
 //
 // A heal holds the beam up a little longer than the gap between this healer's last two heals (the tick's period,
 // whatever the class's table says), then fades it. It is drawn into each view after the view's world effects
 // (0x0D9950, category 0: the effect types 1..0x57), at 0x2A52FA, edi the view: the game's own beam effect's state
 // (CHAREFFECTS_TYPE_BEAM, 0x51: its setup 0x1AA620 sets the world space vertex shader [0x6B826C], the view's matrices
-// from [0x84A13C] + view * 0x2B0 + 0x100 and + 0xC0, no texture, the diffuse colour, depth tested, no depth writes, no
-// culling), blended additively (the destination blend ONE for the draw, 0x303 again after, as the setup leaves it),
+// from [0x84A13C] + view * 0x2B0 + 0x100 and + 0xC0, no texture, the diffuse colour, depth tested LEQUAL, depth writes
+// on, no culling), blended additively (the destination blend ONE for the draw, 0x303 again after, as the setup leaves
+// it) with depth writes off for the draw (on again after): written, the player outlines took the beam for a solid thing
+// in front and were cut where it crossed them (user, a system link match, where the beam itself didn't show);
 // drawn by D3DDevice_DrawVerticesUP, all of a view's beams in one draw.
 //
 // The look (DrawBeam): a curve from the gun to the target through two bends, a third and two thirds along, each where
@@ -56,6 +64,10 @@ constexpr uint32_t kViews = 0x84A13C, kViewSize = 0x2B0, kViewMatrix = 0x100;  /
 constexpr uint32_t kBeamSetup = 0x1AA620, kBeamType = 0x51;
 constexpr uint32_t kRenderState = 0x537990;  // ecx the method (count 1 << 18), edx the value
 constexpr uint32_t kDestBlendMethod = 0x40348, kDestBlendShadow = 0x549AF4, kDestBlendCache = 0x771808;
+// ZWRITEENABLE: NV097_SET_DEPTH_MASK, render state 64; the beam's setup turns it on
+constexpr uint32_t kDepthMaskMethod = 0x4035C, kDepthMaskShadow = 0x549AF8, kDepthMaskCache = 0x771814;
+constexpr uint32_t kNetworked = 0x863D11;  // byte: a system link session (0x281B00's test)
+constexpr uint32_t kController = 0x568, kControl = 0xBC;  // controller +0xBC: 2 a remote player
 constexpr uint32_t kDrawVerticesUP = 0x53A600;
 constexpr uint32_t kTriangleList = 5;
 
@@ -102,6 +114,8 @@ struct Beam {
 constexpr float kFirstHold = 0.7f, kMinHold = 0.25f, kMaxHold = 1.5f, kFade = 0.15f;
 Beam g_beams[16];
 double g_traced = 0;
+double g_ticked[kRecordCount];  // when each record's heal tick last healed (Heal), seconds
+bool g_remote_tick = false;     // in a remote healer's heal tick (sub_00323BC0)
 
 // a player record of the table, alive
 bool LivePlayer(uint32_t rec) {
@@ -349,12 +363,13 @@ void DrawBeam(std::vector<Vertex>& out, Beam& b, uint32_t id, Vec s, Vec e, Vec 
     }
 }
 
-void SetDestBlend(X86Context& ctx, uint32_t blend) {
-    ctx.ecx = kDestBlendMethod;
-    ctx.edx = blend;
+// a render state through the library's method writer, its shadow and the effects' cache kept with it
+void SetState(X86Context& ctx, uint32_t method, uint32_t shadow, uint32_t cache, uint32_t value) {
+    ctx.ecx = method;
+    ctx.edx = value;
     kernel::CallGuest(ctx, kRenderState, {});
-    kernel::W32(kDestBlendShadow, blend);
-    kernel::W32(kDestBlendCache, blend);
+    kernel::W32(shadow, value);
+    kernel::W32(cache, value);
 }
 
 // the draw's vertices in guest memory, room for every beam: 16 beams of 4 strips of up to 48 segments (12 vertices
@@ -364,16 +379,50 @@ uint32_t g_vertices = 0;
 
 }  // namespace
 
-// the heal tick's hit (0x323BA0: eax the healer, [esp+4] the target): a local player's heal
+// the heal tick (0x323BC0, eax the player, from the fire state 0x323E70): run for a remote healer too, its heal and
+// score event skipped, so every machine sees whom it heals
+X86_EXTERN_FUNC(__imp__sub_00323BC0);
+X86_FUNC(sub_00323BC0) {
+    const uint32_t player = ctx.eax;
+    const uint32_t control = player ? kernel::R32(player + kController) : 0;
+    if (!control || kernel::R32(control + kControl) != 2 || !kernel::G<uint8_t>(kNetworked) ||
+        !kernel::G<uint8_t>(kMatchFlag) || !warp::Multiplayer() || g_remote_tick)
+        return __imp__sub_00323BC0(ctx, base);
+    if (Trace()) {
+        static double traced = 0;
+        if (Now() - traced > 1) traced = Now(), LOGR("medbeam: heal tick of remote player %u", Index(player));
+    }
+    g_remote_tick = true;
+    kernel::W32(control + kControl, 0);
+    __imp__sub_00323BC0(ctx, base);
+    kernel::W32(control + kControl, 2);
+    g_remote_tick = false;
+}
+
+// the heal tick's hit (0x323BA0: eax the healer, [esp+4] the target); in a remote healer's tick only the beam's
 X86_EXTERN_FUNC(__imp__sub_00323BA0);
 X86_FUNC(sub_00323BA0) {
     const uint32_t healer = ctx.eax, target = kernel::R32(ctx.esp + 4);
+    if (g_remote_tick) {
+        medbeam::Heal(healer, target);
+        return kernel::Return(ctx, ctx.eax, 0);
+    }
     __imp__sub_00323BA0(ctx, base);
     if (kernel::G<uint8_t>(kMatchFlag) && warp::Multiplayer()) medbeam::Heal(healer, target);
 }
 
-void medbeam::Heal(uint32_t healer, uint32_t target) {
-    if (!healer || !target || healer == target) return;
+// a match event (0x242A80, cdecl: the player's index, the type, ...): a remote heal tick's (type 0x1D, the heal's
+// score) is the healer's machine's to count
+X86_EXTERN_FUNC(__imp__sub_00242A80);
+X86_FUNC(sub_00242A80) {
+    if (g_remote_tick) return kernel::Return(ctx, ctx.eax, 0);
+    __imp__sub_00242A80(ctx, base);
+}
+
+namespace {
+
+// a heal: the beam from healer to target held up, a pulse sent down it
+void Start(uint32_t healer, uint32_t target, const char* from) {
     const double now = Now();
     Beam* slot = nullptr;
     for (Beam& b : g_beams)
@@ -385,7 +434,6 @@ void medbeam::Heal(uint32_t healer, uint32_t target) {
         *slot = {};
     }
     const double gap = now - slot->last;
-    if (slot->healer == healer && slot->target == target && gap < 0.05) return;  // the same heal from 0x2EDDD0
     const bool held = slot->healer == healer && slot->target == target && gap < slot->hold;
     if (slot->healer == healer && slot->target == target && gap < kMaxHold)
         slot->hold = std::clamp(float(gap) * 1.35f + 0.05f, kMinHold, kMaxHold);
@@ -396,8 +444,21 @@ void medbeam::Heal(uint32_t healer, uint32_t target) {
     slot->target = target;
     slot->last = now;
     if (Trace())
-        LOGR("medbeam: player %u heals player %u (gap %.3f s, held %.2f s)", Index(healer), Index(target),
-             gap < 1e6 ? gap : -1.0, slot->hold);
+        LOGR("medbeam: player %u heals player %u (gap %.3f s, held %.2f s), %s", Index(healer), Index(target),
+             gap < 1e6 ? gap : -1.0, slot->hold, from);
+}
+
+}  // namespace
+
+void medbeam::Heal(uint32_t healer, uint32_t target) {
+    if (!LivePlayer(healer) || !target || healer == target) return;
+    g_ticked[Index(healer)] = Now();
+    Start(healer, target, g_remote_tick ? "a remote healer's tick" : "the tick");
+}
+
+void medbeam::HealHit(uint32_t healer, uint32_t target) {
+    if (!LivePlayer(healer) || !target || healer == target || Now() - g_ticked[Index(healer)] < 2.5) return;
+    Start(healer, target, "a hit");
 }
 
 // [[hook]] at 0x2A52FA, a view's world effects drawn (0x0D9950, category 0; [esp+4] the view): the medgun's beams
@@ -442,8 +503,10 @@ void ConkerMedBeams(X86Context& ctx, uint8_t* base) {
     std::memcpy(mem::Base() + g_vertices, verts.data(), bytes);
     const X86Context saved = ctx;
     kernel::CallGuest(ctx, kBeamSetup, {kBeamType, view});
-    SetDestBlend(ctx, 1);  // ONE: the glow adds
+    SetState(ctx, kDestBlendMethod, kDestBlendShadow, kDestBlendCache, 1);  // ONE: the glow adds
+    SetState(ctx, kDepthMaskMethod, kDepthMaskShadow, kDepthMaskCache, 0);  // no depth writes
     kernel::CallGuest(ctx, kDrawVerticesUP, {kTriangleList, uint32_t(verts.size()), g_vertices, uint32_t(sizeof(Vertex))});
-    SetDestBlend(ctx, 0x303);  // INVSRCALPHA, as the setup leaves it
+    SetState(ctx, kDepthMaskMethod, kDepthMaskShadow, kDepthMaskCache, 1);      // as the setup leaves them
+    SetState(ctx, kDestBlendMethod, kDestBlendShadow, kDestBlendCache, 0x303);
     ctx = saved;
 }

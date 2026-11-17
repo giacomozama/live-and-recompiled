@@ -17,7 +17,7 @@
 //
 // With the rule on, in a match, a player hit by another player of its team, or a vehicle driven by one, takes nothing:
 // the function returns before any of its work (no damage, flinch or hit message). The medgun's heal (damage type 0x64)
-// is never dropped, and tells medbeam.cpp who heals whom. A player's own blasts still hurt it and its vehicle; an
+// is never dropped, and tells medbeam.cpp who heals whom (HealHit). A player's own blasts still hurt it and its vehicle; an
 // empty vehicle takes anyone's. Each machine decides the hits its own players deal and every copy
 // in a session plays the host's rule, so the hit is dropped wherever it starts. XBE_FF_TRACE=1 logs each hit on a
 // player or vehicle by a player, its teams and what became of it.
@@ -125,11 +125,11 @@ X86_FUNC(sub_002EDDD0) {
     const uint32_t kind = kernel::R32(victim + kKind);
     // the medgun's heal: its beam, and never dropped (a teammate is all it hits)
     if (kernel::R32(ctx.esp + 0x10) == kTypeMedgun) {
-        // the healer is the record that dealt it (0x2F0470's scratch one) followed to its owner; a local heal also
-        // comes straight from the heal tick (medbeam.cpp's 0x323BA0)
+        // the healer is the record that dealt it (0x2F0470's scratch one) followed to its owner; the beam mostly comes
+        // from the heal tick (medbeam.cpp), which every machine runs for every healer
         if (kind == kKindPlayer)
             if (const uint32_t healer = Attacker(ctx, base, kernel::R32(ctx.esp + 4)); healer && healer != victim)
-                medbeam::Heal(healer, victim);
+                medbeam::HealHit(healer, victim);
         return __imp__sub_002EDDD0(ctx, base);
     }
     if (!syslink::SessionNoFriendlyFire() && !Trace()) return __imp__sub_002EDDD0(ctx, base);
