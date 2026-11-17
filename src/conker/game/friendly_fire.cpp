@@ -17,10 +17,21 @@
 //
 // With the rule on, in a match, a player hit by another player of its team, or a vehicle driven by one, takes nothing:
 // the function returns before any of its work (no damage, flinch or hit message). The medgun's heal (damage type 0x64)
-// is never dropped, and tells medbeam.cpp who heals whom (HealHit). A player's own blasts still hurt it and its vehicle; an
-// empty vehicle takes anyone's. Each machine decides the hits its own players deal and every copy
-// in a session plays the host's rule, so the hit is dropped wherever it starts. XBE_FF_TRACE=1 logs each hit on a
+// is never dropped, and tells medbeam.cpp who heals whom (HealHit). A player's own blasts still hurt it and its
+// vehicle; an empty vehicle takes anyone's. Each machine decides the hits its own players deal and every copy in a
+// session plays the host's rule, so the hit is dropped wherever it starts. XBE_FF_TRACE=1 logs each hit on a
 // player or vehicle by a player, its teams and what became of it.
+//
+// A remote player's death. 0x2EDDD0 changes a player's health only on the machine that plays it (0x281B00, eax the
+// victim: in a system link session a player only if one of this machine's); elsewhere it keeps the damage and still
+// plays the death (0x2F1E60, which also zeroes the copy's health, then 0x2CC0A0) when 0x2F7CA0 says the damage would
+// kill the copy (at 0x2EEC2B; again at 0x2EED7F for 0x320300, which a remote player skips). A copy's health is the low
+// byte its owner's PlrTick sends (0x27E5E6, set at 0x281496/0x2814F7); its +0x3AA (the medgun's overheal) and the
+// controller's +0x2D3 are never sent, and the hit comes a trip late, so the guess can be wrong: a player healed by a
+// teammate's medgun and shot down to a few points died on a third machine and lived on its own and the shooter's
+// (user, three machines, 2026-11-17), dead there for good. The owner's tick already tells every machine of the death
+// (its +0x56, from controller +0x38E: the copy's death and health 0, 0x27F630), so in a session 0x2F7CA0 says no for a
+// remote player's copy for the length of a hit on it. XBE_FF_TRACE=1 logs each guess left out.
 //
 // The menu. The match's configure page (0x290F60, FT_CONFIGURE: Time Limit, Lives Limit, Flag Rest, Victory Swap,
 // ..., Reset Defaults; Dumbots' and system link's alike) is built and run every frame: its rows go into a vector at
@@ -59,6 +70,11 @@ constexpr uint32_t kMatchFlag = 0x7819D5;  // byte: a match runs
 constexpr uint32_t kIsHost = 0x862C5C;     // byte: this copy hosts
 constexpr uint32_t kMachines = 0x864EC1;   // byte: the machines in the session
 constexpr uint32_t kTypeMedgun = 0x64;     // the hit's damage type (fourth argument): the medgun's heal (medbeam.cpp)
+constexpr uint32_t kNetworked = 0x863D11;  // byte: a system link session (0x281B00's test)
+constexpr uint32_t kController = 0x568, kControl = 0xBC;  // controller +0xBC: 2 a remote player
+constexpr uint32_t kHealth = 0x3AE, kExtra = 0x3AA;      // words
+
+uint32_t g_spared = 0;  // the remote player's copy a hit is on (0x2EDDD0): 0x2F7CA0 says it lives
 
 bool Trace() {
     static const bool on = std::getenv("XBE_FF_TRACE") != nullptr;
@@ -118,7 +134,35 @@ int64_t Team(uint32_t record) {
 
 }  // namespace
 
+// 0x2F7CA0 (eax the record, cdecl: the damage, a flag): would the damage kill it. Only a guess for a remote player's
+// copy, left to its own machine
 X86_EXTERN_FUNC(__imp__sub_002EDDD0);
+X86_EXTERN_FUNC(__imp__sub_002F7CA0);
+X86_FUNC(sub_002F7CA0) {
+    const uint32_t record = ctx.eax, damage = kernel::R32(ctx.esp + 4);
+    __imp__sub_002F7CA0(ctx, base);
+    if (!g_spared || record != g_spared || !(ctx.eax & 0xFF)) return;
+    if (Trace())
+        LOGR("friendly fire: player %08X's copy would die of %d here (health %u, extra %u): left to its machine",
+             record, int(damage), kernel::G<uint16_t>(record + kHealth), kernel::G<uint16_t>(record + kExtra));
+    ctx.eax &= ~0xFFu;
+}
+
+namespace {
+
+// the hit function itself, a remote player's death left to its machine
+void Hit(X86Context& ctx, uint8_t* base) {
+    const uint32_t victim = ctx.eax, spared = g_spared;
+    const uint32_t control = kernel::R32(victim + kController);
+    if (control && kernel::G<uint8_t>(kNetworked) && kernel::R32(victim + kKind) == kKindPlayer &&
+        kernel::R32(control + kControl) == 2)
+        g_spared = victim;
+    __imp__sub_002EDDD0(ctx, base);
+    g_spared = spared;
+}
+
+}  // namespace
+
 X86_FUNC(sub_002EDDD0) {
     const uint32_t victim = ctx.eax;
     if (!victim || !kernel::G<uint8_t>(kMatchFlag) || !warp::Multiplayer()) return __imp__sub_002EDDD0(ctx, base);
@@ -130,15 +174,15 @@ X86_FUNC(sub_002EDDD0) {
         if (kind == kKindPlayer)
             if (const uint32_t healer = Attacker(ctx, base, kernel::R32(ctx.esp + 4)); healer && healer != victim)
                 medbeam::HealHit(healer, victim);
-        return __imp__sub_002EDDD0(ctx, base);
+        return Hit(ctx, base);
     }
-    if (!syslink::SessionNoFriendlyFire() && !Trace()) return __imp__sub_002EDDD0(ctx, base);
-    if (kind != kKindPlayer && kind != kKindVehicle) return __imp__sub_002EDDD0(ctx, base);
+    if (!syslink::SessionNoFriendlyFire() && !Trace()) return Hit(ctx, base);
+    if (kind != kKindPlayer && kind != kKindVehicle) return Hit(ctx, base);
     // the player the hit is on: the victim, or the vehicle's driver
     const uint32_t player = kind == kKindPlayer ? victim : Driver(ctx, base, victim);
     const uint32_t from = kernel::R32(ctx.esp + 4);
     const uint32_t attacker = player ? Attacker(ctx, base, from) : 0;
-    if (!attacker || attacker == player) return __imp__sub_002EDDD0(ctx, base);
+    if (!attacker || attacker == player) return Hit(ctx, base);
     const int64_t ours = Team(player), theirs = Team(attacker);
     const bool friendly = ours >= 0 && ours == theirs;
     const bool drop = friendly && syslink::SessionNoFriendlyFire();
@@ -147,7 +191,7 @@ X86_FUNC(sub_002EDDD0) {
              kind == kKindPlayer ? "player" : "vehicle", victim, player, int(ours), attacker, from, int(theirs),
              drop ? ": dropped" : friendly ? ": a teammate's, friendly fire on" : "");
     if (drop) return kernel::Return(ctx, ctx.eax, 0);
-    __imp__sub_002EDDD0(ctx, base);
+    Hit(ctx, base);
 }
 
 namespace {
