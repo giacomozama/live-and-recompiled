@@ -2147,6 +2147,7 @@ private:
     bool upscale_ = false;
     std::array<uint32_t, 5> dlss_made_{};
     std::array<ImageRef, kMaxGen> dlss_out_;
+    std::array<Image*, kMaxGen> dlss_src_{};  // the picture each was made from, for its fur mark; this Present's only
     ImageRef dlss_still_depth_, dlss_still_motion_;
     bool dlss_reset_ = true;
     float lod_bias_ = 0;
@@ -5689,9 +5690,11 @@ void VulkanBackend::MotionPass(bool on, uint32_t slot) {
 
 namespace {
 
-// the motion pass's shaders' cache keys, apart from the draws' own
+// the motion pass's shaders' cache keys, apart from the draws' own; a pixel shader without the draw's discards apart
+// from one with them
 constexpr uint64_t kMotionVertexSalt = 0x6D6F74696F6E5653ull;
 constexpr uint64_t kMotionPixelSalt = 0x6D6F74696F6E5053ull;
+constexpr uint64_t kMotionPlainSalt = 0x6D6F74696F6E504Cull;
 constexpr uint32_t kCmpEqual = 0x202;  // D3DCMP_EQUAL
 
 }  // namespace
@@ -5737,10 +5740,13 @@ void VulkanBackend::DrawMotion(const State& s, const Before& before, uint32_t pr
     for (int i = 0; i < 4; i++) stages.res[i] = BindTexture(s, i, stages);
     PixelKey pk = MakePixelKey(s, stages.info);
     pk.shading = sh.shading;
-    uint64_t pkey = Hash(&pk, sizeof(pk)) ^ kMotionPixelSalt;
+    // a draw tested equal to the depth it wrote needs no discards of its own: the test passes only where it wrote. Its
+    // shading (super fur's strands, worked out a shell at a time) left out, the test can run before the pixel shader
+    const bool plain = zwrite;
+    uint64_t pkey = Hash(&pk, sizeof(pk)) ^ (plain ? kMotionPlainSalt : kMotionPixelSalt);
     auto pit = motion_shaders_.find(pkey);
     if (pit == motion_shaders_.end())
-        pit = motion_shaders_.emplace(pkey, Compile(PixelHlsl(pk, true), "main", "ps_5_0", hash)).first;
+        pit = motion_shaders_.emplace(pkey, Compile(PixelHlsl(pk, true, !plain), "main", "ps_5_0", hash)).first;
     sh.ps_code = pit->second;
     if (!sh.vs_code || !sh.ps_code) return;
 
@@ -6007,6 +6013,7 @@ void VulkanBackend::Upscale(std::vector<Image*>& shows, const std::vector<Image*
         dlss_reset_ = false;
         Transition(*dst, kRead);
         shows[i] = dst.get();
+        dlss_src_[i % kMaxGen] = &color;
         if (i + 1 == sources.size()) last = dst;
     }
 }
@@ -6995,13 +7002,19 @@ void VulkanBackend::DrawUi() {
 // it without FSR's upscaling and sharpening whatever the settings (the menu's blurred picture)
 void VulkanBackend::DrawFrame(Image* picture, uint32_t bi, bool fsr, Image* mask) {
     const app::Settings& set = app::Get();
-    // DLSS's picture, already at the output's size: RCAS alone over it, at its own sharpness, and not by its alpha (the
-    // fur mark), which DLSS doesn't carry through
-    const bool upscaled = picture && std::any_of(dlss_out_.begin(), dlss_out_.end(),
-                                                 [&](const ImageRef& r) { return r.get() == picture; });
+    // DLSS's picture, already at the output's size: RCAS alone over it, at its own sharpness. Its alpha isn't the fur
+    // mark (DLSS doesn't carry it through): the mark is read from the picture DLSS made it from, when that is still
+    // this Present's, else fur is sharpened as the rest
+    bool upscaled = false;
+    Image* mark = nullptr;
+    for (size_t i = 0; picture && i < dlss_out_.size(); i++) {
+        if (dlss_out_[i].get() != picture) continue;
+        upscaled = true;
+        mark = dlss_src_[i];
+    }
     fsr = fsr && (upscaled ? set.dlss_sharpness > 0 : set.fsr);
     const float sharpness = float(upscaled ? set.dlss_sharpness : set.fsr_sharpness) / 100.0f;
-    const float fur_share = upscaled ? 1.0f : float(set.fur_sharpness) / 100.0f;
+    const float fur_share = upscaled && !mark ? 1.0f : float(set.fur_sharpness) / 100.0f;
     // 16:9 when the console reports a widescreen display, else 4:3, or the shape a patched title draws
     float aspect = app::FrameAspect();
     float w = float(bb_w_);
@@ -7097,17 +7110,19 @@ void VulkanBackend::DrawFrame(Image* picture, uint32_t bi, bool fsr, Image* mask
         SetViewport((w - vw) / 2, (h - vh) / 2, vw, vh);
         SetScissor(0, 0, int32_t(bb_w_), int32_t(bb_h_));
         if (fsr) {
-            float p[8] = {
+            float p[12] = {
                 1.0f / float(out_w),
                 1.0f / float(out_h),
                 sharpness,
                 gamma_ ? 1.0f : 0.0f,
-                fur_share, power, level, swap_hdr_ ? 0.0f : float(cvd)
+                fur_share, power, level, swap_hdr_ ? 0.0f : float(cvd),
+                mark ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f
             };
+            if (mark) Transition(*mark, kRead);
             Alloc cb = Upload(kPassCbBytes);
             std::memcpy(cb.cpu, p, sizeof(p));
             DrawFullScreen(EnsurePassPipeline(kFsrHlsl, "rcas", out_fmt, -1), cb,
-                           {final_src, lut_->view, VK_NULL_HANDLE, VK_NULL_HANDLE});
+                           {final_src, lut_->view, mark ? mark->Sampled() : VK_NULL_HANDLE, VK_NULL_HANDLE});
         } else {
             float uv[4] = {0, 0, 1, 1};
             Blit(final_src, uv,
@@ -7504,6 +7519,7 @@ void VulkanBackend::Present(const Surface& front) {
     EndShadingFrame();
     ReleaseOldTextures();
     ResetFrame();
+    dlss_src_ = {};  // the pictures they point at are this Present's
     CountFps(std::max(shown, 1u));
     if (diag::Perf()) LogPerf();
     ApplySettings();

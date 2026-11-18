@@ -15,13 +15,14 @@ inline const char* kFsrHlsl = R"FSR(
 cbuffer B : register(b1) {
     float4 con0;
     float4 con1;
-    float4 con2;
+    float4 con2;  // rcas: x 1 when the fur mark is mark's alpha (DLSS's picture), not img's
     float4 con3;
     float4 con4;  // easu: x the share of FSR's sharpening fur takes (0..1)
 };
 
 Texture2D img : register(t0);
 Texture2D lut : register(t1);
+Texture2D mark : register(t2);
 SamplerState ls : register(s0);
 SamplerState ps : register(s1);
 
@@ -175,6 +176,13 @@ float4 rcas(O i) : SV_Target {
     float4 f4 = img.SampleLevel(ls, i.uv + float2( 1,  0) * texel, 0);
     float4 h4 = img.SampleLevel(ls, i.uv + float2( 0,  1) * texel, 0);
     float3 b = b4.rgb, d = d4.rgb, e = e4.rgb, f = f4.rgb, h = h4.rgb;
+    if (con2.x > 0.0) {
+        b4.a = mark.SampleLevel(ls, i.uv + float2( 0, -1) * texel, 0).a;
+        d4.a = mark.SampleLevel(ls, i.uv + float2(-1,  0) * texel, 0).a;
+        e4.a = mark.SampleLevel(ls, i.uv, 0).a;
+        f4.a = mark.SampleLevel(ls, i.uv + float2( 1,  0) * texel, 0).a;
+        h4.a = mark.SampleLevel(ls, i.uv + float2( 0,  1) * texel, 0).a;
+    }
     // alpha marks what is soft by design (fur): no sharpening there, nor of what borders it, so it draws no halo
     // (con1.x the share of it fur takes)
     sharpness *= 1.0 - saturate(max(max(max(b4.a, d4.a), max(f4.a, h4.a)), e4.a)) * (1.0 - con1.x);

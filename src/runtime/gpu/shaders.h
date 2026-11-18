@@ -266,7 +266,8 @@ std::string FixedVertexHlsl(uint16_t regs, bool pretransformed, uint64_t decode 
                             bool motion = false);
 // motion: the motion pass's (not for a screen quad), which discards as the draw does and writes the pixel's motion
 // as two floats: where it was in the picture before less where it is, in UV units
-std::string PixelHlsl(const PixelKey& k, bool motion = false);
+// discards false (motion only): the draw's shading left out, where the depth test alone says which pixels are its own
+std::string PixelHlsl(const PixelKey& k, bool motion = false, bool discards = true);
 // a screen quad's vertex or pixel shader: texture coordinates as the quad was drawn, before its far edges were pulled out
 std::string QuadHlsl(std::string s);
 // the geometry shader that draws a point as a square of its size, a point sprite with stage 3 spanning it

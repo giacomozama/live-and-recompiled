@@ -1080,7 +1080,7 @@ std::string FixedVertexHlsl(uint16_t regs, bool pretransformed, uint64_t decode,
     return s;
 }
 
-std::string PixelHlsl(const PixelKey& k, bool motion) {
+std::string PixelHlsl(const PixelKey& k, bool motion, bool discards) {
     motion = motion && !k.quad;
     std::string s = Common(k.shading, motion);
     s += PsHelpers();
@@ -1209,12 +1209,11 @@ std::string PixelHlsl(const PixelKey& k, bool motion) {
     if (k.depth_pass) body += F("if (outc.a < %g) discard;\n", std::bit_cast<float>(k.depth_pass));
     body += Hooks().Output() + "return outc;\n}\n";
     s += body;
-    // the motion pass: the draw's shading for its discards alone, then where the pixel was in the picture before, in
-    // UV units from where it is now (y down)
+    // the motion pass: the draw's shading for its discards alone (none when the depth test does their work), then where
+    // the pixel was in the picture before, in UV units from where it is now (y down)
     if (motion)
-        s += R"(float2 main(VOut i, bool front : SV_IsFrontFace) : SV_Target {
-    shade(i, front);
-    float2 now = i.mcur.xy / i.mcur.w, before = i.mprev.xy / i.mprev.w;
+        s += std::string(R"(float2 main(VOut i, bool front : SV_IsFrontFace) : SV_Target {
+)") + (discards ? "    shade(i, front);\n" : "") + R"(    float2 now = i.mcur.xy / i.mcur.w, before = i.mprev.xy / i.mprev.w;
     return (before - now) * float2(0.5, -0.5);
 }
 )";
