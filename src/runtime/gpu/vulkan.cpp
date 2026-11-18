@@ -2146,6 +2146,32 @@ private:
     // coarse pixel may cover (its size times the target's samples)
     bool shading_rate_ = false;
     uint32_t rate_samples_ = 0;
+    // the GPU's time a frame (GpuStamp): timestamps either side of each of the frame's own command buffers (not the
+    // pictures' into the swap chain, which wait for an image), per frame in flight, summed once its fence has passed
+    // (GpuFrameDone). 0 queries made: none yet; failed: the queue has no timestamps
+    static constexpr uint32_t kGpuStamps = 64;
+    VkQueryPool gpu_pool_[kFrames] = {};
+    uint32_t gpu_stamps_[kFrames] = {};
+    bool gpu_open_ = false, gpu_failed_ = false;
+    double gpu_ns_per_tick_ = 0;
+    // Super fur shading Auto (dlss_fur_rate 3, AutoFurRate): the rate in use (0 full, 1 half, 2 quarter); the GPU's time
+    // of the last frame measured, smoothed; frames over and under budget in a row; frames before it may try a finer
+    // rate again (doubling after each try that fails, back to its least after one that holds); the frames since the
+    // last step finer (a step back within kFurTrial of it is a failed try); what each step coarser saved, ms (0 not
+    // known), by the rate stepped from
+    uint32_t fur_auto_ = 0;
+    double gpu_ms_ = 0, gpu_ms_smooth_ = 0;
+    uint32_t fur_over_ = 0, fur_under_ = 0, fur_hold_ = 0, fur_hold_least_ = 60, fur_since_finer_ = ~0u;
+    double fur_saved_[2] = {};
+    double fur_step_from_ms_ = 0;
+    uint32_t fur_step_frames_ = 0;
+    void GpuStamp(bool start);
+    void GpuFrameDone();
+    void AutoFurRate();
+    uint32_t FurRate() const {
+        const uint32_t r = app::Get().dlss_fur_rate;
+        return r >= 3 ? fur_auto_ : r;
+    }
     bool dlss_missing_ = false;  // no module beside the game (LoadDlss)
     int dlss_init_ = 0;
     bool upscale_ = false;
@@ -2245,6 +2271,8 @@ VulkanBackend::~VulkanBackend() {
     }
     for (VkSemaphore s : present_sem_) vkDestroySemaphore(dev_, s, nullptr);
     if (query_pool_) vkDestroyQueryPool(dev_, query_pool_, nullptr);
+    for (VkQueryPool q : gpu_pool_)
+        if (q) vkDestroyQueryPool(dev_, q, nullptr);
     if (timeline_) vkDestroySemaphore(dev_, timeline_, nullptr);
     if (ui_pool_) vkDestroyDescriptorPool(dev_, ui_pool_, nullptr);
     if (layout_) vkDestroyPipelineLayout(dev_, layout_, nullptr);
@@ -2991,6 +3019,7 @@ void VulkanBackend::Begin() {
 
 void VulkanBackend::Submit(bool wait, VkSemaphore wait_sem, VkSemaphore signal_sem) {
     EndRendering();
+    GpuStamp(false);
     vkEndCommandBuffer(cmd_);
     uint64_t value = ++fence_value_;
     VkSemaphore signals[2] = {timeline_, signal_sem};
@@ -3024,6 +3053,7 @@ void VulkanBackend::Submit(bool wait, VkSemaphore wait_sem, VkSemaphore signal_s
         kept_draws_.clear();
         BeginCommands(f.cmd);
         Begin();
+        GpuStamp(true);
     }
 }
 
@@ -6416,7 +6446,7 @@ void VulkanBackend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t
     }
     // ProgramShading::coarse under DLSS: the shells (top's x above 0, not the skin under them) shaded once per 2x1 or
     // 2x2 pixels (app::Settings::dlss_fur_rate)
-    const uint32_t coarse = zps && zps->coarse && shading_rate_ && upscale_ ? app::Get().dlss_fur_rate : 0;
+    const uint32_t coarse = zps && zps->coarse && shading_rate_ && upscale_ ? FurRate() : 0;
     if (coarse && (zps->top < 0 || s.vsc[size_t(zps->top)][0] > 0))
         k.wmask |= coarse >= 2 ? kWmaskCoarseWide | kWmaskCoarseTall : kWmaskCoarseWide;
     float zalpha = 0;
@@ -7418,11 +7448,133 @@ void VulkanBackend::ResetFrame() {
         WaitTimeline(f.fence);
         g_perf.wait += PerfMs(perf_wait);
     }
+    GpuFrameDone();  // its fence passed: the frame this one drew before
     vkResetCommandPool(dev_, f.pool, 0);
     f.garbage.clear();
     f.used = 0;
     BeginCommands(f.cmd);
     Begin();
+    GpuStamp(true);
+}
+
+// a timestamp at the start (true) or end of one of the frame's own command buffers; the pools made the first time
+void VulkanBackend::GpuStamp(bool start) {
+    if (gpu_failed_ || (!start && !gpu_open_)) return;
+    if (!gpu_pool_[0]) {
+        uint32_t n = 0;
+        vkGetPhysicalDeviceQueueFamilyProperties(phys_, &n, nullptr);
+        std::vector<VkQueueFamilyProperties> fams(n);
+        vkGetPhysicalDeviceQueueFamilyProperties(phys_, &n, fams.data());
+        if (qfam_ >= n || !fams[qfam_].timestampValidBits || props_.limits.timestampPeriod <= 0) {
+            gpu_failed_ = true;
+            LOGI("vulkan: no GPU timestamps, Super fur shading Auto stays at its rate");
+            return;
+        }
+        gpu_ns_per_tick_ = props_.limits.timestampPeriod;
+        VkQueryPoolCreateInfo qi{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
+        qi.queryType = VK_QUERY_TYPE_TIMESTAMP;
+        qi.queryCount = kGpuStamps;
+        for (VkQueryPool& q : gpu_pool_) {
+            if (vkCreateQueryPool(dev_, &qi, nullptr, &q) != VK_SUCCESS) {
+                gpu_failed_ = true;
+                return;
+            }
+            vkResetQueryPool(dev_, q, 0, kGpuStamps);
+        }
+    }
+    const uint32_t slot = uint32_t(frame_ % kFrames);
+    uint32_t& n = gpu_stamps_[slot];
+    if (start) {
+        gpu_open_ = n + 2 <= kGpuStamps;
+        if (gpu_open_) vkCmdWriteTimestamp(cmd_, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, gpu_pool_[slot], n++);
+    } else {
+        vkCmdWriteTimestamp(cmd_, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, gpu_pool_[slot], n++);
+        gpu_open_ = false;
+    }
+}
+
+// the frame in flight that last used this slot is done: its command buffers' times summed, the pool reset for this
+// one, and Auto told
+void VulkanBackend::GpuFrameDone() {
+    if (gpu_open_) return;  // the frame's command buffer began without its stamp being closed: none to read
+    const uint32_t slot = uint32_t(frame_ % kFrames);
+    uint32_t& n = gpu_stamps_[slot];
+    if (!gpu_pool_[slot] || n < 2) {
+        n = 0;
+        return;
+    }
+    uint64_t t[kGpuStamps] = {};
+    const uint32_t pairs = n / 2;
+    const VkResult r = vkGetQueryPoolResults(dev_, gpu_pool_[slot], 0, pairs * 2, sizeof(t), t, sizeof(uint64_t),
+                                             VK_QUERY_RESULT_64_BIT);
+    vkResetQueryPool(dev_, gpu_pool_[slot], 0, kGpuStamps);
+    n = 0;
+    if (r != VK_SUCCESS) return;
+    uint64_t ticks = 0;
+    for (uint32_t i = 0; i < pairs; i++)
+        if (t[2 * i + 1] > t[2 * i]) ticks += t[2 * i + 1] - t[2 * i];
+    gpu_ms_ = double(ticks) * gpu_ns_per_tick_ / 1e6;
+    gpu_ms_smooth_ = gpu_ms_smooth_ > 0 ? gpu_ms_smooth_ + (gpu_ms_ - gpu_ms_smooth_) * 0.2 : gpu_ms_;
+    AutoFurRate();
+}
+
+namespace {
+constexpr uint32_t kFurOverFrames = 3;    // frames over budget in a row before a step coarser
+constexpr uint32_t kFurUnderFrames = 60;  // frames well under it in a row before a try finer
+constexpr uint32_t kFurTrial = 60;        // a step back coarser within this many frames of a try finer: the try failed
+constexpr uint32_t kFurSettle = 8;        // frames after a step before what it saved is measured
+constexpr uint32_t kFurHoldMost = 1200;   // the longest wait before trying finer again
+constexpr double kFurOver = 0.92, kFurUnder = 0.75, kFurRoom = 0.88;  // shares of the budget
+}  // namespace
+
+// Super fur shading Auto (app::Settings::dlss_fur_rate 3): the GPU's time a frame against the frame's budget (one
+// frame of the game's rate, its pictures included). Over it a few frames running: a step coarser. Well under it a
+// second running, and room for what the step saved when it was taken: a try finer, which a step back soon after
+// makes wait twice as long the next time. The rate changes pipelines alone: no hitch, nothing for DLSS to start over
+void VulkanBackend::AutoFurRate() {
+    if (!upscale_ || app::Get().dlss_fur_rate < 3 || !shading_rate_) return;
+    const uint32_t fps = app::Get().fps_cap ? app::Get().fps_cap
+                                            : std::max(app::MonitorRefresh() / std::max(app::Get().frame_generation, 1u), 1u);
+    const double budget = 1000.0 / double(fps);
+    if (fur_since_finer_ != ~0u) fur_since_finer_++;
+    if (fur_hold_) fur_hold_--;
+    // what the last step saved, once the frames after it settled
+    if (fur_step_frames_ && --fur_step_frames_ == 0) {
+        const double saved = fur_step_from_ms_ - gpu_ms_smooth_;
+        const uint32_t from = fur_auto_ ? fur_auto_ - 1 : 0;  // a step coarser from 'from'
+        if (fur_auto_ && saved > 0) fur_saved_[from] = saved;
+    }
+    const auto step = [&](int dir) {
+        fur_step_from_ms_ = gpu_ms_smooth_;
+        fur_step_frames_ = dir > 0 ? kFurSettle : 0;
+        fur_auto_ = uint32_t(int(fur_auto_) + dir);
+        fur_over_ = fur_under_ = 0;
+        if (diag::Perf())
+            LOGR("perf: super fur shading auto: %s (GPU %.2f ms a frame of %.2f)",
+                 fur_auto_ == 0 ? "full" : fur_auto_ == 1 ? "half" : "quarter", gpu_ms_smooth_, budget);
+    };
+    fur_over_ = gpu_ms_ > budget * kFurOver ? fur_over_ + 1 : 0;
+    fur_under_ = gpu_ms_ < budget * kFurUnder ? fur_under_ + 1 : 0;
+    if (fur_over_ >= kFurOverFrames && fur_auto_ < 2) {
+        if (fur_since_finer_ <= kFurTrial) {  // the try finer didn't hold
+            fur_hold_least_ = std::min(fur_hold_least_ * 2, kFurHoldMost);
+            fur_hold_ = fur_hold_least_;
+        }
+        fur_since_finer_ = ~0u;
+        step(+1);
+        return;
+    }
+    if (fur_since_finer_ != ~0u && fur_since_finer_ > kFurTrial) {  // the try finer held
+        fur_hold_least_ = kFurUnderFrames;
+        fur_since_finer_ = ~0u;
+    }
+    if (fur_auto_ > 0 && !fur_hold_ && fur_under_ >= kFurUnderFrames) {
+        const double cost = fur_saved_[fur_auto_ - 1];
+        if (cost <= 0 || gpu_ms_smooth_ + cost < budget * kFurRoom) {
+            fur_since_finer_ = 0;
+            step(-1);
+        }
+    }
 }
 
 void VulkanBackend::CountFps(uint32_t pictures) {

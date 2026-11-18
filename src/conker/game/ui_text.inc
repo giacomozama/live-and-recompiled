@@ -273,20 +273,26 @@ constexpr Line kLines[] = {
      "DLSSが画像のアンチエイリアスを自ら行います。"},
     {"super_fur_shading", "Super fur shading", "Super-Fell-Shading", "Ombrage de la super fourrure", "Sombreado del superpelaje",
      "Ombreggiatura super pelliccia", "スーパーファーのシェーディング"},
+    {"auto_rate", "Auto", "Auto", "Auto", "Auto", "Auto", "自動"},
     {"full", "Full", "Voll", "Complet", "Completo", "Piena", "フル"},
     {"half", "Half", "Halb", "Moitié", "Mitad", "Metà", "ハーフ"},
     {"quarter", "Quarter", "Viertel", "Quart", "Cuarto", "Quarto", "クォーター"},
     {"hint_shades_super_fur_once_per", "Shades Super fur once per one, two or four pixels. DLSS rebuilds the strands either "
-     "way; lower is much faster in close-ups. Needs a GPU with variable rate shading.",
+     "way; lower is much faster in close-ups. Auto takes the finest that holds the frame rate. Needs a GPU with variable "
+     "rate shading.",
      "Schattiert Super-Fell einmal pro ein, zwei oder vier Pixel. DLSS baut die Haare so oder so neu auf; niedriger ist "
-     "in Nahaufnahmen viel schneller. Benötigt eine GPU mit Variable Rate Shading.",
+     "in Nahaufnahmen viel schneller. Auto nimmt die feinste Stufe, die die Bildrate hält. Benötigt eine GPU mit "
+     "Variable Rate Shading.",
      "Ombre la super fourrure une fois par un, deux ou quatre pixels. DLSS reconstruit les poils dans tous les cas ; "
-     "plus bas est bien plus rapide en gros plan. Nécessite un GPU avec Variable Rate Shading.",
+     "plus bas est bien plus rapide en gros plan. Auto prend le plus fin qui tient la fréquence d'images. Nécessite un "
+     "GPU avec Variable Rate Shading.",
      "Sombrea el superpelaje una vez por cada uno, dos o cuatro píxeles. DLSS reconstruye los pelos igualmente; más bajo "
-     "es mucho más rápido en primeros planos. Necesita una GPU con Variable Rate Shading.",
+     "es mucho más rápido en primeros planos. Auto elige el más fino que mantiene la tasa de fotogramas. Necesita una "
+     "GPU con Variable Rate Shading.",
      "Ombreggia la super pelliccia una volta ogni uno, due o quattro pixel. DLSS ricostruisce i peli in ogni caso; più "
-     "basso è molto più veloce nei primi piani. Richiede una GPU con Variable Rate Shading.",
-     "スーパーファーを1、2、4ピクセルごとに1回シェーディングします。どれでもDLSSが毛を再構築し、低いほどクローズアップで大幅に速くなります。可変レートシェーディング対応のGPUが必要です。"},
+     "basso è molto più veloce nei primi piani. Auto sceglie il più fine che mantiene la frequenza dei fotogrammi. "
+     "Richiede una GPU con Variable Rate Shading.",
+     "スーパーファーを1、2、4ピクセルごとに1回シェーディングします。どれでもDLSSが毛を再構築し、低いほどクローズアップで大幅に速くなります。自動はフレームレートを保てる最も細かい設定を選びます。可変レートシェーディング対応のGPUが必要です。"},
     {"dlss_quality", "DLSS quality", "DLSS-Qualität", "Qualité DLSS", "Calidad de DLSS", "Qualità DLSS", "DLSS画質"},
     {"dlaa", "DLAA", "DLAA", "DLAA", "DLAA", "DLAA", "DLAA"},
     {"balanced", "Balanced", "Ausgewogen", "Équilibré", "Equilibrado", "Bilanciato", "バランス"},

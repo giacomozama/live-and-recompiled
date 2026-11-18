@@ -67,7 +67,7 @@ void Load() {
     s.upscaler = t["upscaler"].value_or(s.upscaler);
     s.upscaler_quality = std::min<uint32_t>(t["upscaler_quality"].value_or(s.upscaler_quality), 4);
     s.dlss_sharpness = std::min<uint32_t>(t["dlss_sharpness"].value_or(s.dlss_sharpness), 100);
-    s.dlss_fur_rate = std::min<uint32_t>(t["dlss_fur_rate"].value_or(s.dlss_fur_rate), 2);
+    s.dlss_fur_rate = std::min<uint32_t>(t["dlss_fur_rate"].value_or(s.dlss_fur_rate), 3);
     s.fps_cap = t["fps_cap"].value_or(s.fps_cap);
     s.vsync = t["vsync"].value_or(s.vsync);
     s.hdr = t["hdr"].value_or(s.hdr);
