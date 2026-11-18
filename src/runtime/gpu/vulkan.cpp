@@ -1388,6 +1388,8 @@ public:
     uint32_t Pictures() override { return cap_ || !swap_ || minimised_ ? 1 : swap_gen_; }
     uint32_t PictureTimes(float* t, float& step) override;
     double InStep();
+    bool Light() const override { return light_; }
+    bool LightAhead();
     void Keep(const Surface& front, bool own) override;
     void Between(const Surface& front, uint32_t i) override;
     void Replaying(bool on) override {
@@ -2065,6 +2067,7 @@ private:
     bool gen_frame_ = false, gen_own_ = true;
     double gen_step_ = 1.0;
     double gen_next_ = 1.0;
+    bool light_ = false;  // the frame being drawn, drawn light (LightAhead)
     bool replay_ = false;
     // g_hud_split: the draw's x on the guest frame drawn at x * hud_a_ + hud_b_ (SetViewportScissor); the HUD's
     // elements by their scope's id
@@ -5290,6 +5293,7 @@ bool VulkanBackend::DrawBetweenShells(const State& s, const Assembled& a, uint32
     float from = ShadingBefore(shading), to = s.vsc[size_t(ps.top)][0];
     if (from < 0 || to <= from) return false;
     BindGeometry(a);
+    if (light_ && !replay_) return true;  // drawn light, none (still bound: drawn again, the draw isn't kept)
     Bindings eb = b;
     for (int j = 1; j <= between; j++) {
         Alloc vc = Upload(sizeof(s.vsc.v));
@@ -5312,6 +5316,7 @@ bool VulkanBackend::DrawBetweenShells(const State& s, const Assembled& a, uint32
 // bound and vertex constants of their own, then the draw's own bindings pushed back
 void VulkanBackend::DrawBeyondShells(const State& s, const Assembled& a, uint32_t shading, const Bindings& b) {
     const ProgramShading& ps = g_program_shading[shading - 1];
+    if (light_ && !replay_) return;  // drawn light
     if (!ps.beyond_of || !ps.top_layers || ps.top < 0 || ps.top >= int(s.vsc.size())) return;
     const float* top = s.vsc[size_t(ps.top)].data();
     if (top[0] <= 0 || int(top[3]) != ps.top_layers - 1) return;
@@ -5718,7 +5723,7 @@ void VulkanBackend::ApplyOcclusion() {
     occlusion_done_ = true;
     KeepMotionDepth();
     const app::Settings& set = app::Get();
-    if (!set.ambient_occlusion || !view_ok_) return;
+    if (!set.ambient_occlusion || !view_ok_ || (light_ && !replay_)) return;
     Target* t = FindTarget(post_surf_, false);
     Target* z = FindTarget(post_zs_, true);
     if (!t || t->data != post_rt_ || !z || !z->res || !z->res->depth_view || z->w != t->w || z->h != t->h) return;
@@ -6740,7 +6745,8 @@ void VulkanBackend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t
     }
     // ProgramShading::coarse: the shells (top's x above 0, not the skin under them) shaded once per 2x1 or 2x2 pixels
     // as Adaptive fur shading has it (app::Settings::dlss_fur_auto), with DLSS or without
-    const uint32_t coarse = zps && zps->coarse && shading_rate_ ? FurRate() : 0;
+    // (a frame drawn light: the coarsest)
+    const uint32_t coarse = zps && zps->coarse && shading_rate_ ? (light_ && !replay_ ? 2 : FurRate()) : 0;
     if (coarse && (zps->top < 0 || s.vsc[size_t(zps->top)][0] > 0))
         k.wmask |= coarse >= 2 ? kWmaskCoarseWide | kWmaskCoarseTall : kWmaskCoarseWide;
     float zalpha = 0;
@@ -7654,6 +7660,27 @@ double VulkanBackend::InStep() {
     return std::clamp(hz / double(rate), 1.0, double(most));
 }
 
+// in step with the refresh: a frame's picture times from next (the first's), s apart, to its own at most and no more
+// than most of them; returns how many, and in next the first's of the frame after. The time nearest the frame's own,
+// within half a step before or after it, is its own: shown at that refresh, it stands in for a picture drawn again, so
+// every frame shows its own and none is drawn light (LightAhead) once in a steady run, a picture up to half a refresh
+// (3 ms at 165 Hz) off its time. Exact (app::Settings::picture_timing_exact) only a time within 1e-3 of it is, which
+// at 164.958 Hz none ever was: every picture drawn again with its motion pass (with DLSS the render thread busy the
+// whole frame), and every frame drawn light as well
+static uint32_t StepTimes(double& next, double s, uint32_t most, float* t) {
+    constexpr double kNear = 1e-3;
+    const double snap = app::Get().picture_timing_exact ? kNear : s * 0.5;
+    if (!(next > 0) || next >= 1.0 + snap) next = 1.0;
+    uint32_t n = 0;
+    double x = next;
+    for (; x < 1.0 + snap && n < most; x += s) t[n++] = x >= 1.0 - snap ? 1.0f : float(x);
+    // cut short by the most (not in a steady run): the time left over would fall at the frame's start, the frame
+    // before's own again
+    next = x - 1.0;
+    if (next < kNear) next += s;
+    return n;
+}
+
 uint32_t VulkanBackend::PictureTimes(float* t, float& step) {
     const double r = InStep();
     if (r <= 0) {
@@ -7662,20 +7689,30 @@ uint32_t VulkanBackend::PictureTimes(float* t, float& step) {
         gen_step_ = step;
         return n;
     }
-    const uint32_t most = std::min(Pictures(), kMostPictures);
     const double s = 1.0 / r;
-    constexpr double kNear = 1e-3;  // a time this near the frame's own is its own
-    if (!(gen_next_ > 0) || gen_next_ > 1.0 + kNear) gen_next_ = 1.0;
-    uint32_t n = 0;
-    double x = gen_next_;
-    for (; x <= 1.0 + kNear && n < most; x += s) t[n++] = x >= 1.0 - kNear ? 1.0f : float(x);
-    // cut short by the most (not in a steady run): the time left over would fall at the frame's start, the frame
-    // before's own again
-    gen_next_ = x - 1.0;
-    if (gen_next_ < kNear) gen_next_ += s;
+    const uint32_t n = StepTimes(gen_next_, s, std::min(Pictures(), kMostPictures), t);
     step = float(s);
     gen_step_ = s;
     return n;
+}
+
+// In step with the refresh some frames show no picture of their own (no time within StepTimes' snap of it: 165 Hz at
+// 60, 11 pictures every 4 frames), yet each frame was drawn whole before its pictures were drawn again: more scenes
+// drawn than pictures shown, and the GPU held the game under its rate. The next frame's times are known at this
+// one's Present, so a frame whose own won't be shown is drawn light (Light): super fur's shells between and beyond
+// the game's left out, its shells at the coarsest shading, no ambient occlusion. Its depth and visibility tests stay whole: the title
+// counts pixels against them in the frame. XBE_GEN_LIGHT=0 draws every frame whole
+bool VulkanBackend::LightAhead() {
+    static const bool off = [] {
+        const char* e = std::getenv("XBE_GEN_LIGHT");
+        return e && *e == '0';
+    }();
+    const double r = off ? 0 : InStep();
+    if (r <= 0) return false;
+    float t[kMostPictures];
+    double next = gen_next_;
+    const uint32_t n = StepTimes(next, 1.0 / r, std::min(Pictures(), kMostPictures), t);
+    return n && t[n - 1] < 1.0f;
 }
 
 // the frame's own picture, before it is drawn again: the last of its pictures (own: shown, else only the start)
@@ -7977,6 +8014,7 @@ void VulkanBackend::CountFps(uint32_t pictures) {
 // wait for it
 void VulkanBackend::Present(const Surface& front) {
     held_since_ = {};
+    light_ = false;  // foreseen again at the end for the next frame
     if (!std::exchange(world_fog_seen_, false)) std::memset(world_fog_, 0, sizeof(world_fog_));
     FlushRun();
     if (!std::exchange(hud_rolled_, false)) HudRoll();
@@ -8120,6 +8158,7 @@ void VulkanBackend::Present(const Surface& front) {
     CountFps(std::max(shown, 1u));
     if (diag::Perf()) LogPerf();
     ApplySettings();
+    light_ = LightAhead();
 }
 
 // the title held: its last picture again under the overlay, a frame with no draws of its own, blurred a little more as

@@ -71,6 +71,7 @@ void Load() {
     s.dlss_fur_auto = t["dlss_fur_auto"].value_or(s.dlss_fur_auto);
     s.fps_cap = t["fps_cap"].value_or(s.fps_cap);
     s.vsync = t["vsync"].value_or(s.vsync);
+    s.picture_timing_exact = t["picture_timing_exact"].value_or(s.picture_timing_exact);
     s.hdr = t["hdr"].value_or(s.hdr);
     // 0 the display's
     if (uint32_t v = t["hdr_paper_white"].value_or(s.hdr_paper_white))
@@ -165,6 +166,7 @@ toml::table Table() {
                   {"dlss_fur_auto", s.dlss_fur_auto},
                   {"fps_cap", int64_t(s.fps_cap)},
                   {"vsync", s.vsync},
+                  {"picture_timing_exact", s.picture_timing_exact},
                   {"hdr", s.hdr},
                   {"hdr_paper_white", int64_t(s.hdr_paper_white)},
                   {"hdr_highlights", int64_t(s.hdr_highlights)},

@@ -42,6 +42,10 @@ struct Settings {
     // fraction of the cost in a close-up (gpu::ProgramShading::coarse). The name is from when it was DLSS's alone
     bool dlss_fur_auto = true;
     uint32_t fps_cap = 60;           // 0 unlimited
+    // pictures past the monitor's refresh rate with vsync, one a refresh (VulkanBackend::InStep): false, each frame's
+    // own picture shown at the refresh nearest it, up to half a refresh off, one scene drawn a picture; true, every
+    // picture at its own time, most of them drawn again (dearer)
+    bool picture_timing_exact = false;
     bool vsync = true;
     // HDR output (an HDR10 swap chain, where the display and compositor offer one): the SDR picture shown with its
     // white at hdr_paper_white nits, 0 the display's (HdrPaperWhite)

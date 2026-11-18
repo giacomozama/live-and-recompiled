@@ -69,6 +69,10 @@ public:
         return n;
     }
     virtual void Keep(const Surface& /*front*/, bool /*own*/) {}
+    // the frame being drawn was drawn light: its own picture was known not to be shown (in step with the refresh, no
+    // picture time falls on it), so what only colours it was left out; every one of its pictures is drawn again, a
+    // time of 1 too
+    virtual bool Light() const { return false; }
     virtual void Between(const Surface& /*front*/, uint32_t /*i*/) {}
     virtual void Replaying(bool /*on*/) {}
     // drawing again: Skips, the next Draw is one a run drawn again took with it, so blending it is wasted; Pass, a draw

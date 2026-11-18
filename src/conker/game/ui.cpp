@@ -2174,6 +2174,15 @@ void Draw(double fps) {
                     ImGui::EndDisabled();
                     Hint(locked ? "hint_can_t_be_changed_during" :
                                   "hint_highest_picks_the_most_the", true);
+                    // past the monitor's refresh rate with vsync the pictures go one a refresh (VulkanBackend::InStep)
+                    const app::Settings& now = app::Get();
+                    if (now.vsync && now.frame_generation > 1 &&
+                        double(now.fps_cap) * now.frame_generation > app::MonitorHz() + 0.5) {
+                        int timing = s.picture_timing_exact ? 1 : 0;
+                        if (Segmented("picture_timing", &timing, {"lighter", "exact"}))
+                            s.picture_timing_exact = timing == 1;
+                        Hint("hint_above_the_refresh_rate_lighter", true);
+                    }
 
                     constexpr uint32_t kAniso[] = {0, 2, 4, 8, 16};
                     int aniso = 0;

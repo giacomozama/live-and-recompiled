@@ -913,8 +913,17 @@ private:
         float times[Backend::kMostPictures] = {1.0f};
         float step = 1.0f;
         uint32_t pictures = keeping_ ? std::clamp(inner_->PictureTimes(times, step), 1u, Backend::kMostPictures) : 1;
-        const bool own = times[pictures - 1] >= 1.0f;
+        // a frame drawn light shows no picture of its own: one at 1 (its own foreseen wrongly) is drawn again too
+        const bool light = inner_->Light() && frame_draws_;
+        const bool own = times[pictures - 1] >= 1.0f && !light;
         const bool gen = (pictures > 1 || !own) && frame_draws_;
+        gen_light_ += light;
+        // the time of the picture shown before picture i (from 0): the one before in this frame, or the frame before's
+        // last, before this frame's start (below 0: the blend, linear, carries the frame's motion back to it). In
+        // step with the refresh a frame's own may stand in for a time near it, so it is the times', not a step back
+        const float last_t = shown_t_;
+        auto before = [&](uint32_t i) { return i ? times[i - 1] : last_t - 1.0f; };
+        shown_t_ = times[pictures - 1];
         bool motion = motion_ && frame_draws_;
         if ((gen || motion) && frame_draws_) {
             auto match_start = PerfClock::now();
@@ -934,7 +943,7 @@ private:
             // the frame's own picture takes the last slot, those drawn again the first ones in turn
             const uint32_t own_slot = std::max(inner_->Pictures(), 1u) - 1;
             inner_->Keep(c.s1, own);
-            if (motion && own) Motion(b, own_slot, 1, 1 - step);
+            if (motion && own) Motion(b, own_slot, 1, before(pictures - 1));
             const uint32_t again = own ? pictures - 1 : pictures;
             for (uint32_t i = 1; i <= again; i++) {
                 float t = times[i - 1];
@@ -948,16 +957,13 @@ private:
                 auto between_start = PerfClock::now();
                 inner_->Between(c.s1, i);
                 gen_between_ns_ += Ns(between_start);
-                // the picture shown before it: the one before in this frame, or in step with the refresh the frame
-                // before's last, before this frame's start (t below 0: the blend, linear, carries the frame's motion
-                // back to it)
-                if (motion) Motion(b, i - 1, t, t - step);
+                if (motion) Motion(b, i - 1, t, before(i - 1));
             }
             changed_ = true;
         } else if (motion) {
-            // its own picture alone: in its own slot, the picture before a step back (the whole frame without frame
+            // its own picture alone: in its own slot, from the picture shown before (the whole frame without frame
             // generation)
-            Motion(b, std::max(inner_->Pictures(), 1u) - 1, 1, 1 - step);
+            Motion(b, std::max(inner_->Pictures(), 1u) - 1, 1, before(pictures - 1));
             changed_ = true;
         }
         gen_replay_ns_ += Ns(replay_start);
@@ -980,9 +986,9 @@ private:
         // XBE_PERF: what frame generation costs the render thread, a frame
         if (diag::Perf() && keeping_ && ++gen_frames_ >= 120) {
             LOGR("perf: frame generation: matching %.2f ms, drawing again %.2f ms a frame (blending %.2f), %u draws, "
-                 "%u pictures",
+                 "%u pictures, %u of %u frames drawn light",
                  gen_match_ns_ / 1e6 / gen_frames_, gen_replay_ns_ / 1e6 / gen_frames_, gen_blend_ns_ / 1e6 / gen_frames_,
-                 frame_draws_, pictures);
+                 frame_draws_, pictures, gen_light_, gen_frames_);
             // matching: the frame's draws recorded (interp::Draw) and their match to the frame before's; drawing
             // again: the backend's draws (slow: the whole way, fast: kept state, reused: a run's draws as one, the
             // rest skipped with it), the pictures handed out, and what's left: the commands' state, the loop (the motion
@@ -1009,7 +1015,7 @@ private:
                      gen_mslow_ms_ / f, gen_mreused_ / f, gen_mreused_ms_ / f, gen_mskipped_ / f,
                      gen_motion_at_ns_ / 1e6 / f,
                      (double(gen_motion_ns_ - gen_motion_at_ns_) / 1e6 - gen_mslow_ms_ - gen_mreused_ms_) / f);
-            gen_frames_ = 0;
+            gen_frames_ = gen_light_ = 0;
             gen_match_ns_ = gen_replay_ns_ = gen_blend_ns_ = 0;
             gen_matched_ns_ = gen_draw_ns_ = gen_between_ns_ = gen_rec_wait_ns_ = 0;
             gen_draws_ = gen_backend_draws_ = gen_fast_ = gen_reused_ = gen_redrawn_ = 0;
@@ -1106,6 +1112,8 @@ private:
     double gen_mslow_ms_ = 0, gen_mreused_ms_ = 0;  // the backend's time for its draws by kind
     uint64_t gen_rec_wait_ns_ = 0;  // the Present's wait for the recorder
     uint32_t gen_frames_ = 0;
+    uint32_t gen_light_ = 0;
+    float shown_t_ = 1.0f;  // the time of the last picture shown, in its frame (Present)  // of them, drawn light (Backend::Light)
     size_t exec_at_ = 0;  // the command of the batch Execute runs
     size_t rec_end_ = 0;  // the batch running: its commands before this one are the recorder's (RecordAside)
 
