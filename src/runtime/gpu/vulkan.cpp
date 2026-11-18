@@ -6738,9 +6738,9 @@ void VulkanBackend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t
         fur_glow_rt_ = draw_rt_;
         fur_glow_frame_ = frame_;
     }
-    // ProgramShading::coarse under DLSS: the shells (top's x above 0, not the skin under them) shaded once per 2x1 or
-    // 2x2 pixels as Adaptive fur shading has it (app::Settings::dlss_fur_auto)
-    const uint32_t coarse = zps && zps->coarse && shading_rate_ && upscale_ ? FurRate() : 0;
+    // ProgramShading::coarse: the shells (top's x above 0, not the skin under them) shaded once per 2x1 or 2x2 pixels
+    // as Adaptive fur shading has it (app::Settings::dlss_fur_auto), with DLSS or without
+    const uint32_t coarse = zps && zps->coarse && shading_rate_ ? FurRate() : 0;
     if (coarse && (zps->top < 0 || s.vsc[size_t(zps->top)][0] > 0))
         k.wmask |= coarse >= 2 ? kWmaskCoarseWide | kWmaskCoarseTall : kWmaskCoarseWide;
     float zalpha = 0;
@@ -7911,7 +7911,7 @@ constexpr double kFurOver = 0.92, kFurUnder = 0.75;  // uncapped: the GPU's shar
 // second running (the CPU holding the rate), finer. The rate changes pipelines alone: no hitch, nothing for DLSS to
 // start over
 void VulkanBackend::AutoFurRate() {
-    if (!upscale_ || !app::Get().dlss_fur_auto || !shading_rate_) {
+    if (!app::Get().dlss_fur_auto || !shading_rate_) {
         fur_auto_ = 0;  // turned on again, it starts from full
         return;
     }

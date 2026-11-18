@@ -2146,10 +2146,6 @@ void Draw(double fps) {
                             Slider("fur_sharpness", &s.fur_sharpness, 0, 100, app::Settings{}.fur_sharpness);
                             Hint("hint_how_much_of_fsr_s", true);
                         }
-                        if (fur::g_strands) {
-                            Check("adaptive_fur_shading", &s.dlss_fur_auto);
-                            Hint("hint_shades_super_fur_coarser_when", true);
-                        }
                     } else {
                         Slider("render", &s.render_percent, 25, 200, app::Settings{}.render_percent);
                         Check("amd_fsr_1", &s.fsr);
@@ -2159,6 +2155,12 @@ void Draw(double fps) {
                             Slider("fur_sharpness", &s.fur_sharpness, 0, 100, app::Settings{}.fur_sharpness);
                             Hint("hint_how_much_of_fsr_s", true);
                         }
+                    }
+                    // with DLSS or without: under DLSS it rebuilds the strands from the jitter, without it the
+                    // coarser shading shows only while the frame rate needs it
+                    if (fur::g_strands) {
+                        Check("adaptive_fur_shading", &s.dlss_fur_auto);
+                        Hint("hint_shades_super_fur_coarser_when", true);
                     }
                     constexpr uint32_t kRates[] = {30, 60, 120, 180, 240, 0};
                     int rate = 0;

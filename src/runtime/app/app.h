@@ -37,9 +37,9 @@ struct Settings {
     uint32_t dlss_model = 0;
     // RCAS (FSR 1's sharpening) over DLSS's picture, in % (0 off); fsr_sharpness is FSR 1's own
     uint32_t dlss_sharpness = 0;
-    // super fur's shells under DLSS shaded once per 2x1 or 2x2 pixels as far as the GPU's time a frame needs it
-    // (VulkanBackend::AutoFurRate), else once per pixel: DLSS rebuilds their strands from the jitter alike, at a fraction
-    // of the cost in a close-up (gpu::ProgramShading::coarse)
+    // super fur's shells shaded once per 2x1 or 2x2 pixels as far as the frame rate needs it (VulkanBackend::AutoFurRate),
+    // else once per pixel, with DLSS or without: under DLSS it rebuilds their strands from the jitter alike, at a
+    // fraction of the cost in a close-up (gpu::ProgramShading::coarse). The name is from when it was DLSS's alone
     bool dlss_fur_auto = true;
     uint32_t fps_cap = 60;           // 0 unlimited
     bool vsync = true;

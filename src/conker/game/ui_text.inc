@@ -275,16 +275,16 @@ constexpr Line kLines[] = {
      "Ombrage adaptatif de la fourrure (recommandé)", "Sombreado adaptativo del pelaje (recomendado)",
      "Ombreggiatura adattiva della pelliccia (consigliato)", "適応型ファーシェーディング（推奨）"},
     {"hint_shades_super_fur_coarser_when", "Shades Super fur once per two or four pixels when the frame rate needs it, "
-     "full again once there is room. DLSS rebuilds the strands either way.",
+     "full again once there is room.",
      "Schattiert Super-Fell einmal pro zwei oder vier Pixel, wenn die Bildrate es braucht, und wieder voll, sobald Luft "
-     "ist. DLSS baut die Haare so oder so neu auf.",
+     "ist.",
      "Ombre la super fourrure une fois par deux ou quatre pixels quand la fréquence d'images l'exige, puis de nouveau "
-     "pleinement dès qu'il y a de la marge. DLSS reconstruit les poils dans tous les cas.",
+     "pleinement dès qu'il y a de la marge.",
      "Sombrea el superpelaje una vez por cada dos o cuatro píxeles cuando la tasa de fotogramas lo necesita, y de nuevo "
-     "completo en cuanto hay margen. DLSS reconstruye los pelos igualmente.",
+     "completo en cuanto hay margen.",
      "Ombreggia la super pelliccia una volta ogni due o quattro pixel quando la frequenza dei fotogrammi lo richiede, e "
-     "di nuovo piena appena c'è margine. DLSS ricostruisce i peli in ogni caso.",
-     "フレームレートに必要なときはスーパーファーを2または4ピクセルごとに1回シェーディングし、余裕ができればフルに戻します。どちらでもDLSSが毛を再構築します。"},
+     "di nuovo piena appena c'è margine.",
+     "フレームレートに必要なときはスーパーファーを2または4ピクセルごとに1回シェーディングし、余裕ができればフルに戻します。"},
     {"dlss_quality", "DLSS quality", "DLSS-Qualität", "Qualité DLSS", "Calidad de DLSS", "Qualità DLSS", "DLSS画質"},
     {"dlaa", "DLAA", "DLAA", "DLAA", "DLAA", "DLAA", "DLAA"},
     {"balanced", "Balanced", "Ausgewogen", "Équilibré", "Equilibrado", "Bilanciato", "バランス"},
