@@ -4,6 +4,9 @@
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_vulkan.h>
 #include <unistd.h>
+#if defined(__linux__) && !defined(__ANDROID__)
+#include <dlfcn.h>
+#endif
 
 #include <algorithm>
 #include <array>
@@ -325,6 +328,108 @@ bool Handle(const SDL_Event& e) {
     return true;
 }
 
+#if defined(__linux__) && !defined(__ANDROID__)
+// The window's surface marked as a game's with content-type-v1 (wp_content_type_v1), which compositors read for
+// their own choices: Hyprland's VRR on fullscreen video and games (misc:vrr 3) and direct scanout for games alone
+// (render:direct_scanout 2). SDL doesn't speak the protocol. libwayland-client is SDL's own, loaded at run time, so
+// its few calls come by name and the protocol's two interfaces are written out here (wl_interface's layout is
+// libwayland's stable ABI). On a private queue, so SDL's own events aren't dispatched from here
+namespace wl {
+struct Interface;
+struct Message {
+    const char* name;
+    const char* signature;
+    const Interface* const* types;
+};
+struct Interface {
+    const char* name;
+    int version;
+    int method_count;
+    const Message* methods;
+    int event_count;
+    const Message* events;
+};
+struct RegistryListener {
+    void (*global)(void* data, void* registry, uint32_t name, const char* interface, uint32_t version);
+    void (*global_remove)(void* data, void* registry, uint32_t name);
+};
+extern const Interface kContentType;
+const Interface* const kNone[] = {nullptr, nullptr};
+const Interface* const kGetType[] = {&kContentType, nullptr};
+const Message kManagerRequests[] = {{"destroy", "", kNone}, {"get_surface_content_type", "no", kGetType}};
+const Interface kManager = {"wp_content_type_manager_v1", 1, 2, kManagerRequests, 0, nullptr};
+const Message kTypeRequests[] = {{"destroy", "", kNone}, {"set_content_type", "u", kNone}};
+const Interface kContentType = {"wp_content_type_v1", 1, 2, kTypeRequests, 0, nullptr};
+constexpr uint32_t kDisplayGetRegistry = 1, kRegistryBind = 0, kManagerDestroy = 0, kManagerGetType = 1,
+                   kTypeSet = 1, kTypeGame = 3, kMarshalDestroy = 1;
+}  // namespace wl
+
+void TagGameContent() {
+    if (std::strcmp(SDL_GetCurrentVideoDriver() ? SDL_GetCurrentVideoDriver() : "", "wayland")) return;
+    SDL_PropertiesID props = SDL_GetWindowProperties(g_window);
+    void* display = SDL_GetPointerProperty(props, SDL_PROP_WINDOW_WAYLAND_DISPLAY_POINTER, nullptr);
+    void* surface = SDL_GetPointerProperty(props, SDL_PROP_WINDOW_WAYLAND_SURFACE_POINTER, nullptr);
+    void* lib = dlopen("libwayland-client.so.0", RTLD_NOW | RTLD_LOCAL);
+    if (!display || !surface || !lib) return;
+    auto sym = [&](const char* name) { return dlsym(lib, name); };
+    auto marshal = reinterpret_cast<void* (*)(void*, uint32_t, const wl::Interface*, uint32_t, uint32_t, ...)>(
+        sym("wl_proxy_marshal_flags"));  // libwayland 1.20 on
+    auto add_listener = reinterpret_cast<int (*)(void*, void (**)(void), void*)>(sym("wl_proxy_add_listener"));
+    auto version = reinterpret_cast<uint32_t (*)(void*)>(sym("wl_proxy_get_version"));
+    auto destroy = reinterpret_cast<void (*)(void*)>(sym("wl_proxy_destroy"));
+    auto set_queue = reinterpret_cast<void (*)(void*, void*)>(sym("wl_proxy_set_queue"));
+    auto create_wrapper = reinterpret_cast<void* (*)(void*)>(sym("wl_proxy_create_wrapper"));
+    auto wrapper_destroy = reinterpret_cast<void (*)(void*)>(sym("wl_proxy_wrapper_destroy"));
+    auto create_queue = reinterpret_cast<void* (*)(void*)>(sym("wl_display_create_queue"));
+    auto queue_destroy = reinterpret_cast<void (*)(void*)>(sym("wl_event_queue_destroy"));
+    auto roundtrip = reinterpret_cast<int (*)(void*, void*)>(sym("wl_display_roundtrip_queue"));
+    auto flush = reinterpret_cast<int (*)(void*)>(sym("wl_display_flush"));
+    auto registry_iface = static_cast<const wl::Interface*>(sym("wl_registry_interface"));
+    if (!marshal || !add_listener || !version || !destroy || !set_queue || !create_wrapper || !wrapper_destroy ||
+        !create_queue || !queue_destroy || !roundtrip || !flush || !registry_iface) {
+        LOGI("Wayland: content type not set, libwayland-client lacks a call");
+        dlclose(lib);
+        return;
+    }
+    struct Found {
+        decltype(marshal) bind;
+        void* manager = nullptr;
+    } found{marshal};
+    static const wl::RegistryListener listener = {
+        [](void* data, void* registry, uint32_t name, const char* interface, uint32_t) {
+            auto* f = static_cast<Found*>(data);
+            if (f->manager || std::strcmp(interface, wl::kManager.name)) return;
+            f->manager = f->bind(registry, wl::kRegistryBind, &wl::kManager, 1, 0, name, wl::kManager.name, 1u,
+                                 nullptr);
+        },
+        [](void*, void*, uint32_t) {}};
+    void* queue = create_queue(display);
+    void* wrapped = create_wrapper(display);
+    set_queue(wrapped, queue);
+    void* registry = marshal(wrapped, wl::kDisplayGetRegistry, registry_iface, version(wrapped), 0, nullptr);
+    add_listener(registry, reinterpret_cast<void (**)(void)>(const_cast<wl::RegistryListener*>(&listener)), &found);
+    roundtrip(display, queue);
+    if (found.manager) {
+        // kept for the window's life: the object's destruction would take the content type back to none
+        void* type = marshal(found.manager, wl::kManagerGetType, &wl::kContentType, version(found.manager), 0,
+                             nullptr, surface);
+        marshal(type, wl::kTypeSet, nullptr, version(type), 0, wl::kTypeGame);
+        set_queue(type, nullptr);
+        marshal(found.manager, wl::kManagerDestroy, nullptr, version(found.manager), wl::kMarshalDestroy);
+        flush(display);
+        LOGR("Wayland: window marked as game content");
+    } else {
+        LOGI("Wayland: the compositor has no content-type-v1");
+    }
+    destroy(registry);
+    wrapper_destroy(wrapped);
+    queue_destroy(queue);
+    // the library stays loaded: SDL holds it too, and the content type object lives on
+}
+#else
+void TagGameContent() {}
+#endif
+
 }  // namespace
 
 std::filesystem::path ExeDir() {
@@ -555,6 +660,7 @@ int main(int argc, char** argv) {
         app::Alert(L"The game window could not open, see the log: " + std::filesystem::path(logx::Path()).wstring());
         return 1;
     }
+    app::TagGameContent();
     app::StoreDesktop();
     app::ApplyNow();
     SDL_ShowWindow(app::g_window);
