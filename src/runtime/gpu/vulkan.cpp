@@ -2184,13 +2184,14 @@ private:
     // of the last frame measured, smoothed; frames over and under budget in a row; frames before it may try a finer
     // rate again (doubling after each try that fails, back to its least after one that holds); the frames since the
     // last step finer (a step back within kFurTrial of it is a failed try); what each step coarser saved, ms (0 not
-    // known), by the rate stepped from
+    // known), by the rate stepped from, measured kFurSettle frames after a step either way; the last step's direction
     uint32_t fur_auto_ = 0;
     double gpu_ms_ = 0, gpu_ms_smooth_ = 0;
     uint32_t fur_over_ = 0, fur_under_ = 0, fur_hold_ = 0, fur_hold_least_ = 60, fur_since_finer_ = ~0u;
     double fur_saved_[2] = {};
     double fur_step_from_ms_ = 0;
     uint32_t fur_step_frames_ = 0;
+    int fur_step_dir_ = 0;
     void GpuStamp(bool start);
     void GpuFrameDone();
     void AutoFurRate();
@@ -7609,7 +7610,7 @@ void VulkanBackend::GpuStamp(bool start) {
     if (start) {
         gpu_open_ = n + 2 <= kGpuStamps;
         if (gpu_open_) vkCmdWriteTimestamp(cmd_, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, gpu_pool_[slot], n++);
-    } else {
+    } else if (gpu_open_) {  // no start stamp (the pool full): no end stamp either, past the pool's end
         vkCmdWriteTimestamp(cmd_, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, gpu_pool_[slot], n++);
         gpu_open_ = false;
     }
@@ -7646,6 +7647,7 @@ constexpr uint32_t kFurUnderFrames = 60;  // frames well under it in a row befor
 constexpr uint32_t kFurTrial = 60;        // a step back coarser within this many frames of a try finer: the try failed
 constexpr uint32_t kFurSettle = 8;        // frames after a step before what it saved is measured
 constexpr uint32_t kFurHoldMost = 1200;   // the longest wait before trying finer again
+constexpr uint32_t kFurStale = 1200;      // frames well under budget in a row that try finer whatever the step saved
 constexpr double kFurOver = 0.92, kFurUnder = 0.75, kFurRoom = 0.88;  // shares of the budget
 }  // namespace
 
@@ -7663,15 +7665,17 @@ void VulkanBackend::AutoFurRate() {
     const double budget = 1000.0 / double(fps);
     if (fur_since_finer_ != ~0u) fur_since_finer_++;
     if (fur_hold_) fur_hold_--;
-    // what the last step saved, once the frames after it settled
+    // what the last step saved (coarser) or cost (finer), once the frames after it settled; a step either way
+    // measures it, so a figure taken over a hitch (a load's frames in the time before the step) doesn't stay
     if (fur_step_frames_ && --fur_step_frames_ == 0) {
-        const double saved = fur_step_from_ms_ - gpu_ms_smooth_;
-        const uint32_t from = fur_auto_ ? fur_auto_ - 1 : 0;  // a step coarser from 'from'
-        if (fur_auto_ && saved > 0) fur_saved_[from] = saved;
+        const double diff = (fur_step_from_ms_ - gpu_ms_smooth_) * fur_step_dir_;
+        const uint32_t from = fur_step_dir_ > 0 ? fur_auto_ - 1 : fur_auto_;  // a step coarser from 'from'
+        if (from < 2 && diff > 0) fur_saved_[from] = diff;
     }
     const auto step = [&](int dir) {
         fur_step_from_ms_ = gpu_ms_smooth_;
-        fur_step_frames_ = dir > 0 ? kFurSettle : 0;
+        fur_step_frames_ = kFurSettle;
+        fur_step_dir_ = dir;
         fur_auto_ = uint32_t(int(fur_auto_) + dir);
         fur_over_ = fur_under_ = 0;
         if (diag::Perf())
@@ -7679,7 +7683,8 @@ void VulkanBackend::AutoFurRate() {
                  fur_auto_ == 0 ? "full" : fur_auto_ == 1 ? "half" : "quarter", gpu_ms_smooth_, budget);
     };
     fur_over_ = gpu_ms_ > budget * kFurOver ? fur_over_ + 1 : 0;
-    fur_under_ = gpu_ms_ < budget * kFurUnder ? fur_under_ + 1 : 0;
+    // smoothed: one frame's hitch doesn't start the second over
+    fur_under_ = gpu_ms_smooth_ < budget * kFurUnder ? fur_under_ + 1 : 0;
     if (fur_over_ >= kFurOverFrames && fur_auto_ < 2) {
         if (fur_since_finer_ <= kFurTrial) {  // the try finer didn't hold
             fur_hold_least_ = std::min(fur_hold_least_ * 2, kFurHoldMost);
@@ -7695,7 +7700,9 @@ void VulkanBackend::AutoFurRate() {
     }
     if (fur_auto_ > 0 && !fur_hold_ && fur_under_ >= kFurUnderFrames) {
         const double cost = fur_saved_[fur_auto_ - 1];
-        if (cost <= 0 || gpu_ms_smooth_ + cost < budget * kFurRoom) {
+        // the room check gives way after kFurStale frames well under: a figure too high for any room would hold the
+        // coarser rate for good, and only a step back measures it again
+        if (cost <= 0 || gpu_ms_smooth_ + cost < budget * kFurRoom || fur_under_ >= kFurStale) {
             fur_since_finer_ = 0;
             step(-1);
         }
