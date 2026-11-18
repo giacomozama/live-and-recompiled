@@ -173,6 +173,61 @@ constexpr Line kLines[] = {
      "Sube o baja el nivel de negro. El blanco no cambia.",
      "Alza o abbassa il livello del nero. Il bianco resta uguale.",
      "黒レベルを上げ下げします。白は変わりません。"},
+    // display calibration (the test patterns, gpu::g_calibrate)
+    {"calibrate_display", "Calibrate display", "Anzeige kalibrieren", "Calibrer l'affichage", "Calibrar pantalla",
+     "Calibra schermo", "画面の調整"},
+    {"hint_test_patterns_for_brightness_and", "Test patterns for setting brightness and gamma, and paper white and peak brightness under HDR.",
+     "Testbilder zum Einstellen von Helligkeit und Gamma, unter HDR auch von Papierweiß und Spitzenhelligkeit.",
+     "Des mires pour régler la luminosité et le gamma, et en HDR le blanc papier et la luminosité maximale.",
+     "Cartas de ajuste para el brillo y el gamma, y con HDR el blanco de papel y el brillo máximo.",
+     "Immagini di prova per regolare luminosità e gamma, e con l'HDR il bianco carta e la luminosità massima.",
+     "明るさとガンマ、HDR ではペーパーホワイトとピーク輝度を合わせるためのテストパターンです。"},
+    {"display_calibration", "Display calibration", "Anzeigekalibrierung", "Calibrage de l'affichage", "Calibración de pantalla",
+     "Calibrazione dello schermo", "画面の調整"},
+    {"step_of", "Step %d of %d", "Schritt %d von %d", "Étape %d sur %d", "Paso %d de %d", "Passo %d di %d", "ステップ %d / %d"},
+    {"previous", "Back", "Zurück", "Retour", "Atrás", "Indietro", "戻る"},
+    {"next", "Next", "Weiter", "Suivant", "Siguiente", "Avanti", "次へ"},
+    {"done", "Done", "Fertig", "Terminé", "Listo", "Fine", "完了"},
+    {"hint_calibrate_black", "Raise or lower it until the dimmest square, on the left, can only just be seen against the black.",
+     "Heben oder senken, bis das schwächste Quadrat links gerade noch vor dem Schwarz zu sehen ist.",
+     "Montez ou baissez jusqu'à ce que le carré le plus sombre, à gauche, se distingue à peine du noir.",
+     "Súbelo o bájalo hasta que el cuadrado más oscuro, a la izquierda, apenas se distinga del negro.",
+     "Alzala o abbassala finché il quadrato più scuro, a sinistra, si distingue appena dal nero.",
+     "左端のいちばん暗い四角が黒の中にかろうじて見えるところまで上げ下げします。"},
+    {"hint_calibrate_gamma", "From a step back, or squinting: set it so that the middle square blends into the lines around it, "
+     "neither lighter nor darker. If the desktop scales the picture the lines can blur; leave it at 2.20 then.",
+     "Mit etwas Abstand oder zusammengekniffenen Augen so einstellen, dass das mittlere Quadrat mit den Linien um es "
+     "herum verschmilzt, weder heller noch dunkler. Skaliert der Desktop das Bild, können die Linien verschwimmen; dann "
+     "bei 2,20 lassen.",
+     "En reculant un peu, ou en plissant les yeux : réglez pour que le carré du milieu se fonde dans les lignes "
+     "autour, ni plus clair ni plus sombre. Si le bureau met l'image à l'échelle, les lignes peuvent se brouiller ; "
+     "laissez alors 2,20.",
+     "Desde un poco más lejos, o entornando los ojos: ajústalo para que el cuadrado central se funda con las líneas "
+     "de alrededor, ni más claro ni más oscuro. Si el escritorio escala la imagen, las líneas pueden verse borrosas; "
+     "déjalo entonces en 2,20.",
+     "Da un passo indietro, o socchiudendo gli occhi: regolala finché il quadrato centrale si confonde con le linee "
+     "intorno, né più chiaro né più scuro. Se il desktop ridimensiona l'immagine le linee possono sfocarsi; lasciala "
+     "allora a 2,20.",
+     "少し離れるか目を細めて、中央の四角がまわりの線に溶け込み、明るくも暗くも見えないように合わせます。デスクトップが"
+     "画面を拡大縮小していると線がぼやけることがあります。その場合は 2.20 のままにしてください。"},
+    {"hint_calibrate_paper_white", "Set it so that the white card looks as bright as white paper in the room, or as the desktop's white.",
+     "So einstellen, dass die weiße Karte so hell wirkt wie weißes Papier im Raum oder wie das Weiß des Desktops.",
+     "Réglez pour que la carte blanche paraisse aussi lumineuse qu'une feuille blanche dans la pièce, ou que le blanc "
+     "du bureau.",
+     "Ajústalo para que la tarjeta blanca se vea tan brillante como un papel blanco en la habitación, o como el blanco "
+     "del escritorio.",
+     "Regolalo finché la scheda bianca appare luminosa come un foglio bianco nella stanza, o come il bianco del desktop.",
+     "白いカードが部屋の中の白い紙、またはデスクトップの白と同じくらいの明るさに見えるように合わせます。"},
+    {"hint_calibrate_peak", "Raise it until the small square in the middle vanishes into the large one, and stop there: "
+     "that is as bright as the display goes.",
+     "Anheben, bis das kleine Quadrat in der Mitte im großen verschwindet, und dort aufhören: So hell kann die Anzeige.",
+     "Montez jusqu'à ce que le petit carré du milieu disparaisse dans le grand, et arrêtez-vous là : c'est la "
+     "luminosité maximale de l'écran.",
+     "Súbelo hasta que el cuadrado pequeño del centro desaparezca en el grande, y detente ahí: es el brillo máximo de "
+     "la pantalla.",
+     "Alzala finché il quadratino al centro scompare in quello grande, e fermati lì: è la luminosità massima dello "
+     "schermo.",
+     "中央の小さな四角が大きな四角に溶けて見えなくなるまで上げ、そこで止めます。それが画面の最大の明るさです。"},
     {"quality", "Quality", "Qualität", "Qualité", "Calidad", "Qualità", "画質"},
     {"render", "Render %", "Render-Auflösung %", "Rendu %", "Render %", "Rendering %", "レンダー %"},
     {"amd_fsr_1", "AMD FSR 1.0", "AMD FSR 1.0", "AMD FSR 1.0", "AMD FSR 1.0", "AMD FSR 1.0", "AMD FSR 1.0"},

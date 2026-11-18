@@ -163,9 +163,11 @@ float4 psmain(O i) : SV_Target {
 // the frame as an SDR display shows it (gamma p.y, Rec.709) into HDR10: Rec.2020, PQ, white at p.x x 10000 nits.
 // encode: the game's picture (t0) under the overlay (t2, premultiplied over transparent, when q.y), its highlights
 // taken up to p.z x white above p.w where the mask (t1 when q.x, the picture's 3D, vp its viewport) has them.
+// r.x 4: the calibration's peak pattern (g_calibrate) in the picture's place, r.y its square in white's times, r.zw
+// the window
 // mask: 1 where the finished picture (t0) is still the 3D picture as the 2D came to draw over it (t1), else 0
 const char* kHdrHlsl = R"(
-cbuffer B : register(b1) { float4 p; float4 vp; float4 q; };
+cbuffer B : register(b1) { float4 p; float4 vp; float4 q; float4 r; };
 Texture2D img : register(t0);
 Texture2D aux : register(t1);
 Texture2D ui : register(t2);
@@ -198,7 +200,13 @@ float4 encode(O i) : SV_Target {
     float3 g = img.Load(int3(px, 0)).rgb;
     float4 u = q.y > 0 ? ui.Load(int3(px, 0)) : float4(0, 0, 0, 0);
     float3 lin = pow(saturate(u.rgb + g * (1 - u.a)), p.y);
-    if (q.x > 0 && u.a < 1) {
+    if (r.x == 4) {
+        // a square at the peak setting with one at the most PQ carries in its middle: the display shows the two alike
+        // once the setting reaches as far as it goes
+        float2 v = abs(float2((i.p.x - r.z * 0.5) / r.w, i.p.y / r.w - 0.36));
+        float n = all(v <= 0.05) ? 1 / p.x : all(v <= 0.15) ? r.y : 0;
+        lin = pow(saturate(u.rgb), p.y) + n * (1 - u.a);
+    } else if (q.x > 0 && u.a < 1) {
         float m = aux.SampleLevel(ls, (i.p.xy - vp.xy) * vp.zw, 0).r;
         if (m > 0) {
             // a step of triangular dither: the 8 bit picture's steps are stretched with its highlights
@@ -216,6 +224,53 @@ float4 encode(O i) : SV_Target {
 float4 mask(O i) : SV_Target {
     int3 px = int3(int2(i.p.xy), 0);
     return any(abs(img.Load(px).rgb - aux.Load(px).rgb) > 0.5 / 255.0) ? 0 : 1;
+}
+)";
+
+// the display calibration's test patterns (g_calibrate) in the picture's place, as a signal put through the brightness
+// and gamma settings as the picture is (kBlitHlsl). p: the window's size, the pattern, the power; q.x the black level.
+// 1 black level: squares a little above black; 2 gamma: a square at the grey that has half of white's light against
+// lines of black and white, alike at gamma 2.2; 3 paper white: a white card over a grey scale; 4 (the peak) black here,
+// kHdrHlsl draws it
+const char* kCalibHlsl = R"(
+cbuffer B : register(b1) { float4 p; float4 q; };
+struct O { float4 p : SV_Position; float2 uv : TEXCOORD0; };
+O vs(uint id : SV_VertexID) {
+    O o;
+    o.uv = float2((id << 1) & 2, id & 2);
+    o.p = float4(o.uv * float2(2, -2) + float2(-1, 1), 0, 1);
+    return o;
+}
+float Level(float c, float b) { return b >= 0 ? b + c * (1 - b) : saturate((c + b) / (1 + b)); }
+bool Box(float2 v, float2 at, float2 half) { return all(abs(v - at) <= half); }
+float Pattern(float2 px) {
+    // in heights, from the top's middle; the patterns sit above the calibration panel
+    float2 v = float2((px.x - p.x * 0.5) / p.y, px.y / p.y);
+    const float y = 0.36;
+    int mode = (int)p.z;
+    if (mode == 1) {
+        const float steps[4] = {0.02, 0.04, 0.07, 0.12};
+        for (int k = 0; k < 4; k++)
+            if (Box(v, float2((k - 1.5) * 0.2, y), 0.06)) return steps[k];
+        return 0;
+    }
+    if (mode == 2) {
+        if (Box(v, float2(0, y), 0.08)) return pow(0.5, 1 / 2.2);
+        if (Box(v, float2(0, y), float2(0.42, 0.18))) return (int(px.y) & 1) ? 1 : 0;
+        return 0;
+    }
+    if (mode == 3) {
+        if (Box(v, float2(0, y - 0.07), float2(0.3, 0.1))) return 1;
+        if (Box(v, float2(0, y + 0.13), float2(0.55, 0.045))) return min(floor((v.x + 0.55) / 0.1), 10) / 10;
+        return 0.05;
+    }
+    return 0;
+}
+float4 ps(O i) : SV_Target {
+    float c = Pattern(i.p.xy);
+    if (q.x != 0) c = Level(c, q.x);
+    c = pow(saturate(c), p.w);
+    return float4(c, c, c, 1);
 }
 )";
 
@@ -6339,6 +6394,9 @@ void VulkanBackend::DrawFrame(Image* picture, uint32_t bi, bool fsr, Image* mask
     uint32_t out_w = std::max(1u, uint32_t(std::round(vw)));
     uint32_t out_h = std::max(1u, uint32_t(std::round(vh)));
 
+    // the display calibration's test pattern instead of the picture
+    const uint32_t calib = g_calibrate.load(std::memory_order_relaxed);
+    if (calib) picture = nullptr;
     VkImageView final_src = picture ? picture->Sampled() : VK_NULL_HANDLE;
 
     if (picture && fsr) {
@@ -6394,8 +6452,17 @@ void VulkanBackend::DrawFrame(Image* picture, uint32_t bi, bool fsr, Image* mask
     VkClearRect cr{{{0, 0}, {bb.w, bb.h}}, 0, 1};
     vkCmdClearAttachments(cmd_, 1, &ca, 1, &cr);
 
+    if (calib) {
+        const float p[8] = {w, h, float(calib), power, level};
+        SetViewport(0, 0, w, h);
+        SetScissor(0, 0, int32_t(bb_w_), int32_t(bb_h_));
+        Alloc cb = Upload(kPassCbBytes);
+        std::memcpy(cb.cpu, p, sizeof(p));
+        DrawFullScreen(EnsurePassPipeline(kCalibHlsl, "ps", out_fmt, -1), cb, {});
+    }
+
     // the welcome screen, before the title has drawn a picture: its backdrop over the whole window
-    if (!final_src && app::Welcoming()) {
+    if (!final_src && !calib && app::Welcoming()) {
         static const auto since = std::chrono::steady_clock::now();
         const float p[8] = {std::chrono::duration<float>(std::chrono::steady_clock::now() - since).count(), w / std::max(h, 1.0f),
                             std::clamp(g_welcome_fade.load(std::memory_order_relaxed), 0.0f, 1.0f)};
@@ -6456,7 +6523,7 @@ void VulkanBackend::DrawFrame(Image* picture, uint32_t bi, bool fsr, Image* mask
     }
     // the picture into the HDR10 image: white at the paper white setting, highlights over the 3D as far as the peak
     SendHdrMetadata();
-    const bool expand = mask && HdrExpand();
+    const bool expand = mask && HdrExpand() && !calib;
     const float paper = float(set.hdr_paper_white);
     Transition(bb, kRead);
     if (expand) Transition(*mask, kRead);
@@ -6466,10 +6533,11 @@ void VulkanBackend::DrawFrame(Image* picture, uint32_t bi, bool fsr, Image* mask
     EnsureRendering();
     SetFullViewport(bb_w_, bb_h_);
     Alloc cb = Upload(kPassCbBytes);
-    const float p[12] = {paper / 10000.0f, gamma, std::max(float(set.hdr_peak) / paper, 1.0f),
+    const float p[16] = {paper / 10000.0f, gamma, std::max(float(set.hdr_peak) / paper, 1.0f),
                          1.0f - 0.5f * float(set.hdr_highlights) / 100.0f,
                          (w - vw) / 2, (h - vh) / 2, 1.0f / vw, 1.0f / vh,
-                         expand ? 1.0f : 0.0f, ui ? 1.0f : 0.0f, float(presents_ % 1024), float(cvd)};
+                         expand ? 1.0f : 0.0f, ui ? 1.0f : 0.0f, float(presents_ % 1024), float(calib ? 0 : cvd),
+                         float(calib), float(set.hdr_peak) / paper, w, h};
     std::memcpy(cb.cpu, p, sizeof(p));
     DrawFullScreen(EnsurePassPipeline(kHdrHlsl, "encode", swap_fmt_, -1), cb,
                    {bb.view, expand ? mask->view : VK_NULL_HANDLE, ui ? hdr_ui_->view : VK_NULL_HANDLE,

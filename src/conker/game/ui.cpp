@@ -86,6 +86,8 @@ std::atomic<bool> g_quit{false};
 std::atomic<int> g_owner{-1};
 // Escape went to shut the menu or the prompt: it is not the game's Start until it is let go
 std::atomic<bool> g_esc_swallow{false};
+// the display calibration's step in place of the menu's window (DrawCalibration), -1 the window; Esc and B go back to it
+std::atomic<int> g_calib_step{-1};
 
 // the main tab to show next frame (Show asks for one, the bumpers turn), -1 none; the tab drawn now; the player
 // the Controls tab shows
@@ -1331,7 +1333,8 @@ void PadFrame(bool open, bool quit) {
     g_pad.y = pressed(&Buttons::y);
     if (open) {
         if (g_pad.b && !Busy()) {  // B with nothing to back out of
-            Close();
+            if (g_calib_step.load() >= 0) g_calib_step.store(-1);
+            else Close();
             last = drive;
             return;
         }
@@ -1534,6 +1537,88 @@ void DrawAchievements() {
         }
         if (secret) SecretRow(secret);
     }
+}
+
+// the display calibration: a test pattern over the whole display (gpu::g_calibrate) and a panel at the bottom with
+// the step's setting, what to look for and the way on. Under HDR paper white, black level, gamma and the peak; else
+// black level and gamma
+void DrawCalibration(app::Settings& s) {
+    const bool hdr = s.hdr && gpu::HdrAvailable();
+    static constexpr uint32_t kSdr[] = {1, 2}, kHdr[] = {3, 1, 2, 4};
+    const uint32_t* steps = hdr ? kHdr : kSdr;
+    const int count = hdr ? 4 : 2;
+    int step = std::min(g_calib_step.load(), count - 1);
+    const uint32_t mode = steps[step];
+    gpu::g_calibrate.store(mode, std::memory_order_relaxed);
+
+    const ImVec2 display = ImGui::GetIO().DisplaySize;
+    const float font = ImGui::GetFontSize();
+    const float margin = std::max(std::round(std::min(display.x, display.y) * 0.04f), font);
+    const float width = std::min(display.x - margin * 2.0f, font * 46.0f);
+    ImGui::SetNextWindowPos(ImVec2(display.x * 0.5f, display.y - margin), ImGuiCond_Always, ImVec2(0.5f, 1.0f));
+    ImGui::SetNextWindowSizeConstraints(ImVec2(width, 0.0f), ImVec2(width, display.y * 0.45f));
+    static int shown = -1;
+    if (shown != step) ImGui::SetNextWindowFocus();
+    const bool arrived = shown != step;
+    shown = step;
+    if (ImGui::Begin("##calibrate", nullptr,
+                     ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize |
+                         ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings |
+                         ImGuiWindowFlags_AlwaysAutoResize)) {
+        const ImGuiStyle& st = ImGui::GetStyle();
+        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(st.FramePadding.x * 1.25f, st.FramePadding.y * 1.5f));
+        ImGui::TextUnformatted(T("display_calibration"));
+        char of[64];
+        std::snprintf(of, sizeof of, T("step_of"), step + 1, count);
+        ImGui::SameLine(width - st.WindowPadding.x - ImGui::CalcTextSize(of).x);
+        ImGui::TextDisabled("%s", of);
+        ImGui::Separator();
+        g_first_row = true;
+        const app::Settings def{};
+        const char* hint = "";
+        const char* label = mode == 1 ? "brightness" : mode == 2 ? "gamma" : mode == 3 ? "paper_white_nits" : "peak_brightness_nits";
+        switch (mode) {
+            case 1:
+                Slider("brightness", &s.brightness, -20, 20, def.brightness);
+                hint = "hint_calibrate_black";
+                break;
+            case 2:
+                Slider("gamma", &s.gamma, 180, 260, def.gamma, 100);
+                hint = "hint_calibrate_gamma";
+                break;
+            case 3:
+                Slider("paper_white_nits", &s.hdr_paper_white, 80, 500, def.hdr_paper_white);
+                hint = "hint_calibrate_paper_white";
+                break;
+            default:
+                Slider("peak_brightness_nits", &s.hdr_peak, 300, 4000, def.hdr_peak);
+                hint = "hint_calibrate_peak";
+                break;
+        }
+        g_first_row = false;
+        // the pad's cursor starts on the slider (Slider's own ID under the label), not activated
+        if (arrived) {
+            ImGui::PushID(label);
+            ImGui::SetFocusID(ImGui::GetID("##slider"), ImGui::GetCurrentWindow());
+            ImGui::PopID();
+        }
+        ImGui::PushTextWrapPos(width - st.WindowPadding.x);
+        ImGui::TextUnformatted(T(hint));
+        ImGui::PopTextWrapPos();
+        ImGui::Dummy(ImVec2(0.0f, font * 0.4f));
+        // Back to the step before, or to the menu from the first; Next, Done on the last
+        const float bw = std::max({ImGui::CalcTextSize(T("previous")).x, ImGui::CalcTextSize(T("next")).x,
+                                   ImGui::CalcTextSize(T("done")).x}) + st.FramePadding.x * 4.0f;
+        if (ImGui::Button(T("previous"), ImVec2(bw, 0.0f))) step--;
+        ImGui::SameLine(width - st.WindowPadding.x - bw);
+        if (ImGui::Button(T(step + 1 < count ? "next" : "done"), ImVec2(bw, 0.0f))) step = step + 1 < count ? step + 1 : -1;
+        ImGui::PopStyleVar();
+        DrawWindowFrame(1.0f);
+    }
+    ImGui::End();
+    // unless Esc (the window thread) went back to the menu meanwhile
+    if (g_calib_step.load() >= 0) g_calib_step.store(step);
+    if (g_calib_step.load() < 0) shown = -1, gpu::g_calibrate.store(0, std::memory_order_relaxed);
 }
 
 // the toast for each achievement as it is earned: a card at the bottom's middle, framed and shadowed as the menu's
@@ -1758,9 +1843,21 @@ void Draw(double fps) {
             app::Post(mouse::kRefresh);
         }
     }
-    if (!open) return;
+    if (!open) {
+        g_calib_step.store(-1);
+        gpu::g_calibrate.store(0, std::memory_order_relaxed);
+        return;
+    }
 
     app::Settings& s = app::Get();
+    static bool calibrated = false;  // the menu's window takes the focus back from the calibration
+    if (g_calib_step.load() >= 0) {
+        DrawCalibration(s);
+        Cues(opened_before, settings_changed);
+        calibrated = true;
+        return;
+    }
+    gpu::g_calibrate.store(0, std::memory_order_relaxed);
     // the whole display but for a margin; the mouse can still reach every edge. Resizable (Debug): it starts there,
     // then stays where it is dragged or sized to (by its edges, or the empty space in it), for the session
     const ImVec2 display = ImGui::GetIO().DisplaySize;
@@ -1771,7 +1868,7 @@ void Draw(double fps) {
     ImGui::SetNextWindowSize(ImVec2(std::max(display.x - margin * 2.0f, 1.0f), std::max(display.y - margin * 2.0f, 1.0f)),
                              place);
     if (g_menu_resizable) ImGui::SetNextWindowSizeConstraints(ImVec2(320.0f * scale, 200.0f * scale), display);
-    if (!was_open) ImGui::SetNextWindowFocus();
+    if (!was_open || std::exchange(calibrated, false)) ImGui::SetNextWindowFocus();
     // the menu fades in with the blur behind it (vulkan.cpp Redisplay: the same time and curve)
     static double opened_at = 0.0;
     if (!opened_before) opened_at = ImGui::GetTime();
@@ -1997,6 +2094,9 @@ void Draw(double fps) {
                     Hint("hint_higher_darkens_shadows_and_midtones", true);
                     Slider("brightness", &s.brightness, -20, 20, app::Settings{}.brightness);
                     Hint("hint_raises_or_lowers_the_black", true);
+                    Beside("display_calibration");
+                    if (ImGui::Button(T("calibrate_display"))) g_calib_step.store(0);
+                    Hint("hint_test_patterns_for_brightness_and", true);
                 }
 
                 if (Section("quality")) {
@@ -2731,6 +2831,9 @@ bool Message(void* hwnd, uint32_t msg, uintptr_t wp, intptr_t lp, intptr_t* resu
                     g_quit.store(false);
                     g_owner.store(-1);
                     SetOpen(!g_open.load());
+                } else if (g_open.load() && g_calib_step.load() >= 0) {
+                    g_esc_swallow.store(true);
+                    g_calib_step.store(-1);
                 } else if (g_open.load() || g_quit.load()) {
                     g_esc_swallow.store(true);
                     g_quit.store(false);

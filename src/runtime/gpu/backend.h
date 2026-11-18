@@ -128,6 +128,9 @@ inline std::atomic<bool> g_freeze{false};
 // Debug: a colour vision deficiency simulated over the picture put on screen (the settings menu left out): 0 none,
 // 1 protanopia, 2 deuteranopia, 3 tritanopia, 4 achromatopsia (cvd_hlsl.h). Not saved
 inline std::atomic<uint32_t> g_cvd_sim{0};
+// the settings menu's display calibration: a test pattern in place of the picture, the overlay over it (vulkan.cpp
+// kCalibHlsl): 0 none, 1 black level, 2 gamma, 3 paper white, 4 HDR peak. Not saved
+inline std::atomic<uint32_t> g_calibrate{0};
 inline std::atomic<uint32_t> g_freeze_steps{0};
 inline void ToggleFreeze() {
     g_freeze_steps = 0;
