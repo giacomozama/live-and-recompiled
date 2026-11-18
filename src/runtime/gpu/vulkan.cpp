@@ -2784,9 +2784,15 @@ bool VulkanBackend::CreateSwapChain() {
     // without vsync the frame tears in as soon as it is done, as D3D12's tearing does
     if (!swap_vsync_) mode = has(VK_PRESENT_MODE_IMMEDIATE_KHR) ? VK_PRESENT_MODE_IMMEDIATE_KHR
                              : has(VK_PRESENT_MODE_MAILBOX_KHR) ? VK_PRESENT_MODE_MAILBOX_KHR : mode;
-    // a frame's pictures past the first are held acquired while the next is drawn: an image more for each
-    uint32_t count = std::max<uint32_t>(caps.minImageCount, kFrames) + swap_gen_ - 1;
+    // a frame's pictures past the first are held acquired while the next is drawn: an image more for each. And the
+    // next frame acquires all of its own at its Present while the last ones before are still held, queued or on screen
+    // (the compositor gives one back once the one after it was shown): without room for a whole frame's more, the
+    // last acquire waited for the frame before's last picture to be shown, two thirds of a frame and a refresh on, and
+    // that held three pictures a frame a little under the refresh rate, with or without VRR
+    uint32_t count = std::max<uint32_t>(caps.minImageCount, kFrames) + 2 * (swap_gen_ - 1);
     if (caps.maxImageCount) count = std::min(count, caps.maxImageCount);
+    LOGR("vulkan: swap chain of %u images (the surface's least %u, most %u) for %u pictures a frame", count,
+         caps.minImageCount, caps.maxImageCount, swap_gen_);
     VkSwapchainCreateInfoKHR ci{VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR};
     ci.surface = surface_;
     ci.minImageCount = count;
