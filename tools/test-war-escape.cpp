@@ -2,10 +2,10 @@
 #include <cstdlib>
 #include <vector>
 
+#include "common/war_escape.h"
 #include "cpu/x86_ops.h"
 
 X86_EXTERN_FUNC(sub_00364130);
-X86_EXTERN_FUNC(sub_002EDDD0);
 X86_EXTERN_FUNC(sub_002DE9A0);
 
 namespace {
@@ -27,6 +27,14 @@ X86_FUNC(__imp__sub_00364130) {
 X86_FUNC(__imp__sub_002EDDD0) {
     --X86_MEM16(ctx.eax + kHealth);
     ctx.esp += 4;
+}
+// the hit function's hook lives in friendly_fire.cpp; its first step, as there
+X86_FUNC(sub_002EDDD0) {
+    if (war_escape::SparesHit(base, ctx.eax)) {
+        ctx.esp += 4;
+        return;
+    }
+    __imp__sub_002EDDD0(ctx, base);
 }
 X86_FUNC(__imp__sub_002DE9A0) {
     X86_MEM16(ctx.eax + kHealth) = 0;

@@ -2,6 +2,7 @@
 // marks the escape complete. BeachSailAway starts its cutscene on the next
 // update. Dying in between saves the Harbour destination without the departure
 // and prevents the Windmill/BankEntrance story tasks from being started.
+#include "common/war_escape.h"
 #include "cpu/x86_ops.h"
 
 namespace {
@@ -52,14 +53,8 @@ X86_FUNC(sub_00364130) {
 
 // Once the escape has been committed, finish the scripted departure before
 // accepting further damage. Protect only the local player in this transition.
-X86_EXTERN_FUNC(__imp__sub_002EDDD0);
-X86_FUNC(sub_002EDDD0) {
-    if (LeavingBeach(base, ctx.eax)) {
-        ctx.esp += 4;
-        return;
-    }
-    __imp__sub_002EDDD0(ctx, base);
-}
+// The hit function 0x2EDDD0 is hooked in friendly_fire.cpp, which asks this first.
+bool war_escape::SparesHit(uint8_t* base, uint32_t actor) { return LeavingBeach(base, actor); }
 
 X86_EXTERN_FUNC(__imp__sub_002DE9A0);
 X86_FUNC(sub_002DE9A0) {

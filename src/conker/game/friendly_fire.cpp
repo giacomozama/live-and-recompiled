@@ -50,6 +50,7 @@
 #include "common/link.h"
 #include "common/medbeam.h"
 #include "common/menus.h"
+#include "common/war_escape.h"
 #include "common/warp.h"
 #include "core/log.h"
 #include "cpu/x86_ops.h"
@@ -165,6 +166,7 @@ void Hit(X86Context& ctx, uint8_t* base) {
 
 X86_FUNC(sub_002EDDD0) {
     const uint32_t victim = ctx.eax;
+    if (war_escape::SparesHit(base, victim)) return kernel::Return(ctx, ctx.eax, 0);
     if (!victim || !kernel::G<uint8_t>(kMatchFlag) || !warp::Multiplayer()) return __imp__sub_002EDDD0(ctx, base);
     const uint32_t kind = kernel::R32(victim + kKind);
     // the medgun's heal: its beam, and never dropped (a teammate is all it hits)
