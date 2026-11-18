@@ -2219,15 +2219,13 @@ private:
     // Adaptive fur shading (dlss_fur_auto, AutoFurRate): the rate in use (0 full, 1 half, 2 quarter); the GPU's time
     // of the last frame measured, smoothed; frames over and under budget in a row; frames before it may try a finer
     // rate again (doubling after each try that fails, back to its least after one that holds); the frames since the
-    // last step finer (a step back within kFurTrial of it is a failed try); what each step coarser saved, ms (0 not
-    // known), by the rate stepped from, measured kFurSettle frames after a step either way; the last step's direction
+    // last step finer (a step back within kFurTrial of it is a failed try); the time between frames (GpuFrameDone's
+    // calls, one a frame), the last and smoothed: whether the game holds its target
     uint32_t fur_auto_ = 0;
     double gpu_ms_ = 0, gpu_ms_smooth_ = 0;
+    double frame_ms_ = 0, frame_ms_smooth_ = 0;
+    std::chrono::steady_clock::time_point frame_done_t_{};
     uint32_t fur_over_ = 0, fur_under_ = 0, fur_hold_ = 0, fur_hold_least_ = 60, fur_since_finer_ = ~0u;
-    double fur_saved_[2] = {};
-    double fur_step_from_ms_ = 0;
-    uint32_t fur_step_frames_ = 0;
-    int fur_step_dir_ = 0;
     void GpuStamp(bool start);
     void GpuFrameDone();
     void AutoFurRate();
@@ -7802,6 +7800,13 @@ void VulkanBackend::GpuStamp(bool start) {
 // the frame in flight that last used this slot is done: its command buffers' times summed, the pool reset for this
 // one, and Auto told
 void VulkanBackend::GpuFrameDone() {
+    // the time since the last frame's call, every frame, whether or not its GPU time is read
+    const auto now = std::chrono::steady_clock::now();
+    if (frame_done_t_ != std::chrono::steady_clock::time_point{}) {
+        frame_ms_ = std::chrono::duration<double, std::milli>(now - frame_done_t_).count();
+        frame_ms_smooth_ = frame_ms_smooth_ > 0 ? frame_ms_smooth_ + (frame_ms_ - frame_ms_smooth_) * 0.2 : frame_ms_;
+    }
+    frame_done_t_ = now;
     if (gpu_open_) return;  // the frame's command buffer began without its stamp being closed: none to read
     const uint32_t slot = uint32_t(frame_ % kFrames);
     uint32_t& n = gpu_stamps_[slot];
@@ -7825,49 +7830,54 @@ void VulkanBackend::GpuFrameDone() {
 }
 
 namespace {
-constexpr uint32_t kFurOverFrames = 3;    // frames over budget in a row before a step coarser
-constexpr uint32_t kFurUnderFrames = 60;  // frames well under it in a row before a try finer
+constexpr uint32_t kFurOverFrames = 3;    // frames over in a row before a step coarser
+constexpr uint32_t kFurUnderFrames = 60;  // frames under in a row before a try finer
 constexpr uint32_t kFurTrial = 60;        // a step back coarser within this many frames of a try finer: the try failed
-constexpr uint32_t kFurSettle = 8;        // frames after a step before what it saved is measured
 constexpr uint32_t kFurHoldMost = 1200;   // the longest wait before trying finer again
-constexpr uint32_t kFurStale = 1200;      // frames well under budget in a row that try finer whatever the step saved
-constexpr double kFurOver = 0.92, kFurUnder = 0.75, kFurRoom = 0.88;  // shares of the budget
+constexpr double kFurMissed = 1.05, kFurMet = 1.03;  // the time between frames past the target's: missed, within: met
+constexpr double kFurGpuBound = 0.8;      // the GPU's time a frame past this share of the time between frames
+constexpr double kFurOver = 0.92, kFurUnder = 0.75;  // uncapped: the GPU's share of the time between frames
 }  // namespace
 
-// Adaptive fur shading (app::Settings::dlss_fur_auto): the GPU's time a frame against the frame's budget (one
-// frame of the game's rate, its pictures included). Over it a few frames running: a step coarser. Well under it a
-// second running, and room for what the step saved when it was taken: a try finer, which a step back soon after
-// makes wait twice as long the next time. The rate changes pipelines alone: no hitch, nothing for DLSS to start over
+// Adaptive fur shading (app::Settings::dlss_fur_auto). With a target (vsync, the display's rate a frame's pictures
+// take, or the fps cap, whichever is lower) it goes by whether the game holds it: missed a few frames running with the
+// GPU busy most of them (a CPU missing it gains nothing from coarser fur), a step coarser; held a second running, a try
+// finer, which a step back soon after makes wait twice as long the next time. Not the GPU's milliseconds against the
+// target: a GPU with time to spare clocks down, and its frame stretches toward the target (a 3060 Ti at 165 Hz stayed
+// at quarter with full fur holding the rate easily). Uncapped without vsync there is no target, and the GPU runs flat
+// out, so its time is the measure: busy nearly all the time between frames, coarser for more frames; well under it a
+// second running (the CPU holding the rate), finer. The rate changes pipelines alone: no hitch, nothing for DLSS to
+// start over
 void VulkanBackend::AutoFurRate() {
     if (!upscale_ || !app::Get().dlss_fur_auto || !shading_rate_) {
         fur_auto_ = 0;  // turned on again, it starts from full
         return;
     }
-    const uint32_t fps = app::Get().fps_cap ? app::Get().fps_cap
-                                            : std::max(app::MonitorRefresh() / std::max(app::Get().frame_generation, 1u), 1u);
-    const double budget = 1000.0 / double(fps);
+    if (frame_ms_ <= 0 || frame_ms_smooth_ <= 0) return;
+    const app::Settings& set = app::Get();
+    const uint32_t display = swap_vsync_ ? std::max(app::MonitorRefresh() / std::max(swap_gen_, 1u), 1u) : 0;
+    const uint32_t fps = set.fps_cap && display ? std::min(set.fps_cap, display) : set.fps_cap ? set.fps_cap : display;
+    const double target = fps ? 1000.0 / double(fps) : 0;
+    bool over, under;
+    if (target > 0) {
+        over = frame_ms_ > target * kFurMissed && gpu_ms_ > frame_ms_ * kFurGpuBound;
+        under = frame_ms_smooth_ <= target * kFurMet;
+    } else {
+        over = gpu_ms_ > frame_ms_ * kFurOver;
+        under = gpu_ms_smooth_ < frame_ms_smooth_ * kFurUnder;
+    }
     if (fur_since_finer_ != ~0u) fur_since_finer_++;
     if (fur_hold_) fur_hold_--;
-    // what the last step saved (coarser) or cost (finer), once the frames after it settled; a step either way
-    // measures it, so a figure taken over a hitch (a load's frames in the time before the step) doesn't stay
-    if (fur_step_frames_ && --fur_step_frames_ == 0) {
-        const double diff = (fur_step_from_ms_ - gpu_ms_smooth_) * fur_step_dir_;
-        const uint32_t from = fur_step_dir_ > 0 ? fur_auto_ - 1 : fur_auto_;  // a step coarser from 'from'
-        if (from < 2 && diff > 0) fur_saved_[from] = diff;
-    }
     const auto step = [&](int dir) {
-        fur_step_from_ms_ = gpu_ms_smooth_;
-        fur_step_frames_ = kFurSettle;
-        fur_step_dir_ = dir;
         fur_auto_ = uint32_t(int(fur_auto_) + dir);
         fur_over_ = fur_under_ = 0;
         if (diag::Perf())
-            LOGR("perf: adaptive fur shading: %s (GPU %.2f ms a frame of %.2f)",
-                 fur_auto_ == 0 ? "full" : fur_auto_ == 1 ? "half" : "quarter", gpu_ms_smooth_, budget);
+            LOGR("perf: adaptive fur shading: %s (GPU %.2f ms a frame, frames %.2f ms apart, target %.2f)",
+                 fur_auto_ == 0 ? "full" : fur_auto_ == 1 ? "half" : "quarter", gpu_ms_smooth_, frame_ms_smooth_,
+                 target);
     };
-    fur_over_ = gpu_ms_ > budget * kFurOver ? fur_over_ + 1 : 0;
-    // smoothed: one frame's hitch doesn't start the second over
-    fur_under_ = gpu_ms_smooth_ < budget * kFurUnder ? fur_under_ + 1 : 0;
+    fur_over_ = over ? fur_over_ + 1 : 0;
+    fur_under_ = under ? fur_under_ + 1 : 0;
     if (fur_over_ >= kFurOverFrames && fur_auto_ < 2) {
         if (fur_since_finer_ <= kFurTrial) {  // the try finer didn't hold
             fur_hold_least_ = std::min(fur_hold_least_ * 2, kFurHoldMost);
@@ -7882,13 +7892,8 @@ void VulkanBackend::AutoFurRate() {
         fur_since_finer_ = ~0u;
     }
     if (fur_auto_ > 0 && !fur_hold_ && fur_under_ >= kFurUnderFrames) {
-        const double cost = fur_saved_[fur_auto_ - 1];
-        // the room check gives way after kFurStale frames well under: a figure too high for any room would hold the
-        // coarser rate for good, and only a step back measures it again
-        if (cost <= 0 || gpu_ms_smooth_ + cost < budget * kFurRoom || fur_under_ >= kFurStale) {
-            fur_since_finer_ = 0;
-            step(-1);
-        }
+        fur_since_finer_ = 0;
+        step(-1);
     }
 }
 
