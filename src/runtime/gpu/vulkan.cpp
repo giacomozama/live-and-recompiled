@@ -169,7 +169,8 @@ float4 psmain(O i) : SV_Target {
 // taken up to p.z x white above p.w where the mask (t1 when q.x, the picture's 3D, vp its viewport) has them.
 // r.x 4: the calibration's peak pattern (g_calibrate) in the picture's place, r.y its square in white's times, r.zw
 // the window
-// mask: 1 where the finished picture (t0) is still the 3D picture as the 2D came to draw over it (t1), else 0
+// mask: 1 where the finished picture (t0) is still the 3D picture as the 2D came to draw over it (t1), else 0; when
+// p.x, no more than the mask so far (t2, HdrTrack)
 const char* kHdrHlsl = R"(
 cbuffer B : register(b1) { float4 p; float4 vp; float4 q; float4 r; };
 Texture2D img : register(t0);
@@ -227,7 +228,8 @@ float4 encode(O i) : SV_Target {
 }
 float4 mask(O i) : SV_Target {
     int3 px = int3(int2(i.p.xy), 0);
-    return any(abs(img.Load(px).rgb - aux.Load(px).rgb) > 0.5 / 255.0) ? 0 : 1;
+    float m = any(abs(img.Load(px).rgb - aux.Load(px).rgb) > 0.5 / 255.0) ? 0 : 1;
+    return p.x > 0 ? min(m, ui.Load(px).r) : m;
 }
 )";
 
@@ -1514,6 +1516,8 @@ private:
     bool HdrExpand() const { return swap_hdr_ && app::Get().hdr_highlights > 0; }
     void KeepHdr3d(Target& t);
     void MakeHdrMask(Target& t, ImageRef& mask);
+    bool HdrCompare(Target& t, ImageRef& dst);
+    void HdrTrack(const State& s, bool flat);
     void SendHdrMetadata();
     bool ScreenSpaceDraw(const State& s, const Assembled& a);
     bool ReadsTarget(const State& s);
@@ -1778,6 +1782,12 @@ private:
     ImageRef hdr_3d_;
     uint32_t hdr_3d_rt_ = 0;
     ImageRef front_mask_, shown_mask_;
+    // the title's own passes over the whole frame (its glow, reading a target) and 3D after the copy change the
+    // picture under the 2D drawn so far: the mask so far is kept (hdr_part_[hdr_part_n_], -1 none) and the copy taken
+    // again before the next 2D (hdr_stale_) or as the picture ends
+    ImageRef hdr_part_[2];
+    int hdr_part_n_ = -1;
+    bool hdr_stale_ = false;
     std::vector<ImageRef> gen_masks_;
     bool hdr_metadata_ = false;  // VK_EXT_hdr_metadata
     float hdr_meta_sent_ = 0;    // the peak it last told the swap chain, 0 none yet
@@ -5551,6 +5561,7 @@ void VulkanBackend::TrackPost(const State& s, bool flat) {
         if (post_done_ && marked) post_trace_.marked_after++;
         if (post_done_ && !flat) post_trace_.solid_after++;
     }
+    if (post_done_ && hdr_3d_rt_) HdrTrack(s, flat);
     // the motion pass's depth, kept this picture already: 3D onto the frame after it takes it again at the next 2D
     // draw onto the frame (KeepMotionDepth)
     if (motion_z_ && MotionOn() && motion_[pic_slot_ % kMaxGen].taken == presents_ + 1 && s.rt.data == motion_rs_.data) {
@@ -6331,6 +6342,7 @@ void VulkanBackend::KeepHdr3d(Target& t) {
     r.extent = {t.w, t.h, 1};
     vkCmdCopyImage(cmd_, t.res->image, kSrc, hdr_3d_->image, kDst, 1, &r);
     hdr_3d_rt_ = t.data;
+    if (cap_) fprintf(cap_, "     note HDR highlights' copy of the 3D picture of %08X\n", t.data);
 }
 
 // where the finished picture is still its 3D one, the highlights' mask; null when it has no 3D
@@ -6340,17 +6352,50 @@ void VulkanBackend::MakeHdrMask(Target& t, ImageRef& mask) {
         if (mask) Retire(std::exchange(mask, nullptr));
         return;
     }
-    if (!mask || mask->w != t.w || mask->h != t.h) {
-        if (mask) Retire(std::exchange(mask, nullptr));
-        mask = NewImage({.fmt = VK_FORMAT_R8_UNORM, .w = t.w, .h = t.h,
-                         .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT});
-        if (!mask) return;
+    if (hdr_stale_) KeepHdr3d(t);  // the title's passes or 3D since the last 2D: all of it in the copy
+    hdr_stale_ = false;
+    HdrCompare(t, mask);
+}
+
+// where the picture is still the copy, and was in the mask so far, into dst
+bool VulkanBackend::HdrCompare(Target& t, ImageRef& dst) {
+    if (!dst || dst->w != t.w || dst->h != t.h) {
+        if (dst) Retire(std::exchange(dst, nullptr));
+        dst = NewImage({.fmt = VK_FORMAT_R8_UNORM, .w = t.w, .h = t.h,
+                        .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT});
+        if (!dst) return false;
     }
+    Image* part = hdr_part_n_ >= 0 ? hdr_part_[hdr_part_n_].get() : nullptr;
+    if (part && (part->w != t.w || part->h != t.h)) part = nullptr;
+    ResolveSamples(t);
+    Transition(*t.res, kRead);
     Transition(*hdr_3d_, kRead);
-    const VkImageView views[3] = {t.res->Sampled(), hdr_3d_->view, VK_NULL_HANDLE};
-    const float p[8] = {};
-    Pass(kHdrHlsl, "mask", VK_FORMAT_R8_UNORM, *mask, t.w, t.h, views, p, -1);
-    Transition(*mask, kRead);
+    if (part) Transition(*part, kRead);
+    const VkImageView views[3] = {t.res->Sampled(), hdr_3d_->view, part ? part->view : VK_NULL_HANDLE};
+    const float p[8] = {part ? 1.0f : 0.0f};
+    Pass(kHdrHlsl, "mask", VK_FORMAT_R8_UNORM, *dst, t.w, t.h, views, p, -1);
+    Transition(*dst, kRead);
+    return true;
+}
+
+// after the copy: a draw onto the frame that isn't the 2D (the title's own pass over the frame, reading a target, or
+// 3D) folds the mask so far before it draws; the next 2D draw, the copy taken again under it
+void VulkanBackend::HdrTrack(const State& s, bool flat) {
+    if (!HdrExpand()) return;
+    Target* rt = FindTarget(s.rt, false);
+    if (!rt || rt->data != hdr_3d_rt_ || !hdr_3d_ || hdr_3d_->w != rt->w || hdr_3d_->h != rt->h) return;
+    const bool late = !flat || ReadsTarget(s) || ReadsFrame(s);
+    if (late && !hdr_stale_) {
+        const int next = hdr_part_n_ == 0 ? 1 : 0;
+        if (!HdrCompare(*rt, hdr_part_[next])) return;
+        hdr_part_n_ = next;
+        hdr_stale_ = true;
+        if (cap_) fprintf(cap_, "     note HDR highlights' mask so far kept: %s onto %08X\n", flat ? "a pass" : "3D",
+                          rt->data);
+    } else if (!late && hdr_stale_) {
+        KeepHdr3d(*rt);
+        hdr_stale_ = false;
+    }
 }
 
 // the swap chain's mastering display and light levels: the peak the highlights reach, for the compositor's mapping
@@ -6414,7 +6459,7 @@ void VulkanBackend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t
     bool patches = tess_ && TessellatedDraw(s, prim);
     // the effects watch for the first screen space draw, which a draw like a 3D one isn't
     fast_why_ = ProgramPerf::kFast;
-    if (same && kept_.ok && !cap_ && (!PostWanted() || post_done_ || kept_.solid) &&
+    if (same && kept_.ok && !cap_ && (!PostWanted() || post_done_ || kept_.solid) && !(hdr_stale_ && !kept_.solid) &&
         !(kept_.surface && SurfaceDepth(s, start, count, indices)) &&
         ((replay_ && ReuseRun(s)) || FastDraw(s, prim, start, count, indices, patches))) {
         g_perf.fast++;
@@ -7319,6 +7364,8 @@ void VulkanBackend::FinishFront(Target& t, ImageRef* mask) {
     Transition(*t.res, kRead);
     if (mask) MakeHdrMask(t, *mask);
     hdr_3d_rt_ = 0;
+    hdr_part_n_ = -1;
+    hdr_stale_ = false;
 }
 
 // XBE_POST_TRACE: the picture's effects, where they were drawn or why not, logged when that changes from the picture
@@ -7719,6 +7766,8 @@ void VulkanBackend::Present(const Surface& front) {
     post_rt_ = 0;
     post_done_ = false;
     hdr_3d_rt_ = 0;
+    hdr_part_n_ = -1;
+    hdr_stale_ = false;
     occlusion_done_ = view_ok_ = many_views_ = false;
     if (t && interp::Recording()) RecordPictures(sources, notes, t->gw, t->gh);
     if (MotionView() && !sources.empty()) ShowMotion(shows, sources, slots);
