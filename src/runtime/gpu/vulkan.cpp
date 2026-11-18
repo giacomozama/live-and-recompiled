@@ -1386,7 +1386,9 @@ public:
     }
     void Show() override;
     uint32_t Pictures() override { return cap_ || !swap_ || minimised_ ? 1 : swap_gen_; }
-    void Keep(const Surface& front) override;
+    uint32_t PictureTimes(float* t, float& step) override;
+    double InStep();
+    void Keep(const Surface& front, bool own) override;
     void Between(const Surface& front, uint32_t i) override;
     void Replaying(bool on) override {
         FlushRun();
@@ -1660,6 +1662,7 @@ private:
     void ResizeSwap();
     void UploadGammaRamp();
     void FinishFront(Target& t, ImageRef* mask = nullptr);
+    void EndPicture();
     bool KeepPicture(const Surface& front, uint32_t slot);
     bool AcquireImage(uint32_t& bi, VkSemaphore acquired);
     void DrawFrame(Image* picture, uint32_t bi, bool fsr = true, Image* mask = nullptr);
@@ -2057,6 +2060,11 @@ private:
     ImageRef menu_blur_[2];
     ImageRef fsr_easu_;
     uint32_t gen_taken_ = 0;
+    // the frame's pictures came from Keep and Between (not the front buffer alone); the time between two of them, in
+    // frames; in step with the refresh (InStep), the next picture's time from the start of the frame after this one
+    bool gen_frame_ = false, gen_own_ = true;
+    double gen_step_ = 1.0;
+    double gen_next_ = 1.0;
     bool replay_ = false;
     // g_hud_split: the draw's x on the guest frame drawn at x * hud_a_ + hud_b_ (SetViewportScissor); the HUD's
     // elements by their scope's id
@@ -7555,14 +7563,20 @@ void VulkanBackend::FinishFront(Target& t, ImageRef* mask) {
         ApplyPost(t);
     }
     PostTraceEnd(t);
+    ResolveSamples(t);
+    Transition(*t.res, kRead);
+    if (mask) MakeHdrMask(t, *mask);
+    EndPicture();
+}
+
+// what one picture's effects kept, forgotten for the next: the frame's pictures each have their own (a picture drawn
+// again after its frame's own, not shown, kept the effects marked done, and showed without ambient occlusion)
+void VulkanBackend::EndPicture() {
     post_rt_ = 0;
     post_done_ = false;
     occlusion_done_ = view_ok_ = many_views_ = false;
     motion_z_ = false;
     motion_late_ = motion_blocked_ = false;
-    ResolveSamples(t);
-    Transition(*t.res, kRead);
-    if (mask) MakeHdrMask(t, *mask);
     hdr_3d_rt_ = 0;
     hdr_part_n_ = -1;
     hdr_stale_ = false;
@@ -7623,14 +7637,62 @@ bool VulkanBackend::KeepPicture(const Surface& front, uint32_t slot) {
     return true;
 }
 
-// the frame's own picture, before it is drawn again: the last of its pictures
-void VulkanBackend::Keep(const Surface& front) {
+// Frame generation in step with the refresh: with vsync, a frame rate past what the monitor shows (180 on 165 Hz) once
+// drew that many pictures a frame and the swap chain held the game to the refresh over them (55 FPS), so the game's
+// ticks (60ths of a second) came out 1.09 a frame and every 11th or so frame stepped two: Conker's jump and fall, which
+// go by ticks, lurched. Instead the game stays at its rate and the pictures go a refresh apart (165 / 60 = 2.75 a
+// frame: 3, 3, 3, 2), each drawn at its own time between the frame before and this one; the next one's time carries
+// over to the next frame, and a frame's last picture is its own only when one falls on it. The pictures a frame in
+// step with the refresh, 0 when the setting asks for no more than the monitor shows (or without vsync, which shows
+// them all, torn), where a frame has Pictures() of them evenly
+double VulkanBackend::InStep() {
+    const uint32_t most = Pictures();
+    const uint32_t rate = app::Get().fps_cap;
+    if (!swap_vsync_ || most <= 1 || !rate) return 0;
+    const double hz = app::MonitorHz();
+    if (double(most * rate) <= hz + 0.5) return 0;
+    return std::clamp(hz / double(rate), 1.0, double(most));
+}
+
+uint32_t VulkanBackend::PictureTimes(float* t, float& step) {
+    const double r = InStep();
+    if (r <= 0) {
+        gen_next_ = 1.0;  // in step again later, it starts on a frame's own picture
+        const uint32_t n = Backend::PictureTimes(t, step);
+        gen_step_ = step;
+        return n;
+    }
+    const uint32_t most = std::min(Pictures(), kMostPictures);
+    const double s = 1.0 / r;
+    constexpr double kNear = 1e-3;  // a time this near the frame's own is its own
+    if (!(gen_next_ > 0) || gen_next_ > 1.0 + kNear) gen_next_ = 1.0;
+    uint32_t n = 0;
+    double x = gen_next_;
+    for (; x <= 1.0 + kNear && n < most; x += s) t[n++] = x >= 1.0 - kNear ? 1.0f : float(x);
+    // cut short by the most (not in a steady run): the time left over would fall at the frame's start, the frame
+    // before's own again
+    gen_next_ = x - 1.0;
+    if (gen_next_ < kNear) gen_next_ += s;
+    step = float(s);
+    gen_step_ = s;
+    return n;
+}
+
+// the frame's own picture, before it is drawn again: the last of its pictures (own: shown, else only the start)
+void VulkanBackend::Keep(const Surface& front, bool own) {
     FlushRun();
     gen_taken_ = 0;
     replays_ = 0;
+    gen_frame_ = true;
     gen_pics_.resize(Pictures());
     if (Target* t = EnsureTarget(front, false); t && LatchCpuWrite(*t)) UploadTarget(*t, front);
-    KeepPicture(front, uint32_t(gen_pics_.size() - 1));
+    gen_own_ = own;
+    if (own) {
+        KeepPicture(front, uint32_t(gen_pics_.size() - 1));
+    } else {
+        post_trace_ = {};
+        EndPicture();
+    }
 }
 
 void VulkanBackend::Between(const Surface& front, uint32_t i) {
@@ -7855,7 +7917,10 @@ void VulkanBackend::AutoFurRate() {
     }
     if (frame_ms_ <= 0 || frame_ms_smooth_ <= 0) return;
     const app::Settings& set = app::Get();
-    const uint32_t display = swap_vsync_ ? std::max(app::MonitorRefresh() / std::max(swap_gen_, 1u), 1u) : 0;
+    // in step with the refresh (InStep) the game holds its own rate under the pictures
+    const uint32_t display = !swap_vsync_ ? 0
+                             : InStep() > 0 ? set.fps_cap
+                                            : std::max(app::MonitorRefresh() / std::max(swap_gen_, 1u), 1u);
     const uint32_t fps = set.fps_cap && display ? std::min(set.fps_cap, display) : set.fps_cap ? set.fps_cap : display;
     const double target = fps ? 1000.0 / double(fps) : 0;
     bool over, under;
@@ -7948,7 +8013,9 @@ void VulkanBackend::Present(const Surface& front) {
     std::vector<Image*> masks;  // each source's highlights mask (MakeHdrMask), null without
     ImageRef last, last_mask;
     std::vector<uint32_t> slots;
-    if (!gen_pics_.empty() && (gen_taken_ >> (gen_pics_.size() - 1) & 1)) {
+    double spacing = 1.0;  // the time between two of the frame's pictures, in frames
+    if (!gen_pics_.empty() && std::exchange(gen_frame_, false) && gen_taken_) {
+        spacing = gen_step_;
         for (size_t i = 0; i < gen_pics_.size(); i++) {
             if (!(gen_taken_ >> i & 1)) continue;
             pictures.push_back(gen_pics_[i]->view);
@@ -7956,7 +8023,7 @@ void VulkanBackend::Present(const Surface& front) {
             last_mask = i < gen_masks_.size() ? gen_masks_[i] : nullptr;
             masks.push_back(last_mask.get());
             slots.push_back(uint32_t(i));
-            notes.push_back(i + 1 < gen_pics_.size() ? interp::Note(uint32_t(i)) : "the frame's own");
+            notes.push_back(i + 1 < gen_pics_.size() || !gen_own_ ? interp::Note(uint32_t(i)) : "the frame's own");
             last = gen_pics_[i];
         }
     }
@@ -8022,7 +8089,7 @@ void VulkanBackend::Present(const Surface& front) {
         g_perf.p_submit += PerfLap(perf_t);
         if (!i) first = fence_value_;
         const auto offset = std::chrono::duration_cast<std::chrono::steady_clock::duration>(
-            std::chrono::duration<double>(gen_period_ * double(i) / double(pictures.size())));
+            std::chrono::duration<double>(gen_period_ * spacing * double(i)));
         held_.push_back({bi, now + offset, i && !swap_vsync_ ? first : 0, offset});
     }
     DeliverReports();

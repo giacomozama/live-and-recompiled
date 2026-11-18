@@ -65,6 +65,7 @@ std::recursive_mutex& UiLock() {
 void Pace(uint32_t) {}
 void PaceMenu() {}
 uint32_t MonitorRefresh() { return 60; }
+double MonitorHz() { return 60.0; }
 void ReadDisplayHdr() {}
 
 // no keyboard, window or display: the pad script drives port 0

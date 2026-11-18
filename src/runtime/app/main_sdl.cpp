@@ -46,6 +46,7 @@ uint32_t g_user = 0;  // the event type Post, ApplyDisplay and OpenGameWindow se
 enum : int32_t { kUserPost, kUserApply, kUserOpen, kUserText };
 std::atomic<uint64_t> g_desktop{0};  // width << 32 | height, read on any thread
 std::atomic<uint32_t> g_refresh{60};  // the window's display's refresh rate in Hz, read on any thread
+std::atomic<double> g_refresh_hz{60};  // the same, unrounded
 
 // virtual-key codes and the keys SDL names by position; the generic Shift, Ctrl and Alt take either side
 constexpr int kVkShift = 0x10, kVkCtrl = 0x11, kVkAlt = 0x12;
@@ -155,7 +156,12 @@ void StoreDesktop() {
     if (const SDL_DisplayMode* m = SDL_GetDesktopDisplayMode(d))
         g_desktop = uint64_t(uint32_t(m->w)) << 32 | uint32_t(m->h);
     if (const SDL_DisplayMode* m = SDL_GetCurrentDisplayMode(d))
-        if (m->refresh_rate >= 24.0f) g_refresh = uint32_t(std::lround(m->refresh_rate));
+        if (m->refresh_rate >= 24.0f) {
+            g_refresh = uint32_t(std::lround(m->refresh_rate));
+            g_refresh_hz = m->refresh_rate_numerator > 0 && m->refresh_rate_denominator > 0
+                               ? double(m->refresh_rate_numerator) / double(m->refresh_rate_denominator)
+                               : double(m->refresh_rate);
+        }
 }
 
 void DumpThreads() {
@@ -731,6 +737,7 @@ void Pace(uint32_t vblanks) {
 }
 
 uint32_t MonitorRefresh() { return std::max(g_refresh.load(), 24u); }
+double MonitorHz() { return g_refresh.load() >= 24 ? std::max(g_refresh_hz.load(), 24.0) : 24.0; }
 
 void PaceMenu() {
     using clock = std::chrono::steady_clock;

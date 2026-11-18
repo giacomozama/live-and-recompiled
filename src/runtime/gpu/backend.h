@@ -1,4 +1,5 @@
 #pragma once
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -52,12 +53,22 @@ public:
     // still held from the frame before first
     virtual bool Due(std::chrono::steady_clock::time_point& /*at*/) { return false; }
     virtual void Show() {}
-    // frame generation by drawing the frame again (render_thread.cpp): Pictures is how many the frame about to be
-    // presented is shown as, 1 for itself alone. Keep takes its own picture from the front buffer before it is drawn
-    // again, Between each one drawn again, i from 1 to Pictures - 1; Present then shows them in turn, its own last.
-    // Replaying brackets the draws done again, which count no visibility test and feed no shading watch
+    // frame generation by drawing the frame again (render_thread.cpp): Pictures is the most the frame about to be
+    // presented is shown as, 1 for itself alone. PictureTimes, asked once a frame, fills t with the times of the frame's
+    // pictures (ascending, in (0, 1], 1 its own picture: in step with the display's refresh they need not end on it)
+    // and step with the time between two of them, and returns how many (at most Pictures). Keep takes its own picture
+    // from the front buffer before it is drawn again (own: shown; else it only starts the frame's pictures), Between
+    // each one drawn again, i from 1 for the first; Present then shows them in turn, its own last. Replaying brackets
+    // the draws done again, which count no visibility test and feed no shading watch
+    static constexpr uint32_t kMostPictures = 4;
     virtual uint32_t Pictures() { return 1; }
-    virtual void Keep(const Surface& /*front*/) {}
+    virtual uint32_t PictureTimes(float* t, float& step) {
+        const uint32_t n = std::clamp(Pictures(), 1u, kMostPictures);
+        for (uint32_t i = 0; i < n; i++) t[i] = float(i + 1) / float(n);
+        step = 1.0f / float(n);
+        return n;
+    }
+    virtual void Keep(const Surface& /*front*/, bool /*own*/) {}
     virtual void Between(const Surface& /*front*/, uint32_t /*i*/) {}
     virtual void Replaying(bool /*on*/) {}
     // drawing again: Skips, the next Draw is one a run drawn again took with it, so blending it is wasted; Pass, a draw

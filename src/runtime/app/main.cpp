@@ -401,6 +401,8 @@ uint32_t MonitorRefresh() {
     return 60;
 }
 
+double MonitorHz() { return double(MonitorRefresh()); }
+
 void PaceMenu() {
     using clock = std::chrono::steady_clock;
     static clock::time_point next = clock::now(), asked{};

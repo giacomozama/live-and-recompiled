@@ -908,9 +908,15 @@ private:
         }
         interp::Presented(c.s1.data);
         last_front_ = c.s1;
-        uint32_t pictures = keeping_ ? inner_->Pictures() : 1;
+        // the frame's pictures' times: in step with the display's refresh they may number fewer than the most
+        // (Pictures) and end short of the frame's own (t 1)
+        float times[Backend::kMostPictures] = {1.0f};
+        float step = 1.0f;
+        uint32_t pictures = keeping_ ? std::clamp(inner_->PictureTimes(times, step), 1u, Backend::kMostPictures) : 1;
+        const bool own = times[pictures - 1] >= 1.0f;
+        const bool gen = (pictures > 1 || !own) && frame_draws_;
         bool motion = motion_ && frame_draws_;
-        if ((pictures > 1 || motion) && frame_draws_) {
+        if ((gen || motion) && frame_draws_) {
             auto match_start = PerfClock::now();
             interp::Match();
             gen_match_ns_ += Ns(match_start);
@@ -924,12 +930,14 @@ private:
                        was_textures = g_perf.redraw_textures, was_mslow = g_perf.motion_slow,
                        was_mreused = g_perf.motion_reused, was_mskipped = g_perf.motion_skipped;
         const double was_mslow_ms = g_perf.motion_slow_ms, was_mreused_ms = g_perf.motion_reused_ms;
-        float step = 1.0f / float(pictures);
-        if (pictures > 1 && frame_draws_) {
-            inner_->Keep(c.s1);
-            if (motion) Motion(b, pictures - 1, 1, 1 - step);
-            for (uint32_t i = 1; i < pictures; i++) {
-                float t = float(i) / float(pictures);
+        if (gen) {
+            // the frame's own picture takes the last slot, those drawn again the first ones in turn
+            const uint32_t own_slot = std::max(inner_->Pictures(), 1u) - 1;
+            inner_->Keep(c.s1, own);
+            if (motion && own) Motion(b, own_slot, 1, 1 - step);
+            const uint32_t again = own ? pictures - 1 : pictures;
+            for (uint32_t i = 1; i <= again; i++) {
+                float t = times[i - 1];
                 inner_->Replaying(true);
                 ShadingReplay(true, t);
                 interp::BeginPass(t);
@@ -940,11 +948,16 @@ private:
                 auto between_start = PerfClock::now();
                 inner_->Between(c.s1, i);
                 gen_between_ns_ += Ns(between_start);
+                // the picture shown before it: the one before in this frame, or in step with the refresh the frame
+                // before's last, before this frame's start (t below 0: the blend, linear, carries the frame's motion
+                // back to it)
                 if (motion) Motion(b, i - 1, t, t - step);
             }
             changed_ = true;
         } else if (motion) {
-            Motion(b, 0, 1, 0);
+            // its own picture alone: in its own slot, the picture before a step back (the whole frame without frame
+            // generation)
+            Motion(b, std::max(inner_->Pictures(), 1u) - 1, 1, 1 - step);
             changed_ = true;
         }
         gen_replay_ns_ += Ns(replay_start);

@@ -324,5 +324,8 @@ void Pace(uint32_t vblanks = 1);
 void PaceMenu();
 // the window's monitor's refresh rate in Hz (60 when unknown)
 uint32_t MonitorRefresh();
+// the same, unrounded where the system gives it (164.958 for a 165 Hz mode): frame generation spaces the pictures it
+// shows a refresh apart by it
+double MonitorHz();
 
 }  // namespace app
