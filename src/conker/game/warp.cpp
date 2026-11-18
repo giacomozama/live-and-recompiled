@@ -161,6 +161,7 @@ void ReadEnv() {
 constexpr uint32_t kRevealState = 0x771BEC;  // a byte per player
 constexpr int kRevealPlayers = 4;
 std::chrono::steady_clock::time_point g_warped{};  // the last checkpoint or level warp, cleared by its cutscene
+bool g_warped_from_frontend = false;  // a checkpoint or level warp left the frontend: its fade is cleared (Poll)
 // a reveal asked for until then is not started: the load may play its cutscene before it starts the reveal
 std::chrono::steady_clock::time_point g_no_reveal_until{};
 
@@ -216,6 +217,7 @@ void StopLevelMusic(X86Context& ctx) {
 
 void Run(X86Context& ctx, const Request& r) {
     if (r.kind != Kind::Cutscene) g_warped = std::chrono::steady_clock::now();
+    if (r.kind != Kind::Cutscene && InFrontend(g_level)) g_warped_from_frontend = true;
     if (r.kind != Kind::Cutscene) StopLevelMusic(ctx);
     switch (r.kind) {
         case Kind::Checkpoint: {
@@ -351,6 +353,19 @@ void Poll(X86Context& ctx) {
         // stopped; and not in a multiplayer match, which goes back to that menu
         constexpr uint32_t kZoom = 0x776220, kZoomSpeed = 0x776224;
         if (!InFrontend(level) && level < kLevels) kernel::W32(kZoom, 0), kernel::W32(kZoomSpeed, 0);
+        // The frontend's black fade, [0x6BCFE8] (its alpha; 0x2A3FD0 draws it over the whole screen in every level,
+        // and only frontend code writes it): the frontend lowers it before a level it starts (0x207B70, 0x1F6BF0,
+        // 0x1F9D00, its per-frame decrements). A warp found it at 255 and left the frontend before that, so the level
+        // stayed black under it (2026-11-19, checkpoints 139, 140, 163); cleared once the level is up
+        constexpr uint32_t kFrontendFade = 0x6BCFE8;
+        if (!InFrontend(level) && g_warped_from_frontend) {
+            g_warped_from_frontend = false;
+            if (kernel::G<uint8_t>(kFrontendFade)) {
+                LOGR("warp: the frontend's fade (%u) cleared for %s", kernel::G<uint8_t>(kFrontendFade),
+                     LevelLabel(level).c_str());
+                kernel::G<uint8_t>(kFrontendFade) = 0;
+            }
+        }
         std::lock_guard<std::mutex> l(g_lock);
         g_level = level;
         g_cutscenes_level = level;
