@@ -1793,6 +1793,7 @@ private:
     float hdr_meta_sent_ = 0;    // the peak it last told the swap chain, 0 none yet
     uint32_t swap_gen_ = 1;    // the frame generation it has images for
     bool swap_stale_ = false;  // out of date or suboptimal: made again before the next frame
+    const char* swap_why_ = "first";  // why the swap chain is made (again), for the log
     bool minimised_ = false;
     std::vector<ImageRef> bb_;
     std::vector<VkSemaphore> present_sem_;  // per swap chain image: its picture is drawn
@@ -2720,16 +2721,23 @@ bool VulkanBackend::CreateSwapChain() {
         }
     }
     // HDR10: 10 bit PQ in Rec.2020, which DrawFrame encodes to (kHdrHlsl) when the setting is on
-    auto hdr = std::find_if(formats.begin(), formats.end(), [](const VkSurfaceFormatKHR& f) {
-        return f.colorSpace == VK_COLOR_SPACE_HDR10_ST2084_EXT &&
-               (f.format == VK_FORMAT_A2B10G10R10_UNORM_PACK32 || f.format == VK_FORMAT_A2R10G10B10_UNORM_PACK32);
-    });
+    // the same format each time, whichever order the surface lists them in: the list's order follows the compositor's
+    // format feedback (a scanout plane's preference arrives after the first frames), and a swap chain made again in
+    // the other format makes the compositor take the window off the plane and put it back
+    auto hdr = formats.end();
+    for (VkFormat want : {VK_FORMAT_A2B10G10R10_UNORM_PACK32, VK_FORMAT_A2R10G10B10_UNORM_PACK32}) {
+        hdr = std::find_if(formats.begin(), formats.end(), [&](const VkSurfaceFormatKHR& f) {
+            return f.colorSpace == VK_COLOR_SPACE_HDR10_ST2084_EXT && f.format == want;
+        });
+        if (hdr != formats.end()) break;
+    }
     SetHdrAvailable(hdr != formats.end());
     swap_hdr_want_ = app::Get().hdr;
     swap_hdr_ = swap_hdr_want_ && hdr != formats.end();
     if (swap_hdr_) fmt = *hdr;
     if (swap_hdr_want_ && !swap_hdr_) LOG_FIRST(1, "vulkan: HDR is on but the surface offers no HDR10 format, SDR");
-    if (swap_hdr_) LOGR("vulkan: HDR10 swap chain (format %d)", int(fmt.format));
+    LOGR("vulkan: %s swap chain (format %d, %ux%u, %s)", swap_hdr_ ? "HDR10" : "SDR", int(fmt.format), ext.width,
+         ext.height, swap_why_);
     vkGetPhysicalDeviceSurfacePresentModesKHR(phys_, surface_, &n, nullptr);
     std::vector<VkPresentModeKHR> modes(n);
     vkGetPhysicalDeviceSurfacePresentModesKHR(phys_, surface_, &n, modes.data());
@@ -7026,6 +7034,12 @@ void VulkanBackend::ResizeSwap() {
     if (swap_ && !swap_stale_ && ext.width == bb_w_ && ext.height == bb_h_ && vsync == swap_vsync_ && gen == swap_gen_ &&
         app::Get().hdr == swap_hdr_want_)
         return;
+    if (!swap_stale_) {
+        swap_why_ = !swap_                                           ? "no swap chain"
+                    : ext.width != bb_w_ || ext.height != bb_h_ ? "window size"
+                    : app::Get().hdr != swap_hdr_want_          ? "HDR setting"
+                                                                : "vsync or frame generation";
+    }
     Flush();
     vkDeviceWaitIdle(dev_);
     if (!CreateSwapChain()) LOG_FIRST(4, "vulkan: the swap chain could not be made again");
@@ -7128,8 +7142,10 @@ bool VulkanBackend::AcquireImage(uint32_t& bi, VkSemaphore acquired) {
     VkResult r = vkAcquireNextImageKHR(dev_, swap_, UINT64_MAX, acquired, VK_NULL_HANDLE, &bi);
     if (r == VK_SUBOPTIMAL_KHR) {
         swap_stale_ = true;
+        swap_why_ = "suboptimal at acquire";
     } else if (r != VK_SUCCESS) {
         swap_stale_ = true;
+        swap_why_ = r == VK_ERROR_OUT_OF_DATE_KHR ? "out of date at acquire" : "acquire failed";
         return false;
     }
     bb_[bi]->layout = VK_IMAGE_LAYOUT_UNDEFINED;  // its last picture is not read
@@ -7522,7 +7538,10 @@ void VulkanBackend::QueuePresent(uint32_t bi) {
     pi.pSwapchains = &swap_;
     pi.pImageIndices = &bi;
     VkResult r = vkQueuePresentKHR(queue_, &pi);
-    if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR) swap_stale_ = true;
+    if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR) {
+        swap_stale_ = true;
+        swap_why_ = r == VK_SUBOPTIMAL_KHR ? "suboptimal at present" : "out of date at present";
+    }
 }
 
 void VulkanBackend::ReleaseOldTextures() {
