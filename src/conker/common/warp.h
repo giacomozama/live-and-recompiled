@@ -36,6 +36,8 @@ bool Multiplayer();
 // start a new game at checkpoint `index`, with the progress of the checkpoints before it. These three are false
 // when refused at once, the reason in Status
 bool GoCheckpoint(int index);
+// the same, started in `level` at `spawn` instead of the checkpoint's own
+bool GoCheckpointAt(int index, int level, int spawn);
 // a new game in `level` at spawn point `spawn`, no progress
 bool GoLevel(int level, int spawn);
 // cutscene `index` of `level`, loading the level first if it isn't the running one; a cutscene the level lacks is

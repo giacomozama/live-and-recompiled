@@ -57,6 +57,8 @@ constexpr uint32_t kPlayer = 0x84A5F8;  // 0x4EC10 reads it first thing
 constexpr uint32_t kStartOverride = 0x849813, kStartCheckpoint = 0x849810;
 
 constexpr uint32_t kStartAtCheckpoint = 0x1FB760;
+constexpr uint32_t kFrontendState = 0x776574;  // the frontend's state, an index into its table 0x59B448
+constexpr uint8_t kFrontendBooting = 11;
 constexpr uint32_t kRequestLevel = 0x2A94A0;
 constexpr uint32_t kPlayCutscene = 0x4EC10;
 constexpr uint32_t kFindCutscene = 0x55790;
@@ -67,6 +69,7 @@ enum class Kind { Checkpoint, Level, Cutscene };
 struct Request {
     Kind kind;
     int a, b;
+    int at_level = -1, at_spawn = 0;  // a checkpoint started in another level and spawn than its own
     bool loaded = false;  // a cutscene behind a checkpoint start: waits for its level to be the running one
 };
 
@@ -127,10 +130,25 @@ int ParseLevel(const std::string& s) {
     return -1;
 }
 
-// XBE_WARP=<checkpoint> | <level>[:<spawn>], XBE_CUTSCENE=<level>:<cutscene>; levels by name or number
+void ReadCutsceneEnv();
+
+// XBE_WARP=<checkpoint>[@<level>[:<spawn>]] | <level>[:<spawn>], XBE_CUTSCENE=<level>:<cutscene>; levels by name or
+// number. <checkpoint>@<level>:<spawn> starts at the checkpoint, with its progress, but in that level and spawn: for a
+// checkpoint whose own start is elsewhere (140, It's War's escape: WarBoss in the table, played in BeachRunup)
 void ReadEnv() {
     if (const char* e = std::getenv("XBE_WARP")) {
         std::string s = e;
+        if (size_t at = s.find('@'); at != std::string::npos) {
+            const std::string where = s.substr(at + 1);
+            const size_t colon = where.find(':');
+            const int level = ParseLevel(where.substr(0, colon));
+            if (level < 0 || !std::all_of(s.begin(), s.begin() + long(at), ::isdigit))
+                LOGR("warp: XBE_WARP=%s is not <checkpoint>@<level>[:<spawn>]", e);
+            else
+                GoCheckpointAt(std::atoi(s.c_str()), level,
+                               colon == std::string::npos ? 0 : std::atoi(where.c_str() + colon + 1));
+            return ReadCutsceneEnv();
+        }
         size_t colon = s.find(':');
         bool number = !s.empty() && std::all_of(s.begin(), s.end(), ::isdigit);
         int level = number ? -1 : ParseLevel(s.substr(0, colon));
@@ -141,6 +159,10 @@ void ReadEnv() {
         else
             LOGR("warp: XBE_WARP=%s names no checkpoint or level", e);
     }
+    ReadCutsceneEnv();
+}
+
+void ReadCutsceneEnv() {
     if (const char* e = std::getenv("XBE_CUTSCENE")) {
         std::string s = e;
         size_t colon = s.find(':');
@@ -222,12 +244,20 @@ void Run(X86Context& ctx, const Request& r) {
     switch (r.kind) {
         case Kind::Checkpoint: {
             const Checkpoint& c = Checkpoints()[size_t(r.a)];
+            // the chapter start reads the level (+8) and spawn (+0xA) from the checkpoint's entry: another pair is
+            // put there for the call
+            const uint32_t entry = kCheckpointTable + 20 * uint32_t(r.a);
+            const bool at = r.at_level >= 0;
+            if (at) kernel::W16(entry + 8, uint16_t(r.at_level)), kernel::G<uint8_t>(entry + 0xA) = uint8_t(r.at_spawn);
             kernel::G<uint8_t>(kStartOverride) = 1;
             kernel::W16(kStartCheckpoint, uint16_t(r.a));
             kernel::CallGuest(ctx, kStartAtCheckpoint, {});
             kernel::G<uint8_t>(kStartOverride) = 0;  // the chapter menu reads its own choice again
+            if (at) kernel::W16(entry + 8, uint16_t(c.level)), kernel::G<uint8_t>(entry + 0xA) = uint8_t(c.spawn);
+            const int level = at ? r.at_level : c.level, spawn = at ? r.at_spawn : c.spawn;
             SetStatus("checkpoint " + std::to_string(r.a) + (c.name.empty() ? "" : " \"" + c.name + "\"") + ": " +
-                      LevelLabel(c.level) + ", spawn " + std::to_string(c.spawn));
+                      LevelLabel(level) + ", spawn " + std::to_string(spawn) + (at ? " (its own: " + LevelLabel(c.level) +
+                      ", spawn " + std::to_string(c.spawn) + ")" : ""));
             break;
         }
         case Kind::Level: {
@@ -312,6 +342,15 @@ bool GoCheckpoint(int index) {
     return true;
 }
 
+bool GoCheckpointAt(int index, int level, int spawn) {
+    if (index < 0 || index >= kCheckpointCount) return SetStatus("no checkpoint " + std::to_string(index)), false;
+    if (!LevelName(level)) return SetStatus("no level " + std::to_string(level)), false;
+    Request r{Kind::Checkpoint, index, 0};
+    r.at_level = level, r.at_spawn = std::clamp(spawn, 0, 255);
+    Post(r);
+    return true;
+}
+
 bool GoLevel(int level, int spawn) {
     if (!LevelName(level)) return SetStatus("no level " + std::to_string(level)), false;
     Post({Kind::Level, level, std::clamp(spawn, 0, 255)});
@@ -337,8 +376,11 @@ std::string Status() {
 
 // main thread, from the frame timer (display.cpp): the level loop is running, so a level is loaded
 void Poll(X86Context& ctx) {
-    static bool env = (ReadEnv(), true);
-    (void)env;
+    // The environment's warps wait for the frontend's boot: it runs a while in state 11 ([0x776574]) with its fade
+    // at 255 before its menu (state 3, ~0.2 s), and a level started from that state came up frozen (2026-11-19)
+    static bool env = false;
+    if (!env && !(InFrontend(int(kernel::R32(kLevel))) && kernel::G<uint8_t>(kFrontendState) == kFrontendBooting))
+        env = (ReadEnv(), true);
     const int level = int(kernel::R32(kLevel));
     if (level != g_cutscenes_level) {
         // the running level's cutscenes, while its packages are loaded
