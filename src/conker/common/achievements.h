@@ -11,14 +11,18 @@ struct X86Context;
 namespace achievements {
 
 struct Info {
-    const char* name;         // the Store release's title and description, in English as it has them
-    const char* description;
+    const char* name;            // the Store release's title, in English as it has them
+    const char* description[6];  // what earns it: English (the Store's), German, French, Spanish, Italian, Japanese,
+                                 // with the game's own names for what the game names (its chapters, characters, modes)
     int goal;                 // a count the progress runs to (cash, tails, pads, classes), 0 none
     bool multiplayer;
     bool secret;              // its name and description hidden until earned, as in the Store release
 };
 
 constexpr int kCount = 41;
+
+// settings.toml achievements (on by default): off, nothing is earned or counted and no toast shows; game thread reads
+extern bool g_enabled;
 const Info& Get(int index);
 
 struct State {

@@ -1467,7 +1467,7 @@ bool Hidden(int index) { return achievements::Get(index).secret && !achievements
 void AchievementRow(int index) {
     const achievements::Info& info = achievements::Get(index);
     const achievements::State st = achievements::StateOf(index);
-    AchievementLine(info.name, info.description, AchievementStatus(index, st), st.unlocked, info.goal, st.progress);
+    AchievementLine(info.name, info.description[Column()], AchievementStatus(index, st), st.unlocked, info.goal, st.progress);
 }
 
 void SecretRow(int count) {
@@ -1480,6 +1480,8 @@ void SecretRow(int count) {
 // the Achievements tab: how many are earned, then the story's and multiplayer's
 void DrawAchievements() {
     if (Section("achievements", false)) {
+        Check("earn_achievements", &achievements::g_enabled);
+        Hint("hint_off_nothing_is_earned_or", true);
         SettingGap();
         const int got = achievements::UnlockedCount();
         char line[96];
@@ -1574,7 +1576,8 @@ void DrawAchievementToast() {
     // the description under the name, wrapped at the wider of the name and about 26 of its own lines' worth
     const float text_max = display.x - 32.0f - pad * 2.0f;
     const float wrap = std::min(std::max(name_size.x, small * 26.0f), text_max);
-    const ImVec2 desc_size = f->CalcTextSizeA(small, FLT_MAX, wrap, info.description);
+    const char* description = info.description[Column()];
+    const ImVec2 desc_size = f->CalcTextSizeA(small, FLT_MAX, wrap, description);
     const float text_w = std::min(std::max({head_size.x, name_size.x, desc_size.x}), text_max);
     const float w = std::round(pad * 2.0f + text_w);
     const float h = std::round(head_size.y + gap + name_size.y + gap + desc_size.y + pad * 1.5f);
@@ -1601,7 +1604,7 @@ void DrawAchievementToast() {
     dl->AddText(f, font, ImVec2(tx, ty + head_size.y + gap), IM_COL32(255, 255, 255, int(245 * alpha)), info.name);
     const ImVec4 dim = style.Colors[ImGuiCol_TextDisabled];
     dl->AddText(f, small, ImVec2(tx, ty + head_size.y + gap + name_size.y + gap),
-                ImGui::ColorConvertFloat4ToU32(ImVec4(dim.x, dim.y, dim.z, dim.w * alpha)), info.description, nullptr, wrap);
+                ImGui::ColorConvertFloat4ToU32(ImVec4(dim.x, dim.y, dim.z, dim.w * alpha)), description, nullptr, wrap);
     dl->PopClipRect();
 }
 
