@@ -1396,8 +1396,12 @@ public:
         pass_serial_ = skip_to_ = 0;
         kept_run_next_ = kept_draw_next_ = 0;
         as_drawn_ = false;
-        // a picture drawn again is its slot's until the next one starts (its Between, its motion pass)
-        if (on) pic_slot_ = replays_++;
+        // a picture drawn again is its slot's until the next one starts (its Between, its motion pass); its depth for
+        // the motion pass kept afresh
+        if (on) {
+            pic_slot_ = replays_++;
+            motion_late_ = motion_blocked_ = false;
+        }
     }
     bool Skips() const override { return replay_ && pass_serial_ + 1 <= skip_to_; }  // as Draw's first check
     void AsDrawn(bool same) override { as_drawn_ = same; }
@@ -1523,7 +1527,7 @@ private:
     // motion vectors (Motion): the frame's depth kept for the motion pass of the picture being drawn, as the 3D left
     // it; the sub-pixel offset of a picture slot's 3D draws (Jittering), in host pixels; the debug views
     // (XBE_MOTION_VIEW) over the pictures Present shows, their slots beside them
-    void KeepMotionDepth();
+    void KeepMotionDepth(bool again = false);
     bool MotionOn() const { return MotionWanted() || upscale_; }
     bool Jittering() const;
     std::array<float, 2> Jitter(uint32_t slot) const;
@@ -2128,6 +2132,10 @@ private:
     uint32_t motion_slot_ = 0;
     Surface motion_rs_{}, motion_zs_{};
     bool motion_z_ = false;
+    // 3D drawn onto the frame after its depth was kept (a character after a 2D draw among the 3D): kept again at the
+    // next 2D draw onto the frame, or at the motion pass; blocked, the depth was cleared since it was kept, and what
+    // comes after is drawn over that (a 3D HUD model), not the world
+    bool motion_late_ = false, motion_blocked_ = false;
     std::unordered_map<uint64_t, const Spirv*> motion_shaders_;
     std::unordered_map<uint64_t, VkPipeline> motion_psos_;
     std::array<float, 2> jitter_{};
@@ -5539,6 +5547,12 @@ void VulkanBackend::TrackPost(const State& s, bool flat) {
         if (post_done_ && marked) post_trace_.marked_after++;
         if (post_done_ && !flat) post_trace_.solid_after++;
     }
+    // the motion pass's depth, kept this picture already: 3D onto the frame after it takes it again at the next 2D
+    // draw onto the frame (KeepMotionDepth)
+    if (motion_z_ && MotionOn() && motion_[pic_slot_ % kMaxGen].taken == presents_ + 1 && s.rt.data == motion_rs_.data) {
+        if (!flat && s.rs[kRsZEnable]) motion_late_ = true;
+        else if (flat && motion_late_) KeepMotionDepth(true);
+    }
     if (post_done_ || !PostWanted()) return;
     PostTrace& pt = post_trace_;
     Target* rt = FindTarget(s.rt, false);
@@ -5698,10 +5712,11 @@ std::array<float, 2> VulkanBackend::Jitter(uint32_t slot) const {
 
 // at the first 2D after the frame's 3D (ApplyOcclusion's time), which may clear the depth or draw over it, or as the
 // frame left it: once a picture
-void VulkanBackend::KeepMotionDepth() {
+void VulkanBackend::KeepMotionDepth(bool again) {
     if (!MotionOn() || !motion_z_) return;
     MotionSlot& m = motion_[pic_slot_ % kMaxGen];
-    if (m.taken == presents_ + 1) return;
+    if (m.taken == presents_ + 1 && !(again && motion_late_ && !motion_blocked_)) return;
+    motion_late_ = false;
     Target* rt = FindTarget(motion_rs_, false);
     Target* z = FindTarget(motion_zs_, true);
     if (!rt || !z || !z->res || z->w != rt->w || z->h != rt->h) return;
@@ -5713,7 +5728,9 @@ void VulkanBackend::KeepMotionDepth() {
                                      VK_IMAGE_USAGE_TRANSFER_DST_BIT});
         if (!m.depth) return;
     }
-    if (cap_) fprintf(cap_, "     note motion depth of %08X kept for picture slot %u\n", z->data, pic_slot_);
+    if (cap_)
+        fprintf(cap_, "     note motion depth of %08X kept for picture slot %u%s\n", z->data, pic_slot_,
+                m.taken == presents_ + 1 ? " again, after 3D drawn since" : "");
     Transition(*z->res, kSrc);
     Transition(*m.depth, kDst);
     Barrier();
@@ -5736,8 +5753,8 @@ void VulkanBackend::MotionPass(bool on, uint32_t slot) {
     motion_pass_ = false;
     if (!on) return;
     slot %= kMaxGen;
-    // a frame with no 2D after its 3D: its depth as it left it
-    if (slot == pic_slot_ % kMaxGen) KeepMotionDepth();
+    // a frame with no 2D after its 3D: its depth as it left it; one with 3D after the depth was kept, again
+    if (slot == pic_slot_ % kMaxGen) KeepMotionDepth(true);
     MotionSlot& m = motion_[slot];
     if (m.taken != presents_ + 1) return;
     if (!m.velocity || m.velocity->w != m.depth->w || m.velocity->h != m.depth->h) {
@@ -6793,6 +6810,10 @@ void VulkanBackend::Clear(const State& s, uint32_t count, const uint8_t* rects, 
     }
     Target* rt = (flags & kClearTarget) ? EnsureTarget(s.rt, false) : nullptr;
     Target* ds = (flags & (kClearZ | kClearStencil)) ? EnsureTarget(s.zs, true) : nullptr;
+    // the motion pass's depth kept this picture, then cleared: what is drawn after is not the world's (KeepMotionDepth)
+    if ((flags & kClearZ) && motion_z_ && s.zs.data == motion_zs_.data &&
+        motion_[pic_slot_ % kMaxGen].taken == presents_ + 1)
+        motion_blocked_ = true;
     std::vector<VkClearRect> rs;
     ClearArgs c{.count = count, .rects = rects, .flags = flags, .color = color, .z = z, .stencil = stencil};
     for (Target* t : {rt, ds}) {
@@ -7261,6 +7282,7 @@ void VulkanBackend::FinishFront(Target& t, ImageRef* mask) {
     post_done_ = false;
     occlusion_done_ = view_ok_ = many_views_ = false;
     motion_z_ = false;
+    motion_late_ = motion_blocked_ = false;
     ResolveSamples(t);
     Transition(*t.res, kRead);
     if (mask) MakeHdrMask(t, *mask);
