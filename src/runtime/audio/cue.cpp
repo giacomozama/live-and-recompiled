@@ -11,11 +11,15 @@ namespace audio {
 
 namespace {
 
-// the sound as it was given: a 44-byte header and 16-bit stereo PCM
+// the sounds as they were given: a 44-byte header and 16-bit PCM. achievement.wav is "Collect Points" by Liecio
+// (Pixabay, sound 190037, the Pixabay Content License), converted from its mp3
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wc23-extensions"
-const unsigned char kWav[] = {
+const unsigned char kSelectWav[] = {
 #embed "menu_select.wav"
+};
+const unsigned char kAchievementWav[] = {
+#embed "achievement.wav"
 };
 #pragma clang diagnostic pop
 
@@ -23,15 +27,15 @@ constexpr float kGain = 0.5f;
 constexpr int kVoices = 4;  // sounds at once; one more takes the oldest's place
 
 // the sound at kRate, mono, played at this speed (a lower one is a lower pitch); empty if the file is not what is expected
-std::vector<float> Load(float speed) {
+std::vector<float> Load(const unsigned char* kWav, size_t size, float speed) {
     uint16_t channels, bits;
     uint32_t rate;
-    if (sizeof kWav < 44 || std::memcmp(kWav + 36, "data", 4)) return {};
+    if (size < 44 || std::memcmp(kWav + 36, "data", 4)) return {};
     std::memcpy(&channels, kWav + 22, 2);
     std::memcpy(&rate, kWav + 24, 4);
     std::memcpy(&bits, kWav + 34, 2);
     if (bits != 16 || channels == 0) return {};
-    const size_t frames = (sizeof kWav - 44) / (2 * channels);
+    const size_t frames = (size - 44) / (2 * channels);
     auto at = [&](size_t i) {
         float sum = 0;
         for (uint16_t c = 0; c < channels; c++) {
@@ -63,9 +67,11 @@ int g_next = 0;
 }  // namespace
 
 void Play(Cue cue) {
-    static const std::vector<float> select = Load(1.0f), move = Load(0.8f);
+    static const std::vector<float> select = Load(kSelectWav, sizeof kSelectWav, 1.0f),
+                                    move = Load(kSelectWav, sizeof kSelectWav, 0.8f),
+                                    achievement = Load(kAchievementWav, sizeof kAchievementWav, 1.0f);
     std::lock_guard<std::mutex> lock(g_lock);
-    g_voices[g_next] = {cue == Cue::Select ? &select : &move, 0};
+    g_voices[g_next] = {cue == Cue::Select ? &select : cue == Cue::Move ? &move : &achievement, 0};
     g_next = (g_next + 1) % kVoices;
 }
 

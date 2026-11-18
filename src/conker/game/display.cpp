@@ -62,6 +62,7 @@
 #include "xdk/d3d8.h"
 #include "xdk/hle.h"
 
+#include "common/achievements.h"
 #include "common/menus.h"
 #include "common/mouse.h"
 #include "common/warp.h"
@@ -335,6 +336,7 @@ void ConkerFarCameraCeiling(X86Context& ctx, uint8_t* base) {
 X86_EXTERN_FUNC(__imp__sub_002A7B60);
 X86_FUNC(sub_002A7B60) {
     warp::Poll(ctx);  // a frame of the level loop: the Debug tab's warps can run
+    achievements::Poll(ctx);
     gpu::g_hud_split.store(display::HudSplit(), std::memory_order_relaxed);
     gpu::g_outlines.store(display::g_player_outlines && warp::Multiplayer() && !warp::Frontend(),
                           std::memory_order_relaxed);

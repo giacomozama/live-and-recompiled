@@ -16,6 +16,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <ctime>
 #include <cwchar>
 #include <initializer_list>
 #include <string>
@@ -29,6 +30,7 @@
 
 #include "app/app.h"
 #include "audio/audio.h"
+#include "common/achievements.h"
 #include "common/characters.h"
 #include "common/chat.h"
 #include "common/cutscenes.h"
@@ -87,7 +89,7 @@ std::atomic<bool> g_esc_swallow{false};
 
 // the main tab to show next frame (Show asks for one, the bumpers turn), -1 none; the tab drawn now; the player
 // the Controls tab shows
-constexpr int kMainTabs = 9, kControlsTab = 4, kMultiplayerTab = 5, kQuitTab = 8;
+constexpr int kMainTabs = 10, kControlsTab = 4, kMultiplayerTab = 5, kQuitTab = 9;
 // the Quit tab's color
 constexpr ImVec4 kDanger(0.93f, 0.33f, 0.33f, 1.0f);
 std::atomic<int> g_tab_target{-1};
@@ -1403,6 +1405,206 @@ void MenuStyle() {
     st.Colors[ImGuiCol_BorderShadow] = ImVec4(0, 0, 0, 120.0f / 255.0f);
 }
 
+// what an achievement shows at its row's end: the day it was earned, or how far along it is, or Locked
+std::string AchievementStatus(int index, const achievements::State& st) {
+    char text[64];
+    if (st.unlocked) {
+        const std::time_t when = std::time_t(st.when);
+        const std::tm* tm = std::localtime(&when);
+        if (tm && std::strftime(text, sizeof text, "%Y-%m-%d", tm)) return text;
+        return "";
+    }
+    const achievements::Info& info = achievements::Get(index);
+    if (!info.goal) return T("locked");
+    if (info.goal == 1000) std::snprintf(text, sizeof text, "$%d / $%d", st.progress, info.goal);  // Cash Grabber
+    else std::snprintf(text, sizeof text, "%d / %d", st.progress, info.goal);
+    return text;
+}
+
+// a line of the tab's list: a name over its description, a status at the row's end (a bar under it toward a goal)
+void AchievementLine(const char* name, const char* description, const std::string& status, bool unlocked, int goal,
+                     int progress) {
+    SettingGap();
+    const ImGuiStyle& style = ImGui::GetStyle();
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const ImVec2 at = ImGui::GetCursorScreenPos();
+    const float right = ImGui::GetCurrentWindow()->WorkRect.Max.x - style.ItemSpacing.x;
+    const ImVec2 status_size = ImGui::CalcTextSize(status.c_str());
+    const float text_x = at.x;
+    const float text_r = right - status_size.x - style.ItemSpacing.x * 2.0f;
+
+    ImGui::SetCursorScreenPos(ImVec2(text_x, at.y));
+    WrapAtScreenX(std::max(text_r, text_x + ImGui::GetFontSize() * 4.0f));
+    ImGui::PushStyleColor(ImGuiCol_Text, unlocked ? style.Colors[ImGuiCol_Text] : ImVec4(1, 1, 1, 0.62f));
+    ImGui::TextWrapped("%s", name);
+    ImGui::PopStyleColor();
+    // under the name, at its x: a new line would start at the row's indent
+    ImGui::SetCursorScreenPos(ImVec2(text_x, ImGui::GetCursorScreenPos().y - style.ItemSpacing.y * 0.6f));
+    ImGui::PushFont(nullptr, std::max(std::round(style.FontSizeBase * 0.8f), 11.0f));
+    ImGui::PushStyleColor(ImGuiCol_Text, style.Colors[ImGuiCol_TextDisabled]);
+    ImGui::TextWrapped("%s", description);
+    ImGui::PopStyleColor();
+    ImGui::PopFont();
+    ImGui::PopTextWrapPos();
+    const float bottom = ImGui::GetCursorScreenPos().y - style.ItemSpacing.y;
+    const float mid = (at.y + bottom) * 0.5f;
+
+    const ImU32 status_color = unlocked ? ImGui::GetColorU32(ImGuiCol_CheckMark) : ImGui::GetColorU32(ImGuiCol_TextDisabled);
+    dl->AddText(ImVec2(right - status_size.x, mid - status_size.y * 0.5f), status_color, status.c_str());
+    if (!unlocked && goal) {  // a thin bar under the count
+        const float y = mid + status_size.y * 0.5f + 3.0f, w = status_size.x;
+        dl->AddRectFilled(ImVec2(right - w, y), ImVec2(right, y + 3.0f), IM_COL32(255, 255, 255, 30), 1.5f);
+        dl->AddRectFilled(ImVec2(right - w, y), ImVec2(right - w + w * float(progress) / float(goal), y + 3.0f),
+                          ImGui::GetColorU32(ImGuiCol_CheckMark), 1.5f);
+    }
+    ImGui::SetCursorScreenPos(ImVec2(at.x, bottom));
+    ImGui::Dummy(ImVec2(right - at.x, 0.0f));
+}
+
+// a secret achievement not yet earned (Info::secret) stays out of the list: the section ends with one line counting them
+bool Hidden(int index) { return achievements::Get(index).secret && !achievements::StateOf(index).unlocked; }
+
+void AchievementRow(int index) {
+    const achievements::Info& info = achievements::Get(index);
+    const achievements::State st = achievements::StateOf(index);
+    AchievementLine(info.name, info.description, AchievementStatus(index, st), st.unlocked, info.goal, st.progress);
+}
+
+void SecretRow(int count) {
+    char name[96];
+    if (count == 1) std::snprintf(name, sizeof name, "%s", T("one_secret_achievement"));
+    else std::snprintf(name, sizeof name, T("n_secret_achievements"), count);
+    AchievementLine(name, T("hint_keep_playing_to_unlock"), T("locked"), false, 0, 0);
+}
+
+// the Achievements tab: how many are earned, then the story's and multiplayer's
+void DrawAchievements() {
+    if (Section("achievements", false)) {
+        SettingGap();
+        const int got = achievements::UnlockedCount();
+        char line[96];
+        std::snprintf(line, sizeof line, T("unlocked_of"), got, achievements::kCount);
+        ImGui::TextUnformatted(line);
+        ImGui::PushStyleColor(ImGuiCol_PlotHistogram, ImGui::GetStyle().Colors[ImGuiCol_CheckMark]);
+        ImGui::ProgressBar(float(got) / float(achievements::kCount), ImVec2(-FLT_MIN, ImGui::GetFontSize() * 0.45f), "");
+        ImGui::PopStyleColor();
+        Hint("hint_kept_on_this_computer_only");
+        // Reset, red as Quit, behind a prompt: Cancel is where the pad starts, and B is Cancel too
+        const auto shade = [](float f) { return ImVec4(kDanger.x * f, kDanger.y * f, kDanger.z * f, 1.0f); };
+        ImGui::PushStyleColor(ImGuiCol_Button, shade(0.75f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, kDanger);
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive, shade(0.6f));
+        const bool ask = ImGui::Button(T("reset_achievements"));
+        ImGui::PopStyleColor(3);
+        if (ask) ImGui::OpenPopup("##reset_achievements");
+        const ImVec2 display = ImGui::GetIO().DisplaySize;
+        ImGui::SetNextWindowPos(ImVec2(display.x * 0.5f, display.y * 0.5f), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+        ImGui::PushStyleColor(ImGuiCol_PopupBg, ImGui::GetStyleColorVec4(ImGuiCol_WindowBg));
+        if (ImGui::BeginPopupModal("##reset_achievements", nullptr,
+                                   ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoTitleBar)) {
+            ImGui::TextUnformatted(T("hint_reset_every_achievement_and"));
+            ImGui::Dummy(ImVec2(0.0f, ImGui::GetFontSize() * 0.8f));
+            const ImGuiStyle& st = ImGui::GetStyle();
+            ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(st.FramePadding.x * 2.0f, st.FramePadding.y * 1.5f));
+            ImGui::PushStyleColor(ImGuiCol_Button, shade(0.75f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, kDanger);
+            ImGui::PushStyleColor(ImGuiCol_ButtonActive, shade(0.6f));
+            const bool reset = ImGui::Button(T("reset"));
+            ImGui::PopStyleColor(3);
+            ImGui::SameLine();
+            const bool cancel = ImGui::Button(T("cancel"));
+            if (ImGui::IsWindowAppearing()) ImGui::SetItemDefaultFocus();
+            ImGui::PopStyleVar();
+            if (reset) achievements::Reset();
+            DrawWindowFrame(1.0f);
+            if (reset || cancel || g_pad.b) ImGui::CloseCurrentPopup();
+            ImGui::EndPopup();
+        }
+        ImGui::PopStyleColor();
+    }
+    for (const bool multi : {false, true}) {
+        if (!Section(multi ? "multiplayer" : "single_player")) continue;
+        int secret = 0;
+        for (int i = 0; i < achievements::kCount; i++) {
+            if (achievements::Get(i).multiplayer != multi) continue;
+            if (Hidden(i)) secret++;
+            else AchievementRow(i);
+        }
+        if (secret) SecretRow(secret);
+    }
+}
+
+// the toast for each achievement as it is earned: a card at the bottom's middle, framed and shadowed as the menu's
+// window, that glides up and fades in, stays, then sinks a little as it fades out. It moves by fractions of a pixel
+// (whole pixels stepped visibly at the slow end of the ease) and settles on whole ones
+void DrawAchievementToast() {
+    static int showing = -1;
+    static double since = 0.0;
+    constexpr double kIn = 0.5, kStay = 5.0, kOut = 0.5;
+    const double now = ImGui::GetTime();
+    if (showing >= 0 && now - since > kIn + kStay + kOut) showing = -1;
+    if (showing < 0) {
+        showing = achievements::NextToast();
+        since = now;
+        if (showing < 0) return;
+        audio::Play(audio::Cue::Achievement);  // as it appears, whatever menu_sounds says: it is no menu sound
+    }
+    const double t = now - since;
+    float alpha = 1.0f, offset = 0.0f;  // offset: how far below its place, in font heights
+    if (t < kIn) {
+        const float u = float(t / kIn), out = 1.0f - (1.0f - u) * (1.0f - u) * (1.0f - u);  // ease out (cubic)
+        alpha = std::min(u * 1.6f, 1.0f);
+        offset = (1.0f - out) * 1.6f;
+    } else if (t > kIn + kStay) {
+        const float u = std::min(float((t - kIn - kStay) / kOut), 1.0f), in = u * u * u;  // ease in (cubic)
+        alpha = 1.0f - u * u * (3.0f - 2.0f * u);
+        offset = in * 0.6f;
+    }
+
+    const achievements::Info& info = achievements::Get(showing);
+    ImDrawList* dl = ImGui::GetForegroundDrawList();
+    const ImGuiStyle& style = ImGui::GetStyle();
+    const ImVec2 display = ImGui::GetIO().DisplaySize;
+    const float font = std::round(ImGui::GetFontSize() * 1.6f), small = std::round(ImGui::GetFontSize() * 1.1f);
+    ImFont* f = ImGui::GetFont();
+    const char* head = T("achievement_unlocked");
+    const ImVec2 head_size = f->CalcTextSizeA(small, FLT_MAX, 0.0f, head);
+    const ImVec2 name_size = f->CalcTextSizeA(font, FLT_MAX, 0.0f, info.name);
+    const float pad = std::round(font * 0.9f), gap = std::round(font * 0.2f);
+    // the description under the name, wrapped at the wider of the name and about 26 of its own lines' worth
+    const float text_max = display.x - 32.0f - pad * 2.0f;
+    const float wrap = std::min(std::max(name_size.x, small * 26.0f), text_max);
+    const ImVec2 desc_size = f->CalcTextSizeA(small, FLT_MAX, wrap, info.description);
+    const float text_w = std::min(std::max({head_size.x, name_size.x, desc_size.x}), text_max);
+    const float w = std::round(pad * 2.0f + text_w);
+    const float h = std::round(head_size.y + gap + name_size.y + gap + desc_size.y + pad * 1.5f);
+    const float x = std::round((display.x - w) * 0.5f);
+    const float rest = std::round(display.y - h - font * 2.0f);
+    const float y = offset > 0.0f ? rest + offset * font : rest;
+    const ImVec2 lo(x, y), hi(x + w, y + h);
+    const float round = style.WindowRounding;
+    ImVec4 bg = style.Colors[ImGuiCol_WindowBg];  // the menu window's background
+    bg.w = std::max(bg.w, 0.92f) * alpha;
+    if (g_decorations) DrawFrame(dl, lo, hi, round, alpha);  // under the card: its shadow reaches outside it
+    dl->AddRectFilled(lo, hi, ImGui::ColorConvertFloat4ToU32(bg), round);
+    if (g_decorations) {  // the lines again over the fill
+        dl->AddRect(ImVec2(lo.x - 1.0f, lo.y - 1.0f), ImVec2(hi.x + 1.0f, hi.y + 1.0f), IM_COL32(0, 0, 0, int(255 * alpha)),
+                    round + 1.0f, 0, 1.0f);
+        dl->AddRect(lo, hi, IM_COL32(255, 255, 255, int(24 * alpha)), round, 0, 1.0f);
+    } else {
+        dl->AddRect(lo, hi, ImGui::GetColorU32(ImGuiCol_Border, alpha), round, 0, 1.0f);
+    }
+    const float tx = x + pad, ty = y + std::round((h - head_size.y - gap - name_size.y - gap - desc_size.y) * 0.5f);
+    const ImVec4 accent = style.Colors[ImGuiCol_CheckMark];
+    dl->PushClipRect(lo, ImVec2(hi.x - pad * 0.5f, hi.y), true);
+    dl->AddText(f, small, ImVec2(tx, ty), ImGui::ColorConvertFloat4ToU32(ImVec4(accent.x, accent.y, accent.z, alpha)), head);
+    dl->AddText(f, font, ImVec2(tx, ty + head_size.y + gap), IM_COL32(255, 255, 255, int(245 * alpha)), info.name);
+    const ImVec4 dim = style.Colors[ImGuiCol_TextDisabled];
+    dl->AddText(f, small, ImVec2(tx, ty + head_size.y + gap + name_size.y + gap),
+                ImGui::ColorConvertFloat4ToU32(ImVec4(dim.x, dim.y, dim.z, dim.w * alpha)), info.description, nullptr, wrap);
+    dl->PopClipRect();
+}
+
 }  // namespace
 
 void Draw(double fps) {
@@ -1525,6 +1727,8 @@ void Draw(double fps) {
         stroke(total, IM_COL32(255, 255, 255, 60));
         stroke(total * std::min(hold, 1.0f), ImGui::GetColorU32(ImGuiCol_CheckMark));
     }
+
+    DrawAchievementToast();
 
     // the prompt alone: a modal over the game, which is held. It goes when Cancel, B or Esc shut it
     if (quit && !open) {
@@ -2260,6 +2464,11 @@ void Draw(double fps) {
                            "hint_the_game_s_own_files"});
                     if (ImGui::Button(T("rescan"))) app::ScanMods();
                 }
+                end_tab();
+            }
+
+            if (tab("achievements")) {
+                DrawAchievements();
                 end_tab();
             }
 

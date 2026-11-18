@@ -28,6 +28,7 @@ std::filesystem::path ExeDir() {
     static const std::filesystem::path dir = std::filesystem::current_path();
     return dir;
 }
+std::filesystem::path DataDir() { return ExeDir(); }  // the run folder, as its hard disks
 int Instance() {
     static const int n = [] {
         const char* e = std::getenv("INSTANCE");

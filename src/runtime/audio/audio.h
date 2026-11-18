@@ -32,7 +32,7 @@ std::vector<Device> Devices();
 void SelectDevice(const std::string& id);
 
 // the host's own sounds, played over the game; any thread
-enum class Cue { Select, Move };  // a tab or setting changed; the cursor moved
+enum class Cue { Select, Move, Achievement };  // a tab or setting changed; the cursor moved; an achievement's toast
 void Play(Cue cue);
 // adds the playing ones to the front pair of interleaved Channels() frames; the output's callback calls it after the
 // game's mix
