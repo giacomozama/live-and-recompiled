@@ -1528,7 +1528,14 @@ private:
     // it; the sub-pixel offset of a picture slot's 3D draws (Jittering), in host pixels; the debug views
     // (XBE_MOTION_VIEW) over the pictures Present shows, their slots beside them
     void KeepMotionDepth(bool again = false);
-    bool MotionOn() const { return MotionWanted() || upscale_; }
+    // XBE_MOTION=0: none under DLSS either (no motion pass, nor what it keeps), for finding what they bring out
+    bool MotionOn() const {
+        static const bool off = [] {
+            const char* e = std::getenv("XBE_MOTION");
+            return e && *e == '0';
+        }();
+        return !off && (MotionWanted() || upscale_);
+    }
     bool Jittering() const;
     std::array<float, 2> Jitter(uint32_t slot) const;
     // the frame's 3D, jittered for a temporal upscaler; never its 2D or the passes over it (bound_rt_ bound)
@@ -5697,9 +5704,11 @@ void VulkanBackend::ApplyOcclusion() {
 bool VulkanBackend::Motion() { return MotionOn(); }
 
 // for an upscaler; XBE_JITTER=1 with XBE_MOTION_VIEW too, to see it without one
+// XBE_JITTER=0 turns it off under DLSS too, for finding what the jitter brings out
 bool VulkanBackend::Jittering() const {
-    static const bool on = std::getenv("XBE_JITTER") != nullptr;
-    return upscale_ || (on && MotionWanted());
+    static const char* e = std::getenv("XBE_JITTER");
+    static const bool on = e != nullptr && *e != '0', off = e != nullptr && *e == '0';
+    return !off && (upscale_ || (on && MotionWanted()));
 }
 
 // each picture shown takes the next point of Halton's (2, 3) in a cycle of jitter_phases_, within half a pixel each
@@ -5777,25 +5786,35 @@ namespace {
 constexpr uint64_t kMotionVertexSalt = 0x6D6F74696F6E5653ull;
 constexpr uint64_t kMotionPixelSalt = 0x6D6F74696F6E5053ull;
 constexpr uint64_t kMotionPlainSalt = 0x6D6F74696F6E504Cull;
-constexpr uint32_t kCmpEqual = 0x202;  // D3DCMP_EQUAL
+constexpr uint32_t kCmpEqual = 0x202;      // D3DCMP_EQUAL
+constexpr uint32_t kCmpLessEqual = 0x203;  // D3DCMP_LESSEQUAL
+// a tessellated draw's motion, drawn without its tessellation: toward the eye by this much, so the ripples the
+// tessellation raised it by still pass (D3D's units: the depth's least step, and per its slope)
+constexpr int32_t kTessMotionBias = -2048;
+constexpr float kTessMotionSlope = -8;
 
 }  // namespace
 
 // The draw again into the slot's velocity, tested against its depth as the 3D left it: equal where the draw wrote
 // depth (the shaders are precise; a g_surface_depth surface's depth pass wrote it too), its own test where it didn't
 // (a sky behind everything), none where it tests none (a sky drawn first). Only the opaque 3D: what blends without
-// writing depth, points and tessellated patches leave the motion of what's behind them
+// writing depth and points leave the motion of what's behind them. A tessellated draw (dynamic water) is drawn
+// without its tessellation, at or in front of what lies there, a little toward the eye: its whole surface takes its
+// motion, where its depth pass wrote the rippled surface and where that left the floor under it showing (along the
+// tiles' edges), which otherwise drew the floor's motion in lines across the water's none
 void VulkanBackend::DrawMotion(const State& s, const Before& before, uint32_t prim, uint32_t start, uint32_t count,
                                const uint8_t* indices) {
     if (!motion_pass_ || !count) return;
     MotionSlot& m = motion_[motion_slot_];
-    if (prim == kPrimPoints || FixedSprite(s, prim) || TessellatedDraw(s, prim)) return;
+    if (prim == kPrimPoints || FixedSprite(s, prim)) return;
+    const bool tess = TessellatedDraw(s, prim);
     PsoKey k;
     std::memset(&k, 0, sizeof(k));
     KeyBlend(s, k);
     bool zen = s.rs[kRsZEnable] != 0;
     bool zwrite = zen && SimpleState(s, kMZWriteEnable) != 0;
-    if (k.blend && !zwrite && !(zen && SurfaceDepth(s, start, count, indices))) return;
+    if (tess && !zen) return;
+    if (!tess && k.blend && !zwrite && !(zen && SurfaceDepth(s, start, count, indices))) return;
     if (k.blend) zwrite = true;
     Target* rt = FindTarget(s.rt, false);
     if (!rt || rt->data != m.rt) return;
@@ -5824,7 +5843,7 @@ void VulkanBackend::DrawMotion(const State& s, const Before& before, uint32_t pr
     pk.shading = sh.shading;
     // a draw tested equal to the depth it wrote needs no discards of its own: the test passes only where it wrote. Its
     // shading (super fur's strands, worked out a shell at a time) left out, the test can run before the pixel shader
-    const bool plain = zwrite;
+    const bool plain = zwrite || tess;
     uint64_t pkey = Hash(&pk, sizeof(pk)) ^ (plain ? kMotionPlainSalt : kMotionPixelSalt);
     auto pit = motion_shaders_.find(pkey);
     if (pit == motion_shaders_.end())
@@ -5842,6 +5861,12 @@ void VulkanBackend::DrawMotion(const State& s, const Before& before, uint32_t pr
     k.blend = k.src = k.dst = k.op = 0;
     k.wmask = 0x3;
     if (zwrite) k.zfunc = kCmpEqual;
+    if (tess) {
+        k.zen = 1;
+        k.zfunc = kCmpLessEqual;
+        k.zbias = kTessMotionBias;
+        k.zslope = kTessMotionSlope;
+    }
     k.zwrite = 0;
     k.sten = k.sfunc = k.smask = k.swmask = k.sfail = k.szfail = k.spass = 0;
     auto [pso, fresh] = motion_psos_.try_emplace(Hash(&k, sizeof(k)), VK_NULL_HANDLE);
@@ -6012,7 +6037,12 @@ app::Scale VulkanBackend::UpscaleScale() {
     const float ratio = float(out.height) / float(h);
     // NVIDIA's advice: textures as sharp as at the output's size, and 8 jitter phases per output pixel a render pixel
     // covers
-    lod_bias_ = -std::log2(std::max(ratio, 1.0f));
+    // XBE_LOD_BIAS=0 leaves the textures as the render size takes them, for finding what the bias brings out
+    static const bool no_bias = [] {
+        const char* e = std::getenv("XBE_LOD_BIAS");
+        return e && *e == '0';
+    }();
+    lod_bias_ = no_bias ? 0.0f : -std::log2(std::max(ratio, 1.0f));
     jitter_phases_ = std::clamp(uint32_t(std::lround(8 * ratio * ratio)), 8u, 72u);
     return scale;
 }
@@ -6062,7 +6092,12 @@ void VulkanBackend::Upscale(std::vector<Image*>& shows, const std::vector<Image*
         const MotionSlot& m = motion_[slots[i] % kMaxGen];
         bool moved = m.drawn == presents_ + 1 && m.velocity && m.depth && m.velocity->w == color.w &&
                      m.velocity->h == color.h;
-        Image& depth = moved ? *m.depth : *dlss_still_depth_;
+        // XBE_DLSS_DEPTH=0 hands it the far plane everywhere, for finding what the depth brings out
+        static const bool no_depth = [] {
+            const char* e = std::getenv("XBE_DLSS_DEPTH");
+            return e && *e == '0';
+        }();
+        Image& depth = moved && !no_depth ? *m.depth : *dlss_still_depth_;
         Image& motion = moved ? *m.velocity : *dlss_still_motion_;
         ImageRef& dst = dlss_out_[i % kMaxGen];
         if (!dst || dst->w != out.width || dst->h != out.height) {
