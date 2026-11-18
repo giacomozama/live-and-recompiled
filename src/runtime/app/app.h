@@ -333,5 +333,11 @@ uint32_t MonitorRefresh();
 // the same, unrounded where the system gives it (164.958 for a 165 Hz mode): frame generation spaces the pictures it
 // shows a refresh apart by it
 double MonitorHz();
+// vsync forced on: the pictures a second (the cap times frame generation) pass the monitor's refresh, where without
+// it they would tear and some never show; Vsync, the swap chain's: the setting or that
+inline bool VsyncForced(const Settings& s) {
+    return s.fps_cap && double(s.fps_cap) * double(s.frame_generation > 1 ? s.frame_generation : 1) > MonitorHz() + 0.5;
+}
+inline bool Vsync(const Settings& s) { return s.vsync || VsyncForced(s); }
 
 }  // namespace app

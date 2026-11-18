@@ -95,7 +95,7 @@ uint32_t Shown() {
         return e ? uint32_t(std::atoi(e)) : 0u;
     }();
     uint32_t r = Clamp(env ? env : g_frame_rate);
-    if (r) return r;
+    if (r) return env ? r : std::min(r, MostFrameRate());
     // the most of those the monitor can show (a rate just under, as 59.94, counts for the one above)
     uint32_t hz = app::MonitorRefresh(), best = 30;
     for (uint32_t c : {60u, 120u, 180u, 240u})
@@ -140,6 +140,12 @@ void SetFrameRate(uint32_t rate) {
 }
 
 bool FrameRateLocked() { return g_pinned.load(std::memory_order_relaxed) != 0; }
+
+uint32_t MostFrameRate() {
+    const double hz = app::MonitorHz();
+    for (uint32_t c : {60u, 120u, 180u}) if (double(c) >= hz - 0.5) return c;
+    return kShownMost;
+}
 
 uint32_t GameRate() { return Rate(); }
 
@@ -356,7 +362,8 @@ X86_FUNC(sub_002A7B60) {
         display::SetFrameRate(display::g_frame_rate);
     }
     uint32_t rate = Rate();
-    if (!display::g_frame_rate && display::Shown() / rate != app::Get().frame_generation) display::SetFrameRate(0);  // the monitor changed
+    // the monitor changed: Highest follows it, a setting past its most comes down to that (or back up)
+    if (display::Shown() / rate != app::Get().frame_generation) display::SetFrameRate(display::g_frame_rate);
     if (rate != shown) {
         LOGI("display: %u FPS%s", rate, rate > 30 ? ", ticks from the frame time" : " (the console's)");
         shown = rate;

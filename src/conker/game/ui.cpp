@@ -710,8 +710,9 @@ const char* Beside(const char* label, float after = 0.0f, float wide = 0.0f) {
 }
 // a setting with a few short choices: segments side by side in one rounded track, the chosen one in the accent. Where
 // they would not fit the room beside the label it is a dropdown instead. Leading spaces in a name (which line up a
-// dropdown's numbers) are dropped. A label that starts with ## has no label column: the segments take the whole row
-bool Segmented(const char* label, int* v, std::initializer_list<const char*> items) {
+// dropdown's numbers) are dropped. A label that starts with ## has no label column: the segments take the whole row.
+// off: a bit for each choice greyed out
+bool Segmented(const char* label, int* v, std::initializer_list<const char*> items, uint32_t off = 0) {
     const char* id = label[0] == '#' && label[1] == '#' ? label : Beside(label);
     const ImGuiStyle& st = ImGui::GetStyle();
     std::vector<std::string> names;
@@ -732,7 +733,16 @@ bool Segmented(const char* label, int* v, std::initializer_list<const char*> ite
     total = widest * float(widths.size());
     if (total > room) {
         if (id == label) ImGui::SetNextItemWidth(-FLT_MIN);  // no label column: the dropdown the row's width too
-        return ImGui::Combo(id, v, Items(items).c_str());
+        if (!off) return ImGui::Combo(id, v, Items(items).c_str());
+        bool picked = false;
+        if (ImGui::BeginCombo(id, *v >= 0 && *v < int(names.size()) ? names[size_t(*v)].c_str() : "")) {
+            for (int i = 0; i < int(names.size()); i++) {
+                const ImGuiSelectableFlags flags = off >> i & 1 ? ImGuiSelectableFlags_Disabled : 0;
+                if (ImGui::Selectable(names[size_t(i)].c_str(), *v == i, flags) && *v != i) *v = i, picked = true;
+            }
+            ImGui::EndCombo();
+        }
+        return picked;
     }
     // the row fills the room: every segment the same share of it, the last the rounding
     {
@@ -754,7 +764,10 @@ bool Segmented(const char* label, int* v, std::initializer_list<const char*> ite
     for (int i = 0; i < int(names.size()); i++) {
         if (i) ImGui::SameLine(0.0f, 0.0f);
         ImGui::PushID(i);
+        const bool grey = off >> i & 1;
+        ImGui::BeginDisabled(grey);
         if (ImGui::InvisibleButton("##segment", ImVec2(widths[size_t(i)], height))) *v = i, changed = true;
+        ImGui::EndDisabled();
         const ImVec2 a(x, lo.y), b(x + widths[size_t(i)], hi.y);
         const ImDrawFlags corners = names.size() == 1 ? ImDrawFlags_RoundCornersAll
                                     : i == 0          ? ImDrawFlags_RoundCornersLeft
@@ -764,7 +777,7 @@ bool Segmented(const char* label, int* v, std::initializer_list<const char*> ite
         else if (ImGui::IsItemHovered()) dl->AddRectFilled(a, b, IM_COL32(255, 255, 255, 18), round, corners);
         const ImVec2 size = ImGui::CalcTextSize(names[size_t(i)].c_str());
         dl->AddText(ImVec2(std::round((a.x + b.x - size.x) * 0.5f), std::round((a.y + b.y - size.y) * 0.5f)),
-                    ImGui::GetColorU32(ImGuiCol_Text), names[size_t(i)].c_str());
+                    ImGui::GetColorU32(grey ? ImGuiCol_TextDisabled : ImGuiCol_Text), names[size_t(i)].c_str());
         const bool beside_chosen = *v == i || *v == i - 1;  // the chosen one's sides have lines of their own
         if (i && g_decorations && !beside_chosen) {  // a line between this segment and the one before: dark, with a light one beside it
             dl->AddLine(ImVec2(a.x + 0.5f, a.y + 1.0f), ImVec2(a.x + 0.5f, b.y - 1.0f), IM_COL32(0, 0, 0, int(120.0f * st.Alpha)));
@@ -2084,8 +2097,17 @@ void Draw(double fps) {
                         }
                     }
 
-                    Check("v_sync", &s.vsync);
-                    Hint("hint_waits_for_the_display_to", true);
+                    // forced on past the monitor's refresh (app::VsyncForced): shown on and greyed, the setting kept
+                    if (app::VsyncForced(app::Get())) {
+                        bool on = true;
+                        ImGui::BeginDisabled();
+                        Check("v_sync", &on);
+                        ImGui::EndDisabled();
+                        Hint("hint_always_on_while_the_frame", true);
+                    } else {
+                        Check("v_sync", &s.vsync);
+                        Hint("hint_waits_for_the_display_to", true);
+                    }
                     {
                         // offered once the swap chain found an HDR10 format; kept clickable while on, to turn it off
                         bool can = gpu::HdrAvailable() || s.hdr;
@@ -2164,20 +2186,26 @@ void Draw(double fps) {
                     }
                     constexpr uint32_t kRates[] = {30, 60, 120, 180, 240, 0};
                     int rate = 0;
-                    for (int i = 0; i < 6; i++)
-                        if (kRates[i] == display::g_frame_rate) rate = i;
+                    // past the first rate to reach the monitor's refresh, greyed out (a setting there runs at it)
+                    const uint32_t most = display::MostFrameRate();
+                    uint32_t off = 0;
+                    for (int i = 0; i < 6; i++) {
+                        if (kRates[i] > most) off |= 1u << i;
+                        if (kRates[i] == std::min(display::g_frame_rate, most) && (display::g_frame_rate || !kRates[i]))
+                            rate = i;
+                    }
                     // fixed while a system link session has another machine in it: every player's game must run at the same rate (link.cpp)
                     const bool locked = display::FrameRateLocked();
                     ImGui::BeginDisabled(locked);
-                    if (Segmented("frame_rate", &rate, {"30_original", " 60", " 120", " 180", " 240", " highest"}))
+                    if (Segmented("frame_rate", &rate, {"30_original", " 60", " 120", " 180", " 240", " highest"}, off))
                         display::SetFrameRate(kRates[rate]);
                     ImGui::EndDisabled();
                     Hint(locked ? "hint_can_t_be_changed_during" :
                                   "hint_highest_picks_the_most_the", true);
                     // past the monitor's refresh rate with vsync the pictures go one a refresh (VulkanBackend::InStep)
+                    // (vsync forced on there)
                     const app::Settings& now = app::Get();
-                    if (now.vsync && now.frame_generation > 1 &&
-                        double(now.fps_cap) * now.frame_generation > app::MonitorHz() + 0.5) {
+                    if (now.frame_generation > 1 && app::VsyncForced(now)) {
                         int timing = s.picture_timing_exact ? 1 : 0;
                         if (Segmented("picture_timing", &timing, {"lighter", "exact"}))
                             s.picture_timing_exact = timing == 1;

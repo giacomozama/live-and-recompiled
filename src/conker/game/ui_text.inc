@@ -115,6 +115,12 @@ constexpr Line kLines[] = {
     {"graphics_adapter", "Graphics adapter", "Grafikkarte", "Carte graphique", "Adaptador gráfico", "Scheda grafica", "グラフィックアダプター"},
     {"automatic", "Automatic", "Automatisch", "Automatique", "Automático", "Automatico", "自動"},
     {"v_sync", "V-Sync", "V-Sync", "V-Sync", "V-Sync", "V-Sync", "垂直同期"},
+    {"hint_always_on_while_the_frame", "Always on while the frame rate is above the monitor's refresh rate.",
+     "Immer an, solange die Bildrate über der Bildwiederholrate des Monitors liegt.",
+     "Toujours activée tant que la fréquence d'images dépasse la fréquence de rafraîchissement du moniteur.",
+     "Siempre activada mientras la tasa de fotogramas supere la frecuencia de actualización del monitor.",
+     "Sempre attiva finché la frequenza dei fotogrammi supera la frequenza di aggiornamento del monitor.",
+     "フレームレートがモニターのリフレッシュレートを超えている間は常にオンです。"},
     {"hint_waits_for_the_display_to", "Waits for the display to refresh before showing each frame. Stops screen tearing; turn it off for the lowest latency.",
      "Wartet vor jedem Bild auf die Bildschirmaktualisierung. Verhindert Bildreißen; für die geringste Latenz ausschalten.",
      "Attend le rafraîchissement de l'écran avant d'afficher chaque image. Évite le déchirement de l'image ; à "

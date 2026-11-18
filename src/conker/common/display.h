@@ -13,6 +13,9 @@ extern uint32_t g_frame_rate;
 // the frame rate set, the runtime's fps cap and frame generation with it: the one limit (GameInfo::init applies the
 // loaded one)
 void SetFrameRate(uint32_t rate);
+// the highest frame rate offered: the first of 60, 120, 180 and 240 to reach the monitor's refresh (a rate just under,
+// as 59.94 for 60, counts), past which more pictures only cost; 240 past 240 Hz. A setting above it runs at it
+uint32_t MostFrameRate();
 // in a system link session with another machine: the frame rate setting can't change, and the game's rate stays as it
 // was when the other came in (peers must tick alike, link.cpp). Any thread
 bool FrameRateLocked();

@@ -2746,7 +2746,7 @@ bool VulkanBackend::CreateSwapChain() {
     VkSurfaceCapabilitiesKHR caps;
     if (vkGetPhysicalDeviceSurfaceCapabilitiesKHR(phys_, surface_, &caps) != VK_SUCCESS) return false;
     VkExtent2D ext = caps.currentExtent.width == UINT32_MAX ? WindowExtent() : caps.currentExtent;
-    swap_vsync_ = app::Get().vsync;
+    swap_vsync_ = app::Vsync(app::Get());
     swap_gen_ = std::clamp<uint32_t>(app::Get().frame_generation, 1, kMaxGen);
     swap_stale_ = false;
     minimised_ = !ext.width || !ext.height;
@@ -7227,7 +7227,7 @@ void VulkanBackend::ResizeSwap() {
     VkExtent2D ext = caps.currentExtent.width == UINT32_MAX ? WindowExtent() : caps.currentExtent;
     minimised_ = !ext.width || !ext.height;
     if (minimised_) return;
-    bool vsync = app::Get().vsync;
+    bool vsync = app::Vsync(app::Get());
     uint32_t gen = std::clamp<uint32_t>(app::Get().frame_generation, 1, kMaxGen);
     if (swap_ && !swap_stale_ && ext.width == bb_w_ && ext.height == bb_h_ && vsync == swap_vsync_ && gen == swap_gen_ &&
         app::Get().hdr == swap_hdr_want_)
