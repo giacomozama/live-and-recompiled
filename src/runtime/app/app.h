@@ -33,6 +33,8 @@ struct Settings {
     // NVIDIA RTX GPU, with the DLSS module beside the game); its quality, XbeDlssQuality (gpu/dlss.h)
     std::string upscaler = "off";
     uint32_t upscaler_quality = 1;
+    // the model DLSS runs, XbeDlssModel (gpu/dlss.h): K, M, L, or NVIDIA's pick for the quality mode
+    uint32_t dlss_model = 0;
     // RCAS (FSR 1's sharpening) over DLSS's picture, in % (0 off); fsr_sharpness is FSR 1's own
     uint32_t dlss_sharpness = 0;
     // super fur's shells under DLSS shaded once per 2x1 or 2x2 pixels as far as the GPU's time a frame needs it

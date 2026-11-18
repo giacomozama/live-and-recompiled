@@ -2137,6 +2137,9 @@ void Draw(double fps) {
                         if (Segmented("dlss_quality", &quality,
                                       {"dlaa", "quality", "balanced", "performance", "ultra_performance"}))
                             s.upscaler_quality = uint32_t(quality);
+                        int model = int(std::min<uint32_t>(s.dlss_model, 3));
+                        if (Segmented("dlss_model", &model, {"K", "M", "L", "by_quality"})) s.dlss_model = uint32_t(model);
+                        Hint("hint_k_is_the_lightest_m", true);
                         Slider("dlss_sharpness", &s.dlss_sharpness, 0, 100, app::Settings{}.dlss_sharpness);
                         Hint("hint_rcas_sharpening_over_dlss_s", true);
                         if (s.dlss_sharpness > 0) {

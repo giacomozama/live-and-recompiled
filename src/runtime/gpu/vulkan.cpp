@@ -2241,7 +2241,7 @@ private:
     bool dlss_missing_ = false;  // no module beside the game (LoadDlss)
     int dlss_init_ = 0;
     bool upscale_ = false;
-    std::array<uint32_t, 5> dlss_made_{};
+    std::array<uint32_t, 6> dlss_made_{};
     std::array<ImageRef, kMaxGen> dlss_out_;
     std::array<Image*, kMaxGen> dlss_src_{};  // the picture each was made from, for its fur mark; this Present's only
     ImageRef dlss_still_depth_, dlss_still_motion_;
@@ -6256,8 +6256,8 @@ app::Scale VulkanBackend::UpscaleScale() {
 
 // the upscaler made for these sizes, made again (the device idle) when they change; false when it can't be
 bool VulkanBackend::EnsureDlss(uint32_t w, uint32_t h, uint32_t out_w, uint32_t out_h) {
-    uint32_t quality = app::Get().upscaler_quality;
-    std::array<uint32_t, 5> want{w, h, out_w, out_h, quality + 1};
+    const uint32_t quality = app::Get().upscaler_quality, model = app::Get().dlss_model;
+    std::array<uint32_t, 6> want{w, h, out_w, out_h, quality + 1, model};
     if (want == dlss_made_) return true;
     if (dlss_made_[4]) {
         Flush();
@@ -6266,7 +6266,7 @@ bool VulkanBackend::EnsureDlss(uint32_t w, uint32_t h, uint32_t out_w, uint32_t 
     }
     dlss_made_ = {};
     EndRendering();
-    if (!dlss_->create(cmd_, w, h, out_w, out_h, int(quality))) return false;
+    if (!dlss_->create(cmd_, w, h, out_w, out_h, int(quality), int(model))) return false;
     ForgetDrawCmd();
     dlss_made_ = want;
     dlss_reset_ = true;

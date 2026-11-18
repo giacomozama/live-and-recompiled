@@ -11,7 +11,7 @@
 extern "C" {
 #endif
 
-#define XBE_DLSS_API_VERSION 1
+#define XBE_DLSS_API_VERSION 2
 #define XBE_DLSS_API_EXPORT "xbe_dlss_api"
 
 // DLSS's quality modes, the render size's share of the output's from all to least
@@ -21,6 +21,15 @@ enum XbeDlssQuality {
     XBE_DLSS_BALANCED,
     XBE_DLSS_PERFORMANCE,
     XBE_DLSS_ULTRA_PERFORMANCE,
+};
+
+// the model DLSS runs: K (transformer), M or L (the newer ones, dearer, more so on cards without FP8), or the SDK's
+// pick for the mode (K for DLAA, Quality and Balanced, M for Performance, L for Ultra Performance)
+enum XbeDlssModel {
+    XBE_DLSS_MODEL_K = 0,
+    XBE_DLSS_MODEL_M,
+    XBE_DLSS_MODEL_L,
+    XBE_DLSS_MODEL_BY_MODE,
 };
 
 // an image as NGX takes it: the whole of one level and layer, aspect the view's
@@ -59,8 +68,9 @@ typedef struct XbeDlssApi {
                 PFN_vkGetDeviceProcAddr gdpa);
     // the render size DLSS asks for the output size at quality
     int (*render_size)(uint32_t out_w, uint32_t out_h, int quality, uint32_t* w, uint32_t* h);
-    // the upscaler for these sizes (any made before released first: the device must be idle), recorded into cmd
-    int (*create)(VkCommandBuffer cmd, uint32_t w, uint32_t h, uint32_t out_w, uint32_t out_h, int quality);
+    // the upscaler for these sizes at quality running model (XbeDlssModel; any made before released first: the device
+    // must be idle), recorded into cmd
+    int (*create)(VkCommandBuffer cmd, uint32_t w, uint32_t h, uint32_t out_w, uint32_t out_h, int quality, int model);
     // a picture upscaled, recorded into cmd, outside a render pass; NGX leaves cmd's bindings its own
     int (*evaluate)(VkCommandBuffer cmd, const XbeDlssEvaluate* e);
     // the upscaler released, and NGX shut down: the device idle

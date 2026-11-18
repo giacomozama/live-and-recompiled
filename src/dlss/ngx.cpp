@@ -211,23 +211,22 @@ void Release() {
     g_feature = nullptr;
 }
 
-// The model each mode runs. The SDK's defaults: K (transformer) for DLAA, Quality and Balanced, but M for Performance and
-// L for Ultra Performance, the newer models, far dearer on cards without FP8 (an RTX 3060 Ti: Performance came out the
-// slowest of the four, and frame generation runs DLSS on each picture). K for every mode; XBE_DLSS_PRESET=<letter>
-// another for all (J, K, L, M), 0 the SDK's own
-unsigned Preset() {
-    const char* e = getenv("XBE_DLSS_PRESET");
-    if (!e || !*e) return NVSDK_NGX_DLSS_Hint_Render_Preset_K;
-    if (*e == '0') return NVSDK_NGX_DLSS_Hint_Render_Preset_Default;
-    const char c = char(*e | 0x20);
-    if (c >= 'j' && c <= 'm') return NVSDK_NGX_DLSS_Hint_Render_Preset_J + unsigned(c - 'j');
-    return NVSDK_NGX_DLSS_Hint_Render_Preset_K;
+// The model every mode runs (XbeDlssModel), as a render preset hint. The SDK's defaults put Performance on M and Ultra
+// Performance on L, far dearer than K on cards without FP8 (an RTX 3060 Ti: Performance came out the slowest of the
+// four, and frame generation runs DLSS on each picture); the game's default is K for all
+unsigned Preset(int model) {
+    switch (model) {
+        case XBE_DLSS_MODEL_M: return NVSDK_NGX_DLSS_Hint_Render_Preset_M;
+        case XBE_DLSS_MODEL_L: return NVSDK_NGX_DLSS_Hint_Render_Preset_L;
+        case XBE_DLSS_MODEL_BY_MODE: return NVSDK_NGX_DLSS_Hint_Render_Preset_Default;
+        default: return NVSDK_NGX_DLSS_Hint_Render_Preset_K;
+    }
 }
 
-int Create(VkCommandBuffer cmd, uint32_t w, uint32_t h, uint32_t out_w, uint32_t out_h, int quality) {
+int Create(VkCommandBuffer cmd, uint32_t w, uint32_t h, uint32_t out_w, uint32_t out_h, int quality, int model) {
     if (!g_params) return 0;
     Release();
-    const unsigned preset = Preset();
+    const unsigned preset = Preset(model);
     for (const char* mode : {NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_DLAA,
                              NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_Quality,
                              NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_Balanced,
@@ -250,7 +249,7 @@ int Create(VkCommandBuffer cmd, uint32_t w, uint32_t h, uint32_t out_w, uint32_t
         return 0;
     }
     Log("dlss: upscaling %ux%u to %ux%u (preset %c)", w, h, out_w, out_h,
-        preset ? char('A' + preset - 1) : '-');
+        preset ? char('A' + preset - 1) : '?');
     return 1;
 }
 
