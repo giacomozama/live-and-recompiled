@@ -66,6 +66,7 @@ void Load() {
     s.render_percent = std::min<uint32_t>(t["render_percent"].value_or(s.render_percent), 200);
     s.upscaler = t["upscaler"].value_or(s.upscaler);
     s.upscaler_quality = std::min<uint32_t>(t["upscaler_quality"].value_or(s.upscaler_quality), 4);
+    s.dlss_sharpness = std::min<uint32_t>(t["dlss_sharpness"].value_or(s.dlss_sharpness), 100);
     s.fps_cap = t["fps_cap"].value_or(s.fps_cap);
     s.vsync = t["vsync"].value_or(s.vsync);
     s.hdr = t["hdr"].value_or(s.hdr);
@@ -155,6 +156,7 @@ toml::table Table() {
                   {"render_percent", int64_t(s.render_percent)},
                   {"upscaler", s.upscaler},
                   {"upscaler_quality", int64_t(s.upscaler_quality)},
+                  {"dlss_sharpness", int64_t(s.dlss_sharpness)},
                   {"fps_cap", int64_t(s.fps_cap)},
                   {"vsync", s.vsync},
                   {"hdr", s.hdr},

@@ -2142,6 +2142,7 @@ private:
     // texture LOD bias the render size takes
     const XbeDlssApi* dlss_ = nullptr;
     bool dlss_device_ = false;
+    bool dlss_missing_ = false;  // no module beside the game (LoadDlss)
     int dlss_init_ = 0;
     bool upscale_ = false;
     std::array<uint32_t, 5> dlss_made_{};
@@ -5104,6 +5105,7 @@ bool VulkanBackend::ReuseDraw(const State& s) {
     // kept as the frame kept it, with this draw's constants: the draws after it in its state take it up (FastDraw)
     const ViewsAndSamplers filled = *views;  // views may be filled_ itself
     kept_ = r.kept;
+    kept_.jitter = jitter_;  // this picture's, not the frame's: FastDraw and ReuseRun draw with it
     kept_.b = b;
     kept_.stages = stages;
     kept_.filled = filled;
@@ -5851,10 +5853,8 @@ void VulkanBackend::ShowMotion(std::vector<Image*>& shows, const std::vector<Ima
 // the instance, so DLSS can be turned on later without a restart
 void VulkanBackend::AddDlssInstanceExtensions(std::vector<const char*>& exts) {
     dlss_ = LoadDlss();
-    if (!dlss_) {
-        g_dlss_state = 3;
-        return;
-    }
+    dlss_missing_ = !dlss_;
+    if (!dlss_) return;
     static const std::wstring library = app::ExeDir().wstring(), data = app::StateDir().wstring();
     dlss_->setup(DlssLog, library.c_str(), data.c_str());
     uint32_t n = 0;
@@ -5876,6 +5876,8 @@ void VulkanBackend::AddDlssInstanceExtensions(std::vector<const char*>& exts) {
 
 // the device extensions NGX needs, when the GPU has them all: DLSS is there (g_dlss_state)
 void VulkanBackend::AddDlssDeviceExtensions(std::vector<const char*>& exts) {
+    // the module's absence only matters on an NVIDIA GPU: elsewhere DLSS isn't there either way
+    g_dlss_state = dlss_missing_ && props_.vendorID == 0x10DE ? 3 : 0;
     if (!dlss_) return;
     uint32_t n = 0;
     const char* const* names = nullptr;
@@ -6993,7 +6995,13 @@ void VulkanBackend::DrawUi() {
 // it without FSR's upscaling and sharpening whatever the settings (the menu's blurred picture)
 void VulkanBackend::DrawFrame(Image* picture, uint32_t bi, bool fsr, Image* mask) {
     const app::Settings& set = app::Get();
-    fsr = fsr && set.fsr;
+    // DLSS's picture, already at the output's size: RCAS alone over it, at its own sharpness, and not by its alpha (the
+    // fur mark), which DLSS doesn't carry through
+    const bool upscaled = picture && std::any_of(dlss_out_.begin(), dlss_out_.end(),
+                                                 [&](const ImageRef& r) { return r.get() == picture; });
+    fsr = fsr && (upscaled ? set.dlss_sharpness > 0 : set.fsr);
+    const float sharpness = float(upscaled ? set.dlss_sharpness : set.fsr_sharpness) / 100.0f;
+    const float fur_share = upscaled ? 1.0f : float(set.fur_sharpness) / 100.0f;
     // 16:9 when the console reports a widescreen display, else 4:3, or the shape a patched title draws
     float aspect = app::FrameAspect();
     float w = float(bb_w_);
@@ -7089,13 +7097,12 @@ void VulkanBackend::DrawFrame(Image* picture, uint32_t bi, bool fsr, Image* mask
         SetViewport((w - vw) / 2, (h - vh) / 2, vw, vh);
         SetScissor(0, 0, int32_t(bb_w_), int32_t(bb_h_));
         if (fsr) {
-            float sharpness = float(set.fsr_sharpness) / 100.0f;
             float p[8] = {
                 1.0f / float(out_w),
                 1.0f / float(out_h),
                 sharpness,
                 gamma_ ? 1.0f : 0.0f,
-                float(set.fur_sharpness) / 100.0f, power, level, swap_hdr_ ? 0.0f : float(cvd)
+                fur_share, power, level, swap_hdr_ ? 0.0f : float(cvd)
             };
             Alloc cb = Upload(kPassCbBytes);
             std::memcpy(cb.cpu, p, sizeof(p));

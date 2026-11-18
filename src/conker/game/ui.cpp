@@ -2100,23 +2100,28 @@ void Draw(double fps) {
                 }
 
                 if (Section("quality")) {
-                    // DLSS while it is there or already chosen; it sets the render size itself, so the render size
-                    // and FSR 1 step aside while it is on
+                    // DLSS: left out on a GPU without it unless already chosen (so it can be turned off), greyed
+                    // out where something can be done about it (the files, a failed start); it sets the render size
+                    // itself, so the render size and FSR 1 step aside while it is on
                     const int dlss_state = gpu::g_dlss_state.load();
                     bool dlss = s.upscaler == "dlss";
-                    ImGui::BeginDisabled(dlss_state != 1 && !dlss);
-                    if (Check("nvidia_dlss", &dlss)) s.upscaler = dlss ? "dlss" : "off";
-                    ImGui::EndDisabled();
-                    Hint(dlss_state == 3   ? "hint_the_dlss_files_aren_t"
-                         : dlss_state == 2 ? "hint_dlss_failed_to_start_on"
-                         : dlss_state == 1 ? "hint_dlss_renders_fewer_pixels_and"
-                                           : "hint_dlss_needs_an_nvidia_rtx",
-                         true);
+                    if (dlss_state != 0 || dlss) {
+                        ImGui::BeginDisabled(dlss_state != 1 && !dlss);
+                        if (Check("nvidia_dlss", &dlss)) s.upscaler = dlss ? "dlss" : "off";
+                        ImGui::EndDisabled();
+                        Hint(dlss_state == 3   ? "hint_the_dlss_files_aren_t"
+                             : dlss_state == 2 ? "hint_dlss_failed_to_start_on"
+                             : dlss_state == 1 ? "hint_dlss_renders_fewer_pixels_and"
+                                               : "hint_dlss_needs_an_nvidia_rtx",
+                             true);
+                    }
                     if (dlss) {
                         int quality = int(std::min<uint32_t>(s.upscaler_quality, 4));
                         if (Segmented("dlss_quality", &quality,
                                       {"dlaa", "quality", "balanced", "performance", "ultra_performance"}))
                             s.upscaler_quality = uint32_t(quality);
+                        Slider("dlss_sharpness", &s.dlss_sharpness, 0, 100, app::Settings{}.dlss_sharpness);
+                        Hint("hint_rcas_sharpening_over_dlss_s", true);
                     } else {
                         Slider("render", &s.render_percent, 25, 200, app::Settings{}.render_percent);
                         Check("amd_fsr_1", &s.fsr);
@@ -2149,11 +2154,15 @@ void Draw(double fps) {
 
                     // one choice: no anti-aliasing, SMAA, or MSAA at a sample count (the two never run together)
                     constexpr uint32_t kAa[] = {0, 1, 2, 4, 8};  // 0 off, 1 SMAA, else MSAA samples
+                    // DLSS anti-aliases the picture itself: the choice is kept for when it is off
                     int aa = s.smaa ? 1 : s.msaa >= 8 ? 4 : s.msaa >= 4 ? 3 : s.msaa >= 2 ? 2 : 0;
+                    ImGui::BeginDisabled(dlss);
                     if (Segmented("anti_aliasing", &aa, {"off", "SMAA", "MSAA 2x", "MSAA 4x", "MSAA 8x"})) {
                         s.smaa = aa == 1;
                         s.msaa = aa >= 2 ? kAa[aa] : 1;
                     }
+                    ImGui::EndDisabled();
+                    if (dlss) Hint("hint_dlss_anti_aliases_the_picture", true);
                 }
 
                 if (Section("post_processing")) {

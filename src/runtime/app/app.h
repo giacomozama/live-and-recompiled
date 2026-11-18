@@ -33,6 +33,8 @@ struct Settings {
     // NVIDIA RTX GPU, with the DLSS module beside the game); its quality, XbeDlssQuality (gpu/dlss.h)
     std::string upscaler = "off";
     uint32_t upscaler_quality = 1;
+    // RCAS (FSR 1's sharpening) over DLSS's picture, in % (0 off); fsr_sharpness is FSR 1's own
+    uint32_t dlss_sharpness = 0;
     uint32_t fps_cap = 60;           // 0 unlimited
     bool vsync = true;
     // HDR output (an HDR10 swap chain, where the display and compositor offer one): the SDR picture shown with its
