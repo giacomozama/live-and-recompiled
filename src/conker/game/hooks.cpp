@@ -230,6 +230,25 @@ X86_FUNC(sub_0004FF00) {
     __imp__sub_0004FF00(ctx, base);
 }
 
+// 0x501F0 steps a cutscene slot's clock (esi the slot): [0x76F0F8] its frame, [0x76F0F0] the last, the commands
+// between handed on (0x56050). A cutscene that starts part way in (its start frame [0x7655F4], Birdy's in the
+// training level at 180) hands on what lies before its start on its first step: while [0x76F0D8] (set once its
+// commands were first handed on) is clear and the last frame is the start, a clock that has left the start makes the
+// last -1, so the first window (-1, now] holds them. Above 30 the first step is a frame of 1/60 s, and seconds * 60
+// can land a hair under the next whole frame (3.0 + 0.01666 -> 180.9999 -> 180): the clock had not left the start,
+// the window was empty, and Birdy's scene lost its voice stream (command 0xB at frame 175) and with it the lip sync.
+// The last is made -1 then too.
+X86_EXTERN_FUNC(__imp__sub_000501F0);
+X86_FUNC(sub_000501F0) {
+    using kernel::R32;
+    const uint32_t slot = ctx.esi;
+    __imp__sub_000501F0(ctx, base);
+    if (slot > 1 || base[0x76F0E0 + slot] != 1 || base[0x76F0D8 + slot]) return;
+    const uint32_t start = kernel::R16(0x7655F4);
+    if (R32(0x76F0F0 + slot * 4) == start && R32(0x76F0F8 + slot * 4) == start)
+        kernel::W32(0x76F0F0 + slot * 4, 0xFFFFFFFFu);
+}
+
 // 0x52B50 (the slot on the stack) hands the tracks to what they move; a level object (kind 3, its id the byte at
 // [0x76EF2C + slot * 4] + entry * 8 + 2, matched against [obj+0xC6] by 0x6ADD0) gets its place cut to whole units,
 // (short)(int) of x, y + [+0x38], z, and its matrix built (0x6AD30, the object in edx, the matrix at +0x20). The
