@@ -1128,11 +1128,14 @@ void InTurns(const Frame& prev, Frame& cur, const std::vector<uint32_t>& list, c
     }
 }
 
+uint32_t g_at_frame = 0;  // the blend memo (Memoized): the frames matched, its tables good for the last
+
 void Match() {
     Frame& cur = g_frames[g_cur];
     Frame& prev = g_frames[g_cur ^ 1];
     if (cur.matched) return;
     cur.matched = true;
+    g_at_frame++;
     static Motion motion;
     Measure(prev, cur, motion);
     g_loose = std::max(kLooseDistance, kMotionSlack * motion.frame);
@@ -2106,7 +2109,92 @@ Blended BlendDraw(uint32_t n, float t, State& s, Undo& undo, Kept& k, uint32_t p
     return how;
 }
 
+// What a blend set for each draw at a t, for the frame: a motion pass asks every draw at its picture's t and the one
+// before's (At), so the frame's passes ask the same t again (with three pictures 2/3, 0, 1/3, then 1/3 and 2/3 once
+// more), and frame generation's drawing again asks the pictures' t too (Blend); a blend is most of either's time on
+// the render thread. A table a t (its key, t in 1/65536ths: 1 - 1/3 and 2/3 differ
+// in their last bit), good for the frame Match matched (g_at_frame)
+struct AtMemo {
+    uint32_t frame = 0;
+    int32_t key = 0;
+    struct Entry {
+        bool set = false;
+        Blended how = Blended::kNotFound;
+        uint32_t vsc_at = 0, vsc_n = 0, xf_at = 0, xf_n = 0;
+    };
+    std::vector<Entry> by_n;
+    std::vector<std::pair<uint32_t, std::array<float, 4>>> vsc;
+    std::vector<std::pair<uint32_t, std::array<float, 16>>> xf;
+};
+AtMemo g_at_memo[6];  // four pictures ask four t: the frame before's and three between
+
+// the frame's table for key, a stale one taken for it; null with every one taken this frame
+AtMemo* MemoFor(int32_t key) {
+    AtMemo* free = nullptr;
+    for (AtMemo& m : g_at_memo) {
+        if (m.frame == g_at_frame && m.key == key) return &m;
+        if (m.frame != g_at_frame && !free) free = &m;
+    }
+    if (!free) return nullptr;
+    free->frame = g_at_frame;
+    free->key = key;
+    free->by_n.clear();
+    free->vsc.clear();
+    free->xf.clear();
+    return free;
+}
+
+// XBE_MOTION_MEMO=0: every draw blended at each t each pass asks (motion and drawing again), to compare against
+bool AtMemoOn() {
+    static const bool on = [] {
+        const char* e = std::getenv("XBE_MOTION_MEMO");
+        return !(e && *e == '0');
+    }();
+    return on;
+}
+
+// draw n at t from the frame's table when a blend there set it, else blended (blend: BlendDraw, its undo entries
+// appended to undo) and kept: the values it set, put in s the same way, the old ones into undo
+template <typename F>
+Blended Memoized(uint32_t n, float t, State& s, Undo& undo, F blend) {
+    AtMemo* m = AtMemoOn() ? MemoFor(int32_t(std::lround(t * 65536.0f))) : nullptr;
+    if (m && n < m->by_n.size() && m->by_n[n].set) {
+        const AtMemo::Entry& e = m->by_n[n];
+        for (uint32_t i = e.vsc_at; i < e.vsc_at + e.vsc_n; i++) {
+            const auto& [r, v] = m->vsc[i];
+            undo.vsc.emplace_back(r, s.vsc.v[r]);
+            s.vsc.v[r] = v;
+        }
+        for (uint32_t i = e.xf_at; i < e.xf_at + e.xf_n; i++) {
+            const auto& [x, mtx] = m->xf[i];
+            undo.xf.emplace_back(x, s.transforms[x]);
+            s.transforms[x] = mtx;
+        }
+        return e.how;
+    }
+    const size_t vsc0 = undo.vsc.size(), xf0 = undo.xf.size();
+    Blended how = blend();
+    if (m) {
+        if (n >= m->by_n.size()) m->by_n.resize(size_t(n) + 1);
+        AtMemo::Entry& e = m->by_n[n];
+        e.set = true;
+        e.how = how;
+        e.vsc_at = uint32_t(m->vsc.size());
+        e.xf_at = uint32_t(m->xf.size());
+        for (size_t i = vsc0; i < undo.vsc.size(); i++) m->vsc.emplace_back(undo.vsc[i].first, s.vsc.v[undo.vsc[i].first]);
+        for (size_t i = xf0; i < undo.xf.size(); i++) m->xf.emplace_back(undo.xf[i].first, s.transforms[undo.xf[i].first]);
+        e.vsc_n = uint32_t(m->vsc.size()) - e.vsc_at;
+        e.xf_n = uint32_t(m->xf.size()) - e.xf_at;
+    }
+    return how;
+}
+
 Blended Blend(uint32_t n, float t, State& s, Undo& undo) {
+    // in play (no notes recorded, nothing judged) the frame's table shares the blend with the motion passes
+    if (!g_pass.on && !g_sus.on) {
+        g_sus.last = false;
+        return Memoized(n, t, s, undo, [&] { return BlendDraw(n, t, s, undo, g_kept, g_pass_id); });
+    }
     Blended how = BlendDraw(n, t, s, undo, g_kept, g_pass_id);
     g_sus.last = false;
     Frame& cur = g_frames[g_cur];
@@ -2145,10 +2233,12 @@ uint32_t g_motion_id = 0;
 void BeginMotion() { g_motion_id++; }
 
 Blended At(uint32_t n, float t, uint32_t slot, State& s, Undo& undo) {
-    bool on = std::exchange(g_pass.on, false);
-    Blended how = BlendDraw(n, t, s, undo, g_motion_kept[slot & 1], g_motion_id);
-    g_pass.on = on;
-    return how;
+    return Memoized(n, t, s, undo, [&] {
+        bool on = std::exchange(g_pass.on, false);
+        Blended how = BlendDraw(n, t, s, undo, g_motion_kept[slot & 1], g_motion_id);
+        g_pass.on = on;
+        return how;
+    });
 }
 
 // the guest memory MoveVertices writes moved vertices to, and the vertex buffer headers that point at them; the

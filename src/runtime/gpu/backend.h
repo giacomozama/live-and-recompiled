@@ -75,6 +75,9 @@ public:
     virtual void MotionPass(bool /*on*/, uint32_t /*slot*/) {}
     virtual void DrawMotion(const State& /*s*/, const Before& /*before*/, uint32_t /*prim*/, uint32_t /*start*/,
                             uint32_t /*count*/, const uint8_t* /*indices*/) {}
+    // asked before each draw of a motion pass: true, the backend leaves it out (it counted it), so its constants for
+    // the picture before and this one needn't be worked out
+    virtual bool MotionSkips() { return false; }
     // the CPU is about to touch this resource's memory: write GPU results back first
     virtual void Sync(uint32_t data_va, uint32_t size) = 0;
     // a lock that does not wait for the GPU (NOOVERWRITE): a result a frame or two old is what the console gives too

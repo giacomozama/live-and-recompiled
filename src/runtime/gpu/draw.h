@@ -85,6 +85,9 @@ struct Perf {
     // (a FastDraw one, fur, a depth pass), or refused (ring, targets, textures)
     uint64_t redraw_changed = 0, redraw_unkept = 0, redraw_refused = 0;
     uint64_t redraw_textures = 0;  // refused: its stages of other kinds than the frame's draw had
+    // motion passes' draws: worked out the whole way, taken whole from the frame's first pass, left out
+    uint64_t motion_slow = 0, motion_reused = 0, motion_skipped = 0;
+    double motion_slow_ms = 0, motion_reused_ms = 0;  // the backend's time for each kind
 };
 inline Perf g_perf;
 // XBE_PERF: the frame's own draws (not frame generation's) per vertex program (its hash, or the fixed function's

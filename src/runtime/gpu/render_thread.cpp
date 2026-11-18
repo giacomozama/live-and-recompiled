@@ -855,6 +855,8 @@ private:
     // the frame's draws again for the motion vectors of its picture slot, drawn at t, each with its constants as the
     // picture before (at before) had them; the state between them, nothing else
     void Motion(const Batch& last, uint32_t slot, float t, float before) {
+        static const bool perf = diag::Perf();
+        auto motion_start = perf ? PerfClock::now() : PerfClock::time_point{};
         State& rs = replay_state_;
         rs = frame_start_;
         uint32_t n = 0;
@@ -869,15 +871,21 @@ private:
                 const uint8_t* data = b.bytes.data() + c.data;
                 if (c.op == Op::State) Apply(rs, b, c, nullptr);
                 if (c.op != Op::Draw) continue;
+                if (inner_->MotionSkips()) {
+                    n++;
+                    continue;
+                }
                 // the picture before's constants and transforms, then the draw's at t
                 was.vsc.clear();
                 was.xf.clear();
+                auto at_start = perf ? PerfClock::now() : PerfClock::time_point{};
                 interp::At(n, before, 0, rs, undo);
                 for (const auto& [r, v] : undo.vsc) was.vsc.emplace_back(r, rs.vsc.v[r]);
                 for (const auto& [i, m] : undo.xf) was.xf.emplace_back(i, rs.transforms[i]);
                 undo.Restore(rs);
                 if (t < 1) interp::At(n, t, 1, rs, undo);
                 n++;
+                if (perf) gen_motion_at_ns_ += Ns(at_start);
                 inner_->DrawMotion(rs, was, c.a, c.b, c.c, c.d ? data : nullptr);
                 undo.Restore(rs);
             }
@@ -886,6 +894,7 @@ private:
         run(last);
         inner_->MotionPass(false, slot);
         ShadingReplay(false);
+        if (perf) gen_motion_ns_ += Ns(motion_start);
     }
 
     // a frame's Present: with frame generation, the pictures between the frame before and it drawn first; with motion
@@ -912,7 +921,9 @@ private:
         const uint64_t was_draws = g_perf.draws, was_fast = g_perf.fast, was_reused = g_perf.reused,
                        was_redrawn = g_perf.redrawn, was_changed = g_perf.redraw_changed,
                        was_unkept = g_perf.redraw_unkept, was_refused = g_perf.redraw_refused,
-                       was_textures = g_perf.redraw_textures;
+                       was_textures = g_perf.redraw_textures, was_mslow = g_perf.motion_slow,
+                       was_mreused = g_perf.motion_reused, was_mskipped = g_perf.motion_skipped;
+        const double was_mslow_ms = g_perf.motion_slow_ms, was_mreused_ms = g_perf.motion_reused_ms;
         float step = 1.0f / float(pictures);
         if (pictures > 1 && frame_draws_) {
             inner_->Keep(c.s1);
@@ -947,6 +958,11 @@ private:
             gen_unkept_ += g_perf.redraw_unkept - was_unkept;
             gen_refused_ += g_perf.redraw_refused - was_refused;
             gen_textures_ += g_perf.redraw_textures - was_textures;
+            gen_mslow_ += g_perf.motion_slow - was_mslow;
+            gen_mreused_ += g_perf.motion_reused - was_mreused;
+            gen_mskipped_ += g_perf.motion_skipped - was_mskipped;
+            gen_mslow_ms_ += g_perf.motion_slow_ms - was_mslow_ms;
+            gen_mreused_ms_ += g_perf.motion_reused_ms - was_mreused_ms;
         }
         // XBE_PERF: what frame generation costs the render thread, a frame
         if (diag::Perf() && keeping_ && ++gen_frames_ >= 120) {
@@ -956,9 +972,11 @@ private:
                  frame_draws_, pictures);
             // matching: the frame's draws recorded (interp::Draw) and their match to the frame before's; drawing
             // again: the backend's draws (slow: the whole way, fast: kept state, reused: a run's draws as one, the
-            // rest skipped with it), the pictures handed out, and what's left: the commands' state, the loop
+            // rest skipped with it), the pictures handed out, and what's left: the commands' state, the loop (the motion
+            // passes apart, on a line of their own)
             const double f = double(gen_frames_);
-            const double rest = double(gen_replay_ns_ - gen_blend_ns_ - gen_draw_ns_ - gen_between_ns_);
+            const double rest =
+                double(gen_replay_ns_) - double(gen_blend_ns_ + gen_draw_ns_ + gen_between_ns_ + gen_motion_ns_);
             // recording: on the render thread, the recorder's draws waited for at the Present included; the
             // recorder's own time beside it
             LOGR("perf: frame generation split: recording %.2f (waited %.2f, its thread %.2f) matching %.2f | backend "
@@ -970,11 +988,21 @@ private:
                  gen_draws_ / f, (gen_backend_draws_ - gen_fast_) / f, gen_redrawn_ / f, gen_changed_ / f, gen_unkept_ / f, gen_refused_ / f, gen_textures_ / f, (gen_fast_ - gen_reused_) / f,
                  gen_reused_ / f,
                  gen_between_ns_ / 1e6 / f, rest / 1e6 / f);
+            // the motion passes (DLSS's motion vectors), one a picture: their time, and their draws by the way they took
+            if (motion_)
+                LOGR("perf: motion passes: %.2f ms a frame, %.0f draws (%.0f worked out %.2f ms, %.0f taken from the "
+                     "frame's first pass %.2f ms, %.0f left out) | constants blended %.2f ms, the rest %.2f",
+                     gen_motion_ns_ / 1e6 / f, (gen_mslow_ + gen_mreused_ + gen_mskipped_) / f, gen_mslow_ / f,
+                     gen_mslow_ms_ / f, gen_mreused_ / f, gen_mreused_ms_ / f, gen_mskipped_ / f,
+                     gen_motion_at_ns_ / 1e6 / f,
+                     (double(gen_motion_ns_ - gen_motion_at_ns_) / 1e6 - gen_mslow_ms_ - gen_mreused_ms_) / f);
             gen_frames_ = 0;
             gen_match_ns_ = gen_replay_ns_ = gen_blend_ns_ = 0;
             gen_matched_ns_ = gen_draw_ns_ = gen_between_ns_ = gen_rec_wait_ns_ = 0;
             gen_draws_ = gen_backend_draws_ = gen_fast_ = gen_reused_ = gen_redrawn_ = 0;
             gen_changed_ = gen_unkept_ = gen_refused_ = gen_textures_ = 0;
+            gen_motion_ns_ = gen_mslow_ = gen_mreused_ = gen_mskipped_ = gen_motion_at_ns_ = 0;
+            gen_mslow_ms_ = gen_mreused_ms_ = 0;
         }
         inner_->Present(c.s1);
         interp::EndFrame();  // a frame not tracked leaves none to find draws in
@@ -1060,6 +1088,9 @@ private:
     uint64_t gen_matched_ns_ = 0, gen_draw_ns_ = 0, gen_between_ns_ = 0;  // Match alone, backend draws, Between
     uint64_t gen_draws_ = 0, gen_backend_draws_ = 0, gen_fast_ = 0, gen_reused_ = 0, gen_redrawn_ = 0;
     uint64_t gen_changed_ = 0, gen_unkept_ = 0, gen_refused_ = 0, gen_textures_ = 0;
+    uint64_t gen_motion_ns_ = 0, gen_mslow_ = 0, gen_mreused_ = 0, gen_mskipped_ = 0;  // Motion's time, its draws
+    uint64_t gen_motion_at_ns_ = 0;                  // Motion's constants at the two times (interp::At)
+    double gen_mslow_ms_ = 0, gen_mreused_ms_ = 0;  // the backend's time for its draws by kind
     uint64_t gen_rec_wait_ns_ = 0;  // the Present's wait for the recorder
     uint32_t gen_frames_ = 0;
     size_t exec_at_ = 0;  // the command of the batch Execute runs
