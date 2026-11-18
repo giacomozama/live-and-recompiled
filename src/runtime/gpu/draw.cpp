@@ -1116,6 +1116,11 @@ void LogPerf() {
              n * 1000.0 / el, el / n, host / n, p.draw / n, p.assemble / n, p.bind / n, p.sig / n, p.texup / n,
              p.compile / n, p.clear / n, p.copy / n, p.sync / n, p.present / n, p.swap / n, p.wait / n,
              (el - host) / n);
+        LOGR("perf: present split: held pictures queued %.2f, DLSS %.2f, submits %.2f, acquires %.2f, pictures drawn "
+             "%.2f, overlay %.2f, frame end %.2f, swap %.2f, the rest %.2f",
+             p.p_held / n, p.p_dlss / n, p.p_submit / n, p.p_acquire / n, p.p_frame / n, p.p_ui / n,
+             (p.p_end - p.wait) / n, p.swap / n,
+             (p.present - p.p_held - p.p_dlss - p.p_submit - p.p_acquire - p.p_frame - p.p_ui - p.p_end - p.swap) / n);
         LOGR("perf: draw steps per frame: setup %.2f vs %.2f ps %.2f pso %.2f consts %.2f record %.2f | %.0f of %.0f "
              "draws in the state before (%.0f with registers of their own), drawn as %.0f runs (%.0f reused)",
              p.d_setup / n, p.d_vs / n, p.d_ps / n, p.d_pso / n, p.d_consts / n, p.d_record / n, p.fast / n,

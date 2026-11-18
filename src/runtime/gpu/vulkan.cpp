@@ -7925,7 +7925,9 @@ void VulkanBackend::Present(const Surface& front) {
         cap_seq_ = 0;
         StartCapture();
     }
+    auto perf_t = PerfClock::now();
     ShowHeld();
+    g_perf.p_held += PerfLap(perf_t);
     if (g_record_dump.exchange(false)) SaveRecorded();
     // frame generation: the pictures Keep and Between took, in turn, its own last; else the front buffer alone. With
     // their notes for XBE_INTERP_RECORD
@@ -7963,7 +7965,9 @@ void VulkanBackend::Present(const Surface& front) {
     }
     // what each picture's DrawFrame shows: its source, or what DLSS or the motion view made of it
     std::vector<Image*> shows = sources;
+    perf_t = PerfClock::now();
     if (upscale_ && !MotionView() && !sources.empty()) Upscale(shows, sources, slots, last);
+    g_perf.p_dlss += PerfLap(perf_t);
     // kept past a remade target or frame generation's pictures going, for Redisplay; the one before goes with this
     // frame's garbage, once the GPU is done with it
     if (shown_ != last) Retire(std::exchange(shown_, std::move(last)));
@@ -7985,18 +7989,26 @@ void VulkanBackend::Present(const Surface& front) {
     if (since < 0.25) gen_period_ += (since - gen_period_) * 0.1;
     ApplyFade();
     if (ramp_dirty_) UploadGammaRamp();
+    perf_t = PerfClock::now();
     Submit(false);
+    g_perf.p_submit += PerfLap(perf_t);
 
     BuildUi();
+    g_perf.p_ui += PerfLap(perf_t);
     Frame& f = CurrentFrame();
     uint32_t shown = 0;
     uint64_t first = 0;  // the first picture's timeline value
     for (size_t i = 0; i < pictures.size(); i++, shown++) {
         uint32_t bi = 0;
-        if (!AcquireImage(bi, f.acquired[i])) break;
+        perf_t = PerfClock::now();
+        const bool acquired = AcquireImage(bi, f.acquired[i]);
+        g_perf.p_acquire += PerfLap(perf_t);
+        if (!acquired) break;
         BeginCommands(f.present[i]);
         DrawFrame(i < shows.size() ? shows[i] : nullptr, bi, true, i < masks.size() ? masks[i] : nullptr);
+        g_perf.p_frame += PerfLap(perf_t);
         Submit(false, f.acquired[i], present_sem_[bi]);
+        g_perf.p_submit += PerfLap(perf_t);
         if (!i) first = fence_value_;
         const auto offset = std::chrono::duration_cast<std::chrono::steady_clock::duration>(
             std::chrono::duration<double>(gen_period_ * double(i) / double(pictures.size())));
@@ -8021,9 +8033,11 @@ void VulkanBackend::Present(const Surface& front) {
     kept_runs_.clear();
     kept_draws_.clear();
     pass_serial_ = 0;
+    perf_t = PerfClock::now();
     EndShadingFrame();
     ReleaseOldTextures();
     ResetFrame();
+    g_perf.p_end += PerfLap(perf_t);
     dlss_src_ = {};  // the pictures they point at are this Present's
     CountFps(std::max(shown, 1u));
     if (diag::Perf()) LogPerf();

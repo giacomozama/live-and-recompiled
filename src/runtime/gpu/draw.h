@@ -51,6 +51,9 @@ struct Perf {
     double wait = 0;
     double swap = 0;
     double sync = 0;
+    // inside present: held pictures queued (ShowHeld), DLSS (Upscale), submits, swap chain acquires, the pictures'
+    // DrawFrame, the overlay (BuildUi), the frame's end (old textures, ResetFrame but its wait)
+    double p_held = 0, p_dlss = 0, p_submit = 0, p_acquire = 0, p_frame = 0, p_ui = 0, p_end = 0;
     // inside draw: the steps Draw takes past assembling and binding textures
     double d_setup = 0;   // depth copy check, post effects, ring check, targets
     double d_vs = 0;      // classify, vertex key and shader
