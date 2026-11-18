@@ -2139,6 +2139,10 @@ void Draw(double fps) {
                             s.upscaler_quality = uint32_t(quality);
                         Slider("dlss_sharpness", &s.dlss_sharpness, 0, 100, app::Settings{}.dlss_sharpness);
                         Hint("hint_rcas_sharpening_over_dlss_s", true);
+                        if (s.dlss_sharpness > 0) {
+                            Slider("fur_sharpness", &s.fur_sharpness, 0, 100, app::Settings{}.fur_sharpness);
+                            Hint("hint_how_much_of_fsr_s", true);
+                        }
                         if (fur::g_strands) {
                             Check("adaptive_fur_shading", &s.dlss_fur_auto);
                             Hint("hint_shades_super_fur_coarser_when", true);
