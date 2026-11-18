@@ -384,7 +384,23 @@ struct Target {
     std::string cd;                      // there: the path from the root, upper case (CdKey)
     bool mod = false;                    // host is a mod's file, read only
     bool mod_dir = false;                // a folder only the mods have
+    bool no_folder = false;              // on D:, missing along with its folder (mods' folders count)
 };
+
+// a missing file fails as on the console: OBJECT_PATH_NOT_FOUND (ERROR_PATH_NOT_FOUND) when its folder is missing
+// too, else OBJECT_NAME_NOT_FOUND. The title tells them apart: a character model is read from its own folder when a
+// level package lacks it, and the loader 0x99CF0 gives up on path-not-found (It's War's falling Bomb, model 77) but
+// takes any other failure to the missing-data screen 0x1F04F0, which never returns
+uint32_t NotFound(bool no_folder, uint32_t iosb) {
+    const uint32_t status = no_folder ? kObjectPathNotFound : kObjectNameNotFound;
+    IoStatus(iosb, status, no_folder ? 0 : 5);  // 5 FILE_DOES_NOT_EXIST
+    return status;
+}
+
+bool NoHostFolder(const std::string& host) {
+    std::error_code ec;
+    return !fs::is_directory(fs::path(host).parent_path(), ec);
+}
 
 Target Resolve(const std::string& xbox_path, uint32_t root_handle) {
     std::string p = Normalize(xbox_path);
@@ -443,6 +459,17 @@ Target Resolve(const std::string& xbox_path, uint32_t root_handle) {
         found = fs::exists(t.host, ec);
     }
     if (!found && g_mod_dirs.count(t.cd)) t.mod_dir = true;
+    if (!found && !t.mod_dir && !parts.empty()) {
+        const std::vector<std::string> folder(parts.begin(), parts.end() - 1);
+        bool there;
+        if (t.disc) {
+            const Disc::Entry* e = MountedDisc()->Find(folder);
+            there = e && e->dir;
+        } else {
+            there = !NoHostFolder(t.host);
+        }
+        t.no_folder = !there && !g_mod_dirs.count(CdKey(folder));
+    }
     return t;
 }
 
@@ -484,12 +511,11 @@ uint32_t OpenMod(const Target& t, const std::string& name, uint32_t handle_out, 
 }
 
 // the disc image is read only: nothing on it is created, replaced or written
-uint32_t OpenOnDisc(const Disc::Entry* e, const std::string& cd, const std::string& name, uint32_t handle_out, uint32_t iosb,
-                    uint32_t disposition, uint32_t options) {
+uint32_t OpenOnDisc(const Disc::Entry* e, bool no_folder, const std::string& cd, const std::string& name,
+                    uint32_t handle_out, uint32_t iosb, uint32_t disposition, uint32_t options) {
     if (!e && (disposition == 1 || disposition == 4)) {  // FILE_OPEN or FILE_OVERWRITE need an existing file
         LOG_FIRST(200, "missing %s", name.c_str());
-        IoStatus(iosb, kObjectNameNotFound, 5);
-        return kObjectNameNotFound;
+        return NotFound(no_folder, iosb);
     }
     if (!e || (disposition != 1 && disposition != 3)) {
         IoStatus(iosb, kAccessDenied, 0);
@@ -549,7 +575,7 @@ KERNEL_EXPORT(190, NtCreateFile, 9) {
     TraceOpen("create", name);
     Target t = Resolve(name, root);
     if (t.mod || t.mod_dir) return OpenMod(t, name, handle_out, iosb, disposition, options);
-    if (t.disc) return OpenOnDisc(t.entry, t.cd, name, handle_out, iosb, disposition, options);
+    if (t.disc) return OpenOnDisc(t.entry, t.no_folder, t.cd, name, handle_out, iosb, disposition, options);
     const std::string& host = t.host;
     if (host.empty()) {
         LOGW("NtCreateFile: no mapping for %s", name.c_str());
@@ -563,10 +589,7 @@ KERNEL_EXPORT(190, NtCreateFile, 9) {
     uint32_t info = 1;  // FILE_OPENED
     if (want_dir || is_dir) {
         if (!exists) {
-            if (disposition == 1 || disposition == 4) {
-                IoStatus(iosb, kObjectNameNotFound, 5);
-                return kObjectNameNotFound;
-            }
+            if (disposition == 1 || disposition == 4) return NotFound(t.on_cd ? t.no_folder : NoHostFolder(host), iosb);
             fs::create_directories(host, ec);
             info = 2;
         } else if (disposition == 2) {
@@ -597,8 +620,7 @@ KERNEL_EXPORT(190, NtCreateFile, 9) {
         case 1:  // open
             if (!exists) {
                 LOG_FIRST(200, "missing %s", name.c_str());
-                IoStatus(iosb, kObjectNameNotFound, 5);
-                return kObjectNameNotFound;
+                return NotFound(t.on_cd ? t.no_folder : NoHostFolder(host), iosb);
             }
             mode = "r+b";
             break;
@@ -615,10 +637,7 @@ KERNEL_EXPORT(190, NtCreateFile, 9) {
             info = exists ? 1 : 2;
             break;
         case 4:  // overwrite
-            if (!exists) {
-                IoStatus(iosb, kObjectNameNotFound, 5);
-                return kObjectNameNotFound;
-            }
+            if (!exists) return NotFound(t.on_cd ? t.no_folder : NoHostFolder(host), iosb);
             mode = "w+b";
             info = 3;
             break;
@@ -658,13 +677,12 @@ KERNEL_EXPORT(202, NtOpenFile, 6) {
     TraceOpen("open", name);
     Target t = Resolve(name, root);
     if (t.mod || t.mod_dir) return OpenMod(t, name, handle_out, iosb, 1, options);
-    if (t.disc) return OpenOnDisc(t.entry, t.cd, name, handle_out, iosb, 1, options);
+    if (t.disc) return OpenOnDisc(t.entry, t.no_folder, t.cd, name, handle_out, iosb, 1, options);
     const std::string& host = t.host;
     std::error_code ec;
     if (host.empty() || !fs::exists(host, ec)) {
         LOG_FIRST(200, "missing %s", name.c_str());
-        IoStatus(iosb, kObjectNameNotFound, 5);
-        return host.empty() ? kObjectPathNotFound : kObjectNameNotFound;
+        return NotFound(host.empty() || (t.on_cd ? t.no_folder : NoHostFolder(host)), iosb);
     }
     auto f = std::make_shared<File>();
     f->host = host;

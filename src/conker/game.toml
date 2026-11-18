@@ -415,6 +415,10 @@ at = 0x636AF   # a package taken by the level load: a class's, its character sel
 call = "ConkerMenuPackages"
 
 [[hook]]
+at = 0x2B428E  # an actor's type model asked for (0x99CF0's status in eax): a type no file or package has goes without an instance (issue #15)
+call = "ConkerActorModelAsked"
+
+[[hook]]
 at = 0x7FC6E   # a player's draw, its effect passes chosen: the character select model swapped into slot 0 for it, unless cloaked or shielded (characters::g_menu_models)
 call = "ConkerMenuEffects"
 

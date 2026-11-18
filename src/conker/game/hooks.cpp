@@ -515,6 +515,38 @@ void ConkerMenuPackages(X86Context& ctx, uint8_t* base) {
     LOGI("models: level %u loads %s (%u) too", kernel::R32(0x7FA1F8), want.c_str(), model);
 }
 
+// An actor's models (0x2B4250, ebx its type, a model: the names at 0x6A58F0) are asked for with 0x99CF0, then one
+// instance each of its parts ([[ebp+0x50C]], 0x86440, edi the type) is made and its read awaited (0x9A490). A model
+// the level's packages lack is read from aid\zpackage\Characters\<name>\default.rbm; with no such folder 0x99CF0
+// returns 3 (path not found) and drops it. 0x99EF0 then gives an empty stand-in (0x75DB48) for a part that isn't the
+// type, but builds the type's own model regardless, whose read failed, and 0x9A560 sends that to the missing-data
+// screen 0x1F04F0, which never returns: It's War's falling Bomb (BeachRunup's Countdown, BeachEscape's script, type
+// and model 77) froze the game (issue #15). The part goes without an instance, as 0x2B4250 allows: the actor and
+// its script run on, unseen
+static uint32_t g_absent_type = 0xFFFF;
+
+// [[hook]] at 0x2B428E, 0x99CF0's status for the actor's type (ebx) in eax
+void ConkerActorModelAsked(X86Context& ctx, uint8_t* base) {
+    (void)base;
+    constexpr uint32_t kPathNotFound = 3;
+    g_absent_type = ctx.eax == kPathNotFound ? ctx.ebx : 0xFFFF;
+    if (g_absent_type == 0xFFFF) return;
+    static uint32_t logged = 0;
+    if (logged++ < 8)
+        LOGR("models: level %u has no %s (%u), its actor goes without it", kernel::R32(0x7FA1F8),
+             ModelName(g_absent_type).c_str(), g_absent_type);
+}
+
+// 0x86440 (eax the model, edi the actor's type): an instance of the model, 0 without one
+X86_EXTERN_FUNC(__imp__sub_00086440);
+X86_FUNC(sub_00086440) {
+    if (g_absent_type != 0xFFFF && ctx.eax == g_absent_type && ctx.edi == g_absent_type) {
+        kernel::Return(ctx, 0, 0);
+        return;
+    }
+    __imp__sub_00086440(ctx, base);
+}
+
 // A level's start (0x2A9852..0x2A986A) empties the instance list ([0x847230]) and the frontend's list ([0x847228] its
 // head: +4 the first node, each node +0 the one before, +4 the one after) without releasing them. The match's level
 // load has asked for the menu models by then (ConkerMenuPackages), so their nodes were dropped there, never released at
