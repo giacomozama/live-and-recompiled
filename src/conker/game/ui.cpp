@@ -829,6 +829,20 @@ void Slider(const char* label, uint32_t* v, uint32_t min, uint32_t max, uint32_t
     ImGui::PopID();
 }
 
+// one whose default, 0, is a level the display reports: shown as `shown` until moved, Reset taking it back to 0
+void DisplaySlider(const char* label, uint32_t* v, uint32_t min, uint32_t max, uint32_t shown) {
+    ImGui::PushID(label);
+    const float reset = ImGui::CalcTextSize(T("reset")).x + ImGui::GetStyle().FramePadding.x * 2.0f;
+    Beside(label, reset + ImGui::GetStyle().ItemInnerSpacing.x);
+    uint32_t value = *v ? *v : shown;
+    if (ImGui::SliderScalar("##slider", ImGuiDataType_U32, &value, &min, &max, "%u")) *v = value;
+    ImGui::SameLine(0, ImGui::GetStyle().ItemInnerSpacing.x);
+    ImGui::BeginDisabled(*v == 0);
+    if (ImGui::Button(T("reset"))) *v = 0;
+    ImGui::EndDisabled();
+    ImGui::PopID();
+}
+
 // a signed one, shown with its sign
 void Slider(const char* label, int32_t* v, int32_t min, int32_t max, int32_t def) {
     ImGui::PushID(label);
@@ -1587,11 +1601,12 @@ void DrawCalibration(app::Settings& s) {
                 hint = "hint_calibrate_gamma";
                 break;
             case 3:
-                Slider("paper_white_nits", &s.hdr_paper_white, 80, 500, def.hdr_paper_white);
+                DisplaySlider("paper_white_nits", &s.hdr_paper_white, app::kPaperWhiteMin, app::kPaperWhiteMax,
+                              app::HdrPaperWhite());
                 hint = "hint_calibrate_paper_white";
                 break;
             default:
-                Slider("peak_brightness_nits", &s.hdr_peak, 300, 4000, def.hdr_peak);
+                DisplaySlider("peak_brightness_nits", &s.hdr_peak, app::kPeakMin, app::kPeakMax, app::HdrPeak());
                 hint = "hint_calibrate_peak";
                 break;
         }
@@ -2080,12 +2095,14 @@ void Draw(double fps) {
                         Hint(can ? "hint_sends_the_picture_to_the"
                                  : "hint_the_display_or_desktop_offers", true);
                         if (s.hdr) {
-                            Slider("paper_white_nits", &s.hdr_paper_white, 80, 500, app::Settings{}.hdr_paper_white);
+                            DisplaySlider("paper_white_nits", &s.hdr_paper_white, app::kPaperWhiteMin,
+                                          app::kPaperWhiteMax, app::HdrPaperWhite());
                             Hint("hint_how_bright_white_is_shown", true);
                             Slider("highlights", &s.hdr_highlights, 0, 100, app::Settings{}.hdr_highlights);
                             Hint("hint_makes_the_brightest_parts_of", true);
                             if (s.hdr_highlights) {
-                                Slider("peak_brightness_nits", &s.hdr_peak, 300, 4000, app::Settings{}.hdr_peak);
+                                DisplaySlider("peak_brightness_nits", &s.hdr_peak, app::kPeakMin, app::kPeakMax,
+                                              app::HdrPeak());
                                 Hint("hint_how_bright_the_brightest_highlights", true);
                             }
                         }

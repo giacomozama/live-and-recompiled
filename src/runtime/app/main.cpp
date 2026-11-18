@@ -388,6 +388,8 @@ void Pace(uint32_t vblanks) {
     while (clock::now() < next) std::this_thread::yield();
 }
 
+void ReadDisplayHdr() {}
+
 uint32_t MonitorRefresh() {
     MONITORINFOEXW mi{};
     mi.cbSize = sizeof(mi);

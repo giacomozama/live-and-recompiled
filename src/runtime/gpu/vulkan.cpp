@@ -2734,6 +2734,7 @@ bool VulkanBackend::CreateSwapChain() {
     SetHdrAvailable(hdr != formats.end());
     swap_hdr_want_ = app::Get().hdr;
     swap_hdr_ = swap_hdr_want_ && hdr != formats.end();
+    if (swap_hdr_) app::ReadDisplayHdr();  // an auto HDR compositor may have turned the display's HDR on for it
     if (swap_hdr_) fmt = *hdr;
     if (swap_hdr_want_ && !swap_hdr_) LOG_FIRST(1, "vulkan: HDR is on but the surface offers no HDR10 format, SDR");
     LOGR("vulkan: %s swap chain (format %d, %ux%u, %s)", swap_hdr_ ? "HDR10" : "SDR", int(fmt.format), ext.width,
@@ -6409,7 +6410,8 @@ void VulkanBackend::HdrTrack(const State& s, bool flat) {
 // the swap chain's mastering display and light levels: the peak the highlights reach, for the compositor's mapping
 void VulkanBackend::SendHdrMetadata() {
     const app::Settings& set = app::Get();
-    const float peak = float(set.hdr_highlights ? std::max(set.hdr_peak, set.hdr_paper_white) : set.hdr_paper_white);
+    const uint32_t paper = app::HdrPaperWhite();
+    const float peak = float(set.hdr_highlights ? std::max(app::HdrPeak(), paper) : paper);
     if (!hdr_metadata_ || !swap_hdr_ || peak == hdr_meta_sent_) return;
     hdr_meta_sent_ = peak;
     VkHdrMetadataEXT md{VK_STRUCTURE_TYPE_HDR_METADATA_EXT};
@@ -6420,7 +6422,7 @@ void VulkanBackend::SendHdrMetadata() {
     md.maxLuminance = peak;
     md.minLuminance = 0.0f;
     md.maxContentLightLevel = peak;
-    md.maxFrameAverageLightLevel = float(set.hdr_paper_white);
+    md.maxFrameAverageLightLevel = float(paper);
     vkSetHdrMetadataEXT(dev_, 1, &swap_, &md);
 }
 
@@ -7341,7 +7343,7 @@ void VulkanBackend::DrawFrame(Image* picture, uint32_t bi, bool fsr, Image* mask
     // the picture into the HDR10 image: white at the paper white setting, highlights over the 3D as far as the peak
     SendHdrMetadata();
     const bool expand = mask && HdrExpand() && !calib;
-    const float paper = float(set.hdr_paper_white);
+    const float paper = float(app::HdrPaperWhite());
     Transition(bb, kRead);
     if (expand) Transition(*mask, kRead);
     Image& out = *bb_[bi];
@@ -7350,11 +7352,11 @@ void VulkanBackend::DrawFrame(Image* picture, uint32_t bi, bool fsr, Image* mask
     EnsureRendering();
     SetFullViewport(bb_w_, bb_h_);
     Alloc cb = Upload(kPassCbBytes);
-    const float p[16] = {paper / 10000.0f, gamma, std::max(float(set.hdr_peak) / paper, 1.0f),
+    const float p[16] = {paper / 10000.0f, gamma, std::max(float(app::HdrPeak()) / paper, 1.0f),
                          1.0f - 0.5f * float(set.hdr_highlights) / 100.0f,
                          (w - vw) / 2, (h - vh) / 2, 1.0f / vw, 1.0f / vh,
                          expand ? 1.0f : 0.0f, ui ? 1.0f : 0.0f, float(presents_ % 1024), float(calib ? 0 : cvd),
-                         float(calib), float(set.hdr_peak) / paper, w, h};
+                         float(calib), float(app::HdrPeak()) / paper, w, h};
     std::memcpy(cb.cpu, p, sizeof(p));
     DrawFullScreen(EnsurePassPipeline(kHdrHlsl, "encode", swap_fmt_, -1), cb,
                    {bb.view, expand ? mask->view : VK_NULL_HANDLE, ui ? hdr_ui_->view : VK_NULL_HANDLE,

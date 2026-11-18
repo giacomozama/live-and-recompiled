@@ -13,6 +13,7 @@
 #include <atomic>
 #include <chrono>
 #include <climits>
+#include <mutex>
 #include <cstring>
 #include <string>
 #include <thread>
@@ -329,11 +330,14 @@ bool Handle(const SDL_Event& e) {
 }
 
 #if defined(__linux__) && !defined(__ANDROID__)
-// The window's surface marked as a game's with content-type-v1 (wp_content_type_v1), which compositors read for
-// their own choices: Hyprland's VRR on fullscreen video and games (misc:vrr 3) and direct scanout for games alone
-// (render:direct_scanout 2). SDL doesn't speak the protocol. libwayland-client is SDL's own, loaded at run time, so
-// its few calls come by name and the protocol's two interfaces are written out here (wl_interface's layout is
-// libwayland's stable ABI). On a private queue, so SDL's own events aren't dispatched from here
+// Two Wayland protocols SDL doesn't speak. content-type-v1 (wp_content_type_v1) marks the window's surface as a game's,
+// which compositors read for their own choices: Hyprland's VRR on fullscreen video and games (misc:vrr 3) and direct
+// scanout for games alone (render:direct_scanout 2). color-management-v1 (wp_color_manager_v1) tells the HDR levels
+// the compositor would have the surface drawn for, its preferred image description: the SDR white it maps (the
+// reference luminance) and the display's peak (the target luminance), the defaults of paper white and peak.
+// libwayland-client is SDL's own, loaded at run time, so its few calls come by name and the protocols' interfaces are
+// written out here (wl_interface's layout is libwayland's stable ABI). On a private queue, so SDL's own events aren't
+// dispatched from here
 namespace wl {
 struct Interface;
 struct Message {
@@ -353,15 +357,91 @@ struct RegistryListener {
     void (*global)(void* data, void* registry, uint32_t name, const char* interface, uint32_t version);
     void (*global_remove)(void* data, void* registry, uint32_t name);
 };
-extern const Interface kContentType;
-const Interface* const kNone[] = {nullptr, nullptr};
+extern const Interface kContentType, kFeedback, kDesc, kInfo;
+const Interface* const kNone[8] = {};
 const Interface* const kGetType[] = {&kContentType, nullptr};
 const Message kManagerRequests[] = {{"destroy", "", kNone}, {"get_surface_content_type", "no", kGetType}};
 const Interface kManager = {"wp_content_type_manager_v1", 1, 2, kManagerRequests, 0, nullptr};
 const Message kTypeRequests[] = {{"destroy", "", kNone}, {"set_content_type", "u", kNone}};
 const Interface kContentType = {"wp_content_type_v1", 1, 2, kTypeRequests, 0, nullptr};
+// color-management-v1 at version 1: the requests as far as get_surface_feedback, every event
+const Interface* const kGetFeedback[] = {&kFeedback, nullptr};
+const Message kColorRequests[] = {{"destroy", "", kNone},
+                                  {"get_output", "no", kNone},
+                                  {"get_surface", "no", kNone},
+                                  {"get_surface_feedback", "no", kGetFeedback}};
+const Message kColorEvents[] = {{"supported_intent", "u", kNone},
+                                {"supported_feature", "u", kNone},
+                                {"supported_tf_named", "u", kNone},
+                                {"supported_primaries_named", "u", kNone},
+                                {"done", "", kNone}};
+const Interface kColor = {"wp_color_manager_v1", 1, 4, kColorRequests, 5, kColorEvents};
+const Interface* const kGetDesc[] = {&kDesc};
+const Message kFeedbackRequests[] = {{"destroy", "", kNone}, {"get_preferred", "n", kGetDesc}};
+const Message kFeedbackEvents[] = {{"preferred_changed", "u", kNone}, {"preferred_changed2", "2uu", kNone}};
+const Interface kFeedback = {"wp_color_management_surface_feedback_v1", 1, 2, kFeedbackRequests, 2, kFeedbackEvents};
+const Interface* const kGetInfo[] = {&kInfo};
+const Message kDescRequests[] = {{"destroy", "", kNone}, {"get_information", "n", kGetInfo}};
+const Message kDescEvents[] = {{"failed", "us", kNone}, {"ready", "u", kNone}, {"ready2", "2uu", kNone}};
+const Interface kDesc = {"wp_image_description_v1", 1, 2, kDescRequests, 3, kDescEvents};
+const Message kInfoEvents[] = {{"done", "", kNone},
+                               {"icc_file", "hu", kNone},
+                               {"primaries", "iiiiiiii", kNone},
+                               {"primaries_named", "u", kNone},
+                               {"tf_power", "u", kNone},
+                               {"tf_named", "u", kNone},
+                               {"luminances", "uuu", kNone},
+                               {"target_primaries", "iiiiiiii", kNone},
+                               {"target_luminance", "uu", kNone},
+                               {"target_max_cll", "u", kNone},
+                               {"target_max_fall", "u", kNone}};
+const Interface kInfo = {"wp_image_description_info_v1", 1, 0, nullptr, 11, kInfoEvents};
 constexpr uint32_t kDisplayGetRegistry = 1, kRegistryBind = 0, kManagerDestroy = 0, kManagerGetType = 1,
-                   kTypeSet = 1, kTypeGame = 3, kMarshalDestroy = 1;
+                   kTypeSet = 1, kTypeGame = 3, kMarshalDestroy = 1, kColorDestroy = 0, kColorGetFeedback = 3,
+                   kFeedbackGetPreferred = 1, kDescDestroy = 0, kDescGetInformation = 1, kTfPq = 11;
+
+// what the image description's events tell
+struct Desc {
+    bool ready = false, failed = false, done = false;
+    uint32_t tf = 0, reference = 0, target_max = 0;
+};
+using Fn = void (*)();
+template <class... A>
+Fn F(void (*f)(void*, void*, A...)) {
+    return reinterpret_cast<Fn>(f);
+}
+const Fn kDescListener[] = {
+    F(+[](void* d, void*, uint32_t, const char*) { static_cast<Desc*>(d)->failed = true; }),
+    F(+[](void* d, void*, uint32_t) { static_cast<Desc*>(d)->ready = true; }),
+    F(+[](void* d, void*, uint32_t, uint32_t) { static_cast<Desc*>(d)->ready = true; })};
+using I = int32_t;
+using U = uint32_t;
+const Fn kInfoListener[] = {
+    F(+[](void* d, void*) { static_cast<Desc*>(d)->done = true; }),
+    F(+[](void*, void*, I fd, U) { close(fd); }),
+    F(+[](void*, void*, I, I, I, I, I, I, I, I) {}),
+    F(+[](void*, void*, U) {}),
+    F(+[](void*, void*, U) {}),
+    F(+[](void* d, void*, U tf) { static_cast<Desc*>(d)->tf = tf; }),
+    F(+[](void* d, void*, U, U, U reference) { static_cast<Desc*>(d)->reference = reference; }),
+    F(+[](void*, void*, I, I, I, I, I, I, I, I) {}),
+    F(+[](void* d, void*, U, U max) { static_cast<Desc*>(d)->target_max = max; }),
+    F(+[](void*, void*, U) {}),
+    F(+[](void*, void*, U) {})};
+
+// the calls, the display and the surface's color feedback, kept for ReadDisplayHdr
+struct Client {
+    void* (*marshal)(void*, uint32_t, const Interface*, uint32_t, uint32_t, ...) = nullptr;
+    int (*add_listener)(void*, Fn*, void*) = nullptr;
+    uint32_t (*version)(void*) = nullptr;
+    void (*destroy)(void*) = nullptr;
+    int (*roundtrip)(void*, void*) = nullptr;
+    void* display = nullptr;
+    void* queue = nullptr;     // the feedback's, and the descriptions asked through it
+    void* feedback = nullptr;  // none without color-management-v1
+    std::mutex lock;
+};
+Client g_client;
 }  // namespace wl
 
 void TagGameContent() {
@@ -374,7 +454,7 @@ void TagGameContent() {
     auto sym = [&](const char* name) { return dlsym(lib, name); };
     auto marshal = reinterpret_cast<void* (*)(void*, uint32_t, const wl::Interface*, uint32_t, uint32_t, ...)>(
         sym("wl_proxy_marshal_flags"));  // libwayland 1.20 on
-    auto add_listener = reinterpret_cast<int (*)(void*, void (**)(void), void*)>(sym("wl_proxy_add_listener"));
+    auto add_listener = reinterpret_cast<int (*)(void*, wl::Fn*, void*)>(sym("wl_proxy_add_listener"));
     auto version = reinterpret_cast<uint32_t (*)(void*)>(sym("wl_proxy_get_version"));
     auto destroy = reinterpret_cast<void (*)(void*)>(sym("wl_proxy_destroy"));
     auto set_queue = reinterpret_cast<void (*)(void*, void*)>(sym("wl_proxy_set_queue"));
@@ -394,20 +474,22 @@ void TagGameContent() {
     struct Found {
         decltype(marshal) bind;
         void* manager = nullptr;
+        void* color = nullptr;
     } found{marshal};
     static const wl::RegistryListener listener = {
         [](void* data, void* registry, uint32_t name, const char* interface, uint32_t) {
             auto* f = static_cast<Found*>(data);
-            if (f->manager || std::strcmp(interface, wl::kManager.name)) return;
-            f->manager = f->bind(registry, wl::kRegistryBind, &wl::kManager, 1, 0, name, wl::kManager.name, 1u,
-                                 nullptr);
+            for (auto [slot, iface] : {std::pair{&f->manager, &wl::kManager}, std::pair{&f->color, &wl::kColor}}) {
+                if (*slot || std::strcmp(interface, iface->name)) continue;
+                *slot = f->bind(registry, wl::kRegistryBind, iface, 1, 0, name, iface->name, 1u, nullptr);
+            }
         },
         [](void*, void*, uint32_t) {}};
     void* queue = create_queue(display);
     void* wrapped = create_wrapper(display);
     set_queue(wrapped, queue);
     void* registry = marshal(wrapped, wl::kDisplayGetRegistry, registry_iface, version(wrapped), 0, nullptr);
-    add_listener(registry, reinterpret_cast<void (**)(void)>(const_cast<wl::RegistryListener*>(&listener)), &found);
+    add_listener(registry, reinterpret_cast<wl::Fn*>(const_cast<wl::RegistryListener*>(&listener)), &found);
     roundtrip(display, queue);
     if (found.manager) {
         // kept for the window's life: the object's destruction would take the content type back to none
@@ -423,7 +505,19 @@ void TagGameContent() {
     }
     destroy(registry);
     wrapper_destroy(wrapped);
-    queue_destroy(queue);
+    if (found.color) {
+        // the feedback kept on the private queue for ReadDisplayHdr, its preferred_changed events dropped there
+        wl::Client& c = wl::g_client;
+        c.marshal = marshal, c.add_listener = add_listener, c.version = version, c.destroy = destroy;
+        c.roundtrip = roundtrip, c.display = display, c.queue = queue;
+        c.feedback = marshal(found.color, wl::kColorGetFeedback, &wl::kFeedback, version(found.color), 0, nullptr,
+                             surface);
+        marshal(found.color, wl::kColorDestroy, nullptr, version(found.color), wl::kMarshalDestroy);
+        ReadDisplayHdr();
+    } else {
+        LOGI("Wayland: the compositor has no color-management-v1");
+        queue_destroy(queue);
+    }
     // the library stays loaded: SDL holds it too, and the content type object lives on
 }
 #else
@@ -431,6 +525,38 @@ void TagGameContent() {}
 #endif
 
 }  // namespace
+
+#if defined(__linux__) && !defined(__ANDROID__)
+// the surface's preferred image description asked for again: its levels, when it is an HDR one (PQ), the display's
+void ReadDisplayHdr() {
+    wl::Client& c = wl::g_client;
+    std::lock_guard lock(c.lock);
+    if (!c.feedback) return;
+    wl::Desc d;
+    void* desc = c.marshal(c.feedback, wl::kFeedbackGetPreferred, &wl::kDesc, c.version(c.feedback), 0, nullptr);
+    c.add_listener(desc, const_cast<wl::Fn*>(wl::kDescListener), &d);
+    for (int i = 0; i < 4 && !d.ready && !d.failed; i++)
+        if (c.roundtrip(c.display, c.queue) < 0) break;
+    if (d.ready) {
+        void* info = c.marshal(desc, wl::kDescGetInformation, &wl::kInfo, c.version(desc), 0, nullptr);
+        c.add_listener(info, const_cast<wl::Fn*>(wl::kInfoListener), &d);
+        for (int i = 0; i < 4 && !d.done; i++)
+            if (c.roundtrip(c.display, c.queue) < 0) break;
+        c.destroy(info);  // done is its destructor event: the proxy is the client's to free
+    }
+    c.marshal(desc, wl::kDescDestroy, nullptr, c.version(desc), wl::kMarshalDestroy);
+    const bool hdr = d.done && d.tf == wl::kTfPq;
+    const uint32_t paper = hdr ? d.reference : 0, peak = hdr ? d.target_max : 0;
+    static bool told = false;
+    if (!std::exchange(told, true) || paper != DisplayHdrPaperWhite() || peak != DisplayHdrPeak()) {
+        if (hdr) LOGR("Wayland: the compositor's HDR levels: SDR white %u nits, peak %u nits", paper, peak);
+        else LOGR("Wayland: the compositor's preferred image description is %s", d.done ? "not HDR" : "not known");
+    }
+    SetDisplayHdr(paper, peak);
+}
+#else
+void ReadDisplayHdr() {}
+#endif
 
 std::filesystem::path ExeDir() {
     static const std::filesystem::path dir = [] {

@@ -71,9 +71,11 @@ void Load() {
     s.fps_cap = t["fps_cap"].value_or(s.fps_cap);
     s.vsync = t["vsync"].value_or(s.vsync);
     s.hdr = t["hdr"].value_or(s.hdr);
-    s.hdr_paper_white = std::clamp<uint32_t>(t["hdr_paper_white"].value_or(s.hdr_paper_white), 80, 500);
+    // 0 the display's
+    if (uint32_t v = t["hdr_paper_white"].value_or(s.hdr_paper_white))
+        s.hdr_paper_white = std::clamp(v, kPaperWhiteMin, kPaperWhiteMax);
     s.hdr_highlights = std::min<uint32_t>(t["hdr_highlights"].value_or(s.hdr_highlights), 100);
-    s.hdr_peak = std::clamp<uint32_t>(t["hdr_peak"].value_or(s.hdr_peak), 300, 4000);
+    if (uint32_t v = t["hdr_peak"].value_or(s.hdr_peak)) s.hdr_peak = std::clamp(v, kPeakMin, kPeakMax);
     s.gamma = std::clamp<uint32_t>(t["gamma"].value_or(s.gamma), 180, 260);
     s.brightness = std::clamp<int32_t>(t["brightness"].value_or(s.brightness), -20, 20);
     s.aniso = t["anisotropic_filtering"].value_or(s.aniso);
@@ -242,6 +244,27 @@ bool SaveChanged() {
     if (SettingsText() == g_written) return false;
     Save();
     return true;
+}
+
+static std::atomic<uint32_t> g_display_paper{0}, g_display_peak{0};
+
+void SetDisplayHdr(uint32_t paper_white, uint32_t peak) {
+    g_display_paper.store(paper_white, std::memory_order_relaxed);
+    g_display_peak.store(peak, std::memory_order_relaxed);
+}
+uint32_t DisplayHdrPaperWhite() { return g_display_paper.load(std::memory_order_relaxed); }
+uint32_t DisplayHdrPeak() { return g_display_peak.load(std::memory_order_relaxed); }
+
+uint32_t HdrPaperWhite() {
+    if (uint32_t v = Get().hdr_paper_white) return v;
+    uint32_t d = DisplayHdrPaperWhite();
+    return d ? std::clamp(d, kPaperWhiteMin, kPaperWhiteMax) : 200;
+}
+
+uint32_t HdrPeak() {
+    if (uint32_t v = Get().hdr_peak) return v;
+    uint32_t d = DisplayHdrPeak();
+    return d ? std::clamp(d, kPeakMin, kPeakMax) : 1000;
 }
 
 Mode Output() {

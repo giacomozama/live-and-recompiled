@@ -42,13 +42,13 @@ struct Settings {
     uint32_t fps_cap = 60;           // 0 unlimited
     bool vsync = true;
     // HDR output (an HDR10 swap chain, where the display and compositor offer one): the SDR picture shown with its
-    // white at hdr_paper_white nits
+    // white at hdr_paper_white nits, 0 the display's (HdrPaperWhite)
     bool hdr = false;
-    uint32_t hdr_paper_white = 200;
+    uint32_t hdr_paper_white = 0;
     // the 3D picture's highlights taken above paper white, under the 2D: how far down they start in % (0 off), and
-    // the nits white reaches
+    // the nits white reaches, 0 the display's peak (HdrPeak)
     uint32_t hdr_highlights = 50;
-    uint32_t hdr_peak = 1000;
+    uint32_t hdr_peak = 0;
     // the display gamma the picture is shown for, in hundredths: 220 as it was drawn, higher darker in the midtones
     uint32_t gamma = 220;
     // the black level in % of white, -20 to 20: raised above 0, shadows taken down to black below it; white kept
@@ -142,6 +142,18 @@ std::string SettingsText();  // the settings as Save writes them
 void LogSystem();  // the machine, at a run's start
 void InstallCrashHandler();          // crash.cpp: unhandled exceptions, aborts and terminate write a report to the log
 void ApplyDisplay();  // any thread
+// the HDR levels the display reports, in nits, 0 not known: the SDR white the compositor maps and the display's peak
+// (on Wayland the surface's preferred image description, ReadDisplayHdr); any thread
+void SetDisplayHdr(uint32_t paper_white, uint32_t peak);
+uint32_t DisplayHdrPaperWhite();
+uint32_t DisplayHdrPeak();
+// the levels asked for again (the platform's; an HDR swap chain was made, the display may have just turned HDR on)
+void ReadDisplayHdr();
+// the settings' paper white and peak, or the display's where a setting is 0 (within the settings' ranges), else 200
+// and 1000
+uint32_t HdrPaperWhite();
+uint32_t HdrPeak();
+constexpr uint32_t kPaperWhiteMin = 80, kPaperWhiteMax = 500, kPeakMin = 300, kPeakMax = 4000;
 // F11 and Alt+Enter: windowed, or back to the fullscreen or borderless it was in last; any thread
 void ToggleWindowed();
 struct Mode {
