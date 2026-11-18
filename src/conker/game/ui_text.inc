@@ -271,6 +271,22 @@ constexpr Line kLines[] = {
     {"hint_dlss_anti_aliases_the_picture", "DLSS anti-aliases the picture itself.", "DLSS glättet das Bild selbst.",
      "DLSS lisse lui-même l'image.", "DLSS suaviza la imagen por sí mismo.", "DLSS leviga l'immagine da sé.",
      "DLSSが画像のアンチエイリアスを自ら行います。"},
+    {"super_fur_shading", "Super fur shading", "Super-Fell-Shading", "Ombrage de la super fourrure", "Sombreado del superpelaje",
+     "Ombreggiatura super pelliccia", "スーパーファーのシェーディング"},
+    {"full", "Full", "Voll", "Complet", "Completo", "Piena", "フル"},
+    {"half", "Half", "Halb", "Moitié", "Mitad", "Metà", "ハーフ"},
+    {"quarter", "Quarter", "Viertel", "Quart", "Cuarto", "Quarto", "クォーター"},
+    {"hint_shades_super_fur_once_per", "Shades Super fur once per one, two or four pixels. DLSS rebuilds the strands either "
+     "way; lower is much faster in close-ups. Needs a GPU with variable rate shading.",
+     "Schattiert Super-Fell einmal pro ein, zwei oder vier Pixel. DLSS baut die Haare so oder so neu auf; niedriger ist "
+     "in Nahaufnahmen viel schneller. Benötigt eine GPU mit Variable Rate Shading.",
+     "Ombre la super fourrure une fois par un, deux ou quatre pixels. DLSS reconstruit les poils dans tous les cas ; "
+     "plus bas est bien plus rapide en gros plan. Nécessite un GPU avec Variable Rate Shading.",
+     "Sombrea el superpelaje una vez por cada uno, dos o cuatro píxeles. DLSS reconstruye los pelos igualmente; más bajo "
+     "es mucho más rápido en primeros planos. Necesita una GPU con Variable Rate Shading.",
+     "Ombreggia la super pelliccia una volta ogni uno, due o quattro pixel. DLSS ricostruisce i peli in ogni caso; più "
+     "basso è molto più veloce nei primi piani. Richiede una GPU con Variable Rate Shading.",
+     "スーパーファーを1、2、4ピクセルごとに1回シェーディングします。どれでもDLSSが毛を再構築し、低いほどクローズアップで大幅に速くなります。可変レートシェーディング対応のGPUが必要です。"},
     {"dlss_quality", "DLSS quality", "DLSS-Qualität", "Qualité DLSS", "Calidad de DLSS", "Qualità DLSS", "DLSS画質"},
     {"dlaa", "DLAA", "DLAA", "DLAA", "DLAA", "DLAA", "DLAA"},
     {"balanced", "Balanced", "Ausgewogen", "Équilibré", "Equilibrado", "Bilanciato", "バランス"},

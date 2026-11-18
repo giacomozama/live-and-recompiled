@@ -877,6 +877,7 @@ void fur::Init() {
                                           .between_mark = int(kTagRegister),
                                           .beyond_of = crown ? CrownStrandsBeyond : hairy ? HairyStrandsBeyond : StrandsBeyond,
                                           .unsharpened = true,
+                                          .coarse = true,
                                           .glow_capped = true});
     };
     gpu::g_program_watch.push_back({.match = kMatch, .seen = SeenHair, .regs = 1 << 1, .spread = true, .vertices = 1024,

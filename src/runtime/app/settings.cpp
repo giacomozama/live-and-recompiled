@@ -67,6 +67,7 @@ void Load() {
     s.upscaler = t["upscaler"].value_or(s.upscaler);
     s.upscaler_quality = std::min<uint32_t>(t["upscaler_quality"].value_or(s.upscaler_quality), 4);
     s.dlss_sharpness = std::min<uint32_t>(t["dlss_sharpness"].value_or(s.dlss_sharpness), 100);
+    s.dlss_fur_rate = std::min<uint32_t>(t["dlss_fur_rate"].value_or(s.dlss_fur_rate), 2);
     s.fps_cap = t["fps_cap"].value_or(s.fps_cap);
     s.vsync = t["vsync"].value_or(s.vsync);
     s.hdr = t["hdr"].value_or(s.hdr);
@@ -157,6 +158,7 @@ toml::table Table() {
                   {"upscaler", s.upscaler},
                   {"upscaler_quality", int64_t(s.upscaler_quality)},
                   {"dlss_sharpness", int64_t(s.dlss_sharpness)},
+                  {"dlss_fur_rate", int64_t(s.dlss_fur_rate)},
                   {"fps_cap", int64_t(s.fps_cap)},
                   {"vsync", s.vsync},
                   {"hdr", s.hdr},

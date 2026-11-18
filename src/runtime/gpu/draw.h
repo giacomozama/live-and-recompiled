@@ -196,6 +196,10 @@ std::vector<uint8_t> LatchCpuChanges(T& t) {
 // PsoKey::wmask: alpha written as the larger of the draw's and the target's, the color blended as the draw sets
 // (ProgramShading::unsharpened)
 constexpr uint32_t kWmaskAlphaMax = 0x10;
+// PsoKey::wmask: the pipeline's fragment shading rate, two pixels wide and/or tall where the GPU has one
+// (ProgramShading::coarse)
+constexpr uint32_t kWmaskCoarseWide = 0x20;
+constexpr uint32_t kWmaskCoarseTall = 0x40;
 struct PsoKey {
     uint64_t vs;
     uint64_t ps;

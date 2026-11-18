@@ -2122,6 +2122,12 @@ void Draw(double fps) {
                             s.upscaler_quality = uint32_t(quality);
                         Slider("dlss_sharpness", &s.dlss_sharpness, 0, 100, app::Settings{}.dlss_sharpness);
                         Hint("hint_rcas_sharpening_over_dlss_s", true);
+                        if (fur::g_strands) {
+                            int rate = int(std::min<uint32_t>(s.dlss_fur_rate, 2));
+                            if (Segmented("super_fur_shading", &rate, {"full", "half", "quarter"}))
+                                s.dlss_fur_rate = uint32_t(rate);
+                            Hint("hint_shades_super_fur_once_per", true);
+                        }
                     } else {
                         Slider("render", &s.render_percent, 25, 200, app::Settings{}.render_percent);
                         Check("amd_fsr_1", &s.fsr);

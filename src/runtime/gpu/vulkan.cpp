@@ -2142,6 +2142,10 @@ private:
     // texture LOD bias the render size takes
     const XbeDlssApi* dlss_ = nullptr;
     bool dlss_device_ = false;
+    // VK_KHR_fragment_shading_rate's pipelineFragmentShadingRate (ProgramShading::coarse), and the most samples a
+    // coarse pixel may cover (its size times the target's samples)
+    bool shading_rate_ = false;
+    uint32_t rate_samples_ = 0;
     bool dlss_missing_ = false;  // no module beside the game (LoadDlss)
     int dlss_init_ = 0;
     bool upscale_ = false;
@@ -2548,6 +2552,31 @@ bool VulkanBackend::CreateDevice() {
     f.features.tessellationShader = tess_;
     f.features.occlusionQueryPrecise = precise_;
     std::vector<const char*> exts = {VK_KHR_SWAPCHAIN_EXTENSION_NAME, VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME};
+    // a pipeline's own shading rate (ProgramShading::coarse): 1.2 for the render pass 2 it needs, without the extension
+    VkPhysicalDeviceFragmentShadingRateFeaturesKHR rate{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FRAGMENT_SHADING_RATE_FEATURES_KHR};
+    if (dev_api_ >= VK_API_VERSION_1_2) {
+        uint32_t en = 0;
+        vkEnumerateDeviceExtensionProperties(phys_, nullptr, &en, nullptr);
+        std::vector<VkExtensionProperties> list(en);
+        vkEnumerateDeviceExtensionProperties(phys_, nullptr, &en, list.data());
+        if (HasExtension(list, VK_KHR_FRAGMENT_SHADING_RATE_EXTENSION_NAME)) {
+            VkPhysicalDeviceFragmentShadingRateFeaturesKHR rate_have{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FRAGMENT_SHADING_RATE_FEATURES_KHR};
+            VkPhysicalDeviceFeatures2 h2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, &rate_have};
+            vkGetPhysicalDeviceFeatures2(phys_, &h2);
+            VkPhysicalDeviceFragmentShadingRatePropertiesKHR rp{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FRAGMENT_SHADING_RATE_PROPERTIES_KHR};
+            VkPhysicalDeviceProperties2 p2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, &rp};
+            vkGetPhysicalDeviceProperties2(phys_, &p2);
+            shading_rate_ = rate_have.pipelineFragmentShadingRate && rp.maxFragmentSize.width >= 2 &&
+                            rp.maxFragmentSize.height >= 2;
+            rate_samples_ = rp.maxFragmentShadingRateCoverageSamples;
+        }
+    }
+    if (shading_rate_) {
+        rate.pipelineFragmentShadingRate = VK_TRUE;
+        rate.pNext = f.pNext;
+        f.pNext = &rate;
+        exts.push_back(VK_KHR_FRAGMENT_SHADING_RATE_EXTENSION_NAME);
+    }
     if (custom_border_) exts.push_back(VK_EXT_CUSTOM_BORDER_COLOR_EXTENSION_NAME);
     if (hdr_metadata_) exts.push_back(VK_EXT_HDR_METADATA_EXTENSION_NAME);
     // ImGui looks its functions up by the extension's names
@@ -3829,6 +3858,12 @@ VkPipeline VulkanBackend::CreateDrawPipeline(const PsoKey& k, const Spirv& vs, c
     ri.pColorAttachmentFormats = &color;
     ri.depthAttachmentFormat = k.has_ds ? depth_fmt_ : VK_FORMAT_UNDEFINED;
     ri.stencilAttachmentFormat = k.has_ds && HasStencil(depth_fmt_) ? depth_fmt_ : VK_FORMAT_UNDEFINED;
+    // shaded once per 2x1 or 2x2 pixels (kWmaskCoarseWide / kWmaskCoarseTall), where the GPU covers that many samples
+    VkPipelineFragmentShadingRateStateCreateInfoKHR rate{VK_STRUCTURE_TYPE_PIPELINE_FRAGMENT_SHADING_RATE_STATE_CREATE_INFO_KHR};
+    rate.fragmentSize = {k.wmask & kWmaskCoarseWide ? 2u : 1u, k.wmask & kWmaskCoarseTall ? 2u : 1u};
+    rate.combinerOps[0] = rate.combinerOps[1] = VK_FRAGMENT_SHADING_RATE_COMBINER_OP_KEEP_KHR;
+    const uint32_t coarse = rate.fragmentSize.width * rate.fragmentSize.height;
+    if (shading_rate_ && coarse > 1 && coarse * std::max(k.samples, 1u) <= rate_samples_) ri.pNext = &rate;
     VkGraphicsPipelineCreateInfo ci{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO, &ri};
     ci.pVertexInputState = &vi;
     ci.pInputAssemblyState = &ia;
@@ -6367,7 +6402,9 @@ void VulkanBackend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t
     const ProgramShading* zps = sh.shading ? &g_program_shading[sh.shading - 1] : nullptr;
     // ProgramShading::unsharpened: what the draw covers marked in the target's alpha for FSR to leave soft, and for
     // the depth of field to blur by fur's depth (DepthBytes)
-    if (zps && zps->unsharpened && k.has_rt && (k.wmask & 7) && (app::Get().fsr || DepthOfFieldLately())) {
+    // (and RCAS over DLSS's picture, which reads it from the picture DLSS made it from)
+    if (zps && zps->unsharpened && k.has_rt && (k.wmask & 7) &&
+        (app::Get().fsr || (upscale_ && app::Get().dlss_sharpness) || DepthOfFieldLately())) {
         k.wmask |= 8 | kWmaskAlphaMax;
         fur_marked_ = frame_;
     }
@@ -6377,6 +6414,11 @@ void VulkanBackend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t
         fur_glow_rt_ = draw_rt_;
         fur_glow_frame_ = frame_;
     }
+    // ProgramShading::coarse under DLSS: the shells (top's x above 0, not the skin under them) shaded once per 2x1 or
+    // 2x2 pixels (app::Settings::dlss_fur_rate)
+    const uint32_t coarse = zps && zps->coarse && shading_rate_ && upscale_ ? app::Get().dlss_fur_rate : 0;
+    if (coarse && (zps->top < 0 || s.vsc[size_t(zps->top)][0] > 0))
+        k.wmask |= coarse >= 2 ? kWmaskCoarseWide | kWmaskCoarseTall : kWmaskCoarseWide;
     float zalpha = 0;
     int surface = -1;  // g_surface_depth's answer for the draw, -1 not asked
     if (zps && zps->depth_alpha > 0 && k.blend && k.zen && k.zwrite &&
@@ -6396,7 +6438,7 @@ void VulkanBackend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t
             PsoKey zk = k;
             zk.ps = zsh.ph;
             zk.blend = 0;
-            zk.wmask = 0;
+            zk.wmask = k.wmask & (kWmaskCoarseWide | kWmaskCoarseTall);  // no color, the color pass's rate
             zk.sten = 0;
             zk.zwrite = 1;
             zpso = EnsurePipeline(zk, zsh);
