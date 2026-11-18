@@ -141,7 +141,7 @@ struct ProgramShading {
     // title clears it so and blends no draw by it), and EASU upscales those pixels plainly and RCAS leaves them be
     bool unsharpened = false;
     // its draws with top's x above 0 (fur's shells, not the skin under them) may be shaded once per 2x1 or 2x2 pixels
-    // (app::Settings::dlss_fur_rate, under DLSS), where the GPU has a pipeline shading rate
+    // (app::Settings::dlss_fur_auto, under DLSS), where the GPU has a pipeline shading rate
     bool coarse = false;
     // when set, the title's glow gather reads the alpha of the frame its draws went into capped (kTexFurGlow)
     bool glow_capped = false;

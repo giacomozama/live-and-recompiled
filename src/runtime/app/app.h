@@ -35,10 +35,10 @@ struct Settings {
     uint32_t upscaler_quality = 1;
     // RCAS (FSR 1's sharpening) over DLSS's picture, in % (0 off); fsr_sharpness is FSR 1's own
     uint32_t dlss_sharpness = 0;
-    // super fur's shells under DLSS shaded once per pixel (0), per 2x1 (1) or per 2x2 pixels (2): DLSS rebuilds their
-    // strands from the jitter alike, at a fraction of the cost in a close-up (gpu::ProgramShading::coarse). 3 Auto: the
-    // finest the GPU's time a frame allows (VulkanBackend::AutoFurRate)
-    uint32_t dlss_fur_rate = 3;
+    // super fur's shells under DLSS shaded once per 2x1 or 2x2 pixels as far as the GPU's time a frame needs it
+    // (VulkanBackend::AutoFurRate), else once per pixel: DLSS rebuilds their strands from the jitter alike, at a fraction
+    // of the cost in a close-up (gpu::ProgramShading::coarse)
+    bool dlss_fur_auto = true;
     uint32_t fps_cap = 60;           // 0 unlimited
     bool vsync = true;
     // HDR output (an HDR10 swap chain, where the display and compositor offer one): the SDR picture shown with its

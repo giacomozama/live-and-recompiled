@@ -2123,11 +2123,8 @@ void Draw(double fps) {
                         Slider("dlss_sharpness", &s.dlss_sharpness, 0, 100, app::Settings{}.dlss_sharpness);
                         Hint("hint_rcas_sharpening_over_dlss_s", true);
                         if (fur::g_strands) {
-                            // Auto first: settings.toml keeps 3 for it, after the rates 0 to 2
-                            int rate = s.dlss_fur_rate >= 3 ? 0 : int(s.dlss_fur_rate) + 1;
-                            if (Segmented("super_fur_shading", &rate, {"auto_rate", "full", "half", "quarter"}))
-                                s.dlss_fur_rate = rate == 0 ? 3u : uint32_t(rate - 1);
-                            Hint("hint_shades_super_fur_once_per", true);
+                            Check("adaptive_fur_shading", &s.dlss_fur_auto);
+                            Hint("hint_shades_super_fur_coarser_when", true);
                         }
                     } else {
                         Slider("render", &s.render_percent, 25, 200, app::Settings{}.render_percent);

@@ -2169,7 +2169,7 @@ private:
     uint32_t gpu_stamps_[kFrames] = {};
     bool gpu_open_ = false, gpu_failed_ = false;
     double gpu_ns_per_tick_ = 0;
-    // Super fur shading Auto (dlss_fur_rate 3, AutoFurRate): the rate in use (0 full, 1 half, 2 quarter); the GPU's time
+    // Adaptive fur shading (dlss_fur_auto, AutoFurRate): the rate in use (0 full, 1 half, 2 quarter); the GPU's time
     // of the last frame measured, smoothed; frames over and under budget in a row; frames before it may try a finer
     // rate again (doubling after each try that fails, back to its least after one that holds); the frames since the
     // last step finer (a step back within kFurTrial of it is a failed try); what each step coarser saved, ms (0 not
@@ -2183,10 +2183,7 @@ private:
     void GpuStamp(bool start);
     void GpuFrameDone();
     void AutoFurRate();
-    uint32_t FurRate() const {
-        const uint32_t r = app::Get().dlss_fur_rate;
-        return r >= 3 ? fur_auto_ : r;
-    }
+    uint32_t FurRate() const { return app::Get().dlss_fur_auto ? fur_auto_ : 0; }
     bool dlss_missing_ = false;  // no module beside the game (LoadDlss)
     int dlss_init_ = 0;
     bool upscale_ = false;
@@ -6497,7 +6494,7 @@ void VulkanBackend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t
         fur_glow_frame_ = frame_;
     }
     // ProgramShading::coarse under DLSS: the shells (top's x above 0, not the skin under them) shaded once per 2x1 or
-    // 2x2 pixels (app::Settings::dlss_fur_rate)
+    // 2x2 pixels as Adaptive fur shading has it (app::Settings::dlss_fur_auto)
     const uint32_t coarse = zps && zps->coarse && shading_rate_ && upscale_ ? FurRate() : 0;
     if (coarse && (zps->top < 0 || s.vsc[size_t(zps->top)][0] > 0))
         k.wmask |= coarse >= 2 ? kWmaskCoarseWide | kWmaskCoarseTall : kWmaskCoarseWide;
@@ -7584,12 +7581,15 @@ constexpr uint32_t kFurHoldMost = 1200;   // the longest wait before trying fine
 constexpr double kFurOver = 0.92, kFurUnder = 0.75, kFurRoom = 0.88;  // shares of the budget
 }  // namespace
 
-// Super fur shading Auto (app::Settings::dlss_fur_rate 3): the GPU's time a frame against the frame's budget (one
+// Adaptive fur shading (app::Settings::dlss_fur_auto): the GPU's time a frame against the frame's budget (one
 // frame of the game's rate, its pictures included). Over it a few frames running: a step coarser. Well under it a
 // second running, and room for what the step saved when it was taken: a try finer, which a step back soon after
 // makes wait twice as long the next time. The rate changes pipelines alone: no hitch, nothing for DLSS to start over
 void VulkanBackend::AutoFurRate() {
-    if (!upscale_ || app::Get().dlss_fur_rate < 3 || !shading_rate_) return;
+    if (!upscale_ || !app::Get().dlss_fur_auto || !shading_rate_) {
+        fur_auto_ = 0;  // turned on again, it starts from full
+        return;
+    }
     const uint32_t fps = app::Get().fps_cap ? app::Get().fps_cap
                                             : std::max(app::MonitorRefresh() / std::max(app::Get().frame_generation, 1u), 1u);
     const double budget = 1000.0 / double(fps);
@@ -7607,7 +7607,7 @@ void VulkanBackend::AutoFurRate() {
         fur_auto_ = uint32_t(int(fur_auto_) + dir);
         fur_over_ = fur_under_ = 0;
         if (diag::Perf())
-            LOGR("perf: super fur shading auto: %s (GPU %.2f ms a frame of %.2f)",
+            LOGR("perf: adaptive fur shading: %s (GPU %.2f ms a frame of %.2f)",
                  fur_auto_ == 0 ? "full" : fur_auto_ == 1 ? "half" : "quarter", gpu_ms_smooth_, budget);
     };
     fur_over_ = gpu_ms_ > budget * kFurOver ? fur_over_ + 1 : 0;
