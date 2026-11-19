@@ -2291,7 +2291,12 @@ private:
     double gpu_ms_ = 0, gpu_ms_smooth_ = 0;
     double frame_ms_ = 0, frame_ms_smooth_ = 0;
     std::chrono::steady_clock::time_point frame_done_t_{};
-    uint32_t fur_over_ = 0, fur_under_ = 0, fur_hold_ = 0, fur_hold_least_ = 60, fur_since_finer_ = ~0u;
+    uint32_t fur_over_ = 0, fur_under_ = 0, fur_hold_ = 0, fur_hold_least_ = 180, fur_since_finer_ = ~0u;
+    uint32_t fur_settle_ = 0;  // frames before it may step again (kFurSettle)
+    // a try finer from a rate that failed: the smoothed GPU time at that rate when it tried (by the rate tried from),
+    // no try from it again until the GPU's time there is clearly under it (a lighter scene) or kFurHoldMost frames on
+    double fur_tried_gpu_ = 0, fur_failed_gpu_[3] = {};
+    uint32_t fur_failed_age_[3] = {};
     void GpuStamp(bool start);
     void GpuFrameDone();
     void AutoFurRate();
@@ -7334,8 +7339,20 @@ void VulkanBackend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t
     // as Adaptive fur shading has it (app::Settings::dlss_fur_auto), with DLSS or without
     // (a frame drawn light: the coarsest)
     const uint32_t coarse = zps && zps->coarse && shading_rate_ ? (light_ && !replay_ ? 2 : FurRate()) : 0;
-    if (coarse && (zps->top < 0 || s.vsc[size_t(zps->top)][0] > 0))
-        k.wmask |= coarse >= 2 ? kWmaskCoarseWide | kWmaskCoarseTall : kWmaskCoarseWide;
+    // the rate bits its pictures drawn again take (ReuseDraw draws with the kept pipeline): a frame drawn light isn't
+    // shown, its pictures are, at Adaptive fur shading's rate, not the light frame's coarsest
+    constexpr uint32_t kCoarseBits = kWmaskCoarseWide | kWmaskCoarseTall;
+    uint32_t shown_coarse = 0;
+    if (coarse && (zps->top < 0 || s.vsc[size_t(zps->top)][0] > 0)) {
+        k.wmask |= coarse >= 2 ? kCoarseBits : kWmaskCoarseWide;
+        const uint32_t r = FurRate();
+        shown_coarse = r >= 2 ? kCoarseBits : r ? kWmaskCoarseWide : 0;
+    } else {
+        shown_coarse = k.wmask & kCoarseBits;
+    }
+    const bool shown_other = (k.wmask & kCoarseBits) != shown_coarse;
+    PsoKey zk_kept{};
+    DrawShaders zsh_kept{};
     float zalpha = 0;
     int surface = -1;  // g_surface_depth's answer for the draw, -1 not asked
     if (zps && zps->depth_alpha > 0 && k.blend && k.zen && k.zwrite &&
@@ -7359,6 +7376,8 @@ void VulkanBackend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t
             zk.sten = 0;
             zk.zwrite = 1;
             zpso = EnsurePipeline(zk, zsh);
+            zk_kept = zk;
+            zsh_kept = zsh;
         }
         if (zpso) k.zwrite = 0;
     }
@@ -7485,6 +7504,26 @@ void VulkanBackend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t
         drawn_.pso = zpso;
         IssueGeometry(a);
     }
+    // what a kept draw is drawn again with: a light frame's fur at its pictures' rate (shown_other)
+    const auto shown = [&](PsoKey& kk, VkPipeline& p, VkPipeline& zp) {
+        kk = k;
+        p = pso;
+        zp = zpso;
+        if (!shown_other) return;
+        PsoKey o = k;
+        o.wmask = (k.wmask & ~kCoarseBits) | shown_coarse;
+        VkPipeline op = EnsurePipeline(o, sh);
+        if (!op) return;
+        if (zpso) {
+            PsoKey z = zk_kept;
+            z.wmask = shown_coarse;
+            VkPipeline ozp = EnsurePipeline(z, zsh_kept);
+            if (!ozp) return;
+            zp = ozp;
+        }
+        kk = o;
+        p = op;
+    };
     if ((!sh.shading || g_program_shading[sh.shading - 1].plain) && !zpso && &s != &sprite_ && !hud) {
         KeepDraw(a, sh, stages, pso, b, size);
         kept_.surface = k.blend && k.zen && !k.zwrite;
@@ -7496,9 +7535,10 @@ void VulkanBackend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t
             KeptOne& one = kept_draws_.emplace_back();
             one.serial = pass_serial_;
             one.flat = flat;
-            one.kept = kept_;
+            one.kept = kept_;  // kept_ as the frame drew it, for its FastDraws
+            VkPipeline unused;
+            shown(one.k, one.kept.pso, unused);
             one.sh = sh;
-            one.k = k;
             one.g = geom_;
         }
     } else if (&s != &sprite_ && !hud && !replay_ && !cap_ && Pictures() > 1 && FurReuse()) {
@@ -7506,13 +7546,13 @@ void VulkanBackend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t
         KeptOne& one = kept_draws_.emplace_back();
         one.serial = pass_serial_;
         one.flat = flat;
-        FillKept(one.kept, a, sh, stages, pso, b, size);
+        VkPipeline kept_pso;
+        shown(one.k, kept_pso, one.zpso);
+        FillKept(one.kept, a, sh, stages, kept_pso, b, size);
         one.kept.jitter = jitter_;
         one.sh = sh;
-        one.k = k;
         one.g = own_geom;
         one.whole = true;
-        one.zpso = zpso;
     }
     prog_scope.Rec(5);
     g_perf.d_record += PerfLap(lap);
@@ -8539,13 +8579,17 @@ void VulkanBackend::GpuFrameDone() {
 }
 
 namespace {
-constexpr uint32_t kFurOverFrames = 3;    // frames over in a row before a step coarser
-constexpr uint32_t kFurUnderFrames = 60;  // frames under in a row before a try finer
-constexpr uint32_t kFurTrial = 60;        // a step back coarser within this many frames of a try finer: the try failed
+constexpr uint32_t kFurOverFrames = 15;    // frames over, less frames under since, before a step coarser (debounced:
+                                           // a few slow frames, DLSS's frame times jittering, don't step)
+constexpr uint32_t kFurUnderFrames = 180;  // frames under in a row before a try finer
+constexpr uint32_t kFurSettle = 120;       // frames after a step coarser before another step, either way (after a
+                                           // try finer none: a try that fails steps back as soon as it can)
+constexpr uint32_t kFurTrial = 120;        // a step back coarser within this many frames of a try finer: the try failed
 constexpr uint32_t kFurHoldMost = 1200;   // the longest wait before trying finer again
 constexpr double kFurMissed = 1.05, kFurMet = 1.03;  // the time between frames past the target's: missed, within: met
 constexpr double kFurGpuBound = 0.8;      // the GPU's time a frame past this share of the time between frames
 constexpr double kFurOver = 0.92, kFurUnder = 0.75;  // uncapped: the GPU's share of the time between frames
+constexpr double kFurLighter = 0.85;  // the GPU's time under this share of a failed try's: a lighter scene, try again
 }  // namespace
 
 // Adaptive fur shading (app::Settings::dlss_fur_auto). With a target (vsync, the display's rate a frame's pictures
@@ -8560,6 +8604,7 @@ constexpr double kFurOver = 0.92, kFurUnder = 0.75;  // uncapped: the GPU's shar
 void VulkanBackend::AutoFurRate() {
     if (!app::Get().dlss_fur_auto || !shading_rate_) {
         fur_auto_ = 0;  // turned on again, it starts from full
+        std::memset(fur_failed_gpu_, 0, sizeof(fur_failed_gpu_));
         return;
     }
     if (frame_ms_ <= 0 || frame_ms_smooth_ <= 0) return;
@@ -8580,20 +8625,29 @@ void VulkanBackend::AutoFurRate() {
     }
     if (fur_since_finer_ != ~0u) fur_since_finer_++;
     if (fur_hold_) fur_hold_--;
+    for (int i = 0; i < 3; i++)
+        if (fur_failed_gpu_[i] > 0 && ++fur_failed_age_[i] > kFurHoldMost) fur_failed_gpu_[i] = 0;
     const auto step = [&](int dir) {
         fur_auto_ = uint32_t(int(fur_auto_) + dir);
         fur_over_ = fur_under_ = 0;
+        fur_settle_ = dir > 0 ? kFurSettle : 0;
         if (diag::Perf())
             LOGR("perf: adaptive fur shading: %s (GPU %.2f ms a frame, frames %.2f ms apart, target %.2f)",
                  fur_auto_ == 0 ? "full" : fur_auto_ == 1 ? "half" : "quarter", gpu_ms_smooth_, frame_ms_smooth_,
                  target);
     };
-    fur_over_ = over ? fur_over_ + 1 : 0;
+    fur_over_ = over ? fur_over_ + 1 : fur_over_ ? fur_over_ - 1 : 0;  // a frame on time takes one back
     fur_under_ = under ? fur_under_ + 1 : 0;
+    if (fur_settle_) {
+        fur_settle_--;
+        return;
+    }
     if (fur_over_ >= kFurOverFrames && fur_auto_ < 2) {
         if (fur_since_finer_ <= kFurTrial) {  // the try finer didn't hold
             fur_hold_least_ = std::min(fur_hold_least_ * 2, kFurHoldMost);
             fur_hold_ = fur_hold_least_;
+            fur_failed_gpu_[fur_auto_ + 1] = fur_tried_gpu_;  // the rate it goes back to
+            fur_failed_age_[fur_auto_ + 1] = 0;
         }
         fur_since_finer_ = ~0u;
         step(+1);
@@ -8602,9 +8656,15 @@ void VulkanBackend::AutoFurRate() {
     if (fur_since_finer_ != ~0u && fur_since_finer_ > kFurTrial) {  // the try finer held
         fur_hold_least_ = kFurUnderFrames;
         fur_since_finer_ = ~0u;
+        fur_failed_gpu_[fur_auto_ + 1] = 0;
     }
-    if (fur_auto_ > 0 && !fur_hold_ && fur_under_ >= kFurUnderFrames) {
+    // a scene that failed a try finer from here, still as heavy: a try would only miss frames again (a hitch and the
+    // fur's look changing back and forth, the menu's characters every couple of seconds)
+    const bool failed_here = fur_auto_ > 0 && fur_failed_gpu_[fur_auto_] > 0 &&
+                             gpu_ms_smooth_ > fur_failed_gpu_[fur_auto_] * kFurLighter;
+    if (fur_auto_ > 0 && !fur_hold_ && !failed_here && fur_under_ >= kFurUnderFrames) {
         fur_since_finer_ = 0;
+        fur_tried_gpu_ = gpu_ms_smooth_;
         step(-1);
     }
 }
