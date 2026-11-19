@@ -535,6 +535,76 @@ struct RowState {
 } g_row;
 std::unordered_map<ImGuiID, RowMeasure> g_row_measure;
 
+// helper text with **bold** runs, for the values a setting can take. There is no bold face: a bold run is drawn twice, a
+// pixel apart (as SubHeading). Wrapped at wrap_w from the cursor; with draw off it only measures. Returns the height.
+float RichText(const char* text, float wrap_w, bool draw) {
+    struct Tok {
+        std::string s;
+        bool bold, brk, sp;  // brk: a line may break before it (after a space, or between CJK characters); sp: a space does
+        float w;
+    };
+    std::vector<Tok> toks;
+    std::string cur;
+    bool bold = false, cur_bold = false, space = false, brk = true, sp = false;
+    const auto flush = [&] {
+        if (cur.empty()) return;
+        const float w = ImGui::CalcTextSize(cur.c_str()).x + (cur_bold ? 1.0f : 0.0f);
+        toks.push_back({cur, cur_bold, brk, sp, w});
+        cur.clear();
+        space = false;
+    };
+    for (const char* c = text; *c;) {
+        if (c[0] == '*' && c[1] == '*') {
+            flush();
+            bold = !bold;
+            c += 2;
+        } else if (*c == ' ') {
+            flush();
+            space = true;
+            c++;
+        } else {
+            unsigned int cp = 0;
+            const int len = ImTextCharFromUtf8(&cp, c, nullptr);
+            const bool cjk = cp >= 0x3000;
+            if (cur.empty()) cur_bold = bold, sp = space, brk = space || cjk || toks.empty();
+            else if (cur_bold != bold || cjk) {
+                flush();
+                cur_bold = bold, sp = false, brk = cjk;
+            }
+            cur.append(c, size_t(len > 0 ? len : 1));
+            c += len > 0 ? len : 1;
+            if (cjk) flush();
+        }
+    }
+    flush();
+
+    const float line_h = ImGui::GetTextLineHeight(), space_w = ImGui::CalcTextSize(" ").x;
+    const ImVec2 origin = ImGui::GetCursorScreenPos();
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const ImU32 col = ImGui::GetColorU32(ImGuiCol_Text);
+    float x = 0.0f, y = 0.0f;
+    for (size_t i = 0; i < toks.size();) {
+        size_t end = i + 1;  // a unit: the tokens a line can't break between
+        float uw = toks[i].w;
+        while (end < toks.size() && !toks[end].brk) uw += toks[end++].w;
+        const float lead = x > 0.0f && toks[i].sp ? space_w : 0.0f;
+        if (x > 0.0f && x + lead + uw > wrap_w) x = 0.0f, y += line_h;
+        else x += lead;
+        for (size_t k = i; k < end; k++) {
+            if (draw) {
+                const ImVec2 at(origin.x + x, origin.y + y);
+                dl->AddText(at, col, toks[k].s.c_str());
+                if (toks[k].bold) dl->AddText(ImVec2(at.x + 1.0f, at.y), col, toks[k].s.c_str());
+            }
+            x += toks[k].w;
+        }
+        i = end;
+    }
+    const float h = y + line_h;
+    if (draw) ImGui::Dummy(ImVec2(wrap_w, h));
+    return h;
+}
+
 // a hint under the setting before it: smaller, dimmed and wrapped. Right after a setting row it is the label's subtext,
 // in the label's room; elsewhere it runs the width under what is above
 void Hint(const char* text, bool checkbox = false) {
@@ -544,18 +614,16 @@ void Hint(const char* text, bool checkbox = false) {
     if (inline_hint) {
         g_row.open = false;
         const float gap = std::round(style.ItemSpacing.y * 0.25f);
-        const float hint_h = ImGui::CalcTextSize(T(text), nullptr, false, g_row.width).y;
+        const float hint_h = RichText(T(text), g_row.width, false);
         const float ctrl_h = std::max(ImGui::GetCursorScreenPos().y - style.ItemSpacing.y - g_row.ctrl_y, 0.0f);
         RowMeasure& m = g_row_measure[g_row.key];
         m.hint_h = hint_h, m.ctrl_h = ctrl_h;
         const float pair = g_row.label_h + gap + hint_h;
         const float height = std::max(pair, ctrl_h);
         ImGui::SetCursorScreenPos(ImVec2(g_row.x, g_row.label_y + g_row.label_h + gap));
-        WrapAtScreenX(g_row.x + g_row.width);
         ImGui::PushStyleColor(ImGuiCol_Text, style.Colors[ImGuiCol_TextDisabled]);
-        ImGui::TextUnformatted(T(text));
+        RichText(T(text), g_row.width, true);
         ImGui::PopStyleColor();
-        ImGui::PopTextWrapPos();
         ImGui::PopFont();
         // on past the row, where an item spacing and the next one's gap come
         ImGui::SetCursorScreenPos(ImVec2(g_row.x, g_row.top + height));
@@ -565,7 +633,7 @@ void Hint(const char* text, bool checkbox = false) {
     // close to its setting; a checkbox's label sits mid-frame, so under a dropdown or slider it keeps the full spacing
     if (checkbox) ImGui::SetCursorPosY(ImGui::GetCursorPosY() - style.ItemSpacing.y * 0.5f);
     ImGui::PushStyleColor(ImGuiCol_Text, style.Colors[ImGuiCol_TextDisabled]);
-    ImGui::TextWrapped("%s", T(text));
+    RichText(T(text), ImGui::GetContentRegionAvail().x, true);
     ImGui::PopStyleColor();
     ImGui::PopFont();
 }
@@ -617,7 +685,7 @@ void Hints(std::initializer_list<const char*> lines) {
     for (const char* line : lines) {
         ImGui::Bullet();
         ImGui::SameLine();
-        ImGui::TextWrapped("%s", T(line));  // wrapped lines line up under the first, past the bullet
+        RichText(T(line), ImGui::GetContentRegionAvail().x, true);  // wrapped lines line up under the first, past the bullet
     }
     ImGui::PopStyleColor();
     ImGui::PopFont();
@@ -1630,9 +1698,7 @@ void DrawCalibration(app::Settings& s) {
             ImGui::SetFocusID(ImGui::GetID("##slider"), ImGui::GetCurrentWindow());
             ImGui::PopID();
         }
-        ImGui::PushTextWrapPos(width - st.WindowPadding.x);
-        ImGui::TextUnformatted(T(hint));
-        ImGui::PopTextWrapPos();
+        RichText(T(hint), width - st.WindowPadding.x - ImGui::GetCursorPosX(), true);
         ImGui::Dummy(ImVec2(0.0f, font * 0.4f));
         // Back to the step before, or to the menu from the first; Next, Done on the last
         const float bw = std::max({ImGui::CalcTextSize(T("previous")).x, ImGui::CalcTextSize(T("next")).x,
@@ -2058,6 +2124,7 @@ void Draw(double fps) {
                         s.display_mode = app::DisplayMode(mode);
                         app::ApplyDisplay();
                     }
+                    Hint("hint_how_the_game_window_is_placed");
 
                     const std::vector<app::Mode>& modes = Modes();
                     std::string res = T("desktop");
@@ -2073,6 +2140,7 @@ void Draw(double fps) {
                         else s.width = modes[res_idx - 1].width, s.height = modes[res_idx - 1].height;
                         app::ApplyDisplay();
                     }
+                    Hint("hint_the_size_of_the_picture_in");
                     // the camera follows the setting live; only the TV type the console reports waits for a restart
                     const char* aspects[] = {"auto", "4:3", "16:10", "16:9", "21:9", "32:9"};
                     constexpr int kAspects = 6;
@@ -2084,6 +2152,7 @@ void Draw(double fps) {
                     if (aspect < 0) items += s.aspect + '\0', aspect = kAspects;  // a custom W:H from settings.toml
                     items += '\0';
                     if (ImGui::Combo(Beside("aspect_ratio"), &aspect, items.c_str()) && aspect < kAspects) s.aspect = aspects[aspect];
+                    Hint("hint_the_shape_of_the_picture");
 
                     {
                         const std::vector<std::string>& adapters = gpu::Adapters();
@@ -2094,6 +2163,7 @@ void Draw(double fps) {
                                     if (ImGui::Selectable(a.c_str(), a == s.gpu)) s.gpu = a;
                                 ImGui::EndCombo();
                             }
+                            Hint("hint_the_graphics_card_the_game");
                         }
                     }
 
@@ -2108,27 +2178,6 @@ void Draw(double fps) {
                         Check("v_sync", &s.vsync);
                         Hint("hint_waits_for_the_display_to", true);
                     }
-                    {
-                        // offered once the swap chain found an HDR10 format; kept clickable while on, to turn it off
-                        bool can = gpu::HdrAvailable() || s.hdr;
-                        ImGui::BeginDisabled(!can);
-                        Check("hdr", &s.hdr);
-                        ImGui::EndDisabled();
-                        Hint(can ? "hint_sends_the_picture_to_the"
-                                 : "hint_the_display_or_desktop_offers", true);
-                        if (s.hdr) {
-                            DisplaySlider("paper_white_nits", &s.hdr_paper_white, app::kPaperWhiteMin,
-                                          app::kPaperWhiteMax, app::HdrPaperWhite());
-                            Hint("hint_how_bright_white_is_shown", true);
-                            Slider("highlights", &s.hdr_highlights, 0, 100, app::Settings{}.hdr_highlights);
-                            Hint("hint_makes_the_brightest_parts_of", true);
-                            if (s.hdr_highlights) {
-                                DisplaySlider("peak_brightness_nits", &s.hdr_peak, app::kPeakMin, app::kPeakMax,
-                                              app::HdrPeak());
-                                Hint("hint_how_bright_the_brightest_highlights", true);
-                            }
-                        }
-                    }
                     Slider("gamma", &s.gamma, 180, 260, app::Settings{}.gamma, 100);
                     Hint("hint_higher_darkens_shadows_and_midtones", true);
                     Slider("brightness", &s.brightness, -20, 20, app::Settings{}.brightness);
@@ -2136,6 +2185,28 @@ void Draw(double fps) {
                     Beside("display_calibration");
                     if (ImGui::Button(T("calibrate_display"))) g_calib_step.store(0);
                     Hint("hint_test_patterns_for_brightness_and", true);
+                }
+
+                if (Section("hdr")) {
+                    // offered once the swap chain found an HDR10 format; kept clickable while on, to turn it off
+                    bool can = gpu::HdrAvailable() || s.hdr;
+                    ImGui::BeginDisabled(!can);
+                    Check("hdr", &s.hdr);
+                    ImGui::EndDisabled();
+                    Hint(can ? "hint_sends_the_picture_to_the"
+                             : "hint_the_display_or_desktop_offers", true);
+                    if (s.hdr) {
+                        DisplaySlider("paper_white_nits", &s.hdr_paper_white, app::kPaperWhiteMin,
+                                      app::kPaperWhiteMax, app::HdrPaperWhite());
+                        Hint("hint_how_bright_white_is_shown", true);
+                        Slider("highlights", &s.hdr_highlights, 0, 100, app::Settings{}.hdr_highlights);
+                        Hint("hint_makes_the_brightest_parts_of", true);
+                        if (s.hdr_highlights) {
+                            DisplaySlider("peak_brightness_nits", &s.hdr_peak, app::kPeakMin, app::kPeakMax,
+                                          app::HdrPeak());
+                            Hint("hint_how_bright_the_brightest_highlights", true);
+                        }
+                    }
                 }
 
                 if (Section("quality")) {
@@ -2159,6 +2230,7 @@ void Draw(double fps) {
                         if (Segmented("dlss_quality", &quality,
                                       {"dlaa", "quality", "balanced", "performance", "ultra_performance"}))
                             s.upscaler_quality = uint32_t(quality);
+                        Hint("hint_how_many_pixels_dlss_renders");
                         int model = int(std::min<uint32_t>(s.dlss_model, 3));
                         if (Segmented("dlss_model", &model, {"K", "M", "L", "by_quality"})) s.dlss_model = uint32_t(model);
                         Hint("hint_k_is_the_lightest_m", true);
@@ -2170,19 +2242,15 @@ void Draw(double fps) {
                         }
                     } else {
                         Slider("render", &s.render_percent, 25, 200, app::Settings{}.render_percent);
+                        Hint("hint_the_size_the_game_is");
                         Check("amd_fsr_1", &s.fsr);
                         Hint("hint_amd_fidelityfx_super_resolution_edge", true);
                         if (s.fsr) {
                             Slider("fsr_sharpness", &s.fsr_sharpness, 0, 100, app::Settings{}.fsr_sharpness);
+                            Hint("hint_how_strongly_the_upscaled_picture");
                             Slider("fur_sharpness", &s.fur_sharpness, 0, 100, app::Settings{}.fur_sharpness);
                             Hint("hint_how_much_of_fsr_s", true);
                         }
-                    }
-                    // with DLSS or without: under DLSS it rebuilds the strands from the jitter, without it the
-                    // coarser shading shows only while the frame rate needs it
-                    if (fur::g_strands) {
-                        Check("adaptive_fur_shading", &s.dlss_fur_auto);
-                        Hint("hint_shades_super_fur_coarser_when", true);
                     }
                     constexpr uint32_t kRates[] = {30, 60, 120, 180, 240, 0};
                     int rate = 0;
@@ -2218,6 +2286,7 @@ void Draw(double fps) {
                         if (kAniso[i] == s.aniso) aniso = i;
                     if (Segmented("anisotropic", &aniso, {"game_default", " 2x", " 4x", " 8x", " 16x"}))
                         s.aniso = kAniso[aniso];
+                    Hint("hint_keeps_textures_sharp_at_a");
 
                     // one choice: no anti-aliasing, SMAA, or MSAA at a sample count (the two never run together)
                     constexpr uint32_t kAa[] = {0, 1, 2, 4, 8};  // 0 off, 1 SMAA, else MSAA samples
@@ -2229,18 +2298,23 @@ void Draw(double fps) {
                         s.msaa = aa >= 2 ? kAa[aa] : 1;
                     }
                     ImGui::EndDisabled();
-                    if (dlss) Hint("hint_dlss_anti_aliases_the_picture", true);
+                    Hint(dlss ? "hint_dlss_anti_aliases_the_picture" : "hint_smooths_jagged_edges_smaa_is", true);
                 }
 
                 if (Section("post_processing")) {
                     Check("vignette", &vignette::g_on);
                     Hint("hint_the_game_s_darkened_screen", true);
                     Slider("film_grain", &s.film_grain, 0, 100, app::Settings{}.film_grain);
+                    Hint("hint_adds_a_fine_noise_over");
                     Slider("chromatic_aberration", &s.chromatic_aberration, 0, 100, app::Settings{}.chromatic_aberration);
+                    Hint("hint_splits_colors_apart_toward_the");
                     Slider("ambient_occlusion", &s.ambient_occlusion, 0, 100, app::Settings{}.ambient_occlusion);
-                    if (s.ambient_occlusion)
+                    Hint("hint_darkens_creases_and_corners_where");
+                    if (s.ambient_occlusion) {
                         Slider("ambient_occlusion_reach", &s.ambient_occlusion_radius, 5, 200,
                                app::Settings{}.ambient_occlusion_radius);
+                        Hint("hint_how_far_from_a_surface");
+                    }
                     Slider("motion_blur", &s.motion_blur, 0, 100, app::Settings{}.motion_blur);
                     Hint("hint_blurs_the_picture_as_the");
                 }
@@ -2280,7 +2354,13 @@ void Draw(double fps) {
                         Check("improved_fur_shading", &fur::g_shading);
                         Hint("hint_makes_fur_look_more_voluminous", true);
                     }
+                    // the per-model presets stay out of sight until asked for (not saved: closed on each start)
+                    static bool customize_fur = false;
                     if (fur::g_strands) {
+                        Check("customize_fur", &customize_fur);
+                        Hint("hint_shows_the_settings_for_each", true);
+                    }
+                    if (fur::g_strands && customize_fur) {
                         // the model whose look the sliders change: the furry models the game's table names, those
                         // super fur has drawn, and those with a look saved
                         static uint32_t model = fur::kNoModel;
@@ -2363,6 +2443,12 @@ void Draw(double fps) {
                             }
                             ImGui::PopID();
                         }
+                    }
+                    // with DLSS or without: under DLSS it rebuilds the strands from the jitter, without it the
+                    // coarser shading shows only while the frame rate needs it
+                    if (fur::g_strands) {
+                        Check("adaptive_fur_shading", &s.dlss_fur_auto);
+                        Hint("hint_shades_super_fur_coarser_when", true);
                     }
                     Check("full_distant_fur", &fur::g_distant);
                     Hint("hint_keeps_fur_on_far_away", true);
