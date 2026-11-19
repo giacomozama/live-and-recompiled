@@ -45,6 +45,20 @@ HWND g_hwnd = nullptr;
 constexpr UINT kApplyDisplay = WM_APP + 1, kOpenWindow = WM_APP + 2;
 bool g_mode_changed = false;
 bool g_apply_posted = false;  // a display apply is waiting in the queue or running
+// the window's monitor's refresh rate in Hz, read on any thread; asked of the system (ReadRefresh) only when the window
+// is made, moves or the display changes: EnumDisplaySettingsW is slow, and the render and game threads ask several
+// times a frame, which past 120 FPS cost frames
+std::atomic<uint32_t> g_refresh{60};
+
+void ReadRefresh() {
+    MONITORINFOEXW mi{};
+    mi.cbSize = sizeof(mi);
+    DEVMODEW dm{};
+    dm.dmSize = sizeof(dm);
+    if (GetMonitorInfoW(MonitorFromWindow(g_hwnd, MONITOR_DEFAULTTOPRIMARY), &mi) &&
+        EnumDisplaySettingsW(mi.szDevice, ENUM_CURRENT_SETTINGS, &dm) && dm.dmDisplayFrequency >= 24)
+        g_refresh.store(dm.dmDisplayFrequency, std::memory_order_relaxed);
+}
 
 void DumpThreads() {
     gpu::g_capture = true;
@@ -255,6 +269,10 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             ShowWindow(hwnd, SW_SHOW);
             SetForegroundWindow(hwnd);
             return 0;
+        case WM_DISPLAYCHANGE:
+        case WM_WINDOWPOSCHANGED:  // moved onto another monitor, or its mode changed under it
+            ReadRefresh();
+            break;
         case WM_CLOSE:
             DestroyWindow(hwnd);
             return 0;
@@ -401,34 +419,15 @@ void Pace(uint32_t vblanks) {
 
 void ReadDisplayHdr() {}
 
-uint32_t MonitorRefresh() {
-    MONITORINFOEXW mi{};
-    mi.cbSize = sizeof(mi);
-    DEVMODEW dm{};
-    dm.dmSize = sizeof(dm);
-    if (GetMonitorInfoW(MonitorFromWindow(g_hwnd, MONITOR_DEFAULTTOPRIMARY), &mi) &&
-        EnumDisplaySettingsW(mi.szDevice, ENUM_CURRENT_SETTINGS, &dm) && dm.dmDisplayFrequency >= 24)
-        return dm.dmDisplayFrequency;
-    return 60;
-}
+uint32_t MonitorRefresh() { return g_refresh.load(std::memory_order_relaxed); }
 
 double MonitorHz() { return double(MonitorRefresh()); }
 
 void PaceMenu() {
     using clock = std::chrono::steady_clock;
-    static clock::time_point next = clock::now(), asked{};
-    static uint32_t hz = 60;
+    static clock::time_point next = clock::now();
+    const uint32_t hz = MonitorRefresh();
     auto now = clock::now();
-    if (now - asked > std::chrono::seconds(1)) {  // the window's monitor's rate, asked again now and then (it may move)
-        asked = now;
-        MONITORINFOEXW mi{};
-        mi.cbSize = sizeof(mi);
-        DEVMODEW dm{};
-        dm.dmSize = sizeof(dm);
-        if (GetMonitorInfoW(MonitorFromWindow(g_hwnd, MONITOR_DEFAULTTOPRIMARY), &mi) &&
-            EnumDisplaySettingsW(mi.szDevice, ENUM_CURRENT_SETTINGS, &dm) && dm.dmDisplayFrequency >= 24)
-            hz = dm.dmDisplayFrequency;
-    }
     auto period = std::chrono::nanoseconds(1000000000ull / hz);
     next += period;
     if (next < now - period) next = now;
@@ -485,6 +484,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
     RegisterClassExW(&wc);
     app::g_hwnd = CreateWindowExW(0, wc.lpszClassName, app::kGame.title, WS_POPUP, 0, 0, 1280, 720,
                                   nullptr, nullptr, inst, nullptr);
+    app::ReadRefresh();
     // behind a splash the window stays hidden until the game's first frame; handed over, it is set up hidden
     if (handover) {
         app::ApplyNow();
