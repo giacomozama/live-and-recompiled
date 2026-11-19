@@ -572,6 +572,14 @@ at = 0x34822F  # 0x347330, the flag over its carrier: its colour by team in the 
 call = "ConkerCarrierFlag"
 
 [[hook]]
+at = 0x34935E  # 0x348FB0, a health bar's fill corners made: flattened for one drawn across with no name (player_tags.cpp)
+call = "ConkerBarFill"
+
+[[hook]]
+at = 0x34970E  # 0x348FB0, a health bar's frame corners made: its place on screen kept, then flattened (player_tags.cpp)
+call = "ConkerBarFrame"
+
+[[hook]]
 at = 0x1ED983  # 0x1ECF40, the message log drawn: its colour table's green and red in the chosen team colours (player_tags.cpp)
 call = "ConkerMessageColours"
 

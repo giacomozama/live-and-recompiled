@@ -15,6 +15,19 @@
 // 0.9 of the glyph's height apart, the bottom two met under the middle. So the marker moves, fades and scales with the
 // tag as the game places it, and goes through the frame's 2D as the name did.
 //
+// Health bars (settings.toml health_bars, display::g_health_bars): after the names the tag (0x348300) calls 0x346C90
+// ([esp+4] the view), whose loop over the players draws a bar beside each it shows one for by 0x348FB0 (cdecl: the
+// player, the view, the alpha, a size, two flags): two textured quads in the world, written straight into the push
+// buffer, the fill as high as the fraction 0x348E40 gives (eax the player, edx the fraction's float; the red, green and
+// blue as dwords to its three arguments: (health +0x3AE + armour +0x3AA) over (+0x3AC + +0x3B0), the colour from the
+// gradient at 0x74C4C8), then the frame. Instead of the name, a record the tag named this frame (TagPlayer) has no
+// such bar: its alpha, fraction and colour are kept, and the next frame's name or marker is a bar instead, four glyphs
+// I made rectangles as the marker is (a border in the marker's team colour, a dark one inside it, the empty part
+// dimmed, the fill in the game's colour; each glyph's black shadow dropped), so it moves, fades and scales with the
+// tag, under its icons as the name is. A vehicle's bar is its driver's name's, either way round (+0x135). Others (a
+// player past the name's reach, an empty vehicle) get one across where the game's was (FreeBar, at the end). Off,
+// 0x348FB0 draws nothing.
+//
 // Outlines (settings.toml player_outlines, gpu::g_outlines): each view's frame (the function round 0x2A5C40, bp the view) draws the
 // players by 0x7F4D0 (eax the view, [esp+4] the player's index into the records at [0x84A5F8], 0x6D0 bytes each,
 // [esp+8] a kind) from its loop at 0x2A5CA1 (the records are every character-like object, +0x64 their kind: only
@@ -28,8 +41,11 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <cstdarg>
+#include <cstdio>
 #include <unordered_map>
 #include <utility>
+#include <vector>
 
 #include "common/display.h"
 #include "common/menus.h"
@@ -44,6 +60,7 @@ uint32_t display::g_player_tags = display::kTagNames;
 bool display::g_player_ranks = true;
 bool display::g_player_outlines = false;
 uint32_t display::g_team_colors = display::kTeamGreenRed;
+uint32_t display::g_health_bars = display::kBarsBeside;
 
 namespace {
 
@@ -53,6 +70,25 @@ constexpr uint32_t kQuad = 0x807230, kVertex = 0x1C;               // a glyph's 
 
 bool g_marking = false;    // a marker's glyph is drawing, game thread
 uint32_t g_marker_text = 0;  // the guest string L"I"
+
+// a health bar as 0x348FB0 was asked to draw it, kept for the next frame's name (display::kBarsInstead)
+struct Bar {
+    uint32_t player = 0;
+    uint32_t alpha = 0;  // 0..255
+    float fraction = 0;
+    uint8_t rgb[3] = {};
+};
+std::vector<Bar> g_bars[4];          // by view: last frame's bars over a named player
+std::vector<uint32_t> g_named[4];    // by view: the players the tag named this frame, till its bars are drawn
+const Bar* g_bar = nullptr;          // a bar's glyphs drawing, game thread
+int g_bar_piece = -1;                // which: 0 the team's border, 1 the dark border, 2 the empty part, 3 the fill
+uint8_t g_bar_team[3] = {};          // the team's border: the colour the marker would have
+// a bar with no name to take the place of: the game's own drawn flat, its frame's middle on
+// screen (the 2D's 640 by 480) and a glyph height for it from the frame's height there
+bool g_free_call = false;            // 0x348FB0 running for such a bar: its quads flattened, the frame's place kept
+bool g_free_have = false;
+bool g_free_on = false;              // its glyphs drawing
+float g_free_x = 0, g_free_y = 0, g_free_h = 0;
 
 uint32_t MarkerText() {
     if (!g_marker_text) {
@@ -95,10 +131,116 @@ const uint8_t* TeamColour(int team, bool solid) {
 }  // namespace
 
 X86_EXTERN_FUNC(__imp__sub_00348C30);
+
+namespace {
+// the name's record and view (0x347FDF in 0x347330, one argument pushed: the record of the tag's loop over [0x84A5F8]
+// at the caller's [esp+0x28], the one 0x346C90's loop draws the bar for; [esp+0x1C] is the record or, for some
+// (0x347846, the vehicle selector's), what 0x347310 links it to. The view the tag's [ebp+8]); false if they don't look
+// right. A record of kind 0x36 (a player waiting to respawn, or the vehicle selector) is named by 0x347090 (from
+// 0x347FBA, five arguments pushed), the plain name at 0x3472F6 with its frame of 0xE4 bytes and one argument: the same
+// record 0x104 + 0x28 over 0x348C30's [esp]
+bool TagPlayer(const X86Context& ctx, uint32_t& player, uint32_t& view) {
+    constexpr uint32_t kPlayers = 0x84A5F8, kPlayerSize = 0x6D0;
+    const bool waiting = kernel::R32(ctx.esp) == kWaitingName;
+    player = kernel::R32(ctx.esp + (waiting ? 0x104 + 0x28 : 8 + 0x28));
+    view = kernel::R32(ctx.ebp + 8);
+    const uint32_t players = kernel::R32(kPlayers);
+    return view < 4 && players && player >= players && (player - players) % kPlayerSize == 0 &&
+           (player - players) / kPlayerSize < 64;
+}
+
+// XBE_BAR_TRACE=1: a line each time what a name or a bar call finds changes (its record, its index and kind +0x64,
+// its vehicle byte +0x135), with the frame (0x346C90's calls); 600 lines at most
+uint32_t g_bar_frame = 0;
+bool BarTrace() {
+    static const bool on = std::getenv("XBE_BAR_TRACE") != nullptr;
+    return on;
+}
+void TraceBar(uint64_t key, uint64_t now, const char* fmt, ...) __attribute__((format(printf, 3, 4)));
+void TraceBar(uint64_t key, uint64_t now, const char* fmt, ...) {
+    static std::unordered_map<uint64_t, uint64_t> last;
+    static uint32_t lines = 0;
+    const auto it = last.find(key);
+    if ((it != last.end() && it->second == now) || lines >= 600) return;
+    last[key] = now;
+    lines++;
+    char text[400];
+    va_list args;
+    va_start(args, fmt);
+    std::vsnprintf(text, sizeof text, fmt, args);
+    va_end(args);
+    LOGR("bars: frame %u %s", g_bar_frame, text);
+}
+// a record as the trace shows it: its index in [0x84A5F8], kind and vehicle byte
+struct Rec {
+    int index = -1;
+    uint32_t kind = 0, vehicle = 0;
+};
+Rec RecOf(uint32_t p) {
+    Rec r;
+    const uint32_t players = kernel::R32(0x84A5F8);
+    if (!players || p < players || (p - players) % 0x6D0) return r;
+    r.index = int((p - players) / 0x6D0);
+    r.kind = kernel::R32(p + 0x64), r.vehicle = kernel::G<uint8_t>(p + 0x135);
+    return r;
+}
+
+// the name's bar from last frame, null if none; the record noted as named for this frame's bars
+const Bar* NamedBar(const X86Context& ctx) {
+    if (display::g_health_bars != display::kBarsInstead || !MarkerText()) return nullptr;
+    uint32_t player, view;
+    const bool ok = TagPlayer(ctx, player, view);
+    const Bar* found = nullptr;
+    if (ok) {
+        g_named[view].push_back(player);
+        for (const Bar& b : g_bars[view])
+            if (b.player == player) found = &b;
+    }
+    if (BarTrace()) {
+        const uint32_t other = kernel::R32(ctx.esp + (kernel::R32(ctx.esp) == kWaitingName ? 0x104 : 8) + 0x1C);
+        const Rec a = RecOf(player), o = RecOf(other);
+        TraceBar(uint64_t(1) << 60 | uint64_t(player), uint64_t(ok) << 1 | uint64_t(found != nullptr),
+                 "view %u name (from %06X): loop record %08X (index %d kind %X vehicle %u), [esp+0x1C] %08X "
+                 "(index %d kind %X vehicle %u): %s",
+                 view, kernel::R32(ctx.esp), player, a.index, a.kind, a.vehicle, other, o.index, o.kind, o.vehicle,
+                 !ok ? "not a record" : found ? "bar from last frame" : "no bar from last frame");
+    }
+    return found;
+}
+
+// the bar's four glyphs, each a call of 0x348C30 as ctx entered it; ctx left as the last returned. 0x348C30
+// centres the string by moving the x at [edi] left by half its width (0x348C4E..0x348C6A), so each starts from the x
+// as it came
+void DrawBar(X86Context& ctx, uint8_t* base, const Bar& bar) {
+    const X86Context entry = ctx;
+    const uint32_t x = kernel::R32(entry.edi);
+    g_bar = &bar;
+    // the tag's colour as the game set it for this player, in the chosen team colours made solid, as a marker's
+    const uint8_t* tag = base + kTagColour;
+    const int team = TeamOf(tag);
+    std::memcpy(g_bar_team, team >= 0 ? TeamColour(team, true) : tag, 3);
+    for (int piece = 0; piece < 4; piece++) {
+        ctx = entry;
+        kernel::W32(entry.edi, x);
+        ctx.esi = g_marker_text;
+        g_bar_piece = piece;
+        __imp__sub_00348C30(ctx, base);
+    }
+    g_bar_piece = -1;
+    g_bar = nullptr;
+    ctx.esi = entry.esi;
+}
+}  // namespace
+
 X86_FUNC(sub_00348C30) {
     const uint32_t site = kernel::R32(ctx.esp);
     const uint32_t mode = display::g_player_tags;
     const bool plain = site == kTagName || site == kWaitingName;
+    const Bar* bar = plain ? NamedBar(ctx) : nullptr;
+    if (bar) {  // in the name's or marker's place
+        DrawBar(ctx, base, *bar);
+        return;
+    }
     if (mode == display::kTagOff && plain) {
         kernel::Return(ctx, ctx.eax, 0);  // cdecl: the caller pops its argument
         return;
@@ -122,6 +264,98 @@ X86_FUNC(sub_00348C30) {
         ctx.esi = name;
     }
     std::memcpy(colour, was, 3);
+}
+
+// The bars' loop (0x346C90, [esp+4] the view): last frame's bars dropped, this frame's kept as 0x348FB0 is asked for
+// them; the names noted for it dropped after
+X86_EXTERN_FUNC(__imp__sub_00346C90);
+X86_FUNC(sub_00346C90) {
+    const uint32_t view = kernel::R32(ctx.esp + 4);
+    if (view >= 4) return __imp__sub_00346C90(ctx, base);
+    g_bars[view].clear();
+    g_bar_frame++;
+    __imp__sub_00346C90(ctx, base);
+    g_named[view].clear();
+}
+
+namespace {
+// the player named this frame whose bar this record's is, 0 if none: itself, or the vehicle it drives or the one
+// driving it (a player's byte +0x135: 0 on foot, else 1 + the vehicle's index in the records, as 0x3F4E0 reads it)
+uint32_t NamedFor(uint32_t view, uint32_t record) {
+    constexpr uint32_t kPlayers = 0x84A5F8, kPlayerSize = 0x6D0, kVehicle = 0x135;
+    const uint32_t players = kernel::R32(kPlayers);
+    if (!players || record < players) return 0;
+    const auto index = [&](uint32_t p) { return (p - players) / kPlayerSize; };
+    for (const uint32_t n : g_named[view])
+        if (n == record) return n;
+    for (const uint32_t n : g_named[view])
+        if (kernel::G<uint8_t>(n + kVehicle) == index(record) + 1 ||
+            kernel::G<uint8_t>(record + kVehicle) == index(n) + 1)
+            return n;
+    return 0;
+}
+}  // namespace
+
+X86_EXTERN_FUNC(sub_00348E40);
+X86_EXTERN_FUNC(__imp__sub_00348FB0);
+
+namespace {
+// the bar 0x348FB0 (ctx at its entry) would draw for the record, as it decides: none on team 3, none where 0x348E40
+// says so; its alpha, fraction and colour
+bool GameBar(X86Context& ctx, uint8_t* base, uint32_t record, Bar& b) {
+    const uint32_t team = kernel::R32(record + 0x238);
+    if (team && kernel::R32(team) == 3) return false;
+    const X86Context saved = ctx;
+    const uint32_t out = (ctx.esp - 0x40) & ~15u;  // red, green, blue, the fraction
+    ctx.esp = out;
+    X86_PUSH32(out + 8);
+    X86_PUSH32(out + 4);
+    X86_PUSH32(out);
+    X86_PUSH32(kernel::R32(saved.esp));
+    ctx.eax = record;
+    ctx.edx = out + 12;
+    sub_00348E40(ctx, base);
+    const bool shown = (ctx.eax & 0xFF) != 0;
+    ctx = saved;
+    if (!shown) return false;
+    b.player = record;
+    b.alpha = std::min<uint32_t>(kernel::R32(ctx.esp + 12) & 0xFF, 255);
+    b.fraction = std::clamp(GetF(out + 12), 0.0f, 1.0f);
+    for (uint32_t i = 0; i < 3; i++) b.rgb[i] = uint8_t(std::min<uint32_t>(kernel::R32(out + 4 * i), 255));
+    return true;
+}
+
+void FreeBar(const X86Context& entry, uint8_t* base, const Bar& bar, uint32_t view, uint32_t record);
+}  // namespace
+X86_FUNC(sub_00348FB0) {
+    const uint32_t how = display::g_health_bars;
+    if (how == display::kBarsBeside) return __imp__sub_00348FB0(ctx, base);
+    if (how == display::kBarsOff) return kernel::Return(ctx, ctx.eax, 0);  // cdecl
+    const uint32_t player = kernel::R32(ctx.esp + 4), view = kernel::R32(ctx.esp + 8);
+    const uint32_t named = view < 4 ? NamedFor(view, player) : 0;
+    Bar b;
+    const bool shown = GameBar(ctx, base, player, b);
+    if (BarTrace()) {
+        const Rec r = RecOf(player), n = RecOf(named);
+        TraceBar(uint64_t(2) << 60 | uint64_t(player), uint64_t(named) << 1 | uint64_t(shown),
+                 "view %u bar call: record %08X (index %d kind %X vehicle %u), named this frame: %08X (index %d): %s%s",
+                 view, player, r.index, r.kind, r.vehicle, named, n.index,
+                 named ? "kept for its name" : "drawn across where the game's was", shown ? "" : " (none shown)");
+    }
+    if (!named) {
+        // no name: the game's bar drawn flat, then one across where its frame was
+        const X86Context entry = ctx;
+        g_free_call = true, g_free_have = false;
+        __imp__sub_00348FB0(ctx, base);
+        g_free_call = false;
+        if (shown && g_free_have && view < 4) FreeBar(entry, base, b, view, player);
+        return;
+    }
+    if (shown) {
+        b.player = named;
+        g_bars[view].push_back(b);
+    }
+    kernel::Return(ctx, ctx.eax, 0);
 }
 
 // [[hook]] at 0x1D40A8 in 0x1D3CB0 (from the weapon code at 0x3012E5): the colour 0x3488E0 just picked for the
@@ -322,8 +556,54 @@ void ConkerMessageColours(X86Context& ctx, uint8_t* base) {
     if (std::memcmp(table + 18, kDim, 3) == 0) std::memcpy(table + 18, kDimBlue, 3);
 }
 
+namespace {
+// one of a bar's glyphs, its corners and texture coordinates as PlayerMarkerQuad found them
+void BarQuad(uint32_t tl, uint32_t tr, uint32_t bl, uint32_t br, float top, float h, float mid, float pixel) {
+    // the text draws each glyph twice, a black shadow down and right first, then the glyph: the shadow's dropped
+    if ((kernel::R32(kQuad + 0x10) & 0xFFFFFF) == 0) {
+        for (uint32_t i = 0; i < 4; i++) {
+            SetF(kQuad + i * kVertex, mid), SetF(kQuad + i * kVertex + 4, top);
+            kernel::W32(kQuad + i * kVertex + 0x10, 0);
+        }
+        return;
+    }
+    // in the quad's units: a bar 2.6 of the glyph's height wide and 0.3 high, its middle where the marker's is (0.4
+    // of the glyph down), a dark border 0.08 round it and the team's 0.1 round that; each border at least a pixel,
+    // the bar at least two pixels high
+    const float ah = std::fabs(h), sy = h >= 0 ? 1.0f : -1.0f, sx = GetF(tr) >= GetF(tl) ? 1.0f : -1.0f;
+    const float dark = std::max(0.08f * ah, pixel), outer = std::max(0.1f * ah, pixel);
+    const float high = std::max(0.3f * ah, 2 * pixel), half = 1.3f * ah;
+    const float y0 = top + sy * (0.4f * ah - 0.5f * high), y1 = y0 + sy * high;
+    float x0 = mid - sx * half, x1 = mid + sx * half;
+    float u0 = y0, u1 = y1;
+    if (g_bar_piece <= 1) {
+        const float grow = g_bar_piece == 0 ? dark + outer : dark;
+        x0 -= sx * grow, x1 += sx * grow;
+        u0 -= sy * grow, u1 += sy * grow;
+    } else if (g_bar_piece == 3) {
+        x1 = x0 + (x1 - x0) * g_bar->fraction;
+    }
+    SetF(tl, x0), SetF(tl + 4, u0);
+    SetF(tr, x1), SetF(tr + 4, u0);
+    SetF(bl, x0), SetF(bl + 4, u1);
+    SetF(br, x1), SetF(br + 4, u1);
+    // the colour: the team's, black, the game's dimmed, the game's; the alpha the tag's fade and the bar's own
+    static constexpr float kDim[4] = {1.0f, 0.0f, 0.3f, 1.0f}, kOpacity[4] = {1.0f, 0.85f, 0.75f, 1.0f};
+    const uint8_t* rgb = g_bar_piece == 0 ? g_bar_team : g_bar->rgb;
+    const float dim = kDim[g_bar_piece], opacity = kOpacity[g_bar_piece];
+    const uint32_t r = uint32_t(rgb[0] * dim + 0.5f), g = uint32_t(rgb[1] * dim + 0.5f),
+                   b = uint32_t(rgb[2] * dim + 0.5f);
+    for (uint32_t i = 0; i < 4; i++) {
+        const uint32_t v = kQuad + i * kVertex + 0x10;
+        const uint32_t a = kernel::R32(v) >> 24;
+        const uint32_t na = uint32_t(float(a) * float(g_bar->alpha) / 255.0f * opacity + 0.5f);
+        kernel::W32(v, std::min(na, 255u) << 24 | r << 16 | g << 8 | b);
+    }
+}
+}  // namespace
+
 void display::PlayerMarkerQuad() {
-    if (!g_marking) return;
+    if (!g_marking && g_bar_piece < 0) return;
     float sx[4], sy[4];
     if (!menus::GlyphScreen(sx, sy)) return;
     // the corners by where they land: the top two, then the bottom two, each left then right
@@ -337,15 +617,27 @@ void display::PlayerMarkerQuad() {
     const float top = (GetF(tl + 4) + GetF(tr + 4)) * 0.5f, bottom = (GetF(bl + 4) + GetF(br + 4)) * 0.5f;
     const float h = bottom - top;
     const float mid = (GetF(tl) + GetF(tr) + GetF(bl) + GetF(br)) * 0.25f;
+    // every corner samples the glyph's middle
+    float u = 0, v = 0;
+    for (uint32_t i = 0; i < 4; i++) u += GetF(kQuad + i * kVertex + 0x14), v += GetF(kQuad + i * kVertex + 0x18);
+    for (uint32_t i = 0; i < 4; i++) SetF(kQuad + i * kVertex + 0x14, u * 0.25f), SetF(kQuad + i * kVertex + 0x18, v * 0.25f);
+    if (g_bar_piece >= 0) {
+        // a screen pixel in the quad's units, by the glyph's height on screen
+        const float on_screen = std::fabs((sy[at[2]] + sy[at[3]]) - (sy[at[0]] + sy[at[1]])) * 0.5f;
+        const float pixel = on_screen > 0.5f ? std::fabs(h) / on_screen : 1.0f;
+        if (g_free_on) {  // where the game's bar was, not where the glyph fell
+            const float fh = h >= 0 ? g_free_h : -g_free_h;
+            BarQuad(tl, tr, bl, br, g_free_y - 0.4f * fh, fh, g_free_x, pixel);
+        } else {
+            BarQuad(tl, tr, bl, br, top, h, mid, pixel);
+        }
+        return;
+    }
     const float half = 0.45f * std::fabs(h) * (GetF(tr) >= GetF(tl) ? 1.0f : -1.0f);
     SetF(tl, mid - half), SetF(tl + 4, top);
     SetF(tr, mid + half), SetF(tr + 4, top);
     SetF(bl, mid), SetF(bl + 4, top + 0.8f * h);
     SetF(br, mid), SetF(br + 4, top + 0.8f * h);
-    // every corner samples the glyph's middle
-    float u = 0, v = 0;
-    for (uint32_t i = 0; i < 4; i++) u += GetF(kQuad + i * kVertex + 0x14), v += GetF(kQuad + i * kVertex + 0x18);
-    for (uint32_t i = 0; i < 4; i++) SetF(kQuad + i * kVertex + 0x14, u * 0.25f), SetF(kQuad + i * kVertex + 0x18, v * 0.25f);
 }
 
 namespace {
@@ -466,3 +758,107 @@ X86_FUNC(sub_0007F4D0) {
     __imp__sub_0007F4D0(ctx, base);
     d3d::OutlineMark(0);
 }
+
+// A bar with no name in its place (display::kBarsInstead): 0x348FB0 runs as it would, its two quads' corners (four
+// points at [esp+0x20], 0xC bytes each, the world's, made by 0x428393 from the unit corners at 0x590608) flattened to
+// one point before each is written, the fill's at 0x34935E and the frame's at 0x34970E; the frame's middle and height
+// taken to the screen by the view's camera (0x84A13C + 0x2B0 the view: the camera's constants at +0x100 and the
+// projection's at +0xC0, as 0x348FB0 sets them), onto the 2D's 640 by 480. The bar is then four glyphs as a name's
+// is, there, in the colour the game's test (0x3488E0) gives the record for the view's player
+namespace {
+void Flatten(uint32_t corners) {
+    for (uint32_t i = 1; i < 4; i++)
+        for (uint32_t k = 0; k < 3; k++) kernel::W32(corners + i * 12 + k * 4, kernel::R32(corners + k * 4));
+}
+
+bool Project(uint32_t view, const float p[3], float& x, float& y) {
+    const uint32_t cams = kernel::R32(0x84A13C);
+    if (!cams) return false;
+    // as 0x348FB0 loads them into the vertex shader (0x536B50: 0x88 c40..c43 from +0x100, 0x92 c50..c53 from +0xC0),
+    // each row a constant: the world to the camera, then the projection, applied to the point as a column
+    const uint32_t at = cams + view * 0x2B0;
+    float v[16], pr[16];
+    for (uint32_t i = 0; i < 16; i++) v[i] = GetF(at + 0x100 + 4 * i), pr[i] = GetF(at + 0xC0 + 4 * i);
+    float e[4], c[4];
+    for (int r = 0; r < 4; r++) e[r] = v[4 * r] * p[0] + v[4 * r + 1] * p[1] + v[4 * r + 2] * p[2] + v[4 * r + 3];
+    for (int r = 0; r < 4; r++)
+        c[r] = pr[4 * r] * e[0] + pr[4 * r + 1] * e[1] + pr[4 * r + 2] * e[2] + pr[4 * r + 3] * e[3];
+    if (!(c[3] > 1e-4f)) return false;
+    // the viewport as the draws have it (c-38 320 -240, c-37 320 240): the 2D's 640 by 480
+    x = 320.0f + 320.0f * c[0] / c[3];
+    y = 240.0f - 240.0f * c[1] / c[3];
+    return true;
+}
+}  // namespace
+
+// [[hook]] at 0x34935E in 0x348FB0, the fill's corners made: flattened for a bar drawn across instead
+void ConkerBarFill(X86Context& ctx, uint8_t* base) {
+    (void)base;
+    if (g_free_call) Flatten(ctx.esp + 0x20);
+}
+
+// [[hook]] at 0x34970E in 0x348FB0, the frame's corners made: its middle and height on screen kept, then flattened
+void ConkerBarFrame(X86Context& ctx, uint8_t* base) {
+    (void)base;
+    if (!g_free_call) return;
+    const uint32_t corners = ctx.esp + 0x20;
+    const uint32_t view = kernel::R32(ctx.ebp + 0xC);
+    float mid[3] = {}, lo = 1e9f, hi = -1e9f;
+    bool ok = view < 4;
+    for (uint32_t i = 0; i < 4 && ok; i++) {
+        const float p[3] = {GetF(corners + i * 12), GetF(corners + i * 12 + 4), GetF(corners + i * 12 + 8)};
+        for (int k = 0; k < 3; k++) mid[k] += p[k] * 0.25f;
+        float x, y;
+        ok = Project(view, p, x, y);
+        lo = std::min(lo, y), hi = std::max(hi, y);
+    }
+    if (ok && Project(view, mid, g_free_x, g_free_y)) {
+        // the bar about as wide as the game's was high, within a name's sizes
+        g_free_h = std::clamp((hi - lo) * 0.3f, 7.0f, 14.0f);
+        g_free_have = true;
+    }
+    Flatten(corners);
+}
+
+namespace {
+void FreeBar(const X86Context& entry, uint8_t* base, const Bar& bar, uint32_t view, uint32_t record) {
+    if (!MarkerText()) return;
+    // its team for the view's player: neutral (team 2), else a teammate's or an opponent's by the game's test
+    int team = 2;
+    const uint32_t viewer = Viewer(view);
+    const uint32_t team_of = kernel::R32(record + kPlayerTeam);
+    if (viewer && !(team_of && kernel::R32(team_of) == kNeutral)) {
+        X86Context c = entry;
+        c.esp = (entry.esp - 0x100) & ~15u;
+        const uint32_t ret = kernel::R32(entry.esp);
+        c.esp -= 4, kernel::W32(c.esp, viewer);
+        c.esp -= 4, kernel::W32(c.esp, record);
+        c.esp -= 4, kernel::W32(c.esp, ret);
+        sub_003488E0(c, base);
+        team = (c.eax & 0xFF) ? 0 : 1;
+    }
+    static constexpr uint8_t kGame[3][3] = {{0x96, 0xFF, 0x96}, {0xFF, 0x96, 0x96}, {0x96, 0xC8, 0xFF}};
+    // the text's colour, alpha and size as the tag leaves them, put back after
+    uint8_t was_colour[3], was_alpha;
+    float was_size[2];
+    std::memcpy(was_colour, base + kTagColour, 3);
+    was_alpha = kernel::G<uint8_t>(0x807667);
+    was_size[0] = GetF(0x80765C), was_size[1] = GetF(0x807660);
+    std::memcpy(base + kTagColour, kGame[team], 3);
+    base[0x807667] = 0xFF;
+    if (!(was_size[0] > 0.0f)) SetF(0x80765C, 1.0f), SetF(0x807660, 1.0f);
+    // 0x348C30's frame: the y at [esp+4], the x at [edi]
+    X86Context c = entry;
+    c.esp = (entry.esp - 0x100) & ~15u;
+    kernel::W32(c.esp, kernel::R32(entry.esp));
+    SetF(c.esp + 4, g_free_y);
+    SetF(c.esp + 0x20, g_free_x);
+    c.edi = c.esp + 0x20;
+    g_free_on = true;
+    DrawBar(c, base, bar);
+    g_free_on = false;
+    std::memcpy(base + kTagColour, was_colour, 3);
+    base[0x807667] = was_alpha;
+    SetF(0x80765C, was_size[0]), SetF(0x807660, was_size[1]);
+}
+}  // namespace

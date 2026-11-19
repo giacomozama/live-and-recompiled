@@ -67,6 +67,12 @@ void PlayerMarkerQuad();
 // settings.toml player_ranks: the tag's rank emblem (one of the sprites 0x174..0x18B, by the player's rank 0..23,
 // drawn by 0x357CF0 from 0x34810A) beside the name; off, that call is skipped (player_tags.cpp). Read as each tag draws
 extern bool g_player_ranks;
+// settings.toml health_bars: the health bar a match shows by other players (0x348FB0, from 0x346C90): the game's own,
+// upright beside them (kBarsBeside), a small one across in place of their name or marker, in a border of the marker's
+// colour (kBarsInstead; one with no name, a player's past the name's reach, across where the game's was), or none
+// (kBarsOff). Read as each bar draws (player_tags.cpp)
+enum : uint32_t { kBarsBeside = 0, kBarsInstead = 1, kBarsOff = 2 };
+extern uint32_t g_health_bars;
 
 // settings.toml player_outlines: in a match the other players are outlined where they are in view, green for a
 // teammate and red for an opponent as the game's test (0x3488E0) has them for the view's player; never through a

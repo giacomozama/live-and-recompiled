@@ -66,6 +66,7 @@ const app::GameInfo app::kGame = {
                 {"hud_split", &display::g_hud_split, nullptr},  // a match's HUD unstretched, at the display's edges (display.cpp)
                 {"player_tags", nullptr, &display::g_player_tags},  // over other players: 0 names, 1 markers, 2 off (player_tags.cpp)
                 {"player_ranks", &display::g_player_ranks, nullptr},  // the rank emblem in the tag over other players (player_tags.cpp)
+                {"health_bars", nullptr, &display::g_health_bars},  // other players' health bars: 0 the game's beside them, 1 instead of the name or marker, 2 none (player_tags.cpp)
                 {"player_outlines", &display::g_player_outlines, nullptr},  // other players outlined in a match (player_tags.cpp)
                 {"medgun_beam", &medbeam::g_enabled, nullptr},  // the medgun's heal beam in a match (medbeam.cpp)
                 {"team_colors", nullptr, &display::g_team_colors},  // a match's team colours: 0 green/red, 1 blue/orange (player_tags.cpp)

@@ -2734,6 +2734,10 @@ void Draw(double fps) {
                     Hint("hint_over_other_players_in_a", true);
                     Check("player_ranks", &display::g_player_ranks);
                     Hint("hint_the_rank_emblem_beside_other", true);
+                    int bars = int(std::min<uint32_t>(display::g_health_bars, display::kBarsOff));
+                    if (Segmented("health_bars", &bars, {"beside", "instead_of_name_marker", "off"}))
+                        display::g_health_bars = uint32_t(bars);
+                    Hint("hint_other_players_health_bars", true);
                     Check("player_outlines", &display::g_player_outlines);
                     Hint("hint_in_a_match_other_players", true);
                     Check("medgun_beam", &medbeam::g_enabled);
