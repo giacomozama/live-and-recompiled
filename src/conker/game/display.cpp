@@ -66,6 +66,7 @@
 #include "common/menus.h"
 #include "common/mouse.h"
 #include "common/warp.h"
+#include "gpu/backend.h"
 #include "gpu/shaders.h"
 
 namespace display {
@@ -100,7 +101,7 @@ uint32_t Shown() {
     uint32_t hz = app::MonitorRefresh(), best = 30;
     for (uint32_t c : {60u, 120u, 180u, 240u})
         if (c <= hz + 1) best = c;
-    return best;
+    return std::min(best, MostFrameRate());
 }
 
 // Online sessions. Copies in a system link session must tick alike (link.cpp: a join is refused at another rate), so
@@ -141,8 +142,12 @@ void SetFrameRate(uint32_t rate) {
 
 bool FrameRateLocked() { return g_pinned.load(std::memory_order_relaxed) != 0; }
 
+// the first rate to reach the monitor's refresh; with the OpenGL renderer (gpu::g_opengl, set as it starts: the
+// per-frame check below then brings the rate down to it) 120 where the monitor shows that many, else 60, its
+// drawing again too slow for more
 uint32_t MostFrameRate() {
     const double hz = app::MonitorHz();
+    if (gpu::g_opengl.load(std::memory_order_relaxed)) return hz >= 119.5 ? 120 : 60;
     for (uint32_t c : {60u, 120u, 180u}) if (double(c) >= hz - 0.5) return c;
     return kShownMost;
 }
