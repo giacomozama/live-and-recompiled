@@ -266,9 +266,14 @@ struct Frame {
     }
     std::vector<bool> taken;  // found by a draw of the frame after
     bool matched = false;     // its draws looked for in the frame before (Match)
+    // a cut (Match's Cut): so many of its draws found jumped that the pictures before it draw it as it is
+    bool cut = false;
+    uint32_t cut_found = 0, cut_jumped = 0;  // the found draws Cut weighed, those that jumped, for the notes
     const std::array<float, 4>* Values(const Snap& sn) const { return values.data() + sn.at; }
     void Clear() {
         matched = false;
+        cut = false;
+        cut_found = cut_jumped = 0;
         loose.clear();
         Reuse(programs);
         Reuse(lod);
@@ -1185,6 +1190,59 @@ void InTurns(const Frame& prev, Frame& cur, const std::vector<uint32_t>& list, c
 
 uint32_t g_at_frame = 0;  // the blend memo (Memoized): the frames matched, its tables good for the last
 
+// A camera cut (a cutscene's first frame after play, its shots): taken part way, each draw judged alone, those that
+// jumped came out as the frame has them and the rest half way from what they were found as, and a character whose
+// bones were in part palette registers another draw left (kept) was drawn stretched across the two places, most of
+// him where the frame before had him (capture 123844 pic 58, Conker falling into the waterfall cave's pit: 177 draws
+// jumped, 209 palette registers kept). Of the frame's found draws (leaders: those with their own constants), the
+// share with a register that jumped as BlendLeader judges it (packed, wrapped, cleared and left registers aside); past
+// kCutShare of at least kCutMin found, the frame is a cut and the pictures before it draw it as it is. In play a fast
+// turn jumps a few draws a picture (a translation crossing zero), none at all most pictures
+constexpr uint32_t kCutMin = 16;
+constexpr float kCutShare = 0.25f;
+bool LeaderJumped(const Frame& prev, const Frame& cur, const Snap& sn) {
+    const Snap& was = prev.snaps[size_t(sn.found)];
+    if (!sn.reads) {
+        for (size_t i = 0; i < kXf; i++) {
+            float tmp[16];
+            if (!Lerp(was.xf[i].data(), sn.xf[i].data(), 16, 0.5f, tmp, Reach16(was.xf[i], sn.xf[i]).data()))
+                return true;
+        }
+        return false;
+    }
+    if (was.reads != sn.reads) return false;
+    const std::array<float, 4>* a = prev.Values(was);
+    const std::array<float, 4>* c = cur.Values(sn);
+    const size_t n = sn.reads->regs.size();
+    float reach = 0;
+    for (size_t j = 0; j < n; j++) reach = Reach(Reach(reach, a[j][3]), c[j][3]);
+    for (size_t j = 0; j < n; j++) {
+        const uint8_t r = sn.reads->regs[j];
+        if (sn.stale[r] || std::memcmp(&a[j], &c[j], 16) == 0) continue;
+        bool packed = false;
+        for (size_t i = 0; i < 4; i++)
+            packed |= std::memcmp(&a[j][i], &c[j][i], 4) != 0 && (Packed(a[j][i]) || Packed(c[j][i]));
+        if (packed || Wrapped(a[j].data(), c[j].data()) || Cleared(a[j].data(), c[j].data()) ||
+            Flipped(a[j].data(), c[j].data()))
+            continue;
+        if (RowJumped(a[j].data(), c[j].data(), reach)) return true;
+    }
+    return false;
+}
+void Cut(const Frame& prev, Frame& cur) {
+    static const bool off = [] {
+        const char* e = std::getenv("XBE_INTERP_CUT");
+        return e && *e == '0';
+    }();
+    if (off) return;
+    for (const Snap& sn : cur.snaps) {
+        if (sn.leader >= 0 || sn.found < 0) continue;
+        cur.cut_found++;
+        if (LeaderJumped(prev, cur, sn)) cur.cut_jumped++;
+    }
+    cur.cut = cur.cut_found >= kCutMin && float(cur.cut_jumped) > kCutShare * float(cur.cut_found);
+}
+
 void Match() {
     Frame& cur = g_frames[g_cur];
     Frame& prev = g_frames[g_cur ^ 1];
@@ -1498,6 +1556,7 @@ void Match() {
         const Snap& sn = cur.snaps[i];
         if (sn.leader < 0 && sn.found >= 0 && sn.reads) cur.found_programmed.push_back(i);
     }
+    Cut(prev, cur);
     if (Moving()) Settle(prev, cur);
 }
 
@@ -1911,6 +1970,7 @@ Blended BlendLeader(uint32_t n, float t, State& s, Undo& undo) {
     const Frame& prev = g_frames[g_cur ^ 1];
     if (g_pass.on) g_pass.draws++;
     if (n < cur.snaps.size() && cur.snaps[n].leader >= 0) n = uint32_t(cur.snaps[n].leader);
+    if (cur.cut) return Blended::kJumped;  // drawn as the frame has it (Cut)
     if (g_pass.on && n < cur.snaps.size() && cur.snaps[n].tag.key) {
         g_pass.tagged++;
         if (cur.snaps[n].by_tag) g_pass.by_tag++;
@@ -2662,6 +2722,11 @@ void EndPass(uint32_t slot) {
              g_pass.second,
              g_pass.borrowed, g_pass.across, g_pass.jumped, g_pass.kept, g_loose);
     std::string note = b + suspects;
+    if (g_frames[g_cur].cut) {
+        snprintf(b, sizeof(b), "\n  a cut: %u of %u found draws jumped, every draw drawn as the frame has it",
+                 g_frames[g_cur].cut_jumped, g_frames[g_cur].cut_found);
+        note += b;
+    }
     std::vector<std::pair<uint64_t, std::pair<uint32_t, std::string>>> top(g_pass.unfound_programs.begin(),
                                                                            g_pass.unfound_programs.end());
     std::sort(top.begin(), top.end(), [](const auto& a, const auto& b) { return a.second.first > b.second.first; });
