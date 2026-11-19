@@ -625,6 +625,10 @@ float RichText(const char* text, float wrap_w, bool draw) {
 
 // a hint under the setting before it: smaller, dimmed and wrapped. Right after a setting row it is the label's subtext,
 // in the label's room; elsewhere it runs the width under what is above
+// the D3D11 renderer draws (gpu::g_d3d11): a row only Vulkan's draws is greyed, its hint saying so
+bool D3d11() { return gpu::g_d3d11.load(std::memory_order_relaxed); }
+constexpr const char* kNoD3d11 = "hint_not_available_with_direct3d";
+
 void Hint(const char* text, bool checkbox = false) {
     const ImGuiStyle& style = ImGui::GetStyle();
     const bool inline_hint = g_row.open && g_row.frame == ImGui::GetFrameCount();
@@ -2184,6 +2188,17 @@ void Draw(double fps) {
                             Hint("hint_the_graphics_card_the_game");
                         }
                     }
+#ifdef _WIN32
+                    {
+                        // read once at launch (gpu::CreateBackend); Linux has Vulkan alone
+                        int renderer = s.renderer == "d3d11" ? 1 : 0;
+                        if (Segmented("renderer", &renderer, {"Vulkan", "Direct3D 11"}))
+                            s.renderer = renderer ? "d3d11" : "vulkan";
+                        Hint("hint_vulkan_is_the_default_direct3d");
+                        static const std::string start_renderer = s.renderer;
+                        if (s.renderer != start_renderer) WarningCard("hint_restart_the_game_for_this");
+                    }
+#endif
 
                     // forced on past the monitor's refresh (app::VsyncForced): shown on and greyed, the setting kept
                     if (app::VsyncForced(app::Get())) {
@@ -2222,27 +2237,31 @@ void Draw(double fps) {
                     Slider("brightness", &s.brightness, -20, 20, app::Settings{}.brightness);
                     Hint("hint_raises_or_lowers_the_black", true);
                     Beside("display_calibration");
+                    ImGui::BeginDisabled(D3d11());
                     if (ImGui::Button(T("calibrate_display"))) g_calib_step.store(0);
-                    Hint("hint_test_patterns_for_brightness_and", true);
+                    ImGui::EndDisabled();
+                    Hint(D3d11() ? kNoD3d11 : "hint_test_patterns_for_brightness_and", true);
                 }
 
                 if (Section("quality")) {
                     // DLSS: left out on a GPU without it unless already chosen (so it can be turned off), greyed
                     // out where something can be done about it (the files, a failed start); it sets the render size
-                    // itself, so the render size and FSR 1 step aside while it is on
+                    // itself, so the render size and FSR 1 step aside while it is on. A renderer without it (4,
+                    // D3D11) draws as if it were off: the setting kept, its rows left out but the box to turn it off
                     const int dlss_state = gpu::g_dlss_state.load();
                     bool dlss = s.upscaler == "dlss";
-                    if (dlss_state != 0 || dlss) {
+                    if ((dlss_state != 0 && dlss_state != 4) || dlss) {
                         ImGui::BeginDisabled(dlss_state != 1 && !dlss);
                         if (Check("nvidia_dlss", &dlss)) s.upscaler = dlss ? "dlss" : "off";
                         ImGui::EndDisabled();
-                        Hint(dlss_state == 3   ? "hint_the_dlss_files_aren_t"
+                        Hint(dlss_state == 4   ? kNoD3d11
+                             : dlss_state == 3 ? "hint_the_dlss_files_aren_t"
                              : dlss_state == 2 ? "hint_dlss_failed_to_start_on"
                              : dlss_state == 1 ? "hint_dlss_renders_fewer_pixels_and"
                                                : "hint_dlss_needs_an_nvidia_rtx",
                              true);
                     }
-                    if (dlss) {
+                    if (dlss && dlss_state != 4) {
                         int quality = int(std::min<uint32_t>(s.upscaler_quality, 4));
                         if (Segmented("dlss_quality", &quality,
                                       {"dlaa", "quality", "balanced", "performance", "ultra_performance"}))
@@ -2292,9 +2311,11 @@ void Draw(double fps) {
                     const app::Settings& now = app::Get();
                     if (now.frame_generation > 1 && app::VsyncForced(now)) {
                         int timing = s.picture_timing_exact ? 1 : 0;
+                        ImGui::BeginDisabled(D3d11());
                         if (Segmented("picture_timing", &timing, {"lighter", "exact"}))
                             s.picture_timing_exact = timing == 1;
-                        Hint("hint_above_the_refresh_rate_lighter", true);
+                        ImGui::EndDisabled();
+                        Hint(D3d11() ? kNoD3d11 : "hint_above_the_refresh_rate_lighter", true);
                     }
 
                     constexpr uint32_t kAniso[] = {0, 2, 4, 8, 16};
@@ -2464,8 +2485,10 @@ void Draw(double fps) {
                     // with DLSS or without: under DLSS it rebuilds the strands from the jitter, without it the
                     // coarser shading shows only while the frame rate needs it
                     if (fur::g_strands) {
+                        ImGui::BeginDisabled(D3d11());
                         Check("adaptive_fur_shading", &s.dlss_fur_auto);
-                        Hint("hint_shades_super_fur_coarser_when", true);
+                        ImGui::EndDisabled();
+                        Hint(D3d11() ? kNoD3d11 : "hint_shades_super_fur_coarser_when", true);
                     }
                     Check("full_distant_fur", &fur::g_distant);
                     Hint("hint_keeps_fur_on_far_away", true);
@@ -2689,15 +2712,19 @@ void Draw(double fps) {
                 }
 
                 if (Section("ui")) {
+                    ImGui::BeginDisabled(D3d11());
                     Check("unstretched_hud", &display::g_hud_split);
-                    Hint("hint_on_a_widescreen_display_the", true);
+                    ImGui::EndDisabled();
+                    Hint(D3d11() ? kNoD3d11 : "hint_on_a_widescreen_display_the", true);
                     int tags = int(std::min<uint32_t>(display::g_player_tags, display::kTagOff));
                     if (Segmented("player_names", &tags, {"names", "markers", "off"})) display::g_player_tags = uint32_t(tags);
                     Hint("hint_over_other_players_in_a", true);
                     Check("player_ranks", &display::g_player_ranks);
                     Hint("hint_the_rank_emblem_beside_other", true);
+                    ImGui::BeginDisabled(D3d11());
                     Check("player_outlines", &display::g_player_outlines);
-                    Hint("hint_in_a_match_other_players", true);
+                    ImGui::EndDisabled();
+                    Hint(D3d11() ? kNoD3d11 : "hint_in_a_match_other_players", true);
                     Check("medgun_beam", &medbeam::g_enabled);
                     Hint("hint_a_beam_joins_a_medgun", true);
                     int team = int(std::min<uint32_t>(display::g_team_colors, display::kTeamBlueOrange));
@@ -2786,9 +2813,11 @@ void Draw(double fps) {
                 }
                 if (Section("color_vision")) {
                     int cvd = int(std::min<uint32_t>(gpu::g_cvd_sim.load(std::memory_order_relaxed), 4));
+                    ImGui::BeginDisabled(D3d11());
                     if (Segmented("simulate", &cvd, {"off", "protan", "deutan", "tritan", "Mono"}))
                         gpu::g_cvd_sim.store(uint32_t(cvd), std::memory_order_relaxed);
-                    Hint("hint_shows_the_screen_as_seen", true);
+                    ImGui::EndDisabled();
+                    Hint(D3d11() ? kNoD3d11 : "hint_shows_the_screen_as_seen", true);
                 }
                 if (Section("warp")) DrawWarp();
                 end_tab();

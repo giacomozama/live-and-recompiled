@@ -1761,6 +1761,8 @@ public:
         if(ctx_) {ctx_->ClearState();ctx_->Flush();}
     }
     bool Init(uint32_t width,uint32_t height) override {
+        g_dlss_state = 4;  // no DLSS here: the menu says so and keeps the render size and FSR 1 (ui.cpp)
+        g_d3d11 = true;
         LoadShaderCache();
         if (!width || !height) return false;
         guest_frame_ = {width, height};

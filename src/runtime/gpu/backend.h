@@ -168,8 +168,12 @@ inline std::atomic<uint64_t> g_perf_sync_late{0}, g_perf_sync_block{0};  // read
 inline std::atomic<uint64_t> g_perf_rec_cycles[5];
 
 // DLSS as the renderer found it, for the menu: 0 not there (no NVIDIA RTX GPU or driver for it), 1 there, 2 there
-// but failed to start, 3 an NVIDIA GPU but no DLSS module beside the game (the log says why)
+// but failed to start, 3 an NVIDIA GPU but no DLSS module beside the game (the log says why), 4 a renderer without
+// DLSS (D3D11)
 inline std::atomic<int> g_dlss_state{0};
+// the D3D11 renderer draws: the menu greys out what only Vulkan's draws (outlines, unstretched HUD, adaptive fur
+// shading, picture timing, the colour vision simulation, the calibration's patterns)
+inline std::atomic<bool> g_d3d11{false};
 
 // F3: save the next frame, every draw and target, under diag::CaptureDir
 inline std::atomic<bool> g_capture{false};
