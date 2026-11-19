@@ -64,6 +64,7 @@
 #include "core/log.h"
 #include "gpu/backend.h"
 #include "gpu/draw.h"
+#include "gpu/hud_split.h"
 #include "gpu/interp.h"
 #include "gpu/shader_record.h"
 #include "gpu/shaders.h"
@@ -272,65 +273,6 @@ float4 ps(O i) : SV_Target {
     c *= 1.0 - 0.55 * saturate(dot(q, q) / (0.25 * p.y * p.y + 0.25));
     c += (Hash(i.p.xy + frac(t)) - 0.5) / 255.0;  // dithered, no banding in the dark
     return float4(saturate(c) * p.z, 1);
-}
-)";
-
-// outlines round the marked objects (g_outlines, ApplyPost after the motion blur, before SMAA smooths them): the
-// picture (t0), the stencil (t1) whose top two bits hold each pixel's mark (d3d::OutlineMark: 1 green, 2 red, 3
-// light blue), and
-// the depth (t2). An unmarked pixel takes the line's colour where the nearest marked one (looked for on rings of 16,
-// a pixel apart, out to px.z) lies within the line's width: px.z near the camera, down to 40% of it for a marked pixel
-// further than px.w units (opts: the depth's frame.z and frame.w as the motion blur's, opts.z 1 when known), solid but
-// for its outermost pixel, in the team colours opts.w picks (g_team_colors: 1 blue, orange and light grey). Only
-// marks still in front show: no line through a wall
-const char* kOutlineHlsl = R"(
-cbuffer B : register(b1) { float4 px; float4 opts; };
-Texture2D a : register(t0);
-Texture2D<uint> sten : register(t1);
-Texture2D<float> depth : register(t2);
-struct O { float4 p : SV_Position; float2 uv : TEXCOORD0; };
-O vs(uint id : SV_VertexID) {
-    O o;
-    o.uv = float2((id << 1) & 2, id & 2);
-    o.p = float4(o.uv * float2(2, -2) + float2(-1, 1), 0, 1);
-    return o;
-}
-uint markat(int2 p, int2 size) { return (sten.Load(int3(clamp(p, 0, size - 1), 0)) >> 6) & 3; }
-float ViewW(float d) { return opts.y / min(d - opts.x, -1e-7); }
-float4 outline(O i) : SV_Target {
-    int2 p = int2(i.p.xy);
-    float4 c = a.Load(int3(p, 0));
-    uint2 dim;
-    sten.GetDimensions(dim.x, dim.y);
-    int2 size = int2(dim);
-    if (markat(p, size) != 0) return c;
-    uint mark = 0;
-    int2 at = p;
-    float dist = 1e9;
-    const int kMost = 4;
-    int rings = min(int(ceil(px.z)), kMost);
-    [loop] for (int r = 1; r <= rings && mark == 0; r++) {
-        [unroll] for (int k = 0; k < 16; k++) {
-            float ang = k * 0.39269908;
-            int2 off = int2(round(float2(cos(ang), sin(ang)) * r));
-            uint m = markat(p + off, size);
-            float d = length(float2(off));
-            if (m != 0 && d < dist) {
-                mark = m;
-                dist = d;
-                at = clamp(p + off, 0, size - 1);
-            }
-        }
-    }
-    if (mark == 0) return c;
-    float width = px.z;
-    if (opts.z > 0) width *= clamp(px.w / ViewW(depth.Load(int3(at, 0))), 0.4, 1.0);
-    width = max(width, 1.0);
-    float cover = saturate(width - dist + 1.0);
-    float3 col = opts.w > 0.5
-        ? (mark == 2 ? float3(1.0, 0.58, 0.0) : mark == 1 ? float3(0.1, 0.5, 1.0) : float3(0.88, 0.88, 0.88))
-        : (mark == 2 ? float3(0.92, 0.12, 0.08) : mark == 1 ? float3(0.15, 0.88, 0.2) : float3(0.55, 0.75, 1.0));
-    return float4(lerp(c.rgb, col, cover * 0.82), c.a);
 }
 )";
 
@@ -588,39 +530,6 @@ struct Deferred {
         if (release) release();
     }
 };
-
-// g_hud_split: a box on the guest frame, and the edge an element keeps to (kHudEdge)
-enum HudAnchor : uint8_t { kHudNoEdge, kHudLeft, kHudMiddle, kHudRight };
-struct HudBox {
-    float x0 = 1e30f, y0 = 1e30f, x1 = -1e30f, y1 = -1e30f;
-    bool Empty() const { return x1 < x0; }
-    void Add(const HudBox& o) {
-        x0 = std::min(x0, o.x0), y0 = std::min(y0, o.y0);
-        x1 = std::max(x1, o.x1), y1 = std::max(y1, o.y1);
-    }
-    float Mid() const { return (x0 + x1) * 0.5f; }
-};
-// one HUD element (a scope's id) as the frames draw it: its draws' box this frame and the last, the box of its first
-// draw in each (how far it moved), and the edge it keeps to
-struct HudElement {
-    HudBox now, last, first_now, first_last;
-    HudAnchor anchor = kHudNoEdge;
-    uint32_t against = 0;  // frames in a row its box has been nearer another edge
-    uint32_t unseen = 0;   // frames since it last drew
-};
-constexpr uint32_t kHudVertices = 256;  // a draw of more isn't measured (it is drawn with its element's place)
-// an element keeps its edge until its box has been nearer another this many frames in a row
-constexpr uint32_t kHudTurnFrames = 30;
-constexpr uint32_t kHudForget = 120;  // an element not drawn for this many frames is forgotten
-
-// the edge a box keeps nearest to: its left side to the frame's left, its right side to the right, or its middle to
-// the middle. An element grows away from the edge it keeps to (a kill message longer than the last, a sniper's marks
-// left of the weapon panel), which moves its middle but not its near side
-HudAnchor HudEdge(const HudBox& b, float gw) {
-    const float left = b.x0, right = gw - b.x1, middle = std::fabs(b.Mid() - gw * 0.5f);
-    if (middle <= left && middle <= right) return kHudMiddle;
-    return left <= right ? kHudLeft : kHudRight;
-}
 
 struct ImageSpec {
     VkFormat fmt = kBgra;
@@ -1031,9 +940,9 @@ public:
     void Between(const Surface& front, uint32_t i) override;
     void Replaying(bool on) override {
         FlushRun();
-        if (on && !hud_rolled_) {  // the frame's draws again take its own boxes
-            HudRoll();
-            hud_rolled_ = true;
+        if (on && !hud_.rolled) {  // the frame's draws again take its own boxes
+            hud_.Roll(guest_w_);
+            hud_.rolled = true;
         }
         replay_ = on;
         pass_serial_ = skip_to_ = 0;
@@ -1167,6 +1076,7 @@ private:
     bool HdrCompare(Target& t, ImageRef& dst);
     void HdrTrack(const State& s, bool flat);
     void SendHdrMetadata();
+    int PosW(const State& s);
     bool ScreenSpaceDraw(const State& s, const Assembled& a);
     bool ReadsTarget(const State& s);
     void TrackPost(const State& s, bool flat);
@@ -1729,18 +1639,8 @@ private:
     double gen_next_ = 1.0;
     bool light_ = false;  // the frame being drawn, drawn light (LightAhead)
     bool replay_ = false;
-    // g_hud_split: the draw's x on the guest frame drawn at x * hud_a_ + hud_b_ (SetViewportScissor); the HUD's
-    // elements by their scope's id
-    float hud_a_ = 1, hud_b_ = 0;
-    bool hud_bars_ = false;        // and black down the sides it no longer covers (kHudInPlaceBars)
-    HudBox hud_box_;               // the last placed draw's box, and the place it took (for captures)
-    char hud_took_ = 'S';
-    std::unordered_map<uint32_t, HudElement> hud_elements_;
-    bool hud_rolled_ = false;  // the frame's boxes are its elements' last already, for the frame's drawing again
-    bool HudPlace(const State& s, const Assembled& a, uint32_t start, uint32_t count, const uint8_t* indices);
-    bool HudMeasure(const State& s, const Assembled& a, uint32_t start, uint32_t count, const uint8_t* indices,
-                    HudBox& b);
-    void HudRoll();
+    // g_hud_split: the HUD's elements, and the draw's remap (SetViewportScissor)
+    HudSplit hud_;
     struct Run {
         uint32_t first = 0, last = 0;  // pass_serial_ of its first and last draws
         uint32_t draws = 0, vertices = 0, buffers = 0;
@@ -4722,10 +4622,10 @@ void VulkanBackend::ViewportScissorFor(const State& s, GuestExtent size, VkViewp
         y1 = std::min(y1, int32_t(s.scissors[3] * scy));
     }
     // g_hud_split's remap of a 2D draw: the target narrowed to its place, the scissor with it
-    const float vx = hud_b_ * sc, vw = W * hud_a_;
-    if (hud_a_ != 1 || hud_b_ != 0) {
-        x0 = int32_t(std::floor(float(x0) * hud_a_ + vx));
-        x1 = int32_t(std::ceil(float(x1) * hud_a_ + vx));
+    const float vx = hud_.shift * sc, vw = W * hud_.scale;
+    if (hud_.scale != 1 || hud_.shift != 0) {
+        x0 = int32_t(std::floor(float(x0) * hud_.scale + vx));
+        x1 = int32_t(std::ceil(float(x1) * hud_.scale + vx));
     }
     x0 = std::clamp<int32_t>(x0, 0, int32_t(W));
     y0 = std::clamp<int32_t>(y0, 0, int32_t(H));
@@ -5304,167 +5204,16 @@ bool VulkanBackend::PostWanted() const {
            g_outlines.load(std::memory_order_relaxed) || MotionOn();
 }
 
-bool VulkanBackend::ScreenSpaceDraw(const State& s, const Assembled& a) {
-    int pos_w = kPosWUnknown;
-    if ((s.vs_handle & 1) && s.vs && !s.vs->program.empty()) {
-        EnsureProgramHash(s);
-        auto [it, fresh] = pos_w_.try_emplace(s.vs->hash, kPosWUnknown);
-        if (fresh) it->second = PositionWSource(s.vs->program);
-        pos_w = it->second;
-    }
-    return ScreenSpace(s, a, pos_w);
+// the draw's program's PositionWSource, kPosWUnknown without one
+int VulkanBackend::PosW(const State& s) {
+    if (!(s.vs_handle & 1) || !s.vs || s.vs->program.empty()) return kPosWUnknown;
+    EnsureProgramHash(s);
+    auto [it, fresh] = pos_w_.try_emplace(s.vs->hash, kPosWUnknown);
+    if (fresh) it->second = PositionWSource(s.vs->program);
+    return it->second;
 }
 
-// g_hud_split: a draw's box on the guest frame, worked out as the console's would be: pretransformed as they are; a
-// program's that moves its position from the input (Conker's sprites: oPos = v0, already on the screen) as they are
-// too, one's that takes w from a dp4 with c[n] through c[n-3]..c[n] and the viewport's scale and offset (c-38, c-37);
-// the fixed function's through world, view, projection and the viewport. False for a draw not in screen space
-bool VulkanBackend::HudMeasure(const State& s, const Assembled& a, uint32_t start, uint32_t count,
-                               const uint8_t* indices, HudBox& b) {
-    if (!count || count > kHudVertices || !ScreenSpaceDraw(s, a)) return false;
-    float v[kHudVertices][4];
-    if (!ReadInput(s, 0, start, indices, count, v)) return false;
-    bool prog = (s.vs_handle & 1) && s.vs && !s.vs->program.empty();
-    int rows = -1;  // a program's position rows, from c[rows]
-    if (prog) {
-        auto it = pos_w_.find(s.vs->hash);  // ScreenSpaceDraw found it
-        const int pos_w = it == pos_w_.end() ? kPosWUnknown : it->second;
-        if (pos_w == kPosWInput) prog = false;
-        else if (pos_w >= 3 && size_t(pos_w) < s.vsc.size()) rows = pos_w - 3;
-        else return false;
-    }
-    float m[16] = {};
-    const bool as_given = a.pretransformed || ((s.vs_handle & 1) && !prog);  // on the screen already
-    if (!as_given && !prog) {
-        auto mul = [](const float* l, const float* r, float* o) {
-            for (int i = 0; i < 4; i++)
-                for (int j = 0; j < 4; j++)
-                    o[i * 4 + j] = l[i * 4] * r[j] + l[i * 4 + 1] * r[4 + j] + l[i * 4 + 2] * r[8 + j] + l[i * 4 + 3] * r[12 + j];
-        };
-        constexpr size_t kView = 2, kProjection = 3, kWorld = 256;  // D3DTRANSFORMSTATETYPE
-        float wv[16];
-        mul(s.transforms[kWorld].data(), s.transforms[kView].data(), wv);
-        mul(wv, s.transforms[kProjection].data(), m);
-    }
-    b = {};
-    for (uint32_t i = 0; i < count; i++) {
-        const float* p = v[i];
-        float x = p[0], y = p[1];
-        if (prog) {
-            auto dot = [&](size_t r) {
-                const auto& c = s.vsc[r];
-                return p[0] * c[0] + p[1] * c[1] + p[2] * c[2] + p[3] * c[3];
-            };
-            const float w = dot(size_t(rows) + 3);
-            if (!(std::fabs(w) > 1e-6f)) return false;
-            x = dot(size_t(rows)) / w * s.vsc[58][0] + s.vsc[59][0];
-            y = dot(size_t(rows) + 1) / w * s.vsc[58][1] + s.vsc[59][1];
-        } else if (!as_given) {
-            const float cx = p[0] * m[0] + p[1] * m[4] + p[2] * m[8] + m[12];
-            const float cy = p[0] * m[1] + p[1] * m[5] + p[2] * m[9] + m[13];
-            const float w = p[0] * m[3] + p[1] * m[7] + p[2] * m[11] + m[15];
-            if (!(std::fabs(w) > 1e-6f)) return false;
-            x = (cx / w + 1) * 0.5f * float(s.viewport.w) + float(s.viewport.x);
-            y = (1 - cy / w) * 0.5f * float(s.viewport.h) + float(s.viewport.y);
-        }
-        if (!std::isfinite(x) || !std::isfinite(y)) return false;
-        b.Add({x, y, x, y});
-    }
-    const float gw = float(guest_w_);
-    return !(b.x1 < -gw || b.x0 > gw * 2);  // nowhere near the frame: not what it seems
-}
-
-// g_hud_split: whether the draw is one of the HUD's (in a HUD scope, onto the frame), and if so the x remap it is
-// drawn with (hud_a_, hud_b_), by its scope's HudMode (interp::g_run_tag):
-// - kHudEdge: the element's edge (the one its box keeps nearest to, held kHudTurnFrames: HudRoll), the frame's shape there
-// - kHudInPlace: the frame's shape about the middle of the element's box, its box of the frame before moved as its first
-//   draw moved since (a crosshair carried to a target); in its first frame, its first draw's box
-// - kHudInPlaceBars: kHudInPlace, and a draw covering the frame's width gets black down the sides it leaves
-// - kHudInPlaceEach: the frame's shape about the middle of each draw's own box
-// - kHudStretched: as the frame has it
-// A draw not in screen space (a model) is drawn with its element's place but adds nothing to its box
-bool VulkanBackend::HudPlace(const State& s, const Assembled& a, uint32_t start, uint32_t count,
-                             const uint8_t* indices) {
-    if (!g_hud_split.load(std::memory_order_relaxed)) return false;
-    const interp::Tag& tag = interp::g_run_tag;
-    const uint8_t mode = tag.hud_mode;
-    if (mode == kHudNone || !tag.hud[0]) return false;
-    if (!bound_rt_ || bound_rt_->gw != guest_w_ || bound_rt_->gh != guest_h_) return false;
-    const float gw = float(guest_w_), gh = float(guest_h_);
-    const float wider = app::FrameAspect() * gh / gw;  // the frame's width as the window shows it, over its own
-    if (wider < 1.01f) return false;
-    hud_took_ = 'S';
-    hud_box_ = {};
-    if (mode == kHudStretched) return true;
-    HudBox b;
-    const bool measured = HudMeasure(s, a, start, count, indices, b);
-    HudElement& e = hud_elements_[tag.hud[0]];
-    if (measured && !replay_) {
-        if (e.first_now.Empty()) e.first_now = b;
-        e.now.Add(b);
-    }
-    float mid = -1;  // the middle the frame's shape is taken about
-    HudAnchor anchor = kHudNoEdge;
-    if (mode == kHudInPlaceEach) {
-        if (measured) mid = b.Mid();
-    } else if (mode == kHudInPlace || mode == kHudInPlaceBars) {
-        // during the frame's drawing again, its own boxes are last already (HudRoll)
-        const HudBox& first = replay_ ? e.first_last : e.first_now;
-        if (!e.last.Empty() && !first.Empty() && !e.first_last.Empty())
-            mid = e.last.Mid() + (replay_ ? 0 : first.Mid() - e.first_last.Mid());
-        else if (!first.Empty()) mid = first.Mid();  // the first draw's, the same for each of the frame's draws
-        else if (measured) mid = b.Mid();
-    } else {
-        anchor = e.anchor;
-        if (anchor == kHudNoEdge) {  // new: the third of its box so far
-            const HudBox& so_far = !e.now.Empty() ? e.now : e.last;
-            if (!so_far.Empty()) anchor = HudEdge(so_far, gw);
-        }
-    }
-    const float sc = 1 / wider;
-    if (anchor != kHudNoEdge) {
-        hud_a_ = sc;
-        hud_b_ = anchor == kHudRight ? gw * (1 - sc) : anchor == kHudMiddle ? gw * 0.5f * (1 - sc) : 0;
-        hud_took_ = anchor == kHudLeft ? 'L' : anchor == kHudRight ? 'R' : 'M';
-    } else if (mid >= 0) {
-        hud_a_ = sc;
-        hud_b_ = mid * (1 - sc);
-        hud_took_ = 'P';
-        hud_bars_ = mode == kHudInPlaceBars && measured && b.x0 <= 1 && b.x1 >= gw - 1;
-    }
-    if (measured) hud_box_ = b;
-    return true;
-}
-
-// the frame's HUD elements: this frame's boxes become their last, and each keeps its edge until its box has been in
-// another third kHudTurnFrames frames in a row; at the frame's end, or before it is drawn again
-void VulkanBackend::HudRoll() {
-    const float gw = float(guest_w_);
-    for (auto it = hud_elements_.begin(); it != hud_elements_.end();) {
-        HudElement& e = it->second;
-        if (e.now.Empty()) {
-            if (++e.unseen > kHudForget) {
-                it = hud_elements_.erase(it);
-                continue;
-            }
-            ++it;
-            continue;
-        }
-        e.unseen = 0;
-        const HudAnchor own = HudEdge(e.now, gw);
-        if (e.anchor == kHudNoEdge || own == e.anchor) {
-            e.anchor = own;
-            e.against = 0;
-        } else if (++e.against >= kHudTurnFrames) {
-            e.anchor = own;
-            e.against = 0;
-        }
-        e.last = e.now;
-        e.first_last = e.first_now;
-        e.now = e.first_now = {};
-        ++it;
-    }
-}
+bool VulkanBackend::ScreenSpaceDraw(const State& s, const Assembled& a) { return ScreenSpace(s, a, PosW(s)); }
 
 // stage 0 samples a target: the title's own passes over the frame (bloom, depth of field), which stay under the effects
 bool VulkanBackend::ReadsTarget(const State& s) {
@@ -6886,8 +6635,7 @@ void VulkanBackend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t
     const bool as_drawn = std::exchange(as_drawn_, false) && !uncounted;
     if (replay_ && !uncounted && pass_serial_ <= skip_to_) return;  // drawn with the run it was in
     if (uncounted) same_state_ = false;  // the whole way: no run, no draw of the frame's kept
-    hud_a_ = 1, hud_b_ = 0;
-    hud_bars_ = false;
+    hud_.Reset();
     if (&s != &sprite_ && FixedSprite(s, prim)) {
         sprite_ = s;
         SpriteStage(sprite_);
@@ -6979,7 +6727,8 @@ void VulkanBackend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t
     if (CurrentFrame().used > kUploadSize - kUploadReserve) Submit(true);
     if (!BindTargets(s)) return CountedSkip(s, "targets");
     // a 2D draw g_hud_split places isn't kept: a draw in the same state may lie in another group
-    const bool hud = HudPlace(s, a, start, count, indices);
+    const bool hud = bound_rt_ && hud_.Place(s, a, start, count, indices, PosW(s), bound_rt_->gw, bound_rt_->gh,
+                                             guest_w_, guest_h_, replay_);
     jitter_ = DrawJitter(flat);
     g_perf.d_setup += PerfLap(lap);
 
@@ -7101,9 +6850,9 @@ void VulkanBackend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t
                 DescribeInputs(s, start, indices, std::min(cap_verts, std::max(count, 1u))).c_str());
         if (sh.shading) fprintf(cap_, " | shading %u%s", sh.shading, stages.screen ? " screen copy" : "");
         if (hud) {  // placed: Stretched, Left, Middle, Right, in Place
-            fprintf(cap_, " | hud %c mode %u", hud_took_, interp::g_run_tag.hud_mode);
-            if (!hud_box_.Empty())
-                fprintf(cap_, " box %.1f %.1f %.1f %.1f", hud_box_.x0, hud_box_.y0, hud_box_.x1, hud_box_.y1);
+            fprintf(cap_, " | hud %c mode %u", hud_.took, interp::g_run_tag.hud_mode);
+            if (!hud_.box.Empty())
+                fprintf(cap_, " box %.1f %.1f %.1f %.1f", hud_.box.x0, hud_.box.y0, hud_.box.x1, hud_.box.y1);
         }
         fprintf(cap_, "\n     fog chip %u en %u mode %X params %g %g rs en %u table %u | fogp %g %g %g %g color %08X | final %08X %08X",
                 s.chip_fog, s.fog_enable, s.fog_mode, s.fog_param[0], s.fog_param[1], s.rs[kRsFogEnable],
@@ -7179,12 +6928,12 @@ void VulkanBackend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t
     prog_scope.Rec(4);
     const Geometry own_geom = geom_;  // the draw's own (the shells beyond it don't bind theirs, as of now)
     if (sh.shading) DrawBeyondShells(s, &a, sh.shading, b);  // uncounted too, before the draw's depth pass
-    if (hud_bars_ && bound_rt_) {  // the sides a frame wide HUD draw no longer covers, black (kHudInPlaceBars)
+    if (hud_.bars && bound_rt_) {  // the sides a frame wide HUD draw no longer covers, black (kHudInPlaceBars)
         // over the draw's own edge by a console pixel: its outermost texels blend with what lies under, a hairline
         // where the frame's edge hid it
-        const float W = float(bound_rt_->w), sc = W / float(size.w), inset = std::ceil(hud_a_ * sc);
-        const int32_t l = int32_t(std::ceil(hud_b_ * sc + inset));
-        const int32_t r = int32_t(std::floor(hud_b_ * sc + W * hud_a_ - inset));
+        const float W = float(bound_rt_->w), sc = W / float(size.w), inset = std::ceil(hud_.scale * sc);
+        const int32_t l = int32_t(std::ceil(hud_.shift * sc + inset));
+        const int32_t r = int32_t(std::floor(hud_.shift * sc + W * hud_.scale - inset));
         const uint32_t H = bound_rt_->h;
         VkClearAttachment ca{VK_IMAGE_ASPECT_COLOR_BIT, 0, {}};
         ca.clearValue.color.float32[3] = 1;
@@ -8382,12 +8131,12 @@ void VulkanBackend::Present(const Surface& front) {
     light_ = false;  // foreseen again at the end for the next frame
     if (!std::exchange(world_fog_seen_, false)) std::memset(world_fog_, 0, sizeof(world_fog_));
     FlushRun();
-    if (!std::exchange(hud_rolled_, false)) HudRoll();
+    if (!std::exchange(hud_.rolled, false)) hud_.Roll(guest_w_);
     PerfScope perf_present{g_perf.present};
     if (cap_) {
         // g_hud_split: the HUD's elements, as the next frame places them
         static const char kAnchor[] = "-LMR";
-        for (const auto& [id, e] : hud_elements_)
+        for (const auto& [id, e] : hud_.elements)
             if (!e.last.Empty())
                 fprintf(cap_, "hud element %08X edge %c box %.1f %.1f %.1f %.1f against %u\n", id, kAnchor[e.anchor],
                         e.last.x0, e.last.y0, e.last.x1, e.last.y1, e.against);

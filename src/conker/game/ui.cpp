@@ -2712,19 +2712,15 @@ void Draw(double fps) {
                 }
 
                 if (Section("ui")) {
-                    ImGui::BeginDisabled(D3d11());
                     Check("unstretched_hud", &display::g_hud_split);
-                    ImGui::EndDisabled();
-                    Hint(D3d11() ? kNoD3d11 : "hint_on_a_widescreen_display_the", true);
+                    Hint("hint_on_a_widescreen_display_the", true);
                     int tags = int(std::min<uint32_t>(display::g_player_tags, display::kTagOff));
                     if (Segmented("player_names", &tags, {"names", "markers", "off"})) display::g_player_tags = uint32_t(tags);
                     Hint("hint_over_other_players_in_a", true);
                     Check("player_ranks", &display::g_player_ranks);
                     Hint("hint_the_rank_emblem_beside_other", true);
-                    ImGui::BeginDisabled(D3d11());
                     Check("player_outlines", &display::g_player_outlines);
-                    ImGui::EndDisabled();
-                    Hint(D3d11() ? kNoD3d11 : "hint_in_a_match_other_players", true);
+                    Hint("hint_in_a_match_other_players", true);
                     Check("medgun_beam", &medbeam::g_enabled);
                     Hint("hint_a_beam_joins_a_medgun", true);
                     int team = int(std::min<uint32_t>(display::g_team_colors, display::kTeamBlueOrange));

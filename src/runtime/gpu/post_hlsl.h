@@ -319,6 +319,71 @@ float4 blur(O i) : SV_Target {
 }
 )";
 
+// outlines round the marked objects (g_outlines, ApplyPost after the motion blur, before SMAA smooths them): the
+// picture (t0), the stencil (t1) whose top two bits hold each pixel's mark (d3d::OutlineMark: 1 green, 2 red, 3
+// light blue), and the depth (t2); STENCIL_GREEN: the stencil read from its second channel (D3D11). An unmarked
+// pixel takes the line's colour where the nearest marked one (looked for on rings of 16,
+// a pixel apart, out to px.z) lies within the line's width: px.z near the camera, down to 40% of it for a marked pixel
+// further than px.w units (opts: the depth's frame.z and frame.w as the motion blur's, opts.z 1 when known), solid but
+// for its outermost pixel, in the team colours opts.w picks (g_team_colors: 1 blue, orange and light grey). Only
+// marks still in front show: no line through a wall
+inline const char* kOutlineHlsl = R"(
+cbuffer B : register(b1) { float4 px; float4 opts; };
+Texture2D a : register(t0);
+#ifdef STENCIL_GREEN
+Texture2D<uint2> sten : register(t1);  // D3D11's X24_TYPELESS_G8_UINT view: the stencil in its second channel
+uint stencilat(int2 p) { return sten.Load(int3(p, 0)).y; }
+#else
+Texture2D<uint> sten : register(t1);
+uint stencilat(int2 p) { return sten.Load(int3(p, 0)); }
+#endif
+Texture2D<float> depth : register(t2);
+struct O { float4 p : SV_Position; float2 uv : TEXCOORD0; };
+O vs(uint id : SV_VertexID) {
+    O o;
+    o.uv = float2((id << 1) & 2, id & 2);
+    o.p = float4(o.uv * float2(2, -2) + float2(-1, 1), 0, 1);
+    return o;
+}
+uint markat(int2 p, int2 size) { return (stencilat(clamp(p, 0, size - 1)) >> 6) & 3; }
+float ViewW(float d) { return opts.y / min(d - opts.x, -1e-7); }
+float4 outline(O i) : SV_Target {
+    int2 p = int2(i.p.xy);
+    float4 c = a.Load(int3(p, 0));
+    uint2 dim;
+    sten.GetDimensions(dim.x, dim.y);
+    int2 size = int2(dim);
+    if (markat(p, size) != 0) return c;
+    uint mark = 0;
+    int2 at = p;
+    float dist = 1e9;
+    const int kMost = 4;
+    int rings = min(int(ceil(px.z)), kMost);
+    [loop] for (int r = 1; r <= rings && mark == 0; r++) {
+        [unroll] for (int k = 0; k < 16; k++) {
+            float ang = k * 0.39269908;
+            int2 off = int2(round(float2(cos(ang), sin(ang)) * r));
+            uint m = markat(p + off, size);
+            float d = length(float2(off));
+            if (m != 0 && d < dist) {
+                mark = m;
+                dist = d;
+                at = clamp(p + off, 0, size - 1);
+            }
+        }
+    }
+    if (mark == 0) return c;
+    float width = px.z;
+    if (opts.z > 0) width *= clamp(px.w / ViewW(depth.Load(int3(at, 0))), 0.4, 1.0);
+    width = max(width, 1.0);
+    float cover = saturate(width - dist + 1.0);
+    float3 col = opts.w > 0.5
+        ? (mark == 2 ? float3(1.0, 0.58, 0.0) : mark == 1 ? float3(0.1, 0.5, 1.0) : float3(0.88, 0.88, 0.88))
+        : (mark == 2 ? float3(0.92, 0.12, 0.08) : mark == 1 ? float3(0.15, 0.88, 0.2) : float3(0.55, 0.75, 1.0));
+    return float4(lerp(c.rgb, col, cover * 0.82), c.a);
+}
+)";
+
 // SMAA (gpu/smaa_hlsl.h) in its custom shading language mode, a source per pass (SmaaHlsl). No texture is handed to a
 // function: SMAA's texture arguments become unused uints and its sampling macros read the global of the argument's
 // name, which the pass declares.

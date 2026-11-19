@@ -22,6 +22,8 @@
 #include "gpu/draw.h"
 #include "gpu/d3d11_shaders.h"
 #include "gpu/fsr_hlsl.h"
+#include "gpu/hud_split.h"
+#include "gpu/interp.h"
 #include "gpu/lightmap_stage.h"
 #include "gpu/post_hlsl.h"
 #include "gpu/smaa_tex.h"
@@ -304,9 +306,10 @@ class D3D11Backend final : public Backend {
     Shader resolve_depth_ps_, resolve_stencil_ps_;
     Shader depth_bytes_ps_, depth_bytes_ms_ps_;
     Shader grade_ps_, smaa_edges_ps_, smaa_weights_ps_, smaa_blend_ps_, easu_ps_, rcas_ps_;
-    Shader occlusion_ps_, occlusion_x_ps_, occlusion_y_ps_, occlusion_apply_ps_, motion_ps_;
+    Shader occlusion_ps_, occlusion_x_ps_, occlusion_y_ps_, occlusion_apply_ps_, motion_ps_, outline_ps_;
     Image post_edges_, post_weights_, post_blend_, fsr_easu_;
-    Image occlusion_, occlusion_blur_, motion_blur_;
+    Image occlusion_, occlusion_blur_, motion_blur_, outline_;
+    HudSplit hud_;  // g_hud_split: the HUD's elements, and the draw's remap (its viewport and scissor)
     Com<ID3D11ShaderResourceView> smaa_area_, smaa_search_;
     std::unordered_map<uint64_t, int> position_w_;
     uint64_t post_target_ = 0;
@@ -602,6 +605,7 @@ class D3D11Backend final : public Backend {
         static const std::string multi = std::string("#define DEPTH_MULTISAMPLED\n") + kDepthBytesHlsl;
         float constants[8]{};
         DepthByteOrder(format,constants);
+        constants[7] = g_outlines.load(std::memory_order_relaxed) ? 1.0f : 0.0f;  // the marks left out
         if (furred) {
             constants[4] = 1;
             constants[5] = float(furred->w) / source.w;
@@ -835,12 +839,12 @@ class D3D11Backend final : public Backend {
         const auto& set = app::Get();
         return set.smaa || set.film_grain || set.chromatic_aberration ||
                (set.ambient_occlusion && g_view_constants.viewport >= 0) ||
-               (set.motion_blur && g_view_constants.camera >= 0);
+               (set.motion_blur && g_view_constants.camera >= 0) || g_outlines.load(std::memory_order_relaxed);
     }
     void TrackView(const State& s, const Image* depth) {
         const auto& set = app::Get();
         const auto& vc = g_view_constants;
-        if ((!set.ambient_occlusion && !set.motion_blur) || !depth ||
+        if ((!set.ambient_occlusion && !set.motion_blur && !g_outlines.load(std::memory_order_relaxed)) || !depth ||
             vc.viewport < 0 || vc.projection < 0 || !(s.vs_handle & 1) || !s.zscale) return;
         const std::array<float, 4> vp[] = {s.vsc[size_t(vc.viewport)], s.vsc[size_t(vc.viewport + 1)]};
         std::array<float, 4> pr[4];
@@ -924,21 +928,63 @@ class D3D11Backend final : public Backend {
         return FullScreenPass(motion_ps_, kMotionBlurHlsl, "blur", destination.rtv.get(), vp,
                               {source.srv.get(), depth->srv.get()}, params);
     }
+    // g_outlines: the stencil holding the marks (d3d::OutlineMark), the frame's depth buffer (TrackView) at the
+    // picture's size, as Vulkan's ApplyPost finds it
+    Image* OutlineMarks(const Image& target) {
+        if (!g_outlines.load(std::memory_order_relaxed) || !post_depth_) return nullptr;
+        auto it = targets_.find(post_depth_);
+        if (it == targets_.end() || it->second.w != target.w || it->second.h != target.h) return nullptr;
+        Image* z = Snapshot(it->second);
+        return z && z->stencil ? z : nullptr;
+    }
+    // the outlines round the marked players (kOutlineHlsl): the line one of the console's pixels wide, at least one
+    // of the picture's, thinner past 600 units (6 m) where the frame's view is known
+    bool ApplyOutline(Image& source, Image& destination, Image& marks, const Image& target) {
+        const float width = std::max(1.0f, float(target.w) / float(std::max<uint32_t>(target.guest.w, 1)));
+        const auto &vs = view_viewport_[0], &vo = view_viewport_[1], &vz = view_projection_[2];
+        const bool known = view_ok_ && post_zscale_ != 0;
+        const float params[] = {1.0f / target.w, 1.0f / target.h, width, 600.0f,
+                                known ? (vo[2] - vs[2] * vz[2]) / post_zscale_ : 0.0f,
+                                known ? vs[2] * vz[3] / post_zscale_ : 0.0f, known ? 1.0f : 0.0f,
+                                float(g_team_colors.load(std::memory_order_relaxed))};
+        static const std::string src = std::string("#define STENCIL_GREEN\n") + kOutlineHlsl;
+        const D3D11_VIEWPORT vp{0, 0, float(target.w), float(target.h), 0, 1};
+        return FullScreenPass(outline_ps_, src.c_str(), "outline", destination.rtv.get(), vp,
+                              {source.srv.get(), marks.stencil.get(), marks.srv.get()}, params);
+    }
+    // the draw's program's PositionWSource, kPosWUnknown without one
+    int PosW(const State& s) {
+        if (!(s.vs_handle & 1) || !s.vs || s.vs->program.empty()) return kPosWUnknown;
+        EnsureProgramHash(s);
+        auto [it, inserted] = position_w_.try_emplace(s.vs->hash, kPosWUnknown);
+        if (inserted) it->second = PositionWSource(s.vs->program);
+        return it->second;
+    }
     void ApplyPost(Image& target) {
         post_done_ = true;
         const auto& set = app::Get();
         const bool grade = set.film_grain || set.chromatic_aberration;
         if (!occlusion_done_) ApplyOcclusion(target);
-        if (!set.smaa && !grade && !set.motion_blur) return;
+        Image* marks = OutlineMarks(target);
+        if (!set.smaa && !grade && !set.motion_blur && !marks) return;
         Image* source = Snapshot(target);
         if (!source) return;
+        // each effect reads what the one before wrote, the last writes the target
         if (set.motion_blur) {
-            if (!set.smaa && !grade) {
+            if (!set.smaa && !grade && !marks) {
                 if (ApplyMotion(*source, target, target)) MarkWritten(target);
                 return;
             }
             if (ScratchColor(motion_blur_, target.w, target.h) && ApplyMotion(*source, motion_blur_, target))
                 source = &motion_blur_;
+        }
+        if (marks) {
+            if (!set.smaa && !grade) {
+                if (ApplyOutline(*source, target, *marks, target)) MarkWritten(target);
+                return;
+            }
+            if (ScratchColor(outline_, target.w, target.h) && ApplyOutline(*source, outline_, *marks, target))
+                source = &outline_;
         }
         if (set.smaa) {
             if (!grade) {
@@ -958,12 +1004,7 @@ class D3D11Backend final : public Backend {
     }
     void TrackPost(const State& state, const Assembled& assembled, bool program, Image* target, Image* depth) {
         if (!target || post_done_ || (!PostWanted() && !HdrHighlights())) return;
-        int w_source = kPosWUnknown;
-        if (program) {
-            auto [it, inserted] = position_w_.try_emplace(state.vs->hash, kPosWUnknown);
-            if (inserted) it->second = PositionWSource(state.vs->program);
-            w_source = it->second;
-        }
+        const int w_source = program ? PosW(state) : kPosWUnknown;
         const auto key = ResourceKey(target->data, false);
         const bool flat = ScreenSpace(state, assembled, w_source);
         if (flat && !occlusion_done_ && post_target_ && app::Get().ambient_occlusion) {
@@ -1820,6 +1861,35 @@ public:
         ApplyRenderScale();
         return true;
     }
+    // a rectangle clear's blend (bi 1: color written) and depth state (di: 1 depth, 2 stencil)
+    bool ClearStates(unsigned bi, unsigned di) {
+        if(!clear_blend_[bi]) {D3D11_BLEND_DESC b=CopyBlendDesc(bi?15:0);if(!Check(dev_->CreateBlendState(&b,clear_blend_[bi].put()),"clear blend state"))return false;}
+        if(!clear_depth_[di]) {D3D11_DEPTH_STENCIL_DESC d{};d.DepthEnable=di&1;d.DepthFunc=D3D11_COMPARISON_ALWAYS;
+            d.DepthWriteMask=(di&1)?D3D11_DEPTH_WRITE_MASK_ALL:D3D11_DEPTH_WRITE_MASK_ZERO;d.StencilEnable=di&2;d.StencilReadMask=d.StencilWriteMask=255;
+            d.FrontFace={D3D11_STENCIL_OP_REPLACE,D3D11_STENCIL_OP_REPLACE,D3D11_STENCIL_OP_REPLACE,D3D11_COMPARISON_ALWAYS};d.BackFace=d.FrontFace;
+            if(!Check(dev_->CreateDepthStencilState(&d,clear_depth_[di].put()),"clear depth state"))return false;}
+        return true;
+    }
+    // g_hud_split: the sides a frame wide HUD draw no longer covers, black (kHudInPlaceBars), on color (target's
+    // attachment); over the draw's own edge by a console pixel: its outermost texels blend with what lies under, a
+    // hairline where the frame's edge hid it
+    void HudBars(Image& color, const Image& target) {
+        const float W = float(target.w), sc = W / float(std::max<uint32_t>(target.guest.w, 1));
+        const float inset = std::ceil(hud_.scale * sc);
+        const float l = std::ceil(hud_.shift * sc + inset), r = std::floor(hud_.shift * sc + W * hud_.scale - inset);
+        auto& vs=CachedShader(kClearVs,"vs_5_0");auto& ps=CachedShader(kClearPs,"ps_5_0");
+        if(!vs.vs || !ps.ps || !ClearStates(1,0)) return;
+        Unbind();
+        const float constants[8]={0,0,0,1,0,0,0,0};Upload(dc_.get(),constants,sizeof(constants));last_dc_valid_=false;
+        ID3D11Buffer* cb=dc_.get();ctx_->VSSetConstantBuffers(0,1,&cb);ctx_->PSSetConstantBuffers(0,1,&cb);
+        ctx_->VSSetShader(vs.vs.get(),nullptr,0);ctx_->PSSetShader(ps.ps.get(),nullptr,0);ctx_->GSSetShader(nullptr,nullptr,0);
+        ctx_->IASetInputLayout(nullptr);ctx_->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);ctx_->RSSetState(blit_raster_.get());
+        ctx_->OMSetBlendState(clear_blend_[1].get(),nullptr,~0u);ctx_->OMSetDepthStencilState(clear_depth_[0].get(),0);
+        auto* view=color.rtv.get();ctx_->OMSetRenderTargets(1,&view,nullptr);
+        const float H = float(target.h);
+        if (l > 0) {const D3D11_VIEWPORT vp{0,0,std::min(l,W),H,0,1};ctx_->RSSetViewports(1,&vp);ctx_->Draw(3,0);}
+        if (r < W) {const float x=std::max(r,0.0f);const D3D11_VIEWPORT vp{x,0,W-x,H,0,1};ctx_->RSSetViewports(1,&vp);ctx_->Draw(3,0);}
+    }
     void Clear(const State& s,uint32_t count,const uint8_t* rects,uint32_t flags,uint32_t color,float z,uint32_t stencil) override {
         PerfScope timing{g_perf.clear};
         if(!ctx_) return; Unbind();
@@ -1839,11 +1909,7 @@ public:
         if(count && rects) {
             auto& vs=CachedShader(kClearVs,"vs_5_0");auto& ps=CachedShader(kClearPs,"ps_5_0");if(!vs.vs||!ps.ps)return;
             unsigned bi=(flags&kClearTarget)?1:0,di=((flags&kClearZ)?1:0)|((flags&kClearStencil)?2:0);
-            if(!clear_blend_[bi]) {D3D11_BLEND_DESC b=CopyBlendDesc(bi?15:0);if(!Check(dev_->CreateBlendState(&b,clear_blend_[bi].put()),"clear blend state"))return;}
-            if(!clear_depth_[di]) {D3D11_DEPTH_STENCIL_DESC d{};d.DepthEnable=di&1;d.DepthFunc=D3D11_COMPARISON_ALWAYS;
-                d.DepthWriteMask=(di&1)?D3D11_DEPTH_WRITE_MASK_ALL:D3D11_DEPTH_WRITE_MASK_ZERO;d.StencilEnable=di&2;d.StencilReadMask=d.StencilWriteMask=255;
-                d.FrontFace={D3D11_STENCIL_OP_REPLACE,D3D11_STENCIL_OP_REPLACE,D3D11_STENCIL_OP_REPLACE,D3D11_COMPARISON_ALWAYS};d.BackFace=d.FrontFace;
-                if(!Check(dev_->CreateDepthStencilState(&d,clear_depth_[di].put()),"clear depth state"))return;}
+            if(!ClearStates(bi,di))return;
             float constants[8]={c[0],c[1],c[2],c[3],z,0,0,0};Upload(dc_.get(),constants,sizeof(constants));last_dc_valid_=false;
             ID3D11Buffer* cb=dc_.get();ctx_->VSSetConstantBuffers(0,1,&cb);ctx_->PSSetConstantBuffers(0,1,&cb);
             ctx_->VSSetShader(vs.vs.get(),nullptr,0);ctx_->PSSetShader(ps.ps.get(),nullptr,0);ctx_->GSSetShader(nullptr,nullptr,0);
@@ -1878,6 +1944,7 @@ public:
     void Draw(const State& original,uint32_t prim,uint32_t start,uint32_t count,const uint8_t* indices) override {
         PerfScope timing{g_perf.draw};g_perf.draws++;g_perf.verts+=count;
         if(!ctx_) return;
+        hud_.Reset();
         trace_point_material_=trace_color_material_=0;
         auto step_start=PerfClock::now();
         auto step=[&](unsigned part){driver_timing_[part]+=PerfMs(step_start);step_start=PerfClock::now();};
@@ -1934,6 +2001,9 @@ public:
         if(!rt && !ds) return;
         const Image& target = rt ? *rt : *ds;
         if(rt) CpuWrite(*rt);
+        // g_hud_split: a HUD draw onto the frame drawn narrowed to its place
+        const bool hud = rt && hud_.Place(s,a,start,count,indices,PosW(s),rt->guest.w,rt->guest.h,
+                                          guest_frame_.w,guest_frame_.h,replaying_);
         step(1);
         ShaderChoice sh; ClassifyShaders(s,a,count,sh); if(sh.prog) EnsureProgramHash(s);
         TrackPost(s, a, sh.prog, rt, ds);
@@ -2118,6 +2188,9 @@ public:
         if(!draw_state_valid_ || bound_raster_!=p.raster.get()){ctx_->RSSetState(p.raster.get());bound_raster_=p.raster.get();}
         // Shared HLSL already applies the Xbox viewport; the host viewport covers the entire target.
         D3D11_VIEWPORT vp{0,0,float(target.w),float(target.h),0,1};
+        // g_hud_split's remap: the target narrowed to the draw's place, the scissor with it
+        const float hud_sc = float(target.w) / float(std::max<uint32_t>(target.guest.w, 1));
+        if (hud) {vp.TopLeftX = hud_.shift * hud_sc; vp.Width = float(target.w) * hud_.scale;}
         if(!draw_state_valid_ || std::memcmp(&bound_viewport_,&vp,sizeof(vp))){ctx_->RSSetViewports(1,&vp);bound_viewport_=vp;}
         GuestRect clip{int32_t(s.viewport.x), int32_t(s.viewport.y),
                        int32_t(s.viewport.x+s.viewport.w), int32_t(s.viewport.y+s.viewport.h)};
@@ -2128,6 +2201,11 @@ public:
             clip.bottom = std::min(clip.bottom, int32_t(s.scissors[3]));
         }
         auto rect = RenderRect(target, clip);
+        if (hud && (hud_.scale != 1 || hud_.shift != 0)) {
+            const float vx = hud_.shift * hud_sc;
+            rect.left = LONG(std::clamp(std::floor(float(rect.left) * hud_.scale + vx), 0.0f, float(target.w)));
+            rect.right = LONG(std::clamp(std::ceil(float(rect.right) * hud_.scale + vx), 0.0f, float(target.w)));
+        }
         rect.right = std::max(rect.right, rect.left);
         rect.bottom = std::max(rect.bottom, rect.top);
         if(!draw_state_valid_ || std::memcmp(&bound_scissor_,&rect,sizeof(rect))){ctx_->RSSetScissorRects(1,&rect);bound_scissor_=rect;}
@@ -2159,6 +2237,7 @@ public:
         }
         step(8);
         draw_state_valid_=true;g_perf.d_record+=PerfMs(record_start);
+        if (hud_.bars && color_target) HudBars(*color_target, target);
         if (rt) {
             if (fur_mask) rt->fur_frame = frame_;
             MarkWritten(*rt, multi);
@@ -2202,7 +2281,8 @@ public:
         if (copied) MarkWritten(*out);
     }
     void Present(const Surface& front) override {
-        if(!ctx_)return; Image* image=Target(front,false);if(image) {CpuWrite(*image);shown_=ResourceKey(front.data,false);}
+        if(!ctx_)return;
+        if (!std::exchange(hud_.rolled, false)) hud_.Roll(guest_frame_.w); Image* image=Target(front,false);if(image) {CpuWrite(*image);shown_=ResourceKey(front.data,false);}
         if (!keeping_pictures_ && next_picture_ < generated_count_ && last_picture_ >= 0)
             Display(&generated_[last_picture_],&generated_masks_[last_picture_]);
         last_picture_ = keeping_pictures_ && (taken_ & (1u << (generated_count_ - 1))) ? int(generated_count_ - 1) : -1;
@@ -2276,7 +2356,13 @@ public:
     void Between(const Surface& front, uint32_t pass) override {
         if (pass < generated_count_) KeepPicture(front,pass - 1);
     }
-    void Replaying(bool on) override { replaying_ = on; }
+    void Replaying(bool on) override {
+        if (on && !hud_.rolled) {  // the frame's draws again take its own boxes
+            hud_.Roll(guest_frame_.w);
+            hud_.rolled = true;
+        }
+        replaying_ = on;
+    }
     bool Due(std::chrono::steady_clock::time_point& at) override {
         if (next_picture_ >= generated_count_) return false;
         at = schedule_;
