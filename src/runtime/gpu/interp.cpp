@@ -11,6 +11,7 @@
 #include <string>
 #include <type_traits>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -209,6 +210,10 @@ struct Snap {
     // for a reason not worth a watch line
     const char* still = "";
     int32_t from = -1;  // the draw of the frame before its kept vertices move part way from (Settle); -1 none
+    // a large tagged draw's indices as it drew them (Frame::indices, from idx_at; idx_count 0 for none kept), its
+    // primitive, base vertex and vertex buffers (geo), for drawing the frame before's again (Extra)
+    uint32_t idx_at = 0, idx_count = 0, prim = 0, base = 0;
+    uint64_t idx_hash = 0, geo = 0;
 };
 
 static_assert(std::is_trivially_destructible_v<Snap>, "a frame's snaps cleared without a destructor each");
@@ -244,6 +249,11 @@ struct Frame {
     std::vector<Snap> snaps;  // with nothing to free: a frame's tens of thousands cleared at once
     std::vector<std::array<float, 4>> values;  // the snaps' constants
     std::vector<uint8_t> raw;                  // their vertices, of those kept (Snap::raw_at)
+    std::vector<uint8_t> indices;              // their indices, of those kept (Snap::idx_at)
+    // of draws Extra was asked for: the frame before's triangles this frame's indices lack, as a triangle list in
+    // extra_idx (offset, count of indices), worked out once a frame
+    std::vector<uint8_t> extra_idx;
+    std::unordered_map<uint32_t, std::pair<uint32_t, uint32_t>> extra_at;
     // of each draw not found, when recording or tracing: what keeps it from the nearest draw of its program (Why)
     std::unordered_map<uint32_t, std::string> why;
     const std::string& WhyNot(uint32_t n) const {
@@ -269,6 +279,9 @@ struct Frame {
         snaps.clear();
         values.clear();
         raw.clear();
+        indices.clear();
+        extra_idx.clear();
+        extra_at.clear();
         why.clear();
         taken.clear();
     }
@@ -407,6 +420,8 @@ struct Pass {
     uint32_t tagged = 0, by_tag = 0;  // draws the title tagged, those found by their tag (Match)
     uint32_t moved = 0;               // draws whose vertices were moved part way (MoveVertices)
     uint32_t offscreen = 0;           // draws into a target not presented, drawn as the frame has them (OffscreenKept)
+    uint32_t extra = 0;               // draws with the frame before's indices drawn too (Extra)
+    std::array<uint32_t, 10> extra_no{};  // why Extra drew nothing more, of draws with indices kept (kExtraNo)
     std::unordered_map<uint64_t, std::pair<uint32_t, std::string>> unfound_programs;  // count, the first's reason
     std::string jumps;  // the first draws with a jump: draw, program, registers
     std::string watched;  // XBE_INTERP_WATCH's program's draws (Watch)
@@ -666,6 +681,38 @@ bool Moving() {
     }();
     return on;
 }
+// A large tagged draw's indices kept for the frame after (Extra). The level's static push buffers (0x3F2C00) jump
+// over the chunks of a draw the title judged out of view each frame, so one draw's index list changes from frame to
+// frame: drawn again between two frames with the later's indices, what went out of view at the later frame's edge
+// left holes on the side the camera turned from. XBE_INTERP_EXTRA=0 turns it off
+constexpr uint32_t kKeepIndicesMin = 256;
+bool ExtraOn() {
+    static const bool on = [] {
+        const char* e = std::getenv("XBE_INTERP_EXTRA");
+        return !(e && *e == '0');
+    }();
+    return on;
+}
+void KeepIndices(Frame& cur, Snap& sn, const State& s, uint32_t prim, uint32_t count, const uint8_t* indices) {
+    if (!indices || count < kKeepIndicesMin || !sn.tag.key || sn.tag.group || !ExtraOn()) return;
+    sn.idx_at = uint32_t(cur.indices.size());
+    sn.idx_count = count;
+    cur.indices.insert(cur.indices.end(), indices, indices + size_t(count) * 2);
+    sn.idx_hash = HashBytes(count, indices, size_t(count) * 2);
+    sn.prim = prim;
+    sn.base = s.base_vertex;
+    uint64_t g = 0;
+    const uint32_t used = StreamsRead(s);
+    for (uint32_t i = 0; i < 16; i++)
+        if ((used >> i & 1) && s.streams[i].vb) {
+            // the vertices' memory, not the header's: a static push buffer's streams come in headers made again each
+            // frame
+            const uint32_t va = mem::VirtualFromPhysical(kernel::R32(s.streams[i].vb + kResData));
+            g = Mix(g, (uint64_t(va) << 32 | uint64_t(s.streams[i].stride) << 8) | i);
+        }
+    sn.geo = g;
+}
+
 void KeepVertices(Frame& cur, Snap& sn, const State& s, uint32_t start, uint32_t count, const uint8_t* indices) {
     if ((sn.tag.key && !sn.tag.group) || !count || !Moving() || count > (indices ? 6 * kMoveVertices : kMoveVertices)) return;
     InputAt at;
@@ -878,6 +925,7 @@ void Draw(const State& s, bool same, const Tag& tag, uint32_t prim, uint32_t sta
             cur.places[tag.place]++;
         }
         KeepVertices(cur, f, s, start, count, indices);  // a string's letters follow its first
+        KeepIndices(cur, f, s, prim, count, indices);
         return;
     }
     Keys k = MakeKeys(s, prim, start, count, indices);
@@ -899,6 +947,7 @@ void Draw(const State& s, bool same, const Tag& tag, uint32_t prim, uint32_t sta
         cur.groups[tag.key].push_back(n);
     }
     KeepVertices(cur, sn, s, start, count, indices);
+    KeepIndices(cur, sn, s, prim, count, indices);
     if (sn.reads) {
         sn.at = uint32_t(cur.values.size());
         for (uint8_t r : sn.reads->regs) cur.values.push_back(s.vsc[r]);
@@ -1538,6 +1587,17 @@ void Watch(uint32_t n, const Snap& sn, Blended how, const std::string& jumped, c
         // read from, the call that had it read (what the game pushed inline came before that call)
         snprintf(b, sizeof(b), "\n      untagged: caller %08X push buffer %08X walked at %08X", sn.tag.caller,
                  sn.tag.source, sn.tag.walked);
+        g_pass.watched += b;
+    }
+    // its geometry against the draw it was found as: the picture draws its own (count, start, indices, vertices)
+    // with the blended constants, so what the frame before drew and this frame left out is in no picture between
+    if (sn.found >= 0 && size_t(sn.found) < g_frames[g_cur ^ 1].snaps.size()) {
+        const Snap& was = g_frames[g_cur ^ 1].snaps[size_t(sn.found)];
+        const uint32_t count = uint32_t(sn.parts[kShape]), was_count = uint32_t(was.parts[kShape]);
+        const bool indices = sn.parts[kIndices] != was.parts[kIndices], data = sn.data != was.data;
+        snprintf(b, sizeof(b), "\n      geometry: count %u (its match %u), start %llu (%llu)%s%s", count, was_count,
+                 (unsigned long long)sn.parts[kStart], (unsigned long long)was.parts[kStart],
+                 indices ? ", indices differ" : "", data ? ", vertices differ" : "");
         g_pass.watched += b;
     }
     if (!moved.empty()) g_pass.watched += "\n      moved most:" + moved;
@@ -2319,6 +2379,116 @@ bool MoveVertices(uint32_t n, float t, Blended how, State& s, uint32_t& start, U
     return true;
 }
 
+// why Extra drew nothing more for a draw with its indices kept, counted in the note
+constexpr const char* kExtraNo[] = {"not blended", "not a triangle list or strip", "its leader not found",
+                                    "no draw of its mesh before", "no indices kept before", "another object or piece",
+                                    "another primitive", "another base vertex", "other vertex memory",
+                                    "no triangles of its own before"};
+
+// each triangle of a list (5) or strip (6) of 16 bit indices, degenerate ones left out
+template <typename F>
+void EachTriangle(uint32_t prim, const uint8_t* idx, uint32_t count, F f) {
+    auto at = [&](uint32_t i) {
+        uint16_t v;
+        std::memcpy(&v, idx + size_t(i) * 2, 2);
+        return v;
+    };
+    if (prim == 5) {
+        for (uint32_t i = 0; i + 2 < count; i += 3) {
+            uint16_t a = at(i), b = at(i + 1), c = at(i + 2);
+            if (a != b && b != c && a != c) f(a, b, c);
+        }
+    } else {
+        for (uint32_t i = 0; i + 2 < count; i++) {
+            uint16_t a = at(i), b = at(i + 1), c = at(i + 2);
+            if (a == b || b == c || a == c) continue;
+            if (i & 1) f(b, a, c);
+            else f(a, b, c);
+        }
+    }
+}
+// a triangle the same whichever corner it starts from, its winding kept
+uint64_t TriangleKey(uint16_t a, uint16_t b, uint16_t c) {
+    if (b < a && b < c) return uint64_t(b) << 32 | uint64_t(c) << 16 | a;
+    if (c < a && c < b) return uint64_t(c) << 32 | uint64_t(a) << 16 | b;
+    return uint64_t(a) << 32 | uint64_t(b) << 16 | c;
+}
+
+bool Extra(uint32_t n, Blended how, uint32_t& prim, const uint8_t*& indices, uint32_t& count) {
+    if (!ExtraOn()) return false;
+    Frame& cur = g_frames[g_cur];
+    const Frame& prev = g_frames[g_cur ^ 1];
+    if (n >= cur.snaps.size()) return false;
+    const Snap& sn = cur.snaps[n];
+    if (!sn.idx_count) return false;
+    auto no = [](int why) {
+        if (g_pass.on) g_pass.extra_no[size_t(why)]++;
+        return false;
+    };
+    // blended, or moved as a neighbour found (a draw whose tag place moved may be found by neither)
+    if (how != Blended::kYes && how != Blended::kBorrowed) return no(0);
+    if (sn.prim != 5 && sn.prim != 6) return no(1);
+    auto memo = cur.extra_at.find(n);
+    if (memo == cur.extra_at.end()) {
+        // worked out once a frame: the frame before's triangles this frame's lack (drawn once more, a blended draw's
+        // triangles that both have would come out twice as strong)
+        std::pair<uint32_t, uint32_t> at{0, 0};
+        int why = -1;
+        const int32_t leader = sn.leader >= 0 ? sn.leader : int32_t(n);
+        int32_t lf = cur.snaps[size_t(leader)].found;
+        const int64_t p = int64_t(lf) + (int64_t(n) - leader);
+        const Snap* was = lf >= 0 && p >= 0 && size_t(p) < prev.snaps.size() ? &prev.snaps[size_t(p)] : nullptr;
+        // the same mesh of the frame before otherwise: its object, piece, primitive, base vertex and vertex memory
+        auto same = [&](const Snap& w) {
+            return w.idx_count && w.tag.object == sn.tag.object && w.tag.piece == sn.tag.piece && w.prim == sn.prim &&
+                   w.base == sn.base && w.geo == sn.geo;
+        };
+        // (of a place this frame doesn't draw: draws sharing vertex memory are told apart by where they lie)
+        if (!was || !same(*was)) {
+            for (const Snap& w : prev.snaps)
+                if (same(w) && !cur.places.Find(w.tag.place)) {
+                    was = &w;
+                    lf = 0;
+                    break;
+                }
+        }
+        if (lf < 0) why = 2;
+        else if (!was) why = 3;
+        else if (!was->idx_count) why = 4;
+        // its object and piece, not its place: the place counts where in the static push buffer the draw ends,
+        // which moves when the title jumps over its last chunks (0x3F2C00); the same vertex memory says it's the draw
+        else if (was->tag.object != sn.tag.object || was->tag.piece != sn.tag.piece) why = 5;
+        else if (was->prim != sn.prim) why = 6;
+        else if (was->base != sn.base) why = 7;
+        else if (was->geo != sn.geo) why = 8;
+        else if (was->idx_count == sn.idx_count && was->idx_hash == sn.idx_hash) why = 9;
+        else {
+            std::unordered_set<uint64_t> have;
+            have.reserve(sn.idx_count);
+            EachTriangle(sn.prim, cur.indices.data() + sn.idx_at, sn.idx_count,
+                         [&](uint16_t a, uint16_t b, uint16_t c) { have.insert(TriangleKey(a, b, c)); });
+            at.first = uint32_t(cur.extra_idx.size());
+            EachTriangle(was->prim, prev.indices.data() + was->idx_at, was->idx_count,
+                         [&](uint16_t a, uint16_t b, uint16_t c) {
+                             if (have.count(TriangleKey(a, b, c))) return;
+                             const uint16_t t[3] = {a, b, c};
+                             const uint8_t* q = reinterpret_cast<const uint8_t*>(t);
+                             cur.extra_idx.insert(cur.extra_idx.end(), q, q + 6);
+                         });
+            at.second = (uint32_t(cur.extra_idx.size()) - at.first) / 2;
+            if (!at.second) why = 9;
+        }
+        memo = cur.extra_at.emplace(n, at).first;
+        if (why >= 0) return no(why);
+    }
+    if (!memo->second.second) return false;
+    prim = 5;
+    indices = cur.extra_idx.data() + memo->second.first;
+    count = memo->second.second;
+    if (g_pass.on) g_pass.extra++;
+    return true;
+}
+
 bool Hidden(Blended how) {
     uint32_t mask = HideMask();
     return (mask >> uint32_t(how) & 1) || ((mask & kHideSuspects) && g_sus.last);
@@ -2368,11 +2538,12 @@ void EndPass(uint32_t slot) {
     char b[512];
     snprintf(b, sizeof(b),
              "drawn again at t %.2f: %u draws (%u tagged, %u found by tag, %u with their vertices moved, %u off screen "
-             "kept), %u not found, "
+             "kept, %u with the frame before's indices too), %u not found, "
              "%u found as another detail's, %u moved as a neighbour found, %u as another program's, %u with registers "
              "that jumped, %u palette registers another draw left that jumped; at other addresses found within %.4f "
              "(by the frame)",
-             g_pass.t, g_pass.draws, g_pass.tagged, g_pass.by_tag, g_pass.moved, g_pass.offscreen, g_pass.unfound,
+             g_pass.t, g_pass.draws, g_pass.tagged, g_pass.by_tag, g_pass.moved, g_pass.offscreen, g_pass.extra,
+             g_pass.unfound,
              g_pass.second,
              g_pass.borrowed, g_pass.across, g_pass.jumped, g_pass.kept, g_loose);
     std::string note = b + suspects;
@@ -2391,6 +2562,71 @@ void EndPass(uint32_t slot) {
             snprintf(b, sizeof(b), "\n    program %016llX x%u", (unsigned long long)program, k);
             note += b;
         }
+    }
+    // draws whose geometry differs from the draw of the frame before they take their constants from (a follower:
+    // the draw at its offset from its leader's), with their tag: the picture draws this frame's count, start,
+    // indices and vertices, so what only the frame before drew is in no picture between
+    {
+        const Frame& cur = g_frames[g_cur];
+        const Frame& prev = g_frames[g_cur ^ 1];
+        uint32_t differ = 0;
+        std::string lines;
+        for (uint32_t n = 0; n < cur.snaps.size(); n++) {
+            const Snap& sn = cur.snaps[n];
+            const int32_t leader = sn.leader >= 0 ? sn.leader : int32_t(n);
+            const int32_t lf = cur.snaps[size_t(leader)].found;
+            if (lf < 0) continue;
+            const int64_t p = int64_t(lf) + (int64_t(n) - leader);
+            if (p < 0 || size_t(p) >= prev.snaps.size()) continue;
+            const Snap& was = prev.snaps[size_t(p)];
+            if (was.program != sn.program) continue;
+            const uint32_t count = uint32_t(sn.parts[kShape]), was_count = uint32_t(was.parts[kShape]);
+            const bool start = sn.parts[kStart] != was.parts[kStart];
+            const bool indices = sn.parts[kIndices] != was.parts[kIndices], data = sn.data != was.data;
+            if (count == was_count && !start && !indices && !data) continue;
+            if (differ++ >= 64) continue;
+            snprintf(b, sizeof(b),
+                     "\n    draw %u%s program %016llX tag %08X/%08X: count %u (was %u), start %llu (was %llu)%s%s", n,
+                     sn.leader >= 0 ? " (follower)" : "", (unsigned long long)sn.program, sn.tag.object,
+                     sn.tag.piece, count, was_count, (unsigned long long)sn.parts[kStart],
+                     (unsigned long long)was.parts[kStart], indices ? ", indices differ" : "",
+                     data ? ", vertices differ" : "");
+            lines += b;
+        }
+        if (differ) {
+            snprintf(b, sizeof(b), "\n  geometry differs from the frame before's: %u draws", differ);
+            note += b + lines;
+        }
+        // the frame before's large tagged draws at a place this frame drew fewer times or not at all: in no
+        // picture between, whatever Extra does
+        std::unordered_map<uint64_t, uint32_t> seen;
+        uint32_t gone = 0;
+        std::string gone_lines;
+        for (uint32_t q = 0; q < prev.snaps.size(); q++) {
+            const Snap& was = prev.snaps[q];
+            if (!was.idx_count || !was.tag.place) continue;
+            const uint32_t k = ++seen[was.tag.place];
+            const uint32_t* now = cur.places.Find(was.tag.place);
+            if (now && *now >= k) continue;
+            if (gone++ >= 32) continue;
+            snprintf(b, sizeof(b), "\n    draw %u%s tag %08X/%08X: count %u, its place drawn %u times now", q,
+                     was.leader >= 0 ? " (follower)" : "", was.tag.object, was.tag.piece, was.idx_count,
+                     now ? *now : 0u);
+            gone_lines += b;
+        }
+        if (gone) {
+            snprintf(b, sizeof(b), "\n  the frame before's large tagged draws not drawn now: %u", gone);
+            note += b + gone_lines;
+        }
+    }
+    {
+        std::string no;
+        for (size_t i = 0; i < std::size(kExtraNo); i++)
+            if (g_pass.extra_no[i]) {
+                snprintf(b, sizeof(b), "%s %u %s", no.empty() ? "" : ",", g_pass.extra_no[i], kExtraNo[i]);
+                no += b;
+            }
+        if (!no.empty()) note += "\n  the frame before's indices not drawn too:" + no;
     }
     note += "\n  farthest found, a draw per program:";
     std::vector<std::pair<float, std::string>> far;

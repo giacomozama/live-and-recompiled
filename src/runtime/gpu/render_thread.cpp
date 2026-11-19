@@ -795,6 +795,18 @@ private:
                             changed = false;
                             inner_->Draw(rs, c.a, c.b, c.c, c.d ? data : nullptr);
                             if (perf) gen_draws_++;
+                            // the run drew it with the frame's indices: the frame before's too when they differ
+                            const uint8_t* extra = nullptr;
+                            uint32_t extra_count = 0, extra_prim = 0;
+                            if (c.d && interp::Extra(n - 1, interp::Blended::kYes, extra_prim, extra, extra_count)) {
+                                const interp::Blended how = interp::Blend(n - 1, t, rs, undo);
+                                if (how == interp::Blended::kYes || how == interp::Blended::kBorrowed) {
+                                    inner_->Uncounted();
+                                    inner_->Draw(rs, extra_prim, c.b, extra_count, extra);
+                                    changed = true;
+                                }
+                                undo.Restore(rs);
+                            }
                             break;
                         }
                         auto blend_start = perf ? PerfClock::now() : PerfClock::time_point{};
@@ -812,6 +824,14 @@ private:
                             inner_->AsDrawn(!moved);
                             auto draw_start = perf ? PerfClock::now() : PerfClock::time_point{};
                             inner_->Draw(rs, c.a, start, c.c, c.d ? data : nullptr);
+                            // and the frame before's indices, when the title left chunks of it out this frame
+                            const uint8_t* extra = nullptr;
+                            uint32_t extra_count = 0, extra_prim = 0;
+                            if (c.d && interp::Extra(n - 1, how, extra_prim, extra, extra_count)) {
+                                inner_->Uncounted();
+                                inner_->Draw(rs, extra_prim, start, extra_count, extra);
+                                changed = true;
+                            }
                             if (perf) {
                                 gen_draw_ns_ += Ns(draw_start);
                                 gen_draws_++;

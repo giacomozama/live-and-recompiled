@@ -1411,6 +1411,7 @@ public:
     }
     bool Skips() const override { return replay_ && pass_serial_ + 1 <= skip_to_; }  // as Draw's first check
     void AsDrawn(bool same) override { as_drawn_ = same; }
+    void Uncounted() override { uncounted_ = true; }
     void Pass() override {
         if (replay_) pass_serial_++;
     }
@@ -2136,6 +2137,7 @@ private:
     std::vector<KeptOne> kept_draws_;
     size_t kept_draw_next_ = 0;
     bool as_drawn_ = false;  // AsDrawn, for the next Draw
+    bool uncounted_ = false;  // Uncounted, for the next Draw
     bool ReuseDraw(const State& s);
     void FillViewsAndSamplers(const State& s, const DrawTextures& stages, bool clamp, uint32_t aniso);
     uint32_t pass_serial_ = 0;  // Draw calls in this pass: the frame's, or a drawing again
@@ -6622,9 +6624,11 @@ void VulkanBackend::SendHdrMetadata() {
 }
 
 void VulkanBackend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t count, const uint8_t* indices) {
-    if (&s != &sprite_) pass_serial_++;
-    const bool as_drawn = std::exchange(as_drawn_, false);
-    if (replay_ && pass_serial_ <= skip_to_) return;  // drawn with the run it was in
+    const bool uncounted = std::exchange(uncounted_, false);
+    if (&s != &sprite_ && !uncounted) pass_serial_++;
+    const bool as_drawn = std::exchange(as_drawn_, false) && !uncounted;
+    if (replay_ && !uncounted && pass_serial_ <= skip_to_) return;  // drawn with the run it was in
+    if (uncounted) same_state_ = false;  // the whole way: no run, no draw of the frame's kept
     hud_a_ = 1, hud_b_ = 0;
     hud_bars_ = false;
     if (&s != &sprite_ && FixedSprite(s, prim)) {

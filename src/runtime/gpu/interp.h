@@ -138,6 +138,12 @@ Blended At(uint32_t n, float t, uint32_t slot, State& s, Undo& undo);
 // MoveRing gave (start, or s's base vertex for an indexed draw, made to fit it); undo puts them back. False: untouched
 void MoveRing(uint32_t data, uint32_t data_size, uint32_t headers, uint32_t headers_size);
 bool MoveVertices(uint32_t n, float t, Blended how, State& s, uint32_t& start, Undo& undo);
+// The level's static push buffers leave out of a draw the chunks the title judged out of view that frame (0x3F2C00),
+// so the frame's draw n, blended or moved as a neighbour found (how), may have drawn other indices the frame before:
+// then true with the frame before's triangles it lacks as (prim, indices, count), a triangle list to draw too with
+// the same constants, so what went out of view at this frame's edge is in the pictures between (the holes on the side
+// the camera turned from). XBE_INTERP_EXTRA=0 turns it off
+bool Extra(uint32_t n, Blended how, uint32_t& prim, const uint8_t*& indices, uint32_t& count);
 // XBE_INTERP_HIDE: whether a draw that came out so is left out of the picture drawn again; 16 leaves out the
 // suspects too (likely found wrong or missed, interp.cpp's Suspicion), of the draw Blend did last
 bool Hidden(Blended how);

@@ -82,6 +82,9 @@ public:
     // drawing again, before a Draw: true, the draw is the frame's own but for the constants blended for the picture;
     // false, its vertices or other state were changed for it too
     virtual void AsDrawn(bool /*same*/) {}
+    // drawing again, before a Draw: the draw is one the frame didn't have (interp::Extra: the frame before's indices
+    // of the draw just drawn), counted in no pass or run of the frame's draws, drawn the whole way
+    virtual void Uncounted() {}
     // motion vectors, for a temporal upscaler: Motion says the backend wants them for each of the frame's pictures.
     // Between MotionPass(true, slot) and MotionPass(false, slot) the frame's draws come again through DrawMotion, at
     // the picture's own t, each with what its constants were in the picture shown before it (Before). slot numbers
