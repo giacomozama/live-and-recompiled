@@ -87,6 +87,7 @@ struct Settings {
     uint32_t volume = 100;           // the game's sound in %, the mixer's output scaled by its square
     std::string audio_device;         // an audio::Device id, "" the system default
     bool menu_sounds = true;          // the settings menu's sounds (audio::Play)
+    bool achievement_sound = true;    // the sound as an achievement's toast appears
     bool mute_in_background = false;  // silent while the game window lacks the focus (Background)
     // the speakers the console reports and the mixer plays on: stereo, or 5.1 surround; read at launch (audio::Channels)
     bool surround = false;

@@ -401,6 +401,7 @@ bool g_any_section = false;             // a section above in this tab: the next
 float g_clip_bottom = 3.4e38f;  // lines drawn between settings stay above this while a section is part open
 
 void SettingGap();
+void DropOpenRow();
 
 void EndSection() {
     if (!g_sec.active) return;
@@ -423,9 +424,11 @@ void EndSection() {
     }
 }
 
-// a section's card: its header folds the rows away, or with `collapsible` off there is no header and the rows are always shown
-bool Section(const char* name, bool collapsible = true) {
+// a section's card: its header folds the rows away, or with `collapsible` off there is no header and the rows are always shown;
+// default_open off starts it folded (until the person opens it)
+bool Section(const char* name, bool collapsible = true, bool default_open = true) {
     EndSection();
+    DropOpenRow();  // the last setting's hint that never came: not for this section's first hint to take
     // the header is rounded and sits in from the window's edges, by less than the rows under it
     const float margin = std::round(RowInset() * 0.5f);
     ImGuiWindow* w = ImGui::GetCurrentWindow();
@@ -446,6 +449,7 @@ bool Section(const char* name, bool collapsible = true) {
     const ImGuiID id = ImGui::GetID(name);
     const ImGuiID t_id = ImHashStr("section_t", 0, id), h_id = ImHashStr("section_h", 0, id);
     float t = w->StateStorage.GetFloat(t_id, -1.0f);
+    if (t < 0.0f && collapsible && !default_open) t = 0.0f;  // first sight, folded: no card below the header
     const float height = w->StateStorage.GetFloat(h_id, 0.0f);
     {
         // the section's card, framed like the window, round its header and rows (as tall as the rows were
@@ -465,7 +469,7 @@ bool Section(const char* name, bool collapsible = true) {
         g_card_r = w->WorkRect.Max.x;
     }
     ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 0.0f);  // its lines are the card's and its bottom edge's
-    const bool open = collapsible ? ImGui::CollapsingHeader(T(name), ImGuiTreeNodeFlags_DefaultOpen) : true;
+    const bool open = collapsible ? ImGui::CollapsingHeader(T(name), default_open ? ImGuiTreeNodeFlags_DefaultOpen : 0) : true;
     ImGui::PopStyleVar();
     // open, the header keeps the card's black and translucent white lines along its bottom edge and round its lower corners, setting it off from the
     // rows (the rest of its outline is the card's own)
@@ -534,6 +538,11 @@ struct RowState {
     float ctrl_y = 0.0f;                       // where its control starts
 } g_row;
 std::unordered_map<ImGuiID, RowMeasure> g_row_measure;
+
+// the row a setting began, its hint not come: closed, so a later hint can't join it
+void DropOpenRow() {
+    if (g_row.open && g_row.frame == ImGui::GetFrameCount()) g_row_measure.erase(g_row.key), g_row.open = false;
+}
 
 // helper text with **bold** runs, for the values a setting can take. There is no bold face: a bold run is drawn twice, a
 // pixel apart (as SubHeading). Wrapped at wrap_w from the cursor; with draw off it only measures. Returns the height.
@@ -639,7 +648,10 @@ void Hint(const char* text, bool checkbox = false) {
 }
 
 // a warning card: amber tint, a "!" mark and the text at full size, framed like the cards
-void WarningCard(const char* text) {
+// `separated`: set apart like a setting, the line above it and none under it (the setting after it follows closely)
+void WarningCard(const char* text, bool separated = false) {
+    DropOpenRow();  // a setting's hint that never came: not for this card to take
+    if (separated) SettingGap();
     const ImGuiStyle& style = ImGui::GetStyle();
     ImGuiWindow* w = ImGui::GetCurrentWindow();
     ImDrawList* dl = w->DrawList;
@@ -648,7 +660,7 @@ void WarningCard(const char* text) {
     const float vpad = std::round(style.FramePadding.y * 1.9f);
     const float icon = ImGui::GetFontSize() * 1.2f;
     const float side = std::round(style.ItemSpacing.y * 0.5f);  // the gap above the card
-    ImGui::Dummy(ImVec2(0.0f, side));
+    if (!separated) ImGui::Dummy(ImVec2(0.0f, side));
     const float left = std::round(ImGui::GetCursorScreenPos().x);
     const float right = std::round(w->WorkRect.Max.x);
     const float top = std::round(ImGui::GetCursorScreenPos().y);
@@ -674,6 +686,7 @@ void WarningCard(const char* text) {
     dl->ChannelsMerge();
     ImGui::SetCursorScreenPos(ImVec2(left, bottom));
     ImGui::Dummy(ImVec2(right - left, 0.0f));  // an item spacing below, as between any two rows
+    if (separated) g_first_row = true;  // no line under it
 }
 
 // a hint as a dotted list, under the setting before it as Hint
@@ -1068,17 +1081,20 @@ void DrawDevices(int player) {
     bool auto_assign = input::AutoAssign();
     if (Check("hint_new_controllers_go_to_the", &auto_assign))
         input::SetAutoAssign(auto_assign);
+    Hint("hint_otherwise_they_stay_unassigned_until", true);
 }
 
 // a player's controller options, the game's own two (they replace its Options menu's)
 void DrawController(int player) {
     if (!Section("controller")) return;
+    WarningCard("hint_single_player_only_these_settings", true);
     Check("invert_aim", &gamepad::g_invert_aim[player]);
     Hint("hint_up_on_the_right_stick", true);
-    Check("vibration", &gamepad::g_vibration[player]);
-    ImGui::BeginDisabled(!gamepad::g_vibration[player]);
-    Slider("vibration2", &gamepad::g_vibration_percent[player], 0, 100, 100);
-    ImGui::EndDisabled();
+    // one slider: 0 is off (the game's own vibration flag follows it)
+    uint32_t level = gamepad::g_vibration[player] ? std::min(gamepad::g_vibration_percent[player], 100u) : 0;
+    Slider("vibration", &level, 0, 100, 100);
+    gamepad::g_vibration_percent[player] = level;
+    gamepad::g_vibration[player] = level > 0;
     Hint("hint_how_hard_the_controller_shakes");
 }
 
@@ -1089,8 +1105,8 @@ void DrawMouse(int player) {
     Hint("hint_move_the_mouse_to_look", true);
     Slider("horizontal", &mouse::g_sensitivity[player], 10, 500, mouse::kDefaultSensitivity);
     Slider("vertical", &mouse::g_sensitivity_y[player], 10, 500, mouse::kDefaultSensitivity);
+    WarningCard("hint_single_player_only_in_a", true);
     Check("invert_y", &mouse::g_invert_y[player]);
-    Hint("hint_single_player_only_in_a", true);
 }
 
 // a player's keys
@@ -1728,7 +1744,7 @@ void DrawAchievementToast() {
         showing = achievements::NextToast();
         since = now;
         if (showing < 0) return;
-        audio::Play(audio::Cue::Achievement);  // as it appears, whatever menu_sounds says: it is no menu sound
+        if (app::Get().achievement_sound) audio::Play(audio::Cue::Achievement);  // as it appears, whatever menu_sounds says: it is no menu sound
     }
     const double t = now - since;
     float alpha = 1.0f, offset = 0.0f;  // offset: how far below its place, in font heights
@@ -2178,6 +2194,27 @@ void Draw(double fps) {
                         Check("v_sync", &s.vsync);
                         Hint("hint_waits_for_the_display_to", true);
                     }
+                    {
+                        // offered once the swap chain found an HDR10 format; kept clickable while on, to turn it off
+                        bool can = gpu::HdrAvailable() || s.hdr;
+                        ImGui::BeginDisabled(!can);
+                        Check("hdr", &s.hdr);
+                        ImGui::EndDisabled();
+                        Hint(can ? "hint_sends_the_picture_to_the"
+                                 : "hint_the_display_or_desktop_offers", true);
+                        if (s.hdr) {
+                            DisplaySlider("paper_white_nits", &s.hdr_paper_white, app::kPaperWhiteMin,
+                                          app::kPaperWhiteMax, app::HdrPaperWhite());
+                            Hint("hint_how_bright_white_is_shown", true);
+                            Slider("highlights", &s.hdr_highlights, 0, 100, app::Settings{}.hdr_highlights);
+                            Hint("hint_makes_the_brightest_parts_of", true);
+                            if (s.hdr_highlights) {
+                                DisplaySlider("peak_brightness_nits", &s.hdr_peak, app::kPeakMin, app::kPeakMax,
+                                              app::HdrPeak());
+                                Hint("hint_how_bright_the_brightest_highlights", true);
+                            }
+                        }
+                    }
                     Slider("gamma", &s.gamma, 180, 260, app::Settings{}.gamma, 100);
                     Hint("hint_higher_darkens_shadows_and_midtones", true);
                     Slider("brightness", &s.brightness, -20, 20, app::Settings{}.brightness);
@@ -2185,28 +2222,6 @@ void Draw(double fps) {
                     Beside("display_calibration");
                     if (ImGui::Button(T("calibrate_display"))) g_calib_step.store(0);
                     Hint("hint_test_patterns_for_brightness_and", true);
-                }
-
-                if (Section("hdr")) {
-                    // offered once the swap chain found an HDR10 format; kept clickable while on, to turn it off
-                    bool can = gpu::HdrAvailable() || s.hdr;
-                    ImGui::BeginDisabled(!can);
-                    Check("hdr", &s.hdr);
-                    ImGui::EndDisabled();
-                    Hint(can ? "hint_sends_the_picture_to_the"
-                             : "hint_the_display_or_desktop_offers", true);
-                    if (s.hdr) {
-                        DisplaySlider("paper_white_nits", &s.hdr_paper_white, app::kPaperWhiteMin,
-                                      app::kPaperWhiteMax, app::HdrPaperWhite());
-                        Hint("hint_how_bright_white_is_shown", true);
-                        Slider("highlights", &s.hdr_highlights, 0, 100, app::Settings{}.hdr_highlights);
-                        Hint("hint_makes_the_brightest_parts_of", true);
-                        if (s.hdr_highlights) {
-                            DisplaySlider("peak_brightness_nits", &s.hdr_peak, app::kPeakMin, app::kPeakMax,
-                                          app::HdrPeak());
-                            Hint("hint_how_bright_the_brightest_highlights", true);
-                        }
-                    }
                 }
 
                 if (Section("quality")) {
@@ -2454,24 +2469,15 @@ void Draw(double fps) {
                     Hint("hint_keeps_fur_on_far_away", true);
                 }
 
-                if (Section("characters")) {
+                if (Section("detail")) {
                     Check("force_max_character", &characters::g_max_lod);
                     Hint("hint_characters_keep_their_full_model", true);
                     Check("detailed_multiplayer_characters", &characters::g_menu_models);
                     Hint("hint_multiplayer_classes_use_their_more", true);
-                }
-
-                if (Section("grass")) {
-                    Check("wind_on_distant", &grass::g_wind);
-                    Hint("hint_faraway_grass_sways_in_the", true);
-                    Check("force_max_grass", &grass::g_max_lod);
-                    Hint("hint_faraway_grass_stays_as_thick", true);
-                    bool solid = !grass::g_fade;  // the setting is the console's fade, which this checkbox turns off
-                    if (Check("don_t_fade", &solid)) grass::g_fade = !solid;
-                    Hint("hint_faraway_grass_stays_solid_however", true);
-                }
-
-                if (Section("water_and_reflections")) {
+                    // one choice for the three grass settings (each still kept in settings.toml as its own)
+                    bool high = grass::g_wind && grass::g_max_lod && !grass::g_fade;
+                    if (Check("high_quality_grass", &high)) grass::g_wind = grass::g_max_lod = high, grass::g_fade = !high;
+                    Hint("hint_faraway_grass_sways_stays_thick", true);
                     Check("dynamic_water", &water::g_dynamic);
                     Hint("hint_water_ripples_and_makes_waves", true);
                     Check("floor_depth_of", &reflection::g_floor_depth);
@@ -2483,6 +2489,7 @@ void Draw(double fps) {
             if (tab("tweaks")) {
                 if (Section("camera")) {
                     Slider("field_of_view", &display::g_fov, display::kFovMin, display::kFovMax, display::kFov);
+                    Hint("hint_how_wide_the_view_is");
                     Slider("extra_look_up", &display::g_look_up, 0, display::kLookUpMax, 0);
                     Hint("hint_lets_the_third_person_camera");
                 }
@@ -2547,9 +2554,11 @@ void Draw(double fps) {
                     Hint("hint_no_sound_while_you_are", true);
                     Check("menu_sounds", &s.menu_sounds);
                     Hint("hint_the_sounds_of_changing_tabs", true);
+                    Check("achievement_sound", &s.achievement_sound);
+                    Hint("hint_the_sound_that_plays_as", true);
                 }
                 // the mixer's choices, where how the console sounds isn't settled
-                if (Section("mix")) {
+                if (Section("mix", true, false)) {
                     {
                         const app::Settings def{};
                         // a warning card, not a dimmed hint: it is the first thing to read in this section

@@ -106,6 +106,7 @@ void Load() {
     s.volume = std::min<uint32_t>(t["volume"].value_or(s.volume), 100);
     s.audio_device = t["audio_device"].value_or(s.audio_device);
     s.menu_sounds = t["menu_sounds"].value_or(s.menu_sounds);
+    s.achievement_sound = t["achievement_sound"].value_or(s.achievement_sound);
     s.mute_in_background = t["mute_in_background"].value_or(s.mute_in_background);
     s.surround = t["surround"].value_or(s.surround);
     s.stereo_full_backs = t["stereo_full_backs"].value_or(s.stereo_full_backs);
@@ -191,6 +192,7 @@ toml::table Table() {
                   {"volume", int64_t(s.volume)},
                   {"audio_device", s.audio_device},
                   {"menu_sounds", s.menu_sounds},
+                  {"achievement_sound", s.achievement_sound},
                   {"mute_in_background", s.mute_in_background},
                   {"surround", s.surround},
                   {"stereo_full_backs", s.stereo_full_backs},
