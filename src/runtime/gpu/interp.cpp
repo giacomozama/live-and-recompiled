@@ -250,10 +250,13 @@ struct Frame {
     std::vector<std::array<float, 4>> values;  // the snaps' constants
     std::vector<uint8_t> raw;                  // their vertices, of those kept (Snap::raw_at)
     std::vector<uint8_t> indices;              // their indices, of those kept (Snap::idx_at)
-    // of draws Extra was asked for: the frame before's triangles this frame's indices lack, as a triangle list in
-    // extra_idx (offset, count of indices), worked out once a frame
+    // per material, on its first draw (BuildExtra): the frame before's triangles no draw of it has now, as a
+    // triangle list in extra_idx (offset, count of indices), worked out once a frame
     std::vector<uint8_t> extra_idx;
     std::unordered_map<uint32_t, std::pair<uint32_t, uint32_t>> extra_at;
+    std::unordered_map<uint32_t, int8_t> extra_why;  // why a material's first draw has none (kExtraNo), -1 it has
+    bool extra_built = false;
+    std::string extra_note;  // BuildExtra's, for the recorded notes
     // of each draw not found, when recording or tracing: what keeps it from the nearest draw of its program (Why)
     std::unordered_map<uint32_t, std::string> why;
     const std::string& WhyNot(uint32_t n) const {
@@ -282,6 +285,9 @@ struct Frame {
         indices.clear();
         extra_idx.clear();
         extra_at.clear();
+        extra_why.clear();
+        extra_built = false;
+        extra_note.clear();
         why.clear();
         taken.clear();
     }
@@ -421,7 +427,7 @@ struct Pass {
     uint32_t moved = 0;               // draws whose vertices were moved part way (MoveVertices)
     uint32_t offscreen = 0;           // draws into a target not presented, drawn as the frame has them (OffscreenKept)
     uint32_t extra = 0;               // draws with the frame before's indices drawn too (Extra)
-    std::array<uint32_t, 10> extra_no{};  // why Extra drew nothing more, of draws with indices kept (kExtraNo)
+    std::array<uint32_t, 5> extra_no{};  // why Extra drew nothing more, of draws with indices kept (kExtraNo)
     std::unordered_map<uint64_t, std::pair<uint32_t, std::string>> unfound_programs;  // count, the first's reason
     std::string jumps;  // the first draws with a jump: draw, program, registers
     std::string watched;  // XBE_INTERP_WATCH's program's draws (Watch)
@@ -2380,10 +2386,8 @@ bool MoveVertices(uint32_t n, float t, Blended how, State& s, uint32_t& start, U
 }
 
 // why Extra drew nothing more for a draw with its indices kept, counted in the note
-constexpr const char* kExtraNo[] = {"not blended", "not a triangle list or strip", "its leader not found",
-                                    "no draw of its mesh before", "no indices kept before", "another object or piece",
-                                    "another primitive", "another base vertex", "other vertex memory",
-                                    "no triangles of its own before"};
+constexpr const char* kExtraNo[] = {"not blended", "not a triangle list or strip", "left to its material's first draw",
+                                    "no draw of its material before", "no triangles of its own before"};
 
 // each triangle of a list (5) or strip (6) of 16 bit indices, degenerate ones left out
 template <typename F>
@@ -2414,6 +2418,164 @@ uint64_t TriangleKey(uint16_t a, uint16_t b, uint16_t c) {
     return uint64_t(a) << 32 | uint64_t(b) << 16 | c;
 }
 
+// A draw's material for Extra: its object, piece, primitive, base vertex, vertex memory, program, combiner, textures
+// and target. The level's draws all share one tag and one vertex buffer and have the same constants, and which of the
+// frame before's draws one is found as is a toss-up between materials (harmless for blending): taking the frame
+// before's triangles from its match drew another material's with this draw's textures, a wall papered with another's
+// (capture 122217), and refusing such matches brought the training level's holes back (122811: the right draw lay at
+// a place this frame draws, the places shifting as chunks are jumped over). So no pairing: per material, the frame
+// before's triangles no draw of it has now, drawn once with its first draw
+uint64_t MaterialKey(const Snap& w) {
+    uint64_t k = Mix(Mix(0, w.program), uint64_t(w.tag.object) << 32 | w.tag.piece);
+    k = Mix(k, uint64_t(w.prim) << 32 | w.base);
+    k = Mix(k, w.geo);
+    for (int i : {kCombiner, kTarget, kDepth, kAddresses}) k = Mix(k, w.parts[size_t(i)]);
+    return k;
+}
+
+// The mesh a material draws from: its object, piece, primitive, base vertex, vertex memory, target and depth, not its
+// program, combiner or textures
+uint64_t MeshKey(const Snap& w) {
+    uint64_t k = Mix(0, uint64_t(w.tag.object) << 32 | w.tag.piece);
+    k = Mix(k, uint64_t(w.prim) << 32 | w.base);
+    k = Mix(k, w.geo);
+    for (int i : {kTarget, kDepth}) k = Mix(k, w.parts[size_t(i)]);
+    return k;
+}
+// a material of the frame before no draw of this frame has is taken as one whose triangles it shares at least this
+// part of (of the smaller): materials of one vertex buffer share no triangles, passes over the same ones all of them
+constexpr size_t kSharedPart = 4;  // a quarter
+
+void BuildExtra(Frame& cur, const Frame& prev) {
+    cur.extra_built = true;
+    struct Group {
+        std::vector<uint32_t> now, before;
+        uint64_t mesh = 0;
+    };
+    auto listed = [](const Snap& w) { return w.idx_count && (w.prim == 5 || w.prim == 6); };
+    std::unordered_map<uint64_t, Group> groups;
+    for (uint32_t n = 0; n < cur.snaps.size(); n++) {
+        const Snap& w = cur.snaps[n];
+        if (!listed(w)) continue;
+        Group& g = groups[MaterialKey(w)];
+        g.now.push_back(n);
+        g.mesh = MeshKey(w);
+    }
+    // the frame before's materials no draw of this frame has, and those by mesh: some frames a set of the level's
+    // draws samples other texture memory (training level, capture 123228: 27 draws at once), found by triangles
+    std::unordered_map<uint64_t, std::vector<uint32_t>> orphans;
+    std::unordered_map<uint64_t, std::vector<uint64_t>> orphan_meshes;
+    for (uint32_t q = 0; q < prev.snaps.size(); q++) {
+        const Snap& w = prev.snaps[q];
+        if (!listed(w)) continue;
+        const uint64_t mk = MaterialKey(w);
+        auto g = groups.find(mk);
+        if (g != groups.end()) {
+            g->second.before.push_back(q);
+            continue;
+        }
+        auto& list = orphans[mk];
+        if (list.empty()) orphan_meshes[MeshKey(w)].push_back(mk);
+        list.push_back(q);
+    }
+    uint32_t by_shared = 0, none = 0;
+    std::array<uint32_t, 6> differ{};  // of materials found by triangles: program, combiner, texture stages 0-3
+    std::string examples;
+    std::unordered_set<uint64_t> have;
+    for (auto& [key, g] : groups) {
+        const uint32_t owner = g.now.front();  // the lowest: draws were pushed in order
+        std::pair<uint32_t, uint32_t> at{0, 0};
+        int why = -1;
+        bool built = false;
+        auto build = [&] {
+            have.clear();
+            for (uint32_t n : g.now) {
+                const Snap& w = cur.snaps[n];
+                EachTriangle(w.prim, cur.indices.data() + w.idx_at, w.idx_count,
+                             [&](uint16_t a, uint16_t b, uint16_t c) { have.insert(TriangleKey(a, b, c)); });
+            }
+            built = true;
+        };
+        if (g.before.empty()) {
+            auto om = orphan_meshes.find(g.mesh);
+            if (om != orphan_meshes.end()) {
+                build();
+                for (uint64_t mk : om->second) {
+                    const std::vector<uint32_t>& list = orphans[mk];
+                    size_t shared = 0, total = 0;
+                    for (uint32_t q : list) {
+                        const Snap& w = prev.snaps[q];
+                        EachTriangle(w.prim, prev.indices.data() + w.idx_at, w.idx_count,
+                                     [&](uint16_t a, uint16_t b, uint16_t c) {
+                                         total++;
+                                         shared += have.count(TriangleKey(a, b, c));
+                                     });
+                    }
+                    if (!total || shared * kSharedPart < std::min(total, have.size())) continue;
+                    g.before.insert(g.before.end(), list.begin(), list.end());
+                    const Snap& a = cur.snaps[owner];
+                    const Snap& b = prev.snaps[list.front()];
+                    bool d[6] = {a.program != b.program, a.parts[kCombiner] != b.parts[kCombiner],
+                                 a.textures[0] != b.textures[0], a.textures[1] != b.textures[1],
+                                 a.textures[2] != b.textures[2], a.textures[3] != b.textures[3]};
+                    for (size_t i = 0; i < 6; i++) differ[i] += d[i];
+                    if (Recording() && by_shared < 8) {
+                        char t[256];
+                        snprintf(t, sizeof(t),
+                                 "\n    draw %u program %016llX: textures %08X %08X %08X %08X (before %08X %08X %08X %08X)"
+                                 "%s%s, %zu of %zu triangles shared",
+                                 owner, (unsigned long long)a.program, a.textures[0], a.textures[1], a.textures[2],
+                                 a.textures[3], b.textures[0], b.textures[1], b.textures[2], b.textures[3],
+                                 d[0] ? ", other program" : "", d[1] ? ", other combiner" : "", shared, total);
+                        examples += t;
+                    }
+                    by_shared++;
+                }
+            }
+            if (g.before.empty()) {
+                why = 3;
+                none++;
+            }
+        } else {
+            // the same lists both frames: nothing to work out
+            bool alike = g.now.size() == g.before.size();
+            for (size_t i = 0; alike && i < g.now.size(); i++) {
+                const Snap& a = cur.snaps[g.now[i]];
+                const Snap& b = prev.snaps[g.before[i]];
+                alike = a.idx_count == b.idx_count && a.idx_hash == b.idx_hash;
+            }
+            if (alike) why = 4;
+        }
+        if (why < 0) {
+            if (!built) build();
+            at.first = uint32_t(cur.extra_idx.size());
+            for (uint32_t q : g.before) {
+                const Snap& w = prev.snaps[q];
+                EachTriangle(w.prim, prev.indices.data() + w.idx_at, w.idx_count,
+                             [&](uint16_t a, uint16_t b, uint16_t c) {
+                                 // inserted: a triangle two draws of the frame before had comes out once
+                                 if (!have.insert(TriangleKey(a, b, c)).second) return;
+                                 const uint16_t t[3] = {a, b, c};
+                                 const uint8_t* p = reinterpret_cast<const uint8_t*>(t);
+                                 cur.extra_idx.insert(cur.extra_idx.end(), p, p + 6);
+                             });
+            }
+            at.second = (uint32_t(cur.extra_idx.size()) - at.first) / 2;
+            if (!at.second) why = 4;
+        }
+        cur.extra_at.emplace(owner, at);
+        cur.extra_why.emplace(owner, int8_t(why));
+    }
+    if (Recording() && (by_shared || none)) {
+        char t[256];
+        snprintf(t, sizeof(t),
+                 "\n  materials found before by shared triangles: %u (other program %u, combiner %u, textures at "
+                 "stage 0 %u, 1 %u, 2 %u, 3 %u); with none before: %u",
+                 by_shared, differ[0], differ[1], differ[2], differ[3], differ[4], differ[5], none);
+        cur.extra_note = t + examples;
+    }
+}
+
 bool Extra(uint32_t n, Blended how, uint32_t& prim, const uint8_t*& indices, uint32_t& count) {
     if (!ExtraOn()) return false;
     Frame& cur = g_frames[g_cur];
@@ -2428,60 +2590,13 @@ bool Extra(uint32_t n, Blended how, uint32_t& prim, const uint8_t*& indices, uin
     // blended, or moved as a neighbour found (a draw whose tag place moved may be found by neither)
     if (how != Blended::kYes && how != Blended::kBorrowed) return no(0);
     if (sn.prim != 5 && sn.prim != 6) return no(1);
+    if (!cur.extra_built) BuildExtra(cur, prev);
     auto memo = cur.extra_at.find(n);
-    if (memo == cur.extra_at.end()) {
-        // worked out once a frame: the frame before's triangles this frame's lack (drawn once more, a blended draw's
-        // triangles that both have would come out twice as strong)
-        std::pair<uint32_t, uint32_t> at{0, 0};
-        int why = -1;
-        const int32_t leader = sn.leader >= 0 ? sn.leader : int32_t(n);
-        int32_t lf = cur.snaps[size_t(leader)].found;
-        const int64_t p = int64_t(lf) + (int64_t(n) - leader);
-        const Snap* was = lf >= 0 && p >= 0 && size_t(p) < prev.snaps.size() ? &prev.snaps[size_t(p)] : nullptr;
-        // the same mesh of the frame before otherwise: its object, piece, primitive, base vertex and vertex memory
-        auto same = [&](const Snap& w) {
-            return w.idx_count && w.tag.object == sn.tag.object && w.tag.piece == sn.tag.piece && w.prim == sn.prim &&
-                   w.base == sn.base && w.geo == sn.geo;
-        };
-        // (of a place this frame doesn't draw: draws sharing vertex memory are told apart by where they lie)
-        if (!was || !same(*was)) {
-            for (const Snap& w : prev.snaps)
-                if (same(w) && !cur.places.Find(w.tag.place)) {
-                    was = &w;
-                    lf = 0;
-                    break;
-                }
-        }
-        if (lf < 0) why = 2;
-        else if (!was) why = 3;
-        else if (!was->idx_count) why = 4;
-        // its object and piece, not its place: the place counts where in the static push buffer the draw ends,
-        // which moves when the title jumps over its last chunks (0x3F2C00); the same vertex memory says it's the draw
-        else if (was->tag.object != sn.tag.object || was->tag.piece != sn.tag.piece) why = 5;
-        else if (was->prim != sn.prim) why = 6;
-        else if (was->base != sn.base) why = 7;
-        else if (was->geo != sn.geo) why = 8;
-        else if (was->idx_count == sn.idx_count && was->idx_hash == sn.idx_hash) why = 9;
-        else {
-            std::unordered_set<uint64_t> have;
-            have.reserve(sn.idx_count);
-            EachTriangle(sn.prim, cur.indices.data() + sn.idx_at, sn.idx_count,
-                         [&](uint16_t a, uint16_t b, uint16_t c) { have.insert(TriangleKey(a, b, c)); });
-            at.first = uint32_t(cur.extra_idx.size());
-            EachTriangle(was->prim, prev.indices.data() + was->idx_at, was->idx_count,
-                         [&](uint16_t a, uint16_t b, uint16_t c) {
-                             if (have.count(TriangleKey(a, b, c))) return;
-                             const uint16_t t[3] = {a, b, c};
-                             const uint8_t* q = reinterpret_cast<const uint8_t*>(t);
-                             cur.extra_idx.insert(cur.extra_idx.end(), q, q + 6);
-                         });
-            at.second = (uint32_t(cur.extra_idx.size()) - at.first) / 2;
-            if (!at.second) why = 9;
-        }
-        memo = cur.extra_at.emplace(n, at).first;
-        if (why >= 0) return no(why);
+    if (memo == cur.extra_at.end()) return no(2);
+    if (!memo->second.second) {
+        const int8_t why = cur.extra_why[n];
+        return why >= 0 ? no(why) : false;
     }
-    if (!memo->second.second) return false;
     prim = 5;
     indices = cur.extra_idx.data() + memo->second.first;
     count = memo->second.second;
@@ -2627,6 +2742,7 @@ void EndPass(uint32_t slot) {
                 no += b;
             }
         if (!no.empty()) note += "\n  the frame before's indices not drawn too:" + no;
+        note += g_frames[g_cur].extra_note;
     }
     note += "\n  farthest found, a draw per program:";
     std::vector<std::pair<float, std::string>> far;
