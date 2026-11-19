@@ -58,7 +58,8 @@ namespace {
     X(CompileShader) X(GetShaderiv) X(GetShaderInfoLog) X(DeleteShader) X(CreateProgram) X(AttachShader)              \
     X(LinkProgram) X(GetProgramiv) X(GetProgramInfoLog) X(DeleteProgram) X(UseProgram) X(DrawArrays)                  \
     X(DrawElementsBaseVertex) X(PatchParameteri) X(GenQueries) X(DeleteQueries) X(BeginQuery) X(EndQuery)             \
-    X(GetQueryObjectuiv) X(Flush) X(ClipControl) X(DebugMessageCallback)
+    X(GetQueryObjectuiv) X(Flush) X(FenceSync) X(ClientWaitSync) X(DeleteSync) X(ClipControl) X(DebugMessageCallback) \
+    X(BufferStorage)
 namespace gl {
 #define XBE_GL_DECLARE(name) decltype(&::gl##name) name = nullptr;
 XBE_GL_FUNCTIONS(XBE_GL_DECLARE)
@@ -68,11 +69,12 @@ bool Load() {
     XBE_GL_FUNCTIONS(XBE_GL_LOAD)
 #undef XBE_GL_LOAD
     // those a 4.1 context may lack, used only where present: ClipControl (ARB_clip_control, checked at Init),
-    // ViewportIndexedf (else integer viewports), DebugMessageCallback (XBE_GL_DEBUG)
+    // ViewportIndexedf (else integer viewports), DebugMessageCallback (XBE_GL_DEBUG), BufferStorage (else the rings
+    // mapped a piece at a time)
     bool ok = true;
 #define XBE_GL_CHECK(name)                                                                                             \
     if (!name && std::strcmp(#name, "ClipControl") && std::strcmp(#name, "ViewportIndexedf") &&                       \
-        std::strcmp(#name, "DebugMessageCallback")) {                                                                  \
+        std::strcmp(#name, "DebugMessageCallback") && std::strcmp(#name, "BufferStorage")) {                                                                  \
         LOGE("opengl: gl%s missing", #name);                                                                           \
         ok = false;                                                                                                    \
     }
@@ -346,7 +348,19 @@ struct Ring {
     // stores the buffer has had: a new one (grown, or orphaned when full) leaves what was written before behind, so a
     // range bound from the old one reads nothing written
     uint64_t generation = 0;
+    uint32_t frame_bytes = 0;  // put since the last Present
+    // persistently mapped (ARB_buffer_storage): written in place with a copy, no map and unmap a piece (on NVIDIA
+    // microseconds each, several a draw: the render thread's whole frame); a store left full waits in spare behind a
+    // fence until the GPU is past it, then is written again
+    uint8_t* mapped = nullptr;
+    struct Spare {
+        GLuint buffer;
+        uint8_t* mapped;
+        GLsync done;
+    };
+    std::deque<Spare> spare;
 };
+constexpr size_t kRingStores = 6;  // stores a ring keeps behind the GPU before it waits for the oldest
 
 class OpenGLBackend final : public Backend {
     SDL_Window* window_ = nullptr;
@@ -357,6 +371,7 @@ class OpenGLBackend final : public Backend {
     int ubo_align_ = 256;
     int vsync_ = -1;
     GLuint vao_ = 0;
+    bool persistent_ = false;  // the rings persistently mapped (Ring::mapped)
     Ring vertices_{GL_ARRAY_BUFFER, 0, 0, 0, 8u << 20}, indices_{GL_ELEMENT_ARRAY_BUFFER, 0, 0, 0, 2u << 20},
         uniforms_{GL_UNIFORM_BUFFER, 0, 0, 0, 4u << 20};
     double driver_timing_[9]{};
@@ -406,6 +421,7 @@ class OpenGLBackend final : public Backend {
         uint16_t attribs = 0;  // vertex attribute arrays enabled
         struct Attribute {
             uint32_t format = 0, stride = 0, offset = 0;
+            GLuint buffer = 0;  // a new store of the vertex ring is another buffer (persistent stores)
         } attrib[16];
         GLint patch = 0;
     } bound_;
@@ -441,6 +457,25 @@ class OpenGLBackend final : public Backend {
     std::vector<Recorded> recorded_;  // XBE_INTERP_RECORD's ring, the next written at recorded_next_
     uint64_t recorded_next_ = 0;
     std::vector<Report> reports_;
+    uint32_t poll_draws_ = 0;  // Draw looks at reports_ every 32nd draw
+    // drawing again: the frame's draws' geometry where they put it in the rings, by their serial (Draw calls in the
+    // pass, Pass and Uncounted as Vulkan's pass_serial_), for a draw drawn again as the frame drew it (AsDrawn) to
+    // draw from instead of putting the same bytes in again, while the stores they went to are the rings' still
+    struct KeptGeometry {
+        uint32_t serial = 0;
+        uint64_t vertex_store = 0, index_store = 0;  // the rings' generations
+        uint32_t buffer_count = 0, index_bytes = 0, index_offset = 0;
+        GLenum index_type = 0;
+        uint32_t base[16]{}, bytes[16]{};
+        // as assembled, before Draw repacked misaligned streams, and the strides and element offsets after
+        uint32_t source_bytes[16]{}, stride[16]{};
+        uint16_t offset[16]{};
+    };
+    std::vector<KeptGeometry> kept_geometry_;
+    size_t kept_next_ = 0;
+    uint32_t serial_ = 0;
+    bool as_drawn_ = false, uncounted_ = false;  // AsDrawn and Uncounted, for the next Draw
+    bool keep_geometry_ = false;
     uint64_t frame_ = 0, shown_ = 0;
     uint32_t ww_ = 0, wh_ = 0;
     GuestExtent guest_frame_{};
@@ -826,52 +861,94 @@ class OpenGLBackend final : public Backend {
     // room for bytes more in one store: grown or orphaned now if it hasn't, so the Puts that follow (a draw's streams,
     // its two constant blocks) land in the same store; one started over between them leaves those before behind
     void Reserve(Ring& r, uint32_t bytes) {
-        if (!r.buffer) gl::GenBuffers(1, &r.buffer);
-        gl::BindBuffer(r.target, r.buffer);
         if (bytes > r.capacity / 4 || !r.capacity) {
             const uint32_t wanted = std::max(r.least, std::bit_ceil(bytes * 4));
             if (wanted > r.capacity) {
-                gl::BufferData(r.target, wanted, nullptr, GL_STREAM_DRAW);
-                r.generation++;
-                r.capacity = wanted;
-                r.next = 0;
+                NewStore(r, wanted);
                 return;
             }
         }
-        if (uint64_t(r.next) + bytes > r.capacity) {
-            gl::BufferData(r.target, r.capacity, nullptr, GL_STREAM_DRAW);
-            r.generation++;
-            r.next = 0;
+        if (uint64_t(r.next) + bytes > r.capacity) NewStore(r, r.capacity);
+    }
+    // a new store of capacity bytes, written from its start: the old one orphaned (the GPU keeps it), or, mapped,
+    // fenced and kept for when the GPU is past it (a grown ring's old ones deleted, the driver keeping them as long)
+    void NewStore(Ring& r, uint32_t capacity) {
+        r.generation++;
+        r.next = 0;
+        if (!persistent_) {
+            if (!r.buffer) gl::GenBuffers(1, &r.buffer);
+            gl::BindBuffer(r.target, r.buffer);
+            gl::BufferData(r.target, capacity, nullptr, GL_STREAM_DRAW);
+            r.capacity = capacity;
+            return;
         }
+        if (r.buffer) {
+            if (r.mapped && capacity == r.capacity)
+                r.spare.push_back({r.buffer, r.mapped, gl::FenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0)});
+            else gl::DeleteBuffers(1, &r.buffer);
+            r.buffer = 0;
+            r.mapped = nullptr;
+        }
+        if (capacity != r.capacity) {
+            for (const auto& old : r.spare) {
+                gl::DeleteSync(old.done);
+                gl::DeleteBuffers(1, &old.buffer);
+            }
+            r.spare.clear();
+            r.capacity = capacity;
+        }
+        // the oldest kept store, once the GPU is past it; waited for when there are many (the GPU frames behind)
+        while (!r.spare.empty()) {
+            const Ring::Spare old = r.spare.front();
+            const bool many = r.spare.size() >= kRingStores;
+            const GLenum w = gl::ClientWaitSync(old.done, GL_SYNC_FLUSH_COMMANDS_BIT, many ? 1'000'000'000ull : 0);
+            if (w != GL_ALREADY_SIGNALED && w != GL_CONDITION_SATISFIED) {
+                if (many) LOG_FIRST(4, "opengl: a ring's store still in use after a second (0x%X)", unsigned(w));
+                break;
+            }
+            r.spare.pop_front();
+            gl::DeleteSync(old.done);
+            r.buffer = old.buffer;
+            r.mapped = old.mapped;
+            gl::BindBuffer(r.target, r.buffer);
+            return;
+        }
+        constexpr GLbitfield kFlags = GL_MAP_WRITE_BIT | GL_MAP_PERSISTENT_BIT | GL_MAP_COHERENT_BIT;
+        gl::GenBuffers(1, &r.buffer);
+        gl::BindBuffer(r.target, r.buffer);
+        gl::BufferStorage(r.target, capacity, nullptr, kFlags);
+        r.mapped = static_cast<uint8_t*>(gl::MapBufferRange(r.target, 0, capacity, kFlags));
+        if (!r.mapped) LOG_FIRST(4, "opengl: persistent map failed (0x%X)", unsigned(gl::GetError()));
     }
     bool Put(Ring& r, const void* data, uint32_t bytes, uint32_t align, uint32_t& offset) {
-        if (!r.buffer) gl::GenBuffers(1, &r.buffer);
-        gl::BindBuffer(r.target, r.buffer);
         if (bytes > r.capacity / 4 || !r.capacity) {
             const uint32_t wanted = std::max(r.least, std::bit_ceil(bytes * 4));
-            if (wanted > r.capacity) {
-                gl::BufferData(r.target, wanted, nullptr, GL_STREAM_DRAW);
-                r.generation++;
-                r.capacity = wanted;
-                r.next = 0;
-            }
+            if (wanted > r.capacity) NewStore(r, wanted);
         }
         uint32_t at = (r.next + align - 1) / align * align;
         if (uint64_t(at) + bytes > r.capacity) {
-            gl::BufferData(r.target, r.capacity, nullptr, GL_STREAM_DRAW);  // orphaned: the GPU keeps the old store
-            r.generation++;
+            NewStore(r, r.capacity);
             at = 0;
         }
-        void* p = gl::MapBufferRange(r.target, at, bytes,
-                                     GL_MAP_WRITE_BIT | GL_MAP_UNSYNCHRONIZED_BIT | GL_MAP_INVALIDATE_RANGE_BIT);
-        if (!p) {
-            LOG_FIRST(8, "opengl: buffer map failed (0x%X)", unsigned(gl::GetError()));
-            return false;
+        if (r.mapped) {
+            // the index list's binding is the vertex array's: set as before; the others are bound by range or
+            // attribute
+            if (r.target == GL_ELEMENT_ARRAY_BUFFER) gl::BindBuffer(r.target, r.buffer);
+            std::memcpy(r.mapped + at, data, bytes);
+        } else {
+            gl::BindBuffer(r.target, r.buffer);
+            void* p = gl::MapBufferRange(r.target, at, bytes,
+                                         GL_MAP_WRITE_BIT | GL_MAP_UNSYNCHRONIZED_BIT | GL_MAP_INVALIDATE_RANGE_BIT);
+            if (!p) {
+                LOG_FIRST(8, "opengl: buffer map failed (0x%X)", unsigned(gl::GetError()));
+                return false;
+            }
+            std::memcpy(p, data, bytes);
+            gl::UnmapBuffer(r.target);
         }
-        std::memcpy(p, data, bytes);
-        gl::UnmapBuffer(r.target);
         offset = at;
         r.next = at + bytes;
+        r.frame_bytes += bytes;
         g_perf.upload += bytes;
         return true;
     }
@@ -1957,6 +2034,21 @@ class OpenGLBackend final : public Backend {
     GLenum mode_ = GL_TRIANGLES;
     GLenum index_type_ = GL_UNSIGNED_SHORT;
     uint32_t index_offset_ = 0;
+    // the frame's geometry for the draw drawn again at serial_, when it is a's as assembled (the same streams' sizes
+    // and indices)
+    // and still in the rings' stores; null to put it in again
+    const KeptGeometry* KeptFor(const Assembled& a, uint32_t index_bytes) {
+        while (kept_next_ < kept_geometry_.size() && kept_geometry_[kept_next_].serial < serial_) kept_next_++;
+        if (kept_next_ >= kept_geometry_.size()) return nullptr;
+        const KeptGeometry& k = kept_geometry_[kept_next_];
+        if (k.serial != serial_ || k.vertex_store != vertices_.generation || k.buffer_count != a.buffer_count ||
+            k.index_bytes != index_bytes || (index_bytes && k.index_store != indices_.generation) ||
+            a.buffer_count > 16)
+            return nullptr;
+        for (uint32_t i = 0; i < a.buffer_count; i++)
+            if (k.source_bytes[i] != a.buffers[i].bytes) return nullptr;
+        return &k;
+    }
     void IssueGeometry(const Assembled& a) {
         if (a.index_count)
             gl::DrawElementsBaseVertex(mode_, GLsizei(a.index_count), index_type_,
@@ -2000,6 +2092,8 @@ class OpenGLBackend final : public Backend {
         }
         last_vsc_valid_ = Constants(0, s.vsc.data(), sizeof(s.vsc.v), &vc_offset_);
     }
+    // the reports whose queries are done, written in the order made: the GPU ends them in that order, so the first
+    // not done ends the look (each look is a driver call per query, once asked every draw for every report)
     void PollReports(bool wait = false) {
         for (auto it = reports_.begin(); it != reports_.end();) {
             double samples = 0;
@@ -2020,10 +2114,7 @@ class OpenGLBackend final : public Backend {
                 gl::GetQueryObjectuiv(q->query, GL_QUERY_RESULT, &n);
                 samples += double(n) * q->guest_per_sample;
             }
-            if (!ready) {
-                ++it;
-                continue;
-            }
+            if (!ready) break;
             kernel::W32(it->address, uint32_t(frame_));
             kernel::W32(it->address + 4, 0);
             kernel::W32(it->address + 8, uint32_t(std::min(std::ceil(samples), double(UINT32_MAX))));
@@ -2129,7 +2220,7 @@ class OpenGLBackend final : public Backend {
         const uint32_t offset = base + e.offset;
         auto& b = bound_.attrib[r];
         if (bound_.valid && (bound_.attribs >> r & 1) && b.format == e.format && b.stride == stride &&
-            b.offset == offset)
+            b.offset == offset && b.buffer == vertices_.buffer)
             return true;
         const AttribFormat f = Attrib(e.format);
         if (!f.size) {
@@ -2140,7 +2231,7 @@ class OpenGLBackend final : public Backend {
         const void* at = reinterpret_cast<const void*>(uintptr_t(offset));
         if (f.integer) gl::VertexAttribIPointer(GLuint(r), f.size, f.type, GLsizei(stride), at);
         else gl::VertexAttribPointer(GLuint(r), f.size, f.type, f.normalized, GLsizei(stride), at);
-        b = {e.format, stride, offset};
+        b = {e.format, stride, offset, vertices_.buffer};
         return true;
     }
     void Attributes(uint16_t wanted) {
@@ -2241,6 +2332,17 @@ public:
         glsl_version_ = at_least ? 420 : 410;
         LOGR("opengl: GLSL %u, stencil textures %s, S3TC %s", glsl_version_, stencil_texturing_ ? "yes" : "no",
              s3tc_ ? "yes" : "no");
+        {
+            const char* e = std::getenv("XBE_GL_PERSISTENT");
+            persistent_ = gl::BufferStorage && (major > 4 || (major == 4 && minor >= 4) || has("GL_ARB_buffer_storage")) &&
+                          !(e && *e == '0');
+            if (persistent_) {  // written a frame or more ahead of the GPU: room for a few frames' worth per store
+                vertices_.least = 32u << 20;
+                indices_.least = 4u << 20;
+                uniforms_.least = 16u << 20;
+            }
+            LOGR("opengl: streamed buffers %s", persistent_ ? "persistently mapped" : "mapped a piece at a time");
+        }
         if (!stencil_texturing_) LOGR("opengl: no stencil textures: the outlines and depth's stencil bytes are left out");
         if (debug && gl::DebugMessageCallback) {
             gl::Enable(GL_DEBUG_OUTPUT_SYNCHRONOUS);
@@ -2377,16 +2479,26 @@ public:
             sp = &sprite_;
         }
         const State& s = *sp;
-        PollReports();
+        const bool uncounted = std::exchange(uncounted_, false);
+        if (!uncounted) serial_++;
+        const bool as_drawn = std::exchange(as_drawn_, false) && replaying_ && !uncounted;
+        if (!reports_.empty() && (++poll_draws_ & 31) == 0) PollReports();
         if (!replaying_) WatchDraw(s, start, count, indices);
         auto assembly_start = PerfClock::now();
         const bool patches = TessellatedDraw(s, prim);
         Assembled& a = assembled_;
         if (!Assemble(s, prim, start, count, indices, a, patches)) return;
         g_perf.assemble += PerfMs(assembly_start);
+        const uint32_t index_bytes = a.index_count * (a.index16 ? 2 : 4);
+        uint32_t source_bytes[16]{};
+        for (uint32_t i = 0; i < a.buffer_count && i < 16; i++) source_bytes[i] = a.buffers[i].bytes;
+        // drawn again as the frame drew it: its geometry as the frame put it in the rings, repacked as it was (a left
+        // as assembled, its vertices read through its own layout; the attributes take the kept one)
+        const KeptGeometry* kept = as_drawn ? KeptFor(a, index_bytes) : nullptr;
         // an element aligned to min(4, its size), as D3D11 and Vulkan want: Xbox SHORT3 streams can have six byte
         // offsets and strides; those repacked locally
         for (uint32_t slot = 0; slot < a.buffer_count; slot++) {
+            if (kept) break;
             auto& b = a.buffers[slot];
             auto& storage = color_buffers_[slot];
             bool repack = false;
@@ -2541,24 +2653,56 @@ public:
         step(4);
         auto record_start = PerfClock::now();
         uint32_t base[16]{};
-        uint32_t streams = 0;  // the draw's streams, each aligned: in one store (Reserve)
-        for (uint32_t i = 0; i < a.buffer_count; i++) streams += (a.buffers[i].bytes + 15) & ~15u;
-        Reserve(vertices_, streams + 16);
-        for (uint32_t i = 0; i < a.buffer_count; i++) {
-            if (!a.buffers[i].bytes) continue;
-            if (!Put(vertices_, a.buffers[i].src, a.buffers[i].bytes, 16, base[i])) return;
-        }
-        if (a.index_count) {
-            const uint32_t bytes = a.index_count * (a.index16 ? 2 : 4);
-            if (!Put(indices_, a.index_src, bytes, 16, index_offset_)) return;
-            index_type_ = a.index16 ? GL_UNSIGNED_SHORT : GL_UNSIGNED_INT;
+        if (kept) {
+            std::copy(std::begin(kept->base), std::end(kept->base), base);
+            if (index_bytes) {
+                gl::BindBuffer(GL_ELEMENT_ARRAY_BUFFER, indices_.buffer);
+                index_offset_ = kept->index_offset;
+                index_type_ = kept->index_type;
+            }
+            g_perf.redrawn++;
+        } else {
+            uint32_t streams = 0;  // the draw's streams, each aligned: in one store (Reserve)
+            for (uint32_t i = 0; i < a.buffer_count; i++) streams += (a.buffers[i].bytes + 15) & ~15u;
+            Reserve(vertices_, streams + 16);
+            for (uint32_t i = 0; i < a.buffer_count; i++) {
+                if (!a.buffers[i].bytes) continue;
+                if (!Put(vertices_, a.buffers[i].src, a.buffers[i].bytes, 16, base[i])) return;
+            }
+            if (index_bytes) {
+                if (!Put(indices_, a.index_src, index_bytes, 16, index_offset_)) return;
+                index_type_ = a.index16 ? GL_UNSIGNED_SHORT : GL_UNSIGNED_INT;
+            }
+            if (!replaying_ && !uncounted && keep_geometry_) {
+                KeptGeometry& k = kept_geometry_.emplace_back();
+                k.serial = serial_;
+                k.vertex_store = vertices_.generation;
+                k.index_store = indices_.generation;
+                k.buffer_count = a.buffer_count;
+                k.index_bytes = index_bytes;
+                k.index_offset = index_offset_;
+                k.index_type = index_type_;
+                for (uint32_t i = 0; i < a.buffer_count && i < 16; i++) {
+                    k.base[i] = base[i];
+                    k.bytes[i] = a.buffers[i].bytes;
+                    k.source_bytes[i] = source_bytes[i];
+                    k.stride[i] = a.buffers[i].stride;
+                }
+                for (int r = 0; r < 16; r++) k.offset[r] = a.elements[r].offset;
+            }
         }
         gl::BindVertexArray(vao_);
         Attributes(a.regs);
         for (int r = 0; r < 16; r++)
             if ((a.regs >> r) & 1) {
-                const auto& e = a.elements[r];
-                if (e.buffer >= a.buffer_count || !Attribute(r, e, a.buffers[e.buffer].stride, base[e.buffer])) return;
+                VertexElement e = a.elements[r];
+                if (e.buffer >= a.buffer_count) return;
+                uint32_t stride = a.buffers[e.buffer].stride;
+                if (kept) {
+                    e.offset = kept->offset[r];
+                    stride = kept->stride[e.buffer];
+                }
+                if (!Attribute(r, e, stride, base[e.buffer])) return;
             }
         step(5);
         DrawConstants c{};
@@ -2773,6 +2917,20 @@ public:
                 driver_start_ = PerfClock::now();
             }
         }
+        kept_geometry_.clear();
+        serial_ = 0;
+        keep_geometry_ = Pictures() > 1;  // the next frame to be drawn again
+        // a frame's geometry and its drawing again in one store, as far as it goes: one started over between them
+        // leaves the frame's kept geometry behind (KeptFor), so a frame starts a store of its own when the one in use
+        // hasn't room for the last frame's, the ring grown when a frame overfills it
+        for (Ring* r : {&vertices_, &indices_}) {
+            const uint64_t wanted = uint64_t(r->frame_bytes) * 5 / 4;
+            if (r->capacity && wanted > r->capacity && r->capacity < (256u << 20))
+                NewStore(*r, std::min(256u << 20, std::bit_ceil(uint32_t(wanted * 2))));
+            else if (r->capacity && r->capacity - r->next < wanted)
+                NewStore(*r, r->capacity);
+            r->frame_bytes = 0;
+        }
         frame_++;
         if (frame_ % 120 == 0) {
             for (auto it = textures_.begin(); it != textures_.end();)
@@ -2813,7 +2971,15 @@ public:
         Current();
         if (pass < generated_count_) KeepPicture(front, pass - 1);
     }
+    void AsDrawn(bool same) override { as_drawn_ = same; }
+    void Uncounted() override { uncounted_ = true; }
+    void Pass() override {
+        if (replaying_) serial_++;
+    }
     void Replaying(bool on) override {
+        serial_ = 0;
+        kept_next_ = 0;
+        as_drawn_ = uncounted_ = false;
         if (on && !hud_.rolled) {  // the frame's draws again take its own boxes
             hud_.Roll(guest_frame_.w);
             hud_.rolled = true;
