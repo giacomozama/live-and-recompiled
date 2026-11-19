@@ -16,8 +16,7 @@ set(CMAKE_USER_MAKE_RULES_OVERRIDE ${CMAKE_CURRENT_LIST_DIR}/zig-rules.cmake)  #
 set(CMAKE_LINK_DEPENDS_USE_LINKER OFF)
 
 # the baseline CPU and Windows 10 (the mingw-w64 headers default to an older target); -g0: Zig writes debug info by
-# default. The runtime links "xaudio2" (the Windows SDK's name); mingw-w64 ships it as xaudio2_8.
+# default.
 set(XBE_ZIG_TARGET x86_64-windows-gnu)
-set(XBE_XAUDIO2 xaudio2_8)
 set(CMAKE_C_FLAGS_INIT "-target ${XBE_ZIG_TARGET} -mcpu=x86_64_v2 -g0")
 set(CMAKE_CXX_FLAGS_INIT "-target ${XBE_ZIG_TARGET} -mcpu=x86_64_v2 -g0")

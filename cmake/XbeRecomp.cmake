@@ -220,19 +220,19 @@ extern const size_t kUiFontJaSize = sizeof(kUiFontJa);
 ")
 list(APPEND XBE_IMGUI_SOURCES ${XBE_UI_FONT_JA})
 
-# The host's window, events and display modes come from SDL3 everywhere (app/main_sdl.cpp, XBE_SDL); audio from
-# XAudio2 on Windows, SDL elsewhere. Vulkan draws on both. Windows keeps its own crash dumps, system info, boot splash
-# and relaunch handover; each side's own sources are left out of the other's build.
+# The host's window, events, display modes and audio come from SDL3 everywhere (app/main_sdl.cpp, audio/sdl_audio.cpp,
+# XBE_SDL). Vulkan draws on both, D3D11 on Windows too. Windows keeps its own crash dumps, system info, boot splash and
+# relaunch handover; each side's own sources are left out of the other's build.
 file(GLOB XBE_RUNTIME_SOURCES CONFIGURE_DEPENDS ${XBE_ROOT_DIR}/src/runtime/*/*.cpp)
 list(APPEND XBE_IMGUI_SOURCES ${imgui_SOURCE_DIR}/backends/imgui_impl_sdl3.cpp)
 if(WIN32)
     list(APPEND XBE_IMGUI_SOURCES ${imgui_SOURCE_DIR}/backends/imgui_impl_dx11.cpp)
-    list(FILTER XBE_RUNTIME_SOURCES EXCLUDE REGEX "/(app/crash_posix|app/system_info_posix|audio/sdl_audio)\\.cpp$")
+    list(FILTER XBE_RUNTIME_SOURCES EXCLUDE REGEX "/(app/crash_posix|app/system_info_posix)\\.cpp$")
     set(XBE_SDL_SOURCES ${XBE_ROOT_DIR}/src/runtime/core/input.cpp ${XBE_ROOT_DIR}/src/runtime/app/main_sdl.cpp
-        ${imgui_SOURCE_DIR}/backends/imgui_impl_sdl3.cpp)
+        ${XBE_ROOT_DIR}/src/runtime/audio/sdl_audio.cpp ${imgui_SOURCE_DIR}/backends/imgui_impl_sdl3.cpp)
 else()
     list(FILTER XBE_RUNTIME_SOURCES EXCLUDE REGEX
-        "/(app/crash|app/splash|app/handover|app/system_info|audio/xaudio2)\\.cpp$")
+        "/(app/crash|app/splash|app/handover|app/system_info)\\.cpp$")
     set(XBE_SDL_SOURCES ${XBE_ROOT_DIR}/src/runtime/core/input.cpp ${XBE_ROOT_DIR}/src/runtime/app/main_sdl.cpp
         ${XBE_ROOT_DIR}/src/runtime/audio/sdl_audio.cpp ${imgui_SOURCE_DIR}/backends/imgui_impl_sdl3.cpp)
 endif()
@@ -258,10 +258,7 @@ set(CMAKE_LINK_LIBRARY_XBE_WHOLE_ARCHIVE_ATTRIBUTES LIBRARY_TYPE=STATIC DEDUPLIC
 # how the generated code is compiled, here and by a player kit's Setup
 set(XBE_GEN_COMPILE_OPTIONS -O2 -fno-strict-aliasing -Wno-unused-label -Wno-parentheses-equality -Wno-unused-variable)
 set(XBE_HOST_DEFINITIONS UNICODE _UNICODE _CRT_SECURE_NO_WARNINGS)
-# what the host links besides SDL; xaudio2 is the Windows SDK's name, mingw's is xaudio2_8
-if(NOT XBE_XAUDIO2)
-    set(XBE_XAUDIO2 xaudio2)
-endif()
+# what the host links besides SDL
 if(WIN32)
     set(XBE_HOST_SYSTEM_LIBS d3d11 dxgi d3dcompiler_47 dxguid ole32 shell32 windowscodecs dbghelp winmm dwmapi ws2_32)
 else()
@@ -338,8 +335,7 @@ function(add_xbe_image target xbe config partitions game_dir)
     target_include_directories(${target}_host SYSTEM PRIVATE ${imgui_SOURCE_DIR})
     target_compile_options(${target}_host PUBLIC -fno-strict-aliasing)
     target_compile_definitions(${target}_host PUBLIC ${XBE_HOST_DEFINITIONS})
-    target_link_libraries(${target}_host PUBLIC tomlplusplus::tomlplusplus $<LINK_ONLY:SDL3::SDL3-static> ${XBE_HOST_SYSTEM_LIBS}
-        $<$<PLATFORM_ID:Windows>:${XBE_XAUDIO2}>)
+    target_link_libraries(${target}_host PUBLIC tomlplusplus::tomlplusplus $<LINK_ONLY:SDL3::SDL3-static> ${XBE_HOST_SYSTEM_LIBS})
     # the game's hooks see an SDL window (src/conker/game), the runtime's input code hands it the controllers
     target_compile_definitions(${target}_host PRIVATE XBE_SDL)
     foreach(lib ${XBE_GLSLANG_LIBS})
@@ -421,8 +417,6 @@ function(add_xbe_player_kit target title)
     list(APPEND libs ${lib}/libSDL3.a)
     if(os STREQUAL "windows")
         set(sdl_libs m kernel32 user32 gdi32 winmm imm32 ole32 oleaut32 version uuid advapi32 setupapi shell32 dinput8)
-        # Zig makes the import library of xaudio2_8 itself, and the flags carry its -target as on Linux
-        list(APPEND sdl_libs ${XBE_XAUDIO2})
         separate_arguments(ldflags NATIVE_COMMAND "${XBE_KIT_CXX_FLAGS}")
         list(APPEND ldflags -Wl,--subsystem,windows -municode -fuse-ld=lld)  # Zig ignores -mwindows
         set(cxx zig)

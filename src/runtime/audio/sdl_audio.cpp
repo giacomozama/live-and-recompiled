@@ -1,4 +1,4 @@
-// mixer output through SDL's audio, everywhere but Windows (audio/xaudio2.cpp)
+// mixer output through SDL's audio (WASAPI on Windows)
 #include <SDL3/SDL.h>
 
 #include <mutex>
@@ -12,7 +12,7 @@ namespace audio {
 
 namespace {
 
-// what the device asks for, rendered 10 ms at a time as on XAudio2
+// what the device asks for, rendered 10 ms at a time
 void Pull(void* user, SDL_AudioStream* stream, int additional, int) {
     auto& render = *static_cast<std::function<void(float*, uint32_t)>*>(user);
     constexpr uint32_t kFrames = kRate / 100;
