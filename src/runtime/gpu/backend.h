@@ -149,6 +149,9 @@ std::unique_ptr<Backend> CreateBackend(uint32_t width, uint32_t height, bool& ok
 // instead of making its own (d3d8.cpp)
 inline std::unique_ptr<Backend> g_early;
 std::unique_ptr<Backend> CreateVulkanBackend();
+#ifdef _WIN32
+std::unique_ptr<Backend> CreateD3D11Backend();
+#endif
 // the same backend driven from a thread of its own: calls return once recorded
 std::unique_ptr<Backend> CreateThreadedBackend(std::unique_ptr<Backend> inner);
 

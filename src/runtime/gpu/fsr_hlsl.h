@@ -15,7 +15,7 @@ inline const char* kFsrHlsl = R"FSR(
 cbuffer B : register(b1) {
     float4 con0;
     float4 con1;
-    float4 con2;  // rcas: x 1 when the fur mark is mark's alpha (DLSS's picture), not img's
+    float4 con2;  // rcas: x 1 when the fur mark is mark's alpha (DLSS's picture), not img's; y the fade (D3D11)
     float4 con3;
     float4 con4;  // easu: x the share of FSR's sharpening fur takes (0..1)
 };
@@ -206,8 +206,13 @@ float4 rcas(O i) : SV_Target {
                      lut.SampleLevel(ps, float2(rgb.g, 0.5), 0).g,
                      lut.SampleLevel(ps, float2(rgb.b, 0.5), 0).b);
     }
+#ifdef FSR_PRESENTATION_FADE
+    // the D3D11 renderer's presentation fade: con2.y the picture's share, over black
+    rgb = saturate(pow(saturate(rgb), power) * con2.y + level);
+#else
     if (level != 0.0) rgb = Level(rgb, level);
     if (power != 1.0) rgb = pow(saturate(rgb), power);
+#endif
     rgb = CvdDisplay(rgb, con1.w);  // a colour vision deficiency simulated (gpu::g_cvd_sim)
 
     return float4(rgb, 1.0);

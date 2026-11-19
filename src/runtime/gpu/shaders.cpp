@@ -1308,6 +1308,9 @@ void main(point VOut v[1], inout TriangleStream<VOut> strip) {
     float2 half_size = size * v[0].pos.w / surf.xy;  // in clip units, the target spans 2 across surf.xy pixels
     // a target is read half a host pixel back (ptpx.xy host pixels per console pixel): left and top reach that far
     float2 back = (0.5 - 1e-3) * 2 * v[0].pos.w / surf.xy / ptpx.xy;
+    // Native D3D11 on HD 4000 corrupts the dynamically emitted corner UVs.
+    // Four static emissions preserve the independent coordinates of each corner.
+    [unroll]
     for (int i = 0; i < 4; i++) {
         VOut o = v[0];
         o.pos.x += (i & 1) ? half_size.x : -half_size.x - back.x;
