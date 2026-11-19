@@ -89,7 +89,9 @@ Setup keeps nothing it generated except the game. Run it again after updating to
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md).
+When reporting bugs, provide as much information as you can: a detailed description, your recomp settings and version, screenshots, your OS and hardware.
+
+New feature suggestions and/or PRs are also welcome.
 
 ## Building from source
 
