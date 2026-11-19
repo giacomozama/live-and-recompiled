@@ -1156,6 +1156,9 @@ EShLanguage StageOf(const char* profile) {
 // vertex input at its register's location (VK_LOC), what the stages hand on in declaration order
 // SPIR-V 1.6 for a Vulkan 1.3 device, 1.3 for one on 1.1 or 1.2 (PickDevice sets it before any shader compiles)
 bool g_spirv_1_6 = true;
+// spirv.bin's stamp past the compiler's version and the target: bump it when CompileSpirv makes other SPIR-V of the
+// same source (its preamble, bindings, options)
+constexpr uint32_t kSpirvRevision = 1;
 
 bool CompileSpirv(const std::string& src, const char* entry, const char* profile, Spirv& out, std::string& err) {
     EShLanguage stage = StageOf(profile);
@@ -1630,6 +1633,12 @@ private:
     void DeliverReports();
     // shaders by source hash: Compile returns the SPIR-V and sets hash
     const Spirv* Compile(const std::string& src, const char* entry, const char* profile, uint64_t& hash);
+    // CompileSpirv through spirv.bin, any thread; hash is SourceHash's
+    bool CompileCached(const std::string& src, const char* entry, const char* profile, uint64_t hash, Spirv& out,
+                       std::string& err);
+    // spirv.bin and pipelines.vkc in app::CacheDir, opened once the device is picked
+    void OpenDiskCaches();
+    void SavePipelineCache();
     // the shaders and pipelines shaders.rec lists, made on threads of their own while the title runs
     void StartWarmUp();
     void WarmUp(std::vector<shader_record::Entry> entries, shader_record::Programs programs);
@@ -1893,6 +1902,11 @@ private:
     ProgramPerf::Why fast_why_ = ProgramPerf::kFast;  // XBE_PERF: why FastDraw turned the draw down
     std::unordered_map<uint64_t, VkPipeline> psos_;
     shader_record::Recorder record_;
+    shader_record::SpirvCache spirv_;
+    VkPipelineCache pcache_ = VK_NULL_HANDLE;
+    bool pcache_write_ = false;  // a second instance on this PC reads the files only
+    std::mutex pcache_save_;
+    size_t pcache_saved_ = 0;    // the size written last
     // WarmUp's results by source hash and pipeline key, taken by Compile and EnsurePipeline as they first need them
     struct Warm {
         std::mutex lock;
@@ -2335,6 +2349,7 @@ bool VulkanBackend::Init(uint32_t width, uint32_t height) {
     static std::once_flag glslang_once;
     std::call_once(glslang_once, [] { glslang::InitializeProcess(); });
     if (!CreateInstance() || !CreateSurface() || !PickDevice() || !CreateDevice()) return false;
+    OpenDiskCaches();
     if (!CreateSwapChain() || !CreateLayout() || !CreateFrames()) return false;
     BeginCommands(frames_[0].cmd);
     Begin();
@@ -2394,6 +2409,8 @@ VulkanBackend::~VulkanBackend() {
             if (p) vkDestroyPipeline(dev_, p, nullptr);
         }
     }
+    SavePipelineCache();
+    if (pcache_) vkDestroyPipelineCache(dev_, pcache_, nullptr);
     for (auto& [key, s] : samplers_) vkDestroySampler(dev_, s, nullptr);
     for (VkSampler s : blit_) {
         if (s) vkDestroySampler(dev_, s, nullptr);
@@ -3742,7 +3759,7 @@ const Spirv* VulkanBackend::Compile(const std::string& src, const char* entry, c
     PerfScope perf_compile{g_perf.compile};
     g_perf.shaders++;
     auto t = std::chrono::steady_clock::now();
-    bool ok = CompileSpirv(src, entry, profile, code, err);
+    bool ok = CompileCached(src, entry, profile, hash, code, err);
     // a compile runs on the frame that first needs the shader: log the ones long enough to be seen as a hitch
     if (double ms = SinceMs(t); ms > 20) LOGR("vulkan: %s compile took %.0f ms (%zu bytes of source)", profile, ms, src.size());
     if (!ok) {
@@ -3775,7 +3792,7 @@ VkPipeline VulkanBackend::CreatePipeline(VkGraphicsPipelineCreateInfo& ci, const
     ci.stageCount = n;
     ci.pStages = si;
     ci.layout = layout_;
-    if (made && vkCreateGraphicsPipelines(dev_, VK_NULL_HANDLE, 1, &ci, nullptr, &p) != VK_SUCCESS) p = VK_NULL_HANDLE;
+    if (made && vkCreateGraphicsPipelines(dev_, pcache_, 1, &ci, nullptr, &p) != VK_SUCCESS) p = VK_NULL_HANDLE;
     for (VkShaderModule m : modules) {
         if (m) vkDestroyShaderModule(dev_, m, nullptr);
     }
@@ -4116,6 +4133,60 @@ VkPipeline VulkanBackend::FindPipeline(const PsoKey& k, const DrawShaders& sh) {
     return pso;
 }
 
+bool VulkanBackend::CompileCached(const std::string& src, const char* entry, const char* profile, uint64_t hash,
+                                  Spirv& out, std::string& err) {
+    if (spirv_.Find(hash, out)) return true;
+    if (!CompileSpirv(src, entry, profile, out, err)) return false;
+    spirv_.Add(hash, out);
+    return true;
+}
+
+void VulkanBackend::OpenDiskCaches() {
+    const std::filesystem::path dir = app::CacheDir();
+    pcache_write_ = app::Instance() <= 1;
+    // spirv.bin: g_spirv_1_6 is set by now (PickDevice)
+    const glslang::Version gv = glslang::GetVersion();
+    const uint32_t stamp_in[5] = {kSpirvRevision, g_spirv_1_6 ? 1u : 0u, uint32_t(gv.major), uint32_t(gv.minor),
+                                  uint32_t(gv.patch)};
+    spirv_.Open(dir, Hash(stamp_in, sizeof(stamp_in)), pcache_write_);
+    // pipelines.vkc: handed to the driver only when its header names this device, as some drivers trust it blindly
+    std::vector<uint8_t> b = shader_record::ReadFile(dir / "pipelines.vkc");
+    bool usable = false;
+    if (b.size() >= 16 + VK_UUID_SIZE) {
+        uint32_t h[4];
+        std::memcpy(h, b.data(), sizeof(h));
+        usable = h[0] >= 16 + VK_UUID_SIZE && h[0] <= b.size() && h[1] == VK_PIPELINE_CACHE_HEADER_VERSION_ONE &&
+                 h[2] == props_.vendorID && h[3] == props_.deviceID &&
+                 !std::memcmp(b.data() + 16, props_.pipelineCacheUUID, VK_UUID_SIZE);
+    }
+    if (!b.empty() && !usable) LOGI("vulkan: pipelines.vkc is from another device or driver, starting it over");
+    VkPipelineCacheCreateInfo ci{VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO};
+    if (usable) {
+        ci.initialDataSize = b.size();
+        ci.pInitialData = b.data();
+    }
+    if (vkCreatePipelineCache(dev_, &ci, nullptr, &pcache_) != VK_SUCCESS) {
+        ci.initialDataSize = 0;
+        ci.pInitialData = nullptr;
+        if (vkCreatePipelineCache(dev_, &ci, nullptr, &pcache_) != VK_SUCCESS) pcache_ = VK_NULL_HANDLE;
+        usable = false;
+    }
+    pcache_saved_ = usable ? b.size() : 0;
+    LOGI("vulkan: pipeline cache %s (%zu KB)", usable ? "loaded" : "empty", usable ? b.size() / 1024 : size_t(0));
+}
+
+// pipelines.vkc as the driver's cache now is; the warm-up's thread and the destructor, when it grew
+void VulkanBackend::SavePipelineCache() {
+    if (!pcache_ || !pcache_write_) return;
+    std::lock_guard<std::mutex> g(pcache_save_);
+    size_t n = 0;
+    if (vkGetPipelineCacheData(dev_, pcache_, &n, nullptr) != VK_SUCCESS || !n || n == pcache_saved_) return;
+    std::vector<uint8_t> data(n);
+    if (vkGetPipelineCacheData(dev_, pcache_, &n, data.data()) != VK_SUCCESS) return;
+    if (shader_record::WriteFile(app::CacheDir() / "pipelines.vkc", data.data(), n)) pcache_saved_ = n;
+    else LOGW("vulkan: can't write pipelines.vkc");
+}
+
 void VulkanBackend::StartWarmUp() {
     // a second instance on this PC shares the files: it reads them only
     record_.Open(app::CacheDir(), RecordLayout(), app::Instance() <= 1);
@@ -4136,6 +4207,7 @@ void VulkanBackend::WarmUp(std::vector<shader_record::Entry> entries, shader_rec
     std::unordered_map<uint64_t, WarmShader> made;  // by record id
     WarmShaders(shaders, programs, made);
     size_t psos = WarmPipelines(pipelines, made);
+    if (!warm_.stop) SavePipelineCache();
     LOGR("shaders: made %zu of %zu recorded shaders and %zu of %zu pipelines ahead in %.0f ms%s", made.size(),
          shaders.size(), psos, pipelines.size(), SinceMs(t), warm_.stop ? ", stopped" : "");
 }
@@ -4184,8 +4256,8 @@ void VulkanBackend::WarmShaders(const std::vector<const shader_record::Entry*>& 
         }
         Spirv code;
         std::string err;
-        if (!CompileSpirv(src, "main", profile, code, err)) return;
         uint64_t hash = SourceHash(src, "main", profile);
+        if (!CompileCached(src, "main", profile, hash, code, err)) return;
         auto ref = std::make_shared<const Spirv>(std::move(code));
         {
             std::lock_guard<std::mutex> lock(warm_.lock);
@@ -4201,7 +4273,8 @@ size_t VulkanBackend::WarmPipelines(const std::vector<const shader_record::Entry
                                     const std::unordered_map<uint64_t, WarmShader>& made) {
     Spirv gs;
     std::string err;
-    bool have_gs = CompileSpirv(PointHlsl(), "main", "gs_5_0", gs, err);
+    const std::string point_src = PointHlsl();
+    bool have_gs = CompileCached(point_src, "main", "gs_5_0", SourceHash(point_src, "main", "gs_5_0"), gs, err);
     std::atomic<size_t> n{0};
     ParallelFor(list.size(), warm_.stop, [&](size_t i) {
         const shader_record::Entry& e = *list[i];

@@ -17,6 +17,10 @@ constexpr uint32_t kVersion = 1;
 constexpr size_t kRecHeader = 16;
 constexpr size_t kProgHeader = 8;
 constexpr uint32_t kMaxProgramWords = 136 * 4;  // the chip's program memory
+// spirv.bin: magic, version, stamp (8 bytes), then blobs of hash (8), word count (4) and words
+constexpr char kSpvMagic[4] = {'X', 'S', 'P', 'V'};
+constexpr size_t kSpvHeader = 16;
+constexpr uint32_t kMaxSpirvWords = 1u << 22;
 
 FILE* OpenFile(const std::filesystem::path& p, const char* mode) {
 #ifdef _WIN32
@@ -27,7 +31,9 @@ FILE* OpenFile(const std::filesystem::path& p, const char* mode) {
 #endif
 }
 
-std::vector<uint8_t> ReadAll(const std::filesystem::path& p) {
+}  // namespace
+
+std::vector<uint8_t> ReadFile(const std::filesystem::path& p) {
     std::vector<uint8_t> b;
     FILE* f = OpenFile(p, "rb");
     if (!f) return b;
@@ -36,6 +42,21 @@ std::vector<uint8_t> ReadAll(const std::filesystem::path& p) {
     std::fclose(f);
     return b;
 }
+
+bool WriteFile(const std::filesystem::path& p, const void* data, size_t n) {
+    std::filesystem::path tmp = p;
+    tmp += ".tmp";
+    FILE* f = OpenFile(tmp, "wb");
+    if (!f) return false;
+    bool ok = std::fwrite(data, 1, n, f) == n;
+    ok = std::fclose(f) == 0 && ok;
+    std::error_code ec;
+    if (ok) std::filesystem::rename(tmp, p, ec);
+    if (!ok || ec) std::filesystem::remove(tmp, ec);
+    return ok && !ec;
+}
+
+namespace {
 
 template <typename T>
 T Read(const uint8_t* p) {
@@ -68,7 +89,7 @@ Recorder::~Recorder() {
 void Recorder::Open(const std::filesystem::path& dir, uint64_t layout, bool write) {
     // shaders.rec: what each shader and pipeline was made from
     std::filesystem::path rec_path = dir / "shaders.rec";
-    std::vector<uint8_t> b = ReadAll(rec_path);
+    std::vector<uint8_t> b = ReadFile(rec_path);
     uint8_t header[kRecHeader];
     std::memcpy(header, kRecMagic, 4);
     std::memcpy(header + 4, &kVersion, 4);
@@ -79,7 +100,7 @@ void Recorder::Open(const std::filesystem::path& dir, uint64_t layout, bool writ
         while (good + 3 <= b.size()) {
             Kind kind = Kind(b[good]);
             uint16_t n = Read<uint16_t>(&b[good + 1]);
-            if (good + 3 + n > b.size() || kind < kVertex || kind > kPipeline) break;
+            if (good + 3 + n > b.size() || kind < kVertex || kind > kMotionPipeline) break;
             const uint8_t* p = &b[good + 3];
             uint64_t id = Id(kind, p, n);
             if (ids_.insert(id).second) entries_.push_back({kind, id, std::vector<uint8_t>(p, p + n)});
@@ -90,7 +111,7 @@ void Recorder::Open(const std::filesystem::path& dir, uint64_t layout, bool writ
     }
     // shader_programs.bin: the vertex programs those name
     std::filesystem::path prog_path = dir / "shader_programs.bin";
-    std::vector<uint8_t> pb = ReadAll(prog_path);
+    std::vector<uint8_t> pb = ReadFile(prog_path);
     uint8_t pheader[kProgHeader];
     std::memcpy(pheader, kProgMagic, 4);
     std::memcpy(pheader + 4, &kVersion, 4);
@@ -130,6 +151,63 @@ void Recorder::AddProgram(uint64_t hash, const std::vector<uint32_t>& words) {
     std::fwrite(&n, 4, 1, prog_);
     std::fwrite(words.data(), 4, n, prog_);
     std::fflush(prog_);
+}
+
+SpirvCache::~SpirvCache() {
+    if (f_) std::fclose(f_);
+}
+
+void SpirvCache::Open(const std::filesystem::path& dir, uint64_t stamp, bool write) {
+    std::lock_guard<std::mutex> g(lock_);
+    std::filesystem::path path = dir / "spirv.bin";
+    std::vector<uint8_t> b = ReadFile(path);
+    uint8_t header[kSpvHeader];
+    std::memcpy(header, kSpvMagic, 4);
+    std::memcpy(header + 4, &kVersion, 4);
+    std::memcpy(header + 8, &stamp, 8);
+    size_t good = 0;
+    if (b.size() >= kSpvHeader && !std::memcmp(b.data(), header, kSpvHeader)) {
+        good = kSpvHeader;
+        while (good + 12 <= b.size()) {
+            uint64_t hash = Read<uint64_t>(&b[good]);
+            uint32_t n = Read<uint32_t>(&b[good + 8]);
+            if (!n || n > kMaxSpirvWords || good + 12 + size_t(n) * 4 > b.size()) break;
+            std::vector<uint32_t> words(n);
+            std::memcpy(words.data(), &b[good + 12], size_t(n) * 4);
+            blobs_.emplace(hash, std::move(words));
+            good += 12 + size_t(n) * 4;
+        }
+    } else if (!b.empty()) {
+        LOGI("shaders: %s is from another compiler or device%s", path.string().c_str(), write ? ", starting it over" : "");
+    }
+    LOGI("shaders: %zu compiled shaders in spirv.bin", blobs_.size());
+    if (!write) return;
+    f_ = Reopen(path, b, good, header, sizeof(header));
+    if (!f_) LOGW("shaders: can't write %s", path.string().c_str());
+}
+
+bool SpirvCache::Find(uint64_t hash, std::vector<uint32_t>& out) {
+    std::lock_guard<std::mutex> g(lock_);
+    auto it = blobs_.find(hash);
+    if (it == blobs_.end()) return false;
+    out = it->second;
+    return true;
+}
+
+void SpirvCache::Add(uint64_t hash, const std::vector<uint32_t>& words) {
+    if (words.empty() || words.size() > kMaxSpirvWords) return;
+    std::lock_guard<std::mutex> g(lock_);
+    if (!blobs_.emplace(hash, words).second || !f_) return;
+    uint32_t n = uint32_t(words.size());
+    std::fwrite(&hash, 8, 1, f_);
+    std::fwrite(&n, 4, 1, f_);
+    std::fwrite(words.data(), 4, n, f_);
+    std::fflush(f_);
+}
+
+size_t SpirvCache::Size() {
+    std::lock_guard<std::mutex> g(lock_);
+    return blobs_.size();
 }
 
 }  // namespace gpu::shader_record

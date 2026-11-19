@@ -2,9 +2,12 @@
 // The shaders and pipelines a run made, kept in app::CacheDir so the next run can make them before the frames that
 // need them. shaders.rec holds what each was made from and may be shared: vertex programs are named by hash only.
 // Their microcode, the title's own, goes in shader_programs.bin, which stays on the machine that played.
+// spirv.bin keeps what glslang made of each source and pipelines.vkc the driver's pipeline cache, so a run after the
+// first makes neither again.
 #include <cstdint>
 #include <cstdio>
 #include <filesystem>
+#include <mutex>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -60,5 +63,26 @@ private:
     FILE* rec_ = nullptr;
     FILE* prog_ = nullptr;
 };
+
+// spirv.bin: SPIR-V by SourceHash, for one compiler and SPIR-V target (stamp); a file with another stamp starts over.
+// Find and Add from any thread
+class SpirvCache {
+public:
+    ~SpirvCache();
+    void Open(const std::filesystem::path& dir, uint64_t stamp, bool write);
+    bool Find(uint64_t hash, std::vector<uint32_t>& out);
+    void Add(uint64_t hash, const std::vector<uint32_t>& words);
+    size_t Size();
+
+private:
+    std::mutex lock_;
+    std::unordered_map<uint64_t, std::vector<uint32_t>> blobs_;
+    FILE* f_ = nullptr;
+};
+
+// a whole file, empty when there is none
+std::vector<uint8_t> ReadFile(const std::filesystem::path& p);
+// the file replaced whole: written beside it, then renamed over it
+bool WriteFile(const std::filesystem::path& p, const void* data, size_t n);
 
 }  // namespace gpu::shader_record
