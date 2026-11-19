@@ -89,7 +89,7 @@ bool g_to_team = false;  // the line typed: to the team
 int g_open_vk = 0;       // the key that opened it
 std::string g_typed;
 double g_opened_at = 0;
-uint16_t g_high_surrogate = 0;  // Windows sends a character past U+FFFF as two WM_CHARs
+uint16_t g_high_surrogate = 0;  // a character past U+FFFF sent as two UTF-16 units (SDL sends code points)
 std::string g_name = "Player";  // this copy's, as Tick found it
 
 std::atomic<bool> g_in_session{false};

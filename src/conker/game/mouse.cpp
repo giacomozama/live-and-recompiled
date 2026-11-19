@@ -1,7 +1,6 @@
 // Mouse look: each player's mouse turns their camera where the game turns it by the right stick.
 //
-// The window thread adds raw mouse motion (app::kMsgMouseMotion: WM_INPUT's unaccelerated counts, or SDL's relative
-// motion) up for the player whose mouse it came from (input::Owner). The third
+// The window thread adds raw mouse motion (app::kMsgMouseMotion, SDL's relative motion) up for the player whose mouse it came from (input::Owner). The third
 // person, first person and weapon cameras all turn by the stick in 0x2F99A0 (hooked at the end of the file): Turn
 // adds the motion, in degrees, to the turn it works out each frame, so each camera takes the mouse as it takes the
 // stick, inside its own limits. A match's aircraft and the Sneeker's drone take the mouse as right stick (see Turn).
@@ -25,8 +24,8 @@
 // turns (see Calibrate and Probe).
 //
 // While mouse look is on (the default) for a player who has a mouse, the game window has the focus, the menu is shut
-// and the game shows no menu of its own (the frontend, a pause menu), the cursor is hidden and held inside the window. Alt-tab or Esc (the menu) lets it go. The SDL window (not Windows) holds it in relative mode and sends the
-// motion as app::kMsgMouseMotion instead.
+// and the game shows no menu of its own (the frontend, a pause menu), the cursor is hidden and held inside the window (SDL's relative mode, app::HoldMouse), its motion sent as
+// app::kMsgMouseMotion. Alt-tab or Esc (the menu) lets it go.
 //
 // On the headless harness there is no window and no mouse, so everything but the option globals compiles out.
 #include "common/mouse.h"
@@ -38,16 +37,6 @@
 #include <cstring>
 
 #if !defined(XBE_HEADLESS)
-
-#ifdef _WIN32
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#include <windows.h>
-#endif
 
 #include <algorithm>
 #include <array>
@@ -192,31 +181,7 @@ bool AnyLook() {
     return false;
 }
 
-#ifdef _WIN32
-
-bool g_hidden = false;
-
-void Hold(HWND hwnd) {
-    RECT r;
-    GetClientRect(hwnd, &r);
-    POINT tl{r.left, r.top}, br{r.right, r.bottom};
-    ClientToScreen(hwnd, &tl);
-    ClientToScreen(hwnd, &br);
-    RECT clip{tl.x, tl.y, br.x, br.y};
-    ClipCursor(&clip);
-    if (!g_hidden) ShowCursor(FALSE), g_hidden = true;
-}
-
-void Release() {
-    ClipCursor(nullptr);
-    if (g_hidden) ShowCursor(TRUE), g_hidden = false;
-}
-
-#else
-
 void Release() { app::HoldMouse(false); }
-
-#endif
 
 }  // namespace
 
@@ -225,16 +190,9 @@ void InMenu() { g_menu_us.store(Now(), std::memory_order_relaxed); }
 bool GameMenu() { return g_game_menu.load(std::memory_order_relaxed); }
 
 void Refresh(void* window) {
-#ifdef _WIN32
-    HWND hwnd = static_cast<HWND>(window);
-    const bool want = AnyLook() && !ui::Open() && !g_game_menu.load() && hwnd && GetForegroundWindow() == hwnd && !IsIconic(hwnd);
-    if (want) Hold(hwnd);  // again while held: the window may have moved or changed size
-    else if (g_held.load()) Release();
-#else
     (void)window;
     const bool want = AnyLook() && !ui::Open() && !g_game_menu.load() && app::Focused();
     if (want || g_held.load()) app::HoldMouse(want);
-#endif
     if (want != g_held.exchange(want)) {
         Clear();
         LOGI("mouse: look %s", want ? "holds the cursor" : "lets the cursor go");

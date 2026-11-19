@@ -220,17 +220,18 @@ extern const size_t kUiFontJaSize = sizeof(kUiFontJa);
 ")
 list(APPEND XBE_IMGUI_SOURCES ${XBE_UI_FONT_JA})
 
-# The host's platform: on Windows a Win32 window and XAudio2; elsewhere an SDL3 window and audio (XBE_SDL). Vulkan draws
-# on both. Each side's own sources are left out of the other's build.
+# The host's window, events and display modes come from SDL3 everywhere (app/main_sdl.cpp, XBE_SDL); audio from
+# XAudio2 on Windows, SDL elsewhere. Vulkan draws on both. Windows keeps its own crash dumps, system info, boot splash
+# and relaunch handover; each side's own sources are left out of the other's build.
 file(GLOB XBE_RUNTIME_SOURCES CONFIGURE_DEPENDS ${XBE_ROOT_DIR}/src/runtime/*/*.cpp)
+list(APPEND XBE_IMGUI_SOURCES ${imgui_SOURCE_DIR}/backends/imgui_impl_sdl3.cpp)
 if(WIN32)
-    list(APPEND XBE_IMGUI_SOURCES ${imgui_SOURCE_DIR}/backends/imgui_impl_win32.cpp)
-    list(FILTER XBE_RUNTIME_SOURCES EXCLUDE REGEX "/(app/main_sdl|app/crash_posix|app/system_info_posix|audio/sdl_audio)\\.cpp$")
-    set(XBE_SDL_SOURCES ${XBE_ROOT_DIR}/src/runtime/core/input.cpp)
+    list(FILTER XBE_RUNTIME_SOURCES EXCLUDE REGEX "/(app/crash_posix|app/system_info_posix|audio/sdl_audio)\\.cpp$")
+    set(XBE_SDL_SOURCES ${XBE_ROOT_DIR}/src/runtime/core/input.cpp ${XBE_ROOT_DIR}/src/runtime/app/main_sdl.cpp
+        ${imgui_SOURCE_DIR}/backends/imgui_impl_sdl3.cpp)
 else()
-    list(APPEND XBE_IMGUI_SOURCES ${imgui_SOURCE_DIR}/backends/imgui_impl_sdl3.cpp)
     list(FILTER XBE_RUNTIME_SOURCES EXCLUDE REGEX
-        "/(app/main|app/crash|app/splash|app/handover|app/system_info|audio/xaudio2)\\.cpp$")
+        "/(app/crash|app/splash|app/handover|app/system_info|audio/xaudio2)\\.cpp$")
     set(XBE_SDL_SOURCES ${XBE_ROOT_DIR}/src/runtime/core/input.cpp ${XBE_ROOT_DIR}/src/runtime/app/main_sdl.cpp
         ${XBE_ROOT_DIR}/src/runtime/audio/sdl_audio.cpp ${imgui_SOURCE_DIR}/backends/imgui_impl_sdl3.cpp)
 endif()
@@ -244,9 +245,6 @@ set_source_files_properties(${XBE_ROOT_DIR}/src/runtime/gpu/vulkan.cpp PROPERTIE
     COMPILE_DEFINITIONS "ENABLE_HLSL;IMGUI_IMPL_VULKAN_USE_VOLK" COMPILE_OPTIONS -Wno-nullability-completeness)
 set_source_files_properties(${imgui_SOURCE_DIR}/backends/imgui_impl_vulkan.cpp PROPERTIES
     INCLUDE_DIRECTORIES "${XBE_VULKAN_INCLUDES}" COMPILE_DEFINITIONS IMGUI_IMPL_VULKAN_USE_VOLK)
-# the settings menu reads the pads itself (ui.cpp), so neither of ImGui's backends does
-set_source_files_properties(${imgui_SOURCE_DIR}/backends/imgui_impl_win32.cpp PROPERTIES
-    COMPILE_DEFINITIONS IMGUI_IMPL_WIN32_DISABLE_GAMEPAD)
 # glslang's libraries in the order they link
 set(XBE_GLSLANG_LIBS glslang glslang-default-resource-limits)
 
@@ -342,9 +340,7 @@ function(add_xbe_image target xbe config partitions game_dir)
     target_link_libraries(${target}_host PUBLIC tomlplusplus::tomlplusplus $<LINK_ONLY:SDL3::SDL3-static> ${XBE_HOST_SYSTEM_LIBS}
         $<$<PLATFORM_ID:Windows>:${XBE_XAUDIO2}>)
     # the game's hooks see an SDL window (src/conker/game), the runtime's input code hands it the controllers
-    if(NOT WIN32)
-        target_compile_definitions(${target}_host PRIVATE XBE_SDL)
-    endif()
+    target_compile_definitions(${target}_host PRIVATE XBE_SDL)
     foreach(lib ${XBE_GLSLANG_LIBS})
         target_link_libraries(${target}_host PUBLIC $<LINK_ONLY:${lib}>)
     endforeach()

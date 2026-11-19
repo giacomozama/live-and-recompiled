@@ -211,10 +211,10 @@ bool FindGame(GameFiles& game);
 int Instance();  // --instance N on the command line, 0 without: a second copy on this PC for system link tests
 int PortArg();   // --port N on the command line, 0 without: this copy's system link port, over the setting
 const std::string& JoinArg();  // --join host[:port] on the command line, "" without: over the join_ip setting
-void* Window();  // HWND on Windows, SDL_Window elsewhere
+void* Window();  // the SDL_Window
 
-// The platform's window as the game's hooks see it, the same on Windows and on the SDL window elsewhere.
-// GameInfo::message's numbers are Win32's; the SDL window sends these the Win32 way too: kMsgKeyDown with the
+// The SDL window as the game's hooks see it. GameInfo::message's numbers are Win32's, and the window sends them the
+// Win32 way: kMsgKeyDown with the
 // virtual-key code in wp and bit 30 of lp set on auto repeat, kMsgMouseWheel as WM_MOUSEWHEEL, kMsgActivate with LOWORD(wp) 0 when the window loses
 // the focus, kMsgSize and kMsgMove without arguments, kMsgChar as WM_CHAR (one character, while TextInput is on), and
 // messages Post sent.
@@ -223,11 +223,11 @@ enum : uint32_t {
     kMsgSize = 0x0005,
     kMsgActivate = 0x0006,
     kMsgKeyDown = 0x0100,
-    kMsgChar = 0x0102,  // a character typed, its code point in wp (Windows: a UTF-16 unit, control characters too)
+    kMsgChar = 0x0102,  // a character typed, its code point in wp
     kMsgMouseWheel = 0x020A,  // the signed turn in HIWORD(wp), 120 a notch, away from the player positive
     kMsgApp = 0x8000,                  // WM_APP: a game's own from here
     // raw relative motion: int32 dx in wp's low half and dy in its high half (MotionWp), the mouse's input::Device id
-    // in lp; on the SDL window only while HoldMouse holds it
+    // in lp; only while HoldMouse holds it
     kMsgMouseMotion = kMsgApp + 0x3F,
 };
 inline uintptr_t MotionWp(int32_t dx, int32_t dy) { return uintptr_t(uint32_t(dx)) | uintptr_t(uint32_t(dy)) << 32; }
@@ -241,8 +241,8 @@ void Quit();                                // any thread: closes the window, as
 void SetTitle(const std::wstring& title);   // window thread
 bool Focused();                             // window thread: the game window has the keyboard
 bool Background();                          // any thread: the game window lost the focus, as of its last message
-void HoldMouse(bool hold);                  // window thread, SDL only: the cursor hidden, motion as kMsgMouseMotion
-// any thread: typed text comes as kMsgChar while on (the SDL window's text input; Windows sends WM_CHAR always)
+void HoldMouse(bool hold);                  // window thread: the cursor hidden, motion as kMsgMouseMotion
+// any thread: typed text comes as kMsgChar while on (the SDL window's text input)
 void TextInput(bool on);
 // a message box over the game; ask: Yes and No, true for Yes
 bool Alert(const std::wstring& text, bool ask = false);
@@ -254,14 +254,15 @@ std::vector<Mode> DisplayModes();
 uint64_t GpuDriverVersion(uint32_t vendor, uint32_t device);
 #endif
 
-#ifndef _WIN32
 // the SDL window for the Vulkan renderer: the instance extensions it needs, its surface (VkInstance, VkSurfaceKHR*),
 // its size in pixels, and ImGui's platform frame; any thread
 std::vector<const char*> VulkanExtensions();
 bool VulkanSurface(void* instance, void* surface);
 void PixelSize(uint32_t& w, uint32_t& h);
 void UiNewFrame();
-#endif
+// any thread, before handing the window over to a relaunched instance (kernel::Relaunch): losing the focus to it no
+// longer minimizes an exclusive fullscreen window, which would give the desktop's mode back for the new one's start
+void KeepFullscreenOnFocusLoss();
 // boot splash: GameInfo::splash .bmp or .png beside the exe, up before the game window
 bool OpenSplash();        // window thread, at launch; false without one, and the game window opens at once
 void SplashFirstFrame();  // the game's first Swap: waits out the splash's minimum, then opens the game window

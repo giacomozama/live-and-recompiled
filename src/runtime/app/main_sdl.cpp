@@ -1,9 +1,22 @@
-// The host on SDL3, everywhere but Windows (app/main.cpp): window, events, display modes, the Vulkan surface; the
-// game is described by app::kGame. The window thread is the main thread, which SDL's video wants. Its events reach
-// GameInfo::message as the Win32 window's would (app.h): the game's hooks are the same on both.
+// The host on SDL3, on every platform: window, events, display modes, the Vulkan surface; the game is described by
+// app::kGame. The window thread is the main thread, which SDL's video wants. Its events reach GameInfo::message as a
+// Win32 window's would (app.h). Windows adds its boot splash and relaunch handover (splash.cpp, handover.cpp), a
+// console when started from one, and raw keyboard input, so each keyboard is told apart as on Linux.
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#include <shellapi.h>
+#include <timeapi.h>
+#else
+#include <unistd.h>
+#endif
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_vulkan.h>
-#include <unistd.h>
 #if defined(__linux__) && !defined(__ANDROID__)
 #include <dlfcn.h>
 #endif
@@ -15,9 +28,12 @@
 #include <cctype>
 #include <climits>
 #include <mutex>
+#include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include <imgui.h>
 #include <backends/imgui_impl_sdl3.h>
@@ -327,6 +343,7 @@ bool Handle(const SDL_Event& e) {
                 if (e.user.data1) SDL_StartTextInput(g_window);
                 else SDL_StopTextInput(g_window);
             } else if (e.user.code == kUserOpen) {
+                CloseSplash();
                 if (e.user.data1) ApplyNow();
                 SDL_ShowWindow(g_window);
                 SDL_RaiseWindow(g_window);
@@ -567,9 +584,15 @@ void ReadDisplayHdr() {}
 
 std::filesystem::path ExeDir() {
     static const std::filesystem::path dir = [] {
+#ifdef _WIN32
+        wchar_t p[MAX_PATH];
+        GetModuleFileNameW(nullptr, p, MAX_PATH);
+        return std::filesystem::path(p).parent_path();
+#else
         char p[PATH_MAX] = {};
         ssize_t n = readlink("/proc/self/exe", p, sizeof(p) - 1);
         return n > 0 ? std::filesystem::path(std::string(p, size_t(n))).parent_path() : std::filesystem::current_path();
+#endif
     }();
     return dir;
 }
@@ -588,6 +611,16 @@ std::recursive_mutex& UiLock() {
 void ApplyDisplay() { PushUser(kUserApply, 0); }
 
 void OpenFolder(const std::filesystem::path& dir) {
+#ifdef _WIN32
+    std::wstring cmd = L"explorer.exe \"" + dir.wstring() + L"\"";
+    STARTUPINFOW si{};
+    si.cb = sizeof si;
+    PROCESS_INFORMATION pi{};
+    if (CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, FALSE, 0, nullptr, nullptr, &si, &pi)) {
+        CloseHandle(pi.hThread);
+        CloseHandle(pi.hProcess);
+    }
+#else
     // a file URL with what a path may hold escaped; the desktop opens it in its file manager
     std::string url = "file://";
     for (unsigned char c : dir.string()) {
@@ -599,9 +632,11 @@ void OpenFolder(const std::filesystem::path& dir) {
         }
     }
     if (!SDL_OpenURL(url.c_str())) LOGE("open folder: %s", SDL_GetError());
+#endif
 }
 void OpenGameWindow(bool apply) { PushUser(kUserOpen, apply); }
 
+#ifndef _WIN32
 // no splash, and a relaunch execs in place: there is no window to hand over (kernel::Relaunch)
 bool OpenSplash() { return false; }
 void SplashFirstFrame() {}
@@ -609,6 +644,9 @@ void CloseSplash() {}
 bool StartHandover() { return false; }
 bool HandingOver() { return false; }
 void FinishHandover() {}
+#endif
+
+void KeepFullscreenOnFocusLoss() { SDL_SetHint(SDL_HINT_VIDEO_MINIMIZE_ON_FOCUS_LOSS, "0"); }
 
 bool Pump() {
     SDL_Event e;
@@ -767,14 +805,43 @@ void PaceMenu() {
 
 }  // namespace app
 
-int main(int argc, char** argv) {
+namespace {
+
+// "--name value" or "--name=value" at argv[i]; i steps past the value
+const char* ArgValue(int argc, char** argv, int& i, const char* name) {
+    const size_t n = std::strlen(name);
+    if (std::strncmp(argv[i], name, n)) return nullptr;
+    if (argv[i][n] == '=') return argv[i] + n + 1;
+    if (argv[i][n] || i + 1 >= argc) return nullptr;
+    return argv[++i];
+}
+
+#ifdef _WIN32
+// a GUI program has no console of its own: started from a shell, print into that shell's (unless output is redirected)
+void AttachParentConsole() {
+    HANDLE out = GetStdHandle(STD_OUTPUT_HANDLE), err = GetStdHandle(STD_ERROR_HANDLE);
+    bool need_out = !out || out == INVALID_HANDLE_VALUE, need_err = !err || err == INVALID_HANDLE_VALUE;
+    if (!(need_out || need_err) || !AttachConsole(ATTACH_PARENT_PROCESS)) return;
+    if (need_out) std::freopen("CONOUT$", "w", stdout);
+    if (need_err) std::freopen("CONOUT$", "w", stderr);
+}
+#endif
+
+int Run(int argc, char** argv) {
     bool relaunched = false;
     for (int i = 1; i < argc; i++) {
-        if (!std::strcmp(argv[i], "--instance") && i + 1 < argc) app::g_instance = std::clamp(std::atoi(argv[++i]), 0, 8);
-        else if (!std::strcmp(argv[i], "--port") && i + 1 < argc) app::g_port = std::clamp(std::atoi(argv[++i]), 0, 65535);
-        else if (!std::strcmp(argv[i], "--join") && i + 1 < argc) app::g_join = argv[++i];
+        if (const char* v = ArgValue(argc, argv, i, "--instance")) app::g_instance = std::clamp(std::atoi(v), 0, 8);
+        else if (const char* v = ArgValue(argc, argv, i, "--port")) app::g_port = std::clamp(std::atoi(v), 0, 65535);
+        else if (const char* v = ArgValue(argc, argv, i, "--join")) app::g_join = v;
         else if (!std::strcmp(argv[i], "--relaunched")) relaunched = true;
     }
+#ifdef _WIN32
+    AttachParentConsole();
+    timeBeginPeriod(1);  // Sleep(1) a millisecond, for Pace
+    // each keyboard its own device, for the players' keyboards (input.h), as Linux has them; Windows' own messages
+    // tell them all as one
+    SDL_SetHint(SDL_HINT_WINDOWS_RAW_KEYBOARD, "1");
+#endif
     app::InstallCrashHandler();
     // one log a session: a relaunch into another image carries on its predecessor's
     std::string log = app::kGame.log;
@@ -797,6 +864,10 @@ int main(int argc, char** argv) {
     if (!app::FindGame(game)) return 1;
     app::MountMods();
 
+    // the welcome screen (RunWelcome) shows in the game window from the start: no splash in front of it
+    const bool welcome = app::FirstRun() && app::kGame.welcome;
+    const bool splash = !welcome && app::OpenSplash(), handover = app::StartHandover();
+
     app::g_user = SDL_RegisterEvents(1);
     std::wstring title = app::kGame.title;
     if (app::Instance()) title += L" [" + std::to_wstring(app::Instance()) + L"]";
@@ -811,7 +882,9 @@ int main(int argc, char** argv) {
     app::TagGameContent();
     app::StoreDesktop();
     app::ApplyNow();
-    SDL_ShowWindow(app::g_window);
+    // behind a splash the window stays hidden until the game's first frame, handed over until the new instance's
+    // (OpenGameWindow); Windows alone has either
+    if (!splash && !handover) SDL_ShowWindow(app::g_window);
 
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
@@ -843,4 +916,30 @@ int main(int argc, char** argv) {
     }
     logx::Flush();
     kernel::Shutdown(0);
+    return 0;
 }
+
+}  // namespace
+
+#ifdef _WIN32
+// the arguments in UTF-8, as main has them elsewhere
+int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
+    int argc = 0;
+    wchar_t** wide = CommandLineToArgvW(GetCommandLineW(), &argc);
+    std::vector<std::string> args;
+    for (int i = 0; wide && i < argc; i++) {
+        const int n = WideCharToMultiByte(CP_UTF8, 0, wide[i], -1, nullptr, 0, nullptr, nullptr);
+        std::string a(size_t(std::max(n, 1)), '\0');
+        if (n > 0) WideCharToMultiByte(CP_UTF8, 0, wide[i], -1, a.data(), n, nullptr, nullptr);
+        a.resize(std::strlen(a.c_str()));
+        args.push_back(std::move(a));
+    }
+    if (wide) LocalFree(wide);
+    std::vector<char*> argv;
+    for (std::string& a : args) argv.push_back(a.data());
+    argv.push_back(nullptr);
+    return Run(int(args.size()), argv.data());
+}
+#else
+int main(int argc, char** argv) { return Run(argc, argv); }
+#endif

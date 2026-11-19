@@ -192,6 +192,7 @@ void Relaunch(const char* exe) {
         HANDLE ready = CreateEventW(nullptr, TRUE, FALSE, HandoverEvent(pi.dwProcessId).c_str());
         AllowSetForegroundWindow(pi.dwProcessId);
         g_relaunching = true;
+        app::KeepFullscreenOnFocusLoss();  // the new window takes the focus in the same mode
         ResumeThread(pi.hThread);
         HANDLE wait[] = {ready, pi.hProcess};
         if (ready) WaitForMultipleObjects(2, wait, FALSE, 15000);

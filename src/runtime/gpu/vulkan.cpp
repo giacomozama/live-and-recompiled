@@ -9,7 +9,6 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
-#define VK_USE_PLATFORM_WIN32_KHR
 #endif
 #define VK_NO_PROTOTYPES
 #include <vulkan/vulkan.h>
@@ -54,9 +53,6 @@
 #define IMGUI_IMPL_VULKAN_USE_VOLK
 #endif
 #include <backends/imgui_impl_vulkan.h>
-#ifdef _WIN32
-#include <backends/imgui_impl_win32.h>
-#endif
 
 #include <smmintrin.h>
 #ifndef _WIN32
@@ -1208,20 +1204,9 @@ VKAPI_ATTR VkBool32 VKAPI_CALL DebugMessage(VkDebugUtilsMessageSeverityFlagBitsE
 
 // the window's client area
 VkExtent2D WindowExtent() {
-#ifdef _WIN32
-    // in real pixels whatever this thread's DPI awareness: Windows answers in the caller's, and an unaware render
-    // thread got a 4K window at 200% as 1920x1080, which the swap chain then took
-    DPI_AWARENESS_CONTEXT was = SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
-    RECT rc;
-    const BOOL ok = GetClientRect(static_cast<HWND>(app::Window()), &rc);
-    if (was) SetThreadDpiAwarenessContext(was);
-    if (!ok) return {0, 0};
-    return {uint32_t(std::max<LONG>(rc.right - rc.left, 0)), uint32_t(std::max<LONG>(rc.bottom - rc.top, 0))};
-#else
     VkExtent2D e{};
     app::PixelSize(e.width, e.height);
     return e;
-#endif
 }
 
 VkPrimitiveTopology PrimitiveTopology(const Assembled& a) {
@@ -2371,11 +2356,7 @@ bool VulkanBackend::CreateInstance() {
     inst_api_ = loader >= VK_API_VERSION_1_3   ? VK_API_VERSION_1_3
                 : loader >= VK_API_VERSION_1_2 ? VK_API_VERSION_1_2
                                                : VK_API_VERSION_1_1;
-#ifdef _WIN32
-    std::vector<const char*> exts = {VK_KHR_SURFACE_EXTENSION_NAME, VK_KHR_WIN32_SURFACE_EXTENSION_NAME};
-#else
     std::vector<const char*> exts = app::VulkanExtensions();  // the SDL window's surface ones
-#endif
     {
         // the HDR color spaces a surface may list (CreateSwapChain), where the loader has them
         uint32_t n = 0;
@@ -2427,22 +2408,11 @@ bool VulkanBackend::CreateInstance() {
 }
 
 bool VulkanBackend::CreateSurface() {
-#ifdef _WIN32
-    VkWin32SurfaceCreateInfoKHR si{VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR};
-    si.hinstance = GetModuleHandleW(nullptr);
-    si.hwnd = static_cast<HWND>(app::Window());
-    if (vkCreateWin32SurfaceKHR(inst_, &si, nullptr, &surface_) != VK_SUCCESS) {
-        LOGE("vulkan: no surface for the window");
-        return false;
-    }
-    return true;
-#else
     if (!app::VulkanSurface(inst_, &surface_)) {
         LOGE("vulkan: no surface for the window");
         return false;
     }
     return true;
-#endif
 }
 
 bool HasExtension(const std::vector<VkExtensionProperties>& list, const char* name) {
@@ -7365,11 +7335,7 @@ VkExtent2D VulkanBackend::PictureExtent() const {
 // the overlay, once a frame: each of the frame's pictures draws it (DrawUi)
 void VulkanBackend::BuildUi() {
     std::lock_guard lock(app::UiLock());
-#ifdef _WIN32
-    ImGui_ImplWin32_NewFrame();
-#else
     app::UiNewFrame();
-#endif
     // the window's size is known now. Glyphs a size needs for the first time go up from the first DrawUi, which waits
     // for the queue to go idle
     app::UiFontResize();

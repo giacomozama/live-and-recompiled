@@ -56,6 +56,7 @@ void OpenGameWindow(bool) {}
 bool StartHandover() { return false; }
 bool HandingOver() { return false; }
 void FinishHandover() {}
+void KeepFullscreenOnFocusLoss() {}
 
 std::recursive_mutex& UiLock() {
     static std::recursive_mutex m;
