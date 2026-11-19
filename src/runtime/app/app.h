@@ -149,6 +149,7 @@ std::string SettingsText();  // the settings as Save writes them
 void LogSystem();  // the machine, at a run's start
 void InstallCrashHandler();          // crash.cpp: unhandled exceptions, aborts and terminate write a report to the log
 void ApplyDisplay();  // any thread
+void OpenFolder(const std::filesystem::path& dir);  // in the system's file manager
 // the HDR levels the display reports, in nits, 0 not known: the SDR white the compositor maps and the display's peak
 // (on Wayland the surface's preferred image description, ReadDisplayHdr); any thread
 void SetDisplayHdr(uint32_t paper_white, uint32_t peak);

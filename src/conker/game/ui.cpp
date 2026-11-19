@@ -94,6 +94,14 @@ std::atomic<int> g_calib_step{-1};
 constexpr int kMainTabs = 10, kControlsTab = 4, kMultiplayerTab = 5, kQuitTab = 9;
 // the Quit tab's color
 constexpr ImVec4 kDanger(0.93f, 0.33f, 0.33f, 1.0f);
+// a button for what can't be undone: the danger red, its edge line brighter so it shows against the fill (Pop after it)
+void PushDangerButton() {
+    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(kDanger.x * 0.75f, kDanger.y * 0.75f, kDanger.z * 0.75f, 1.0f));
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, kDanger);
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(kDanger.x * 0.6f, kDanger.y * 0.6f, kDanger.z * 0.6f, 1.0f));
+    ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(1.0f, 1.0f, 1.0f, 48.0f / 255.0f));
+}
+void PopDangerButton() { ImGui::PopStyleColor(4); }
 std::atomic<int> g_tab_target{-1};
 int g_tab_now = 0;
 int g_player_now = 0;
@@ -647,15 +655,16 @@ void Hint(const char* text, bool checkbox = false) {
     ImGui::PopFont();
 }
 
-// a warning card: amber tint, a "!" mark and the text at full size, framed like the cards
-// `separated`: set apart like a setting, the line above it and none under it (the setting after it follows closely)
-void WarningCard(const char* text, bool separated = false) {
+// a notice card: a tinted fill, a round mark and the text at full size, framed like the cards. Warning is amber with a
+// "!", info a calmer blue with an "i"; several lines are a dotted list. `separated`: set apart like a setting, the line
+// above it and none under it (the setting after it follows closely)
+void NoticeCard(std::initializer_list<const char*> lines, bool info, bool separated) {
     DropOpenRow();  // a setting's hint that never came: not for this card to take
     if (separated) SettingGap();
     const ImGuiStyle& style = ImGui::GetStyle();
     ImGuiWindow* w = ImGui::GetCurrentWindow();
     ImDrawList* dl = w->DrawList;
-    const ImVec4 amber(0.96f, 0.69f, 0.20f, 1.0f);
+    const ImVec4 tone = info ? ImVec4(0.52f, 0.68f, 0.90f, 1.0f) : ImVec4(0.96f, 0.69f, 0.20f, 1.0f);
     const float pad = std::round(style.FramePadding.y * 1.5f);
     const float vpad = std::round(style.FramePadding.y * 1.9f);
     const float icon = ImGui::GetFontSize() * 1.2f;
@@ -669,41 +678,36 @@ void WarningCard(const char* text, bool separated = false) {
     dl->ChannelsSplit(2);
     dl->ChannelsSetCurrent(1);
     const float text_x = left + pad + icon + pad * 1.6f;
+    const bool list = lines.size() > 1;
+    const float dot = list ? ImGui::GetFontSize() * 0.9f : 0.0f;  // a list's text sits past its bullets
     ImGui::SetCursorScreenPos(ImVec2(text_x, top + vpad + 2.0f));
-    WrapAtScreenX(right - pad);
-    ImGui::TextWrapped("%s", T(text));
-    ImGui::PopTextWrapPos();
+    for (const char* line : lines) {
+        const ImVec2 at = ImGui::GetCursorScreenPos();
+        if (list)
+            dl->AddCircleFilled(ImVec2(at.x + dot * 0.3f, at.y + ImGui::GetTextLineHeight() * 0.5f), ImGui::GetFontSize() * 0.11f,
+                                ImGui::GetColorU32(ImGuiCol_Text));
+        ImGui::SetCursorScreenPos(ImVec2(at.x + dot, at.y));
+        RichText(T(line), right - pad - text_x - dot, true);
+        ImGui::SetCursorScreenPos(ImVec2(at.x, ImGui::GetCursorScreenPos().y));
+    }
     const float bottom = std::round(std::max(ImGui::GetCursorScreenPos().y - style.ItemSpacing.y, top + vpad + icon) + vpad + 2.0f);
     dl->ChannelsSetCurrent(0);
     const ImVec2 lo(left, top), hi(right, bottom);
-    dl->AddRectFilled(lo, hi, ImGui::GetColorU32(ImVec4(amber.x, amber.y, amber.z, 0.12f)), round);
+    dl->AddRectFilled(lo, hi, ImGui::GetColorU32(ImVec4(tone.x, tone.y, tone.z, info ? 0.10f : 0.12f)), round);
     if (g_decorations) DrawFrame(dl, lo, hi, round, style.Alpha, 6, 30.0f, 120.0f);
-    // the mark: a filled disc with an exclamation point
+    // the mark: a filled disc with its letter
     const ImVec2 c(left + pad + icon * 0.5f, top + vpad + icon * 0.5f);
-    dl->AddCircleFilled(c, icon * 0.5f, ImGui::GetColorU32(amber));
-    const ImVec2 ts = ImGui::CalcTextSize("!");
-    dl->AddText(ImVec2(c.x - ts.x * 0.5f, c.y - ts.y * 0.5f), IM_COL32(30, 20, 0, 255), "!");
+    dl->AddCircleFilled(c, icon * 0.5f, ImGui::GetColorU32(tone));
+    const char* mark = info ? "i" : "!";
+    const ImVec2 ts = ImGui::CalcTextSize(mark);
+    dl->AddText(ImVec2(c.x - ts.x * 0.5f, c.y - ts.y * 0.5f), info ? IM_COL32(10, 22, 40, 255) : IM_COL32(30, 20, 0, 255), mark);
     dl->ChannelsMerge();
     ImGui::SetCursorScreenPos(ImVec2(left, bottom));
     ImGui::Dummy(ImVec2(right - left, 0.0f));  // an item spacing below, as between any two rows
     if (separated) g_first_row = true;  // no line under it
 }
-
-// a hint as a dotted list, under the setting before it as Hint
-void Hints(std::initializer_list<const char*> lines) {
-    const ImGuiStyle& style = ImGui::GetStyle();
-    ImGui::PushFont(nullptr, std::max(std::round(style.FontSizeBase * 0.8f), 11.0f));
-    ImGui::Dummy(ImVec2(0.0f, style.ItemSpacing.y * 0.25f));  // set apart from the setting above and what follows
-    ImGui::PushStyleColor(ImGuiCol_Text, style.Colors[ImGuiCol_TextDisabled]);
-    for (const char* line : lines) {
-        ImGui::Bullet();
-        ImGui::SameLine();
-        RichText(T(line), ImGui::GetContentRegionAvail().x, true);  // wrapped lines line up under the first, past the bullet
-    }
-    ImGui::PopStyleColor();
-    ImGui::PopFont();
-    ImGui::Dummy(ImVec2(0.0f, style.ItemSpacing.y * 0.75f));
-}
+void WarningCard(const char* text, bool separated = false) { NoticeCard({text}, false, separated); }
+void InfoCard(std::initializer_list<const char*> lines, bool separated = false) { NoticeCard(lines, true, separated); }
 
 // what comes before a setting: a line between it and the one above, or under a section's header the room such a line
 // gives (a table's cells and a row's later widgets are no settings of their own)
@@ -1119,7 +1123,7 @@ void DrawKeys(int player) {
         g_rebind = -1;  // folded away: no key waits
         return;
     }
-    Hint("hint_right_click_a_slot_y");
+    InfoCard({"hint_right_click_a_slot_y"});
     if (const int scheme = keyboard::Scheme(player))
         ImGui::Text(T("in_use_now"), keyboard::SchemeName(scheme));
     // a frame per kind of action; the frame names it, so a row only names its action
@@ -1605,13 +1609,11 @@ void DrawAchievements() {
         ImGui::ProgressBar(float(got) / float(achievements::kCount), ImVec2(-FLT_MIN, ImGui::GetFontSize() * 0.45f), "");
         ImGui::PopStyleColor();
         Hint("hint_kept_on_this_computer_only");
+        ImGui::Dummy(ImVec2(0.0f, ImGui::GetStyle().ItemSpacing.y * 0.75f));  // set apart from the button, as on the Quit tab
         // Reset, red as Quit, behind a prompt: Cancel is where the pad starts, and B is Cancel too
-        const auto shade = [](float f) { return ImVec4(kDanger.x * f, kDanger.y * f, kDanger.z * f, 1.0f); };
-        ImGui::PushStyleColor(ImGuiCol_Button, shade(0.75f));
-        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, kDanger);
-        ImGui::PushStyleColor(ImGuiCol_ButtonActive, shade(0.6f));
+        PushDangerButton();
         const bool ask = ImGui::Button(T("reset_achievements"));
-        ImGui::PopStyleColor(3);
+        PopDangerButton();
         if (ask) ImGui::OpenPopup("##reset_achievements");
         const ImVec2 display = ImGui::GetIO().DisplaySize;
         ImGui::SetNextWindowPos(ImVec2(display.x * 0.5f, display.y * 0.5f), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
@@ -1622,11 +1624,9 @@ void DrawAchievements() {
             ImGui::Dummy(ImVec2(0.0f, ImGui::GetFontSize() * 0.8f));
             const ImGuiStyle& st = ImGui::GetStyle();
             ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(st.FramePadding.x * 2.0f, st.FramePadding.y * 1.5f));
-            ImGui::PushStyleColor(ImGuiCol_Button, shade(0.75f));
-            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, kDanger);
-            ImGui::PushStyleColor(ImGuiCol_ButtonActive, shade(0.6f));
+            PushDangerButton();
             const bool reset = ImGui::Button(T("reset"));
-            ImGui::PopStyleColor(3);
+            PopDangerButton();
             ImGui::SameLine();
             const bool cancel = ImGui::Button(T("cancel"));
             if (ImGui::IsWindowAppearing()) ImGui::SetItemDefaultFocus();
@@ -2098,6 +2098,7 @@ void Draw(double fps) {
                             if (Segmented(label, &lang, {"English", "日本語", "Deutsch", "Français", "Español", "Italiano"})) setting = kKeys[lang];
                         };
                         pick("ui", s.ui_language);
+                        Hint("hint_the_language_of_this_menu");
                         pick("game_text", s.language);
                         Hint("hint_text_only_requires_restart_voices");
                         static const std::string start_language = s.language;
@@ -2655,22 +2656,22 @@ void Draw(double fps) {
                     // each time it changes (xnet.cpp JoinAddress), and a half typed name is a DNS lookup
                     static char host[256];
                     if (ImGui::IsWindowAppearing()) std::snprintf(host, sizeof host, "%s", s.join_ip.c_str());
+                    InfoCard({"hint_leave_empty_to_host_or",
+                              "hint_for_lan_hosts_outside_your",
+                              "hint_for_hosts_over_the_internet",
+                              "hint_for_hosts_on_a_port"}, true);
                     ImGui::InputTextWithHint(Beside("host_address"), T("leave_empty_to"), host, sizeof host);
                     if (ImGui::IsItemDeactivatedAfterEdit()) s.join_ip = host;
                     if (!app::JoinArg().empty()) ImGui::Text(T("this_copy_joins"), app::JoinArg().c_str());
-                    Hints({"hint_leave_empty_to_host_or",
-                           "hint_for_lan_hosts_outside_your",
-                           "hint_for_hosts_over_the_internet",
-                           "hint_for_hosts_on_a_port"});
+                    InfoCard({"hint_udp_3074_as_on_the",
+                              "hint_hosting_for_players_past_the",
+                              "hint_each_extra_copy_on_this",
+                              "hint_a_change_starts_from_the"}, true);
                     int port = int(s.system_link_port);
                     ImGui::BeginDisabled(app::PortArg() != 0);
                     if (ImGui::InputInt(Beside("online_play_port"), &port, 0, 0)) s.system_link_port = uint32_t(std::clamp(port, 1, 65535));
                     ImGui::EndDisabled();
                     if (app::PortArg()) ImGui::Text(T("this_copy_uses"), app::PortArg());
-                    Hints({"hint_udp_3074_as_on_the",
-                           "hint_hosting_for_players_past_the",
-                           "hint_each_extra_copy_on_this",
-                           "hint_a_change_starts_from_the"});
                     static const uint32_t start_port = s.system_link_port;
                     if (s.system_link_port != start_port) WarningCard("hint_restart_the_game_for_this");
                 }
@@ -2708,6 +2709,8 @@ void Draw(double fps) {
                 // the folders are looked at again each time the tab opens, and on Rescan
                 if (ImGui::IsWindowAppearing()) app::ScanMods();
                 if (Section("mods")) {
+                    InfoCard({"hint_ticked_mods_are_in_use",
+                              "hint_a_change_starts_from_the"}, true);
                     std::vector<app::ModEntry>& mods = s.mods;
                     if (mods.empty()) ImGui::TextDisabled("%s", T("hint_no_mods_installed"));
                     int move = -1, to = -1;
@@ -2735,14 +2738,14 @@ void Draw(double fps) {
                         ImGui::PopID();
                     }
                     if (move >= 0) std::swap(mods[move], mods[to]);
-                    Hints({"hint_ticked_mods_are_in_use",
-                           "hint_a_change_starts_from_the"});
                     if (app::ModsChanged())
                         WarningCard("hint_restart_the_game_to_use");
                 }
                 if (Section("installing")) {
                     static std::string dir;
                     if (dir.empty()) dir = app::ModsDir().string();
+                    InfoCard({"hint_put_each_mod_in_its",
+                              "hint_the_game_s_own_files"}, true);
                     {
                         // set in from the card's sides and down from its header
                         const float side = std::round(ImGui::GetStyle().ItemSpacing.x * 1.5f);
@@ -2753,9 +2756,10 @@ void Draw(double fps) {
                         ImGui::PopTextWrapPos();
                         ImGui::Unindent(side);
                     }
-                    Hints({"hint_put_each_mod_in_its",
-                           "hint_the_game_s_own_files"});
+                    ImGui::Dummy(ImVec2(0.0f, ImGui::GetStyle().ItemSpacing.y));
                     if (ImGui::Button(T("rescan"))) app::ScanMods();
+                    ImGui::SameLine();
+                    if (ImGui::Button(T("open_folder"))) app::OpenFolder(app::ModsDir());
                 }
                 end_tab();
             }
@@ -2789,12 +2793,9 @@ void Draw(double fps) {
                     SettingGap();  // the room under the card's top, as before a settings row
                     ImGui::TextUnformatted(T("hint_quit_the_game_progress_since"));
                     ImGui::Dummy(ImVec2(0.0f, ImGui::GetStyle().ItemSpacing.y * 0.75f));  // set apart from the button
-                    const auto shade = [](float f) { return ImVec4(kDanger.x * f, kDanger.y * f, kDanger.z * f, 1.0f); };
-                    ImGui::PushStyleColor(ImGuiCol_Button, shade(0.75f));
-                    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, kDanger);
-                    ImGui::PushStyleColor(ImGuiCol_ButtonActive, shade(0.6f));
+                    PushDangerButton();
                     if (ImGui::Button(T("quit_game"))) app::Quit();  // the tab is the prompt: no second one
-                    ImGui::PopStyleColor(3);
+                    PopDangerButton();
                 }
                 end_tab();
             }

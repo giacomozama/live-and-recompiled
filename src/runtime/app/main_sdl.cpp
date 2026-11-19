@@ -12,6 +12,7 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cctype>
 #include <climits>
 #include <mutex>
 #include <cstring>
@@ -585,6 +586,20 @@ std::recursive_mutex& UiLock() {
 }
 
 void ApplyDisplay() { PushUser(kUserApply, 0); }
+
+void OpenFolder(const std::filesystem::path& dir) {
+    // a file URL with what a path may hold escaped; the desktop opens it in its file manager
+    std::string url = "file://";
+    for (unsigned char c : dir.string()) {
+        if (std::isalnum(c) || std::strchr("/-._~", c)) url += char(c);
+        else {
+            char hex[4];
+            std::snprintf(hex, sizeof hex, "%%%02X", c);
+            url += hex;
+        }
+    }
+    if (!SDL_OpenURL(url.c_str())) LOGE("open folder: %s", SDL_GetError());
+}
 void OpenGameWindow(bool apply) { PushUser(kUserOpen, apply); }
 
 // no splash, and a relaunch execs in place: there is no window to hand over (kernel::Relaunch)

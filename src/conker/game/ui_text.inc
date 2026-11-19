@@ -87,6 +87,8 @@ constexpr Line kLines[] = {
     {"language", "Language", "Sprache", "Langue", "Idioma", "Lingua", "言語"},
     {"ui", "UI", "UI", "UI", "UI", "UI", "UI"},
     {"game_text", "Game text", "Spieltext", "Texte du jeu", "Texto del juego", "Testo di gioco", "ゲームのテキスト"},
+    {"hint_the_language_of_this_menu", "The language of this menu.", "Die Sprache dieses Menüs.", "La langue de ce menu.",
+     "El idioma de este menú.", "La lingua di questo menu.", "このメニューの言語です。"},
     {"hint_text_only_requires_restart_voices", "Text only, requires restart. Voices stay in English.",
      "Nur der Text, Neustart nötig. Die Stimmen bleiben englisch.",
      "Texte uniquement, nécessite un redémarrage. Les voix restent en anglais.",
@@ -908,6 +910,7 @@ constexpr Line kLines[] = {
     {"hint_the_game_s_own_files", "The game's own files are left as they are.", "Die eigenen Dateien des Spiels bleiben unverändert.",
      "Les fichiers du jeu ne sont pas modifiés.", "Los archivos del propio juego se dejan tal cual.",
      "I file del gioco restano così come sono.", "ゲーム本体のファイルはそのまま変更されません。"},
+    {"open_folder", "Open folder", "Ordner öffnen", "Ouvrir le dossier", "Abrir carpeta", "Apri cartella", "フォルダを開く"},
     {"rescan", "Rescan", "Neu suchen", "Réanalyser", "Volver a buscar", "Cerca di nuovo", "再スキャン"},
 
     // debug
