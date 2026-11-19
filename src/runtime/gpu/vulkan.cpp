@@ -1612,8 +1612,12 @@ private:
     bool ReuseRun(const State& s);
     void BindGeometry(const Assembled& a);
     void IssueGeometry(const Assembled& a);
-    bool DrawBetweenShells(const State& s, const Assembled& a, uint32_t shading, const Bindings& b);
-    void DrawBeyondShells(const State& s, const Assembled& a, uint32_t shading, const Bindings& b);
+    struct Geometry;
+    // the shells around a draw, over its assembly (a) or its kept geometry (g, a null: ReuseDraw's)
+    bool DrawBetweenShells(const State& s, const Assembled* a, uint32_t shading, const Bindings& b,
+                           const Geometry* g = nullptr);
+    void DrawBeyondShells(const State& s, const Assembled* a, uint32_t shading, const Bindings& b,
+                          const Geometry* g = nullptr);
     void UploadVertexBuffers(const Assembled& a);
     // visibility tests
     bool EnsureQueries();
@@ -2123,8 +2127,14 @@ private:
         DrawShaders sh;
         PsoKey k;
         Geometry g;
+        // a draw no FastDraw follows (a shading's, fur, its shells between and beyond it drawn again with it; a depth
+        // pass of its own, zpso): drawn again whole, kept_ left unkept
+        bool whole = false;
+        VkPipeline zpso = VK_NULL_HANDLE;
     };
     std::vector<KeptOne> kept_draws_;
+    void FillKept(KeptDraw& k, const Assembled& a, const DrawShaders& sh, const DrawTextures& stages, VkPipeline pso,
+                  const Bindings& b, GuestExtent size);
     size_t kept_draw_next_ = 0;
     bool as_drawn_ = false;  // AsDrawn, for the next Draw
     bool uncounted_ = false;  // Uncounted, for the next Draw
@@ -2194,6 +2204,9 @@ private:
     // and kept geometry bound and drawn
     const KeptOne* FrameDrawGeometry(uint32_t serial, const Assembled& a) const;
     void DrawKeptGeometry(const Geometry& g);
+    void BindKeptGeometry(const Geometry& g);
+    void IssueKeptGeometry(const Geometry& g);
+    static bool FurReuse();
     static bool DrawConstantsKept();
     static bool FrameDrawSetup();
     // MotionAll's pass: each picture's place side by side in one velocity and one depth (its depth copied in, its
@@ -5215,6 +5228,9 @@ bool VulkanBackend::ReuseDraw(const State& s) {
         g_perf.redraw_refused++;
         return false;
     }
+    // as Draw leaves them: kTexFurGlow only the glow gather's
+    for (int i = 0; i < 4; i++)
+        if (i != 0 || !(stages.info[1].flags & kTexDepthBytes)) stages.info[i].flags &= uint8_t(~kTexFurGlow);
     // the stages as the shaders and pipeline were made for: their kinds; their images may be others (a target read is
     // a copy made again), their views and samplers then made again too, clamped or not as the frame's draw
     const DrawTextures& was = r.kept.stages;
@@ -5250,6 +5266,25 @@ bool VulkanBackend::ReuseDraw(const State& s) {
     jitter_ = DrawJitter(r.flat);  // the picture's own, not the frame's
     SetViewportScissor(s, r.kept.size);
     SetBlendFactorStencilRef(s);
+    if (r.whole) {
+        // the shells between first (they bind the geometry), the draw, the shells beyond, its depth pass
+        const uint32_t shading = r.sh.shading;
+        const bool bound = shading && DrawBetweenShells(s, nullptr, shading, b, &r.g);
+        if (!bound) BindKeptGeometry(r.g);
+        uint32_t query = BeginCountedDraw(s);
+        IssueKeptGeometry(r.g);
+        EndCountedDraw(query);
+        if (shading) DrawBeyondShells(s, nullptr, shading, b, &r.g);
+        if (r.zpso) {
+            vkCmdBindPipeline(cmd_, VK_PIPELINE_BIND_POINT_GRAPHICS, r.zpso);
+            drawn_.pso = r.zpso;
+            IssueKeptGeometry(r.g);
+        }
+        kept_.ok = false;
+        kept_draw_next_++;
+        g_perf.redrawn++;
+        return true;
+    }
     const Geometry& g = r.g;
     if (g.buffers) vkCmdBindVertexBuffers2(cmd_, 0, g.buffers, g.bufs, g.offs, g.sizes, g.strides);
     if (g.topo != drawn_.topo) {
@@ -5291,7 +5326,8 @@ void VulkanBackend::IssueGeometry(const Assembled& a) {
 // They take no depth pass (zpso): the draws either side write theirs, a shell apart at most from where these would,
 // and the shells go up from the skin, each in front of the one before, so no depth of theirs holds a later one back.
 // In a close-up each pass covers much of the screen, the depth passes as much as the colors
-bool VulkanBackend::DrawBetweenShells(const State& s, const Assembled& a, uint32_t shading, const Bindings& b) {
+bool VulkanBackend::DrawBetweenShells(const State& s, const Assembled* a, uint32_t shading, const Bindings& b,
+                                      const Geometry* g) {
     const ProgramShading& ps = g_program_shading[shading - 1];
     int between = ps.between_live ? int(*ps.between_live) : ps.between;
     if (ps.between_of) {
@@ -5304,7 +5340,10 @@ bool VulkanBackend::DrawBetweenShells(const State& s, const Assembled& a, uint32
     if (between <= 0) return false;
     float from = ShadingBefore(shading), to = s.vsc[size_t(ps.top)][0];
     if (from < 0 || to <= from) return false;
-    BindGeometry(a);
+    if (a)
+        BindGeometry(*a);
+    else
+        BindKeptGeometry(*g);
     if (light_ && !replay_) return true;  // drawn light, none (still bound: drawn again, the draw isn't kept)
     Bindings eb = b;
     for (int j = 1; j <= between; j++) {
@@ -5318,7 +5357,10 @@ bool VulkanBackend::DrawBetweenShells(const State& s, const Assembled& a, uint32
         }
         eb.cb[0] = {vc.buf, vc.off, sizeof(s.vsc.v)};
         PushRaw(eb);
-        IssueGeometry(a);
+        if (a)
+            IssueGeometry(*a);
+        else
+            IssueKeptGeometry(*g);
     }
     PushRaw(b);  // drawn_.b still holds it
     return true;
@@ -5326,7 +5368,8 @@ bool VulkanBackend::DrawBetweenShells(const State& s, const Assembled& a, uint32
 
 // ProgramShading::beyond_of: the shells past the draw, its piece's outermost, drawn after it with its geometry still
 // bound and vertex constants of their own, then the draw's own bindings pushed back
-void VulkanBackend::DrawBeyondShells(const State& s, const Assembled& a, uint32_t shading, const Bindings& b) {
+void VulkanBackend::DrawBeyondShells(const State& s, const Assembled* a, uint32_t shading, const Bindings& b,
+                                     const Geometry* g) {
     const ProgramShading& ps = g_program_shading[shading - 1];
     if (light_ && !replay_) return;  // drawn light
     if (!ps.beyond_of || !ps.top_layers || ps.top < 0 || ps.top >= int(s.vsc.size())) return;
@@ -5348,7 +5391,10 @@ void VulkanBackend::DrawBeyondShells(const State& s, const Assembled& a, uint32_
         }
         eb.cb[0] = {vc.buf, vc.off, sizeof(s.vsc.v)};
         PushRaw(eb);
-        IssueGeometry(a);
+        if (a)
+            IssueGeometry(*a);
+        else
+            IssueKeptGeometry(*g);
     }
     PushRaw(b);
 }
@@ -6306,18 +6352,35 @@ void VulkanBackend::DrawMotionKept(const State& s, const Before& before, MotionK
 }
 
 void VulkanBackend::DrawKeptGeometry(const Geometry& g) {
+    BindKeptGeometry(g);
+    IssueKeptGeometry(g);
+}
+
+void VulkanBackend::BindKeptGeometry(const Geometry& g) {
     if (g.buffers) vkCmdBindVertexBuffers2(cmd_, 0, g.buffers, g.bufs, g.offs, g.sizes, g.strides);
     if (g.topo != drawn_.topo) {
         vkCmdSetPrimitiveTopology(cmd_, VkPrimitiveTopology(g.topo));
         drawn_.topo = g.topo;
     }
-    if (g.index_count) {
-        vkCmdBindIndexBuffer(cmd_, g.ib, g.ioff, g.itype);
-        vkCmdDrawIndexed(cmd_, g.index_count, 1, 0, g.base_vertex, 0);
-    } else {
-        vkCmdDraw(cmd_, g.draw_count, 1, 0, 0);
-    }
+    if (g.index_count) vkCmdBindIndexBuffer(cmd_, g.ib, g.ioff, g.itype);
     geom_ = g;
+}
+
+void VulkanBackend::IssueKeptGeometry(const Geometry& g) {
+    if (g.index_count)
+        vkCmdDrawIndexed(cmd_, g.index_count, 1, 0, g.base_vertex, 0);
+    else
+        vkCmdDraw(cmd_, g.draw_count, 1, 0, 0);
+}
+
+// XBE_FUR_REUSE=0: a shading's draw (fur) and a draw with a depth pass of its own go the whole way again in each
+// picture frame generation draws, as before
+bool VulkanBackend::FurReuse() {
+    static const bool on = [] {
+        const char* e = std::getenv("XBE_FUR_REUSE");
+        return !(e && *e == '0');
+    }();
+    return on;
 }
 
 // XBE_MOTION_DC=0: every motion draw taken from the first pass fills and uploads its draw constants again
@@ -7167,7 +7230,7 @@ void VulkanBackend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t
     SetBlendFactorStencilRef(s);
 
     // geometry, counted while the title runs a visibility test; a shading's shells between go first, uncounted
-    bool bound = sh.shading && DrawBetweenShells(s, a, sh.shading, b);
+    bool bound = sh.shading && DrawBetweenShells(s, &a, sh.shading, b);
     prog_scope.Rec(1);
     uint32_t query = BeginCountedDraw(s);
     prog_scope.counted = query != kNoQuery;
@@ -7179,7 +7242,8 @@ void VulkanBackend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t
     prog_scope.Rec(3);
     EndCountedDraw(query);
     prog_scope.Rec(4);
-    if (sh.shading) DrawBeyondShells(s, a, sh.shading, b);  // uncounted too, before the draw's depth pass
+    const Geometry own_geom = geom_;  // the draw's own (the shells beyond it don't bind theirs, as of now)
+    if (sh.shading) DrawBeyondShells(s, &a, sh.shading, b);  // uncounted too, before the draw's depth pass
     if (hud_bars_ && bound_rt_) {  // the sides a frame wide HUD draw no longer covers, black (kHudInPlaceBars)
         // over the draw's own edge by a console pixel: its outermost texels blend with what lies under, a hairline
         // where the frame's edge hid it
@@ -7216,6 +7280,18 @@ void VulkanBackend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t
             one.k = k;
             one.g = geom_;
         }
+    } else if (&s != &sprite_ && !hud && !replay_ && !cap_ && Pictures() > 1 && FurReuse()) {
+        // drawn again whole (ReuseDraw), its shells and depth pass with it
+        KeptOne& one = kept_draws_.emplace_back();
+        one.serial = pass_serial_;
+        one.flat = flat;
+        FillKept(one.kept, a, sh, stages, pso, b, size);
+        one.kept.jitter = jitter_;
+        one.sh = sh;
+        one.k = k;
+        one.g = own_geom;
+        one.whole = true;
+        one.zpso = zpso;
     }
     prog_scope.Rec(5);
     g_perf.d_record += PerfLap(lap);
@@ -7223,24 +7299,29 @@ void VulkanBackend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t
 
 void VulkanBackend::KeepDraw(const Assembled& a, const DrawShaders& sh, const DrawTextures& stages, VkPipeline pso,
                              const Bindings& b, GuestExtent size) {
+    FillKept(kept_, a, sh, stages, pso, b, size);
     kept_.ok = true;
-    kept_.reads = sh.reads;
-    kept_.quad = sh.quad;
-    kept_.stages = stages;
-    kept_.pso = pso;
-    kept_.b = b;
-    kept_.filled = filled_;  // this draw's, SetTextureViewsAndSamplers the last before
-    kept_.size = size;
-    kept_.rt = bound_rt_;
-    kept_.ds = bound_ds_;
-    kept_.ms = bound_ms_;
-    kept_.regs = a.regs;
-    kept_.decode = a.decode;
-    kept_.topology = a.topology;
-    kept_.strip = a.strip;
-    kept_.pretransformed = a.pretransformed;
-    kept_.elements = a.elements;
-    kept_.plain = !sh.shading;
+}
+
+void VulkanBackend::FillKept(KeptDraw& k, const Assembled& a, const DrawShaders& sh, const DrawTextures& stages,
+                             VkPipeline pso, const Bindings& b, GuestExtent size) {
+    k.reads = sh.reads;
+    k.quad = sh.quad;
+    k.stages = stages;
+    k.pso = pso;
+    k.b = b;
+    k.filled = filled_;  // this draw's, SetTextureViewsAndSamplers the last before
+    k.size = size;
+    k.rt = bound_rt_;
+    k.ds = bound_ds_;
+    k.ms = bound_ms_;
+    k.regs = a.regs;
+    k.decode = a.decode;
+    k.topology = a.topology;
+    k.strip = a.strip;
+    k.pretransformed = a.pretransformed;
+    k.elements = a.elements;
+    k.plain = !sh.shading;
 }
 
 // a draw whose state is the kept draw's but for its vertices and constants: false, nothing recorded, when anything it
