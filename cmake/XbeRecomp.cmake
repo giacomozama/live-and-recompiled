@@ -61,7 +61,18 @@ foreach(option ENABLE_OPT ENABLE_GLSLANG_BINARIES ENABLE_SPVREMAPPER ENABLE_PCH 
 endforeach()
 set(ENABLE_HLSL ON CACHE BOOL "" FORCE)
 FetchContent_Declare(glslang GIT_REPOSITORY https://github.com/KhronosGroup/glslang.git GIT_TAG 15.0.0 GIT_SHALLOW TRUE)
-FetchContent_MakeAvailable(zydis tomlplusplus imgui roboto SDL3 miniz vulkan_headers volk vma glslang fltk)
+# The OpenGL renderer: SPIRV-Cross turns glslang's SPIR-V of the same HLSL into GLSL, its core and GLSL parts alone
+foreach(option SPIRV_CROSS_CLI SPIRV_CROSS_ENABLE_TESTS SPIRV_CROSS_ENABLE_HLSL SPIRV_CROSS_ENABLE_MSL
+        SPIRV_CROSS_ENABLE_CPP SPIRV_CROSS_ENABLE_REFLECT SPIRV_CROSS_ENABLE_C_API SPIRV_CROSS_ENABLE_UTIL
+        SPIRV_CROSS_SHARED SPIRV_CROSS_SKIP_INSTALL)
+    set(${option} OFF CACHE BOOL "" FORCE)
+endforeach()
+set(SPIRV_CROSS_SKIP_INSTALL ON CACHE BOOL "" FORCE)
+set(SPIRV_CROSS_STATIC ON CACHE BOOL "" FORCE)
+set(SPIRV_CROSS_ENABLE_GLSL ON CACHE BOOL "" FORCE)
+FetchContent_Declare(spirv_cross GIT_REPOSITORY https://github.com/KhronosGroup/SPIRV-Cross.git
+    GIT_TAG vulkan-sdk-1.3.296.0 GIT_SHALLOW TRUE)
+FetchContent_MakeAvailable(zydis tomlplusplus imgui roboto SDL3 miniz vulkan_headers volk vma glslang spirv_cross fltk)
 execute_process(COMMAND ${CMAKE_COMMAND} -P ${CMAKE_CURRENT_LIST_DIR}/patch_imgui.cmake ${imgui_SOURCE_DIR})
 # the DLSS module, a library of its own beside the game (Zig builds)
 if(XBE_ZIG_TARGET)
@@ -193,7 +204,8 @@ set(XBE_IMGUI_SOURCES
     ${imgui_SOURCE_DIR}/imgui_draw.cpp
     ${imgui_SOURCE_DIR}/imgui_tables.cpp
     ${imgui_SOURCE_DIR}/imgui_widgets.cpp
-    ${imgui_SOURCE_DIR}/backends/imgui_impl_vulkan.cpp)
+    ${imgui_SOURCE_DIR}/backends/imgui_impl_vulkan.cpp
+    ${imgui_SOURCE_DIR}/backends/imgui_impl_opengl3.cpp)
 # the overlay's font, Roboto Regular, as bytes in the executable (src/runtime/app/ui_font.cpp)
 set(XBE_UI_FONT ${CMAKE_BINARY_DIR}/xbe_ui_font.cpp)
 file(READ ${roboto_SOURCE_DIR}/Roboto-Regular.ttf XBE_UI_FONT_HEX HEX)
@@ -221,7 +233,7 @@ extern const size_t kUiFontJaSize = sizeof(kUiFontJa);
 list(APPEND XBE_IMGUI_SOURCES ${XBE_UI_FONT_JA})
 
 # The host's window, events, display modes and audio come from SDL3 everywhere (app/main_sdl.cpp, audio/sdl_audio.cpp,
-# XBE_SDL). Vulkan draws on both, D3D11 on Windows too. Windows keeps its own crash dumps, system info, boot splash and
+# XBE_SDL). Vulkan and OpenGL draw on both, D3D11 on Windows too. Windows keeps its own crash dumps, system info, boot splash and
 # relaunch handover; each side's own sources are left out of the other's build.
 file(GLOB XBE_RUNTIME_SOURCES CONFIGURE_DEPENDS ${XBE_ROOT_DIR}/src/runtime/*/*.cpp)
 list(APPEND XBE_IMGUI_SOURCES ${imgui_SOURCE_DIR}/backends/imgui_impl_sdl3.cpp)
@@ -246,8 +258,14 @@ set_source_files_properties(${XBE_ROOT_DIR}/src/runtime/gpu/vulkan.cpp PROPERTIE
     COMPILE_DEFINITIONS "ENABLE_HLSL;IMGUI_IMPL_VULKAN_USE_VOLK" COMPILE_OPTIONS -Wno-nullability-completeness)
 set_source_files_properties(${imgui_SOURCE_DIR}/backends/imgui_impl_vulkan.cpp PROPERTIES
     INCLUDE_DIRECTORIES "${XBE_VULKAN_INCLUDES}" COMPILE_DEFINITIONS IMGUI_IMPL_VULKAN_USE_VOLK)
-# glslang's libraries in the order they link
-set(XBE_GLSLANG_LIBS glslang glslang-default-resource-limits)
+# the OpenGL renderer: SDL's headers for its GL headers and context, its shaders glslang's and SPIRV-Cross's
+set_source_files_properties(${XBE_ROOT_DIR}/src/runtime/gpu/opengl.cpp PROPERTIES
+    INCLUDE_DIRECTORIES "${sdl3_SOURCE_DIR}/include")
+set_source_files_properties(${XBE_ROOT_DIR}/src/runtime/gpu/opengl_glsl.cpp PROPERTIES
+    INCLUDE_DIRECTORIES "${glslang_SOURCE_DIR};${glslang_BINARY_DIR}/include;${spirv_cross_SOURCE_DIR}"
+    COMPILE_DEFINITIONS "ENABLE_HLSL")
+# glslang's libraries in the order they link, SPIRV-Cross's after them (GLSL before its core)
+set(XBE_GLSLANG_LIBS glslang glslang-default-resource-limits spirv-cross-glsl spirv-cross-core)
 
 # a whole archive as --whole-archive ... --no-whole-archive, the way a player kit's link line has it. CMake's own
 # WHOLE_ARCHIVE wraps it in --push-state and --pop-state when lld takes them, which zig c++ rejects
