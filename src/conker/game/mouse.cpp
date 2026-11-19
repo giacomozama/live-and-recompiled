@@ -29,6 +29,7 @@
 //
 // On the headless harness there is no window and no mouse, so everything but the option globals compiles out.
 #include "common/mouse.h"
+#include "core/diag.h"
 
 #include "common/display.h"
 #include "common/menus.h"
@@ -425,7 +426,7 @@ bool Probe(input::Pad& pad, int64_t now, uint32_t cam, bool pressed) {
 }
 
 bool Calibrate(input::Pad& pad, int64_t now) {
-    static const char* env = std::getenv("XBE_MOUSE_CALIBRATE");
+    static const char* env = diag::Env("XBE_MOUSE_CALIBRATE");
     if (!env) return false;
     static bool f9 = false;
     const bool down = app::KeyDown(0x78);  // F9
@@ -538,7 +539,7 @@ bool Flying(int port, int64_t now) { return now - g_fly_us[port].load(std::memor
 // XBE_MOUSE_TRACE=1: while a player flies, the turns Turn sees and what Pad does with the motion
 bool Trace() {
     static const bool on = [] {
-        const char* e = std::getenv("XBE_MOUSE_TRACE");
+        const char* e = diag::Env("XBE_MOUSE_TRACE");
         return e && *e && *e != '0';
     }();
     return on;

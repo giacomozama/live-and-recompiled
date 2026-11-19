@@ -61,6 +61,7 @@ struct Window {
     Fl_Box* status = nullptr;
     Fl_Check_Button* portable = nullptr;
     Fl_Check_Button* keep = nullptr;
+    Fl_Check_Button* debug = nullptr;
     Fl_Button* install = nullptr;
     Fl_Button* close = nullptr;
     Fl_Progress* bar = nullptr;
@@ -296,6 +297,7 @@ Options Read(Window& u) {
     o.game_dir = ToPath(u.game.input->value());
     o.portable = u.portable->value();
     o.keep = u.keep->value();
+    o.debug_features = u.debug->value();
     return o;
 }
 
@@ -313,7 +315,8 @@ void Lock(Window& u, bool busy) {
                          static_cast<Fl_Widget*>(u.source.browse_file), static_cast<Fl_Widget*>(u.work.input),
                          static_cast<Fl_Widget*>(u.work.browse), static_cast<Fl_Widget*>(u.game.input),
                          static_cast<Fl_Widget*>(u.game.browse),
-                         static_cast<Fl_Widget*>(u.portable), static_cast<Fl_Widget*>(u.keep)}) {
+                         static_cast<Fl_Widget*>(u.portable), static_cast<Fl_Widget*>(u.keep),
+                         static_cast<Fl_Widget*>(u.debug)}) {
         if (busy) w->deactivate();
         else w->activate();
     }
@@ -424,7 +427,7 @@ int RunWindow(const Options& defaults) {
     Fl::set_color(FL_SELECTION_COLOR, 0x4c, 0x8d, 0xff);
     Fl::set_boxtype(kInsetBox, DrawInset, 8, 4, 16, 8);
 
-    const int W = 780, H = 742, M = 22, label_h = 22, row_h = 32, browse_w = 100;
+    const int W = 780, H = 774, M = 22, label_h = 22, row_h = 32, browse_w = 100;
     static const char* const kTitle = "Live & Recompiled Setup";
     u.win = new Fl_Double_Window(W, H, kTitle);
     u.win->color(kBackground);
@@ -496,6 +499,12 @@ int RunWindow(const Options& defaults) {
     u.keep->value(defaults.keep);
     u.keep->labelcolor(kMuted);
     u.keep->labelsize(13);
+    y += row_h;
+
+    u.debug = new CheckBox(M, y, W - 2 * M, row_h, "Include debug features");
+    u.debug->value(defaults.debug_features);
+    u.debug->labelcolor(kMuted);
+    u.debug->labelsize(13);
     y += row_h + 12;
 
     u.install = new FlatButton(W - M - browse_w - 8 - 150, y, 150, row_h, "Start");

@@ -1,4 +1,5 @@
 #include "common/water.h"
+#include "core/diag.h"
 
 #include <algorithm>
 #include <chrono>
@@ -266,7 +267,7 @@ struct Drop {
 // XBE_TRACE_WATER: a line a second of what reached the sheet, to tell a pool that doesn't ripple from one whose
 // ripples don't show
 bool Trace() {
-    static const bool trace = std::getenv("XBE_TRACE_WATER") != nullptr;
+    static const bool trace = diag::Env("XBE_TRACE_WATER") != nullptr;
     return trace;
 }
 struct TraceCounts {

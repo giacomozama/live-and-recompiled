@@ -25,6 +25,7 @@
 #include <vector>
 
 #include "common/crate_fall.h"
+#include "core/diag.h"
 #include "common/display.h"
 #include "core/log.h"
 #include "kernel/kernel.h"
@@ -43,7 +44,7 @@ using Clock = std::chrono::steady_clock;
 
 bool Tracing() {
     static const bool on = [] {
-        const char* e = std::getenv("XBE_CRATE_TRACE");
+        const char* e = diag::Env("XBE_CRATE_TRACE");
         return e && *e && *e != '0';
     }();
     return on;
@@ -51,7 +52,7 @@ bool Tracing() {
 
 float FallSeconds() {
     static const float s = [] {
-        const char* e = std::getenv("XBE_CRATE_FALL_MS");
+        const char* e = diag::Env("XBE_CRATE_FALL_MS");
         if (!e || !*e) return 0.12f;
         return std::max(0.0f, float(std::atof(e))) / 1000.0f;
     }();

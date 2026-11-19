@@ -1,4 +1,5 @@
 #include "core/log.h"
+#include "core/diag.h"
 
 #include <algorithm>
 #include <chrono>
@@ -53,7 +54,7 @@ const std::string& Path() { return g_path; }
 
 void Write(Level lv, const char* fmt, ...) {
     // a release build still needs to be able to say what it is doing, so XBE_VERBOSE turns Info and Debug back on
-    static const bool verbose = kVerbose || std::getenv("XBE_VERBOSE") != nullptr;
+    static const bool verbose = kVerbose || diag::Env("XBE_VERBOSE") != nullptr;
     if (!verbose && lv < Level::Error) return;
     char msg[4096];
     va_list ap;

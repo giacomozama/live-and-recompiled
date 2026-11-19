@@ -47,6 +47,7 @@
 #include <cstdlib>
 
 #include "app/app.h"
+#include "core/diag.h"
 #include "common/link.h"
 #include "common/medbeam.h"
 #include "common/menus.h"
@@ -78,7 +79,7 @@ constexpr uint32_t kHealth = 0x3AE, kExtra = 0x3AA;      // words
 uint32_t g_spared = 0;  // the remote player's copy a hit is on (0x2EDDD0): 0x2F7CA0 says it lives
 
 bool Trace() {
-    static const bool on = std::getenv("XBE_FF_TRACE") != nullptr;
+    static const bool on = diag::Env("XBE_FF_TRACE") != nullptr;
     return on;
 }
 

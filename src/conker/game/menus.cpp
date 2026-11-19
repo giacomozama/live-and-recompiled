@@ -19,6 +19,7 @@
 #include <utility>
 
 #include "app/app.h"
+#include "core/diag.h"
 #include "core/input.h"
 #include "core/log.h"
 #include "cpu/x86_ops.h"
@@ -347,7 +348,7 @@ float F32(uint32_t va) {
 }
 
 bool TraceMouse() {
-    static const bool on = std::getenv("XBE_TRACE_MENU_MOUSE") != nullptr;
+    static const bool on = diag::Env("XBE_TRACE_MENU_MOUSE") != nullptr;
     return on;
 }
 
@@ -1831,7 +1832,7 @@ std::string Narrow(uint32_t va) {
 
 // XBE_TRACE_STRINGS set: each key looked up is logged once
 void Trace(const std::string& key) {
-    static const bool on = std::getenv("XBE_TRACE_STRINGS") != nullptr;
+    static const bool on = diag::Env("XBE_TRACE_STRINGS") != nullptr;
     if (!on) return;
     static std::mutex lock;  // the loader thread looks strings up too
     static std::set<std::string> seen;

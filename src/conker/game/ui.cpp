@@ -2,7 +2,7 @@
 //
 // The render thread draws the frame with app::UiLock held (vulkan.cpp RenderUi), and the window thread runs
 // Message for every message after ImGui's. Draw must never make a blocking cross-thread call: it only posts.
-// So the fps in the title is posted (kFpsTitle), and the window thread sets it.
+// So the window title is posted (kTitle), and the window thread sets it.
 //
 // On the headless harness there is no ImGui and no window, so everything but the option globals compiles out;
 // keyboard.cpp can still ask Open().
@@ -51,6 +51,7 @@
 #include "common/vignette.h"
 #include "common/warp.h"
 #include "common/water.h"
+#include "core/diag.h"
 #include "core/input.h"
 #include "gpu/backend.h"
 #include "kernel/kernel.h"
@@ -67,14 +68,13 @@ namespace ui {
 
 bool g_fps_overlay = false;
 uint32_t g_accent = 4;  // orange
-bool g_fps_title = true;
 bool g_menu_resizable = false;
 bool g_decorations = true;
 
 namespace {
 
-// the window owns the title; Draw posts this, Message (window thread) writes it
-constexpr uint32_t kFpsTitle = app::kMsgApp + 0x40;
+// the window owns the title; Draw posts this once, Message (window thread) writes it
+constexpr uint32_t kTitle = app::kMsgApp + 0x40;
 
 // virtual-key codes the menu reads
 constexpr int kMouse1 = 0x01, kEscape = 0x1B, kF1 = 0x70;
@@ -92,7 +92,10 @@ std::atomic<int> g_calib_step{-1};
 
 // the main tab to show next frame (Show asks for one, the bumpers turn), -1 none; the tab drawn now; the player
 // the Controls tab shows
-constexpr int kMainTabs = 10, kControlsTab = 4, kMultiplayerTab = 5, kQuitTab = 9;
+// (Debug, the one before Quit, only in a build with the debug features: core/diag.h)
+constexpr int kMainTabs = diag::kDebugFeatures ? 10 : 9, kControlsTab = 4, kMultiplayerTab = 5, kQuitTab = kMainTabs - 1;
+// the Debug tab's option; its saved value is ignored by a build without it
+bool MenuResizable() { return diag::kDebugFeatures && g_menu_resizable; }
 // the Quit tab's color
 constexpr ImVec4 kDanger(0.93f, 0.33f, 0.33f, 1.0f);
 // a button for what can't be undone: the danger red, its edge line brighter so it shows against the fill (Pop after it)
@@ -252,7 +255,6 @@ struct PadEdges {
     float scroll = 0.0f;        // pixels the right stick scrolls the page
 } g_pad;
 
-std::atomic<double> g_fps{0.0};
 
 // the display's modes, asked once
 const std::vector<app::Mode>& Modes() {
@@ -1816,8 +1818,7 @@ void DrawAchievementToast() {
 
 void Draw(double fps) {
     static bool was_open = false;
-    static double last_fps = -1.0;
-    static bool last_title = !g_fps_title;
+    static bool titled = false;
     static int last_look = -1;
     MenuStyle();
     chat::Draw(T("team"), T("all"));  // under the menu
@@ -1844,12 +1845,7 @@ void Draw(double fps) {
     was_open = open;
 
     // not from here: setting the title from the render thread could deadlock on the window thread's UiLock; post
-    if (fps != last_fps || g_fps_title != last_title) {
-        last_fps = fps;
-        last_title = g_fps_title;
-        g_fps.store(fps);
-        app::Post(kFpsTitle);
-    }
+    if (!std::exchange(titled, true)) app::Post(kTitle);
 
     // the window thread takes or lets go of the cursor, as a player with a mouse turns mouse look on or off, or gets
     // or loses the mouse
@@ -1982,11 +1978,11 @@ void Draw(double fps) {
     const ImVec2 display = ImGui::GetIO().DisplaySize;
     const float scale = ImGui::GetFontSize() / 13.0f;  // the minimums were set with ImGui's 13 px font
     const float margin = std::max(std::round(std::min(display.x, display.y) * 0.04f), 12.0f * scale);
-    const ImGuiCond place = g_menu_resizable ? ImGuiCond_Once : ImGuiCond_Always;
+    const ImGuiCond place = MenuResizable() ? ImGuiCond_Once : ImGuiCond_Always;
     ImGui::SetNextWindowPos(ImVec2(margin, margin), place);
     ImGui::SetNextWindowSize(ImVec2(std::max(display.x - margin * 2.0f, 1.0f), std::max(display.y - margin * 2.0f, 1.0f)),
                              place);
-    if (g_menu_resizable) ImGui::SetNextWindowSizeConstraints(ImVec2(320.0f * scale, 200.0f * scale), display);
+    if (MenuResizable()) ImGui::SetNextWindowSizeConstraints(ImVec2(320.0f * scale, 200.0f * scale), display);
     if (!was_open || std::exchange(calibrated, false)) ImGui::SetNextWindowFocus();
     // the menu fades in with the blur behind it (vulkan.cpp Redisplay: the same time and curve)
     static double opened_at = 0.0;
@@ -1996,7 +1992,7 @@ void Draw(double fps) {
     g_fade = fade;
     ImGui::PushStyleVar(ImGuiStyleVar_Alpha, fade);
     bool keep_open = true;
-    const ImGuiWindowFlags fixed = g_menu_resizable ? 0 : ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize;
+    const ImGuiWindowFlags fixed = MenuResizable() ? 0 : ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize;
     if (ImGui::Begin("Settings", &keep_open,
                      fixed | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoTitleBar |
                          ImGuiWindowFlags_NoSavedSettings)) {
@@ -2256,6 +2252,8 @@ void Draw(double fps) {
                     if (ImGui::Button(T("calibrate_display"))) g_calib_step.store(0);
                     ImGui::EndDisabled();
                     Hint(D3d11() ? NoVulkan() : "hint_test_patterns_for_brightness_and", true);
+                    Check("fps_counter", &g_fps_overlay);
+                    Hint("hint_shows_the_frame_rate_in", true);
                 }
 
                 if (Section("quality")) {
@@ -2816,11 +2814,7 @@ void Draw(double fps) {
                 end_tab();
             }
 
-            if (tab("debug")) {
-                if (Section("fps")) {
-                    Check("overlay", &g_fps_overlay);
-                    Check("window_title", &g_fps_title);
-                }
+            if (diag::kDebugFeatures && tab("debug")) {
                 if (Section("menu")) {
                     Check("resizable_menu", &g_menu_resizable);
                     Hint("hint_drag_the_menu_s_edges",
@@ -3086,15 +3080,10 @@ bool Message(void* hwnd, uint32_t msg, uintptr_t wp, intptr_t lp, intptr_t* resu
                 return true;
             }
             break;
-        case kFpsTitle: {
+        case kTitle: {
             wchar_t title[256];
             const int instance = app::Instance();
-            if (g_fps_title) {
-                if (instance)
-                    swprintf(title, 256, L"%ls [%d] | %.0f FPS", app::kGame.title, instance, g_fps.load());
-                else
-                    swprintf(title, 256, L"%ls | %.0f FPS", app::kGame.title, g_fps.load());
-            } else if (instance) {
+            if (instance) {
                 swprintf(title, 256, L"%ls [%d]", app::kGame.title, instance);
             } else {
                 swprintf(title, 256, L"%ls", app::kGame.title);
@@ -3175,7 +3164,6 @@ namespace ui {
 
 bool g_fps_overlay = false;
 uint32_t g_accent = 4;  // orange
-bool g_fps_title = true;
 bool g_menu_resizable = false;
 bool g_decorations = true;
 

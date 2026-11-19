@@ -47,6 +47,7 @@
 #include <vector>
 
 #include "common/medbeam.h"
+#include "core/diag.h"
 #include "common/warp.h"
 #include "core/log.h"
 #include "cpu/x86_ops.h"
@@ -94,7 +95,7 @@ constexpr float kStartUp = 42, kStartAhead = 14, kStartRight = 8, kEndUp = 34;
 constexpr float kGlowWidth = 8, kCoreWidth = 2.2f;
 
 bool Trace() {
-    static const bool on = std::getenv("XBE_MEDBEAM_TRACE") != nullptr;
+    static const bool on = diag::Env("XBE_MEDBEAM_TRACE") != nullptr;
     return on;
 }
 

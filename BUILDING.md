@@ -70,6 +70,9 @@ builds `out/harness/conker`, a headless Linux build with no window or GPU, for t
 It's the same build as on Linux and in releases, with the same compiler and flags. `tools\build.bat --pdb` also writes
 `Game.pdb`, for debugging in Visual Studio or WinDbg; it makes builds slower, and
 `cmake -DXBE_PDB=OFF out\build\zig-windows` turns it off again. (`tools/build.sh --pdb` does the same on Linux.)
+The debug features (the `XBE_*` environment variables, the F3 to F8 keys and the settings menu's Debug tab) are left
+out unless `cmake -DXBE_DEBUG_FEATURES=ON out\build\zig-windows` turns them on; `run-linux.sh` and `run-proton.sh` do,
+and take `--no-debug-features`. A release's Setup has an "Include debug features" box (`--debug-features`).
 IDEs that read `CMakePresets.json` get the same build as the `zig-windows` preset, once `tools\build.bat` has fetched
 the compiler.
 

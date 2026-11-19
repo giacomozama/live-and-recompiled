@@ -191,6 +191,11 @@ constexpr Line kLines[] = {
      "Cartas de ajuste para el brillo y el gamma, y con HDR el blanco de papel y el brillo máximo.",
      "Immagini di prova per regolare luminosità e gamma, e con l'HDR il bianco carta e la luminosità massima.",
      "明るさとガンマ、HDR ではペーパーホワイトとピーク輝度を合わせるためのテストパターンです。"},
+    {"fps_counter", "FPS counter", "FPS-Anzeige", "Compteur de FPS", "Contador de FPS", "Contatore FPS", "FPS表示"},
+    {"hint_shows_the_frame_rate_in", "Shows the frame rate in the top-left corner.",
+     "Zeigt die Bildrate in der oberen linken Ecke.", "Affiche la fréquence d'images dans le coin supérieur gauche.",
+     "Muestra la tasa de fotogramas en la esquina superior izquierda.",
+     "Mostra la frequenza dei fotogrammi nell'angolo in alto a sinistra.", "画面左上にフレームレートを表示します。"},
     {"display_calibration", "Display calibration", "Anzeigekalibrierung", "Calibrage de l'affichage", "Calibración de pantalla",
      "Calibrazione dello schermo", "画面の調整"},
     {"step_of", "Step %d of %d", "Schritt %d von %d", "Étape %d sur %d", "Paso %d de %d", "Passo %d di %d", "ステップ %d / %d"},
@@ -949,10 +954,6 @@ constexpr Line kLines[] = {
     {"rescan", "Rescan", "Neu suchen", "Réanalyser", "Volver a buscar", "Cerca di nuovo", "再スキャン"},
 
     // debug
-    {"fps", "FPS", "FPS", "FPS", "FPS", "FPS", "FPS"},
-    {"overlay", "Overlay", "Overlay", "Surimpression", "Superposición", "Overlay", "オーバーレイ"},
-    {"window_title", "Window title", "Fenstertitel", "Titre de la fenêtre", "Título de la ventana", "Titolo della finestra",
-     "ウィンドウタイトル"},
     {"current_level", "Current level", "Aktuelles Level", "Niveau actuel", "Nivel actual", "Livello attuale", "現在のレベル"},
     {"checkpoints", "Checkpoints", "Checkpoints", "Points de contrôle", "Puntos de control", "Checkpoint", "チェックポイント"},
     {"hint_warning_these_start_a_new", "Warning: these start a new game. Don't save afterwards over a save you want to keep.",

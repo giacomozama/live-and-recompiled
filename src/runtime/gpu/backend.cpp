@@ -1,5 +1,6 @@
 // The renderer the settings name
 #include "gpu/backend.h"
+#include "core/diag.h"
 
 #include "app/app.h"
 #include "core/log.h"
@@ -19,7 +20,7 @@ bool HdrAvailable() { return g_hdr_available.load(std::memory_order_relaxed); }
 void SetHdrAvailable(bool on) { g_hdr_available.store(on, std::memory_order_relaxed); }
 
 std::string RendererName() {
-    const char* override_name = std::getenv("XBE_RENDERER");
+    const char* override_name = diag::Env("XBE_RENDERER");
     return override_name && *override_name ? override_name : app::Get().renderer;
 }
 

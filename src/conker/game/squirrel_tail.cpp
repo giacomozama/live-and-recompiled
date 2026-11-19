@@ -20,6 +20,7 @@
 // Who is who: a player's draw (0x7FB00, cdecl, arg 0 its index in [0x84A5F8], 0x6D0 each) keeps its model's
 // skeleton node at [player+0x4EC] and its type at [player+0x68].
 #include "cpu/x86_ops.h"
+#include "core/diag.h"
 
 #include <chrono>
 #include <cmath>
@@ -58,7 +59,7 @@ uint32_t g_node = 0;  // the kneeling squirrel's skeleton node, from his last dr
 // XBE_TAIL_TRACE=1: a line a second while the squirrel draws, saying whether his tail was held
 bool Tracing() {
     static const bool on = [] {
-        const char* e = std::getenv("XBE_TAIL_TRACE");
+        const char* e = diag::Env("XBE_TAIL_TRACE");
         return e && *e && *e != '0';
     }();
     return on;

@@ -571,7 +571,7 @@ private:
     // XBE_INTERP_INLINE=1 records them on the render thread as before
     static bool RecordAside() {
         static const bool on = [] {
-            const char* e = std::getenv("XBE_INTERP_INLINE");
+            const char* e = diag::Env("XBE_INTERP_INLINE");
             return !e || *e == '0';
         }();
         return on;
@@ -936,7 +936,7 @@ private:
                 slots[p] = in_slots[order[p]], ts[p] = in_ts[order[p]], befores[p] = in_befores[order[p]];
         }
         static const bool chain_on = [] {
-            const char* e = std::getenv("XBE_MOTION_CHAIN");
+            const char* e = diag::Env("XBE_MOTION_CHAIN");
             return !(e && *e == '0');
         }();
         State& rs = replay_state_;

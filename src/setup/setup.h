@@ -18,6 +18,7 @@ struct Options {
     unsigned jobs = 1;
     bool portable = false;            // put portable.txt in the game folder: settings and saves stay beside the game
     bool keep = false;                // leave the generated code, the objects and the unpacked kit in the work folder
+    bool debug_features = false;      // link the host with the debug features (XBE_* variables, F3-F8, the Debug tab)
 };
 
 // the kit's own facts: what the window shows before anything is chosen

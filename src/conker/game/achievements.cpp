@@ -38,6 +38,7 @@
 // The unlocks and the counts toward them are kept in DataDir/achievements.txt. XBE_ACH_TRACE=1 logs what the rules see
 // (checkpoints completed, stat changes, attempts started and ended, B pads, the Dumbots results).
 #include "common/achievements.h"
+#include "core/diag.h"
 
 #include <algorithm>
 #include <array>
@@ -489,7 +490,7 @@ constexpr uint32_t kModelNames = 0x6A58F0;
 const char* const kClasses[kClassGoal] = {"grunt", "sneaker", "sharpshooter", "demolisher", "poisoner", "skyjockey"};
 
 bool Trace() {
-    static const bool on = std::getenv("XBE_ACH_TRACE") != nullptr;
+    static const bool on = diag::Env("XBE_ACH_TRACE") != nullptr;
     return on;
 }
 

@@ -19,6 +19,7 @@
 #include <imgui.h>
 #include <backends/imgui_impl_dx11.h>
 #include "gpu/backend.h"
+#include "core/diag.h"
 #include "gpu/draw.h"
 #include "gpu/d3d11_shaders.h"
 #include "gpu/fsr_hlsl.h"
@@ -1366,7 +1367,7 @@ class D3D11Backend final : public Backend {
     void TraceEffect(const State& s,const Assembled& a,uint32_t prim,uint32_t count,
                      const Shader& vs,const Shader& ps,const PixelKey& pk,const DrawConstants& c,bool clamp,
                      Image* const images[4],const bool target[4]) {
-        static const wchar_t* destination=_wgetenv(L"XBE_D3D11_EFFECT_TRACE");
+        static const wchar_t* destination=diag::WEnv(L"XBE_D3D11_EFFECT_TRACE");
         if(!destination || !effect_trace_active_ || traced_effects_.size()>=512)return;
         PsoKey key{};key.vs=vs.hash;key.ps=ps.hash;key.topo=uint32_t(a.topology);
         KeyBlend(s,key);KeyDepthStencil(s,a,key);KeyRasterizer(s,a,key);
@@ -1416,7 +1417,7 @@ class D3D11Backend final : public Backend {
             std::snprintf(name,sizeof(name),"texture-%08X-%X.bmp",d.data,d.format);WriteBmp(dir/name,packed,d.width,d.height);
         }
         if(count<=64)CaptureInputs(f,s,a,c);
-        static const char* selected_ps=std::getenv("XBE_D3D11_TRACE_PS");
+        static const char* selected_ps=diag::Env("XBE_D3D11_TRACE_PS");
         bool selected=selected_ps && (!std::strcmp(selected_ps,"ALL") || ps.hash==std::strtoull(selected_ps,nullptr,16));
         if(selected_ps && !std::strcmp(selected_ps,"ALL")) {
             // Guest RAM does not contain pixels most recently written by the
@@ -1457,7 +1458,7 @@ class D3D11Backend final : public Backend {
         ctx_->Unmap(staging.get(),0);WriteBmp(path,pixels,front->w,front->h);
     }
     void BeginEffectCapture(Image* front) {
-        const wchar_t* destination=_wgetenv(L"XBE_D3D11_EFFECT_TRACE");
+        const wchar_t* destination=diag::WEnv(L"XBE_D3D11_EFFECT_TRACE");
         if(!destination)return;
         effect_trace_active_=true;traced_effects_.clear();effect_capture_++;point_debug_count_=0;
         const auto dir=std::filesystem::path(destination)/("capture-"+std::to_string(effect_capture_));
@@ -1468,7 +1469,7 @@ class D3D11Backend final : public Backend {
     void DebugPointRaster(const Assembled& a,const DrawConstants& constants, const Image& rendered,
                           ID3D11ShaderResourceView* const* views,ID3D11SamplerState* const* samplers) {
         if(!trace_point_material_)return;
-        const wchar_t* destination=_wgetenv(L"XBE_D3D11_EFFECT_TRACE");if(!destination)return;
+        const wchar_t* destination=diag::WEnv(L"XBE_D3D11_EFFECT_TRACE");if(!destination)return;
         auto dir=std::filesystem::path(destination)/("capture-"+std::to_string(effect_capture_));
         auto& image=point_debug_image_;uint32_t w=rendered.w,h=rendered.h;
         if(!image.resource || image.w!=w || image.h!=h) {
@@ -2245,7 +2246,7 @@ public:
         if (ds && (depth_write || depth_p || s.rs[kRsStencilEnable])) MarkWritten(*ds, multi);
         DebugPointRaster(a,c,target,views,samplers);
         if(trace_color_material_ && rt) {
-            const auto dir=std::filesystem::path(_wgetenv(L"XBE_D3D11_EFFECT_TRACE"))/("capture-"+std::to_string(effect_capture_));
+            const auto dir=std::filesystem::path(diag::WEnv(L"XBE_D3D11_EFFECT_TRACE"))/("capture-"+std::to_string(effect_capture_));
             char name[64];std::snprintf(name,sizeof(name),"draw-%03u-output.bmp",trace_color_material_);SaveColorImage(*rt,dir/name);
         }
     }
@@ -2289,7 +2290,7 @@ public:
         keeping_pictures_ = false;
         if (image && last_picture_ < 0) FinishPicture(*image,hdr_mask_);
         if(g_capture.exchange(false))BeginEffectCapture(last_picture_ < 0 ? image : &generated_[last_picture_]);
-        else if(effect_trace_active_ && std::getenv("XBE_D3D11_TRACE_FRAME")) {
+        else if(effect_trace_active_ && diag::Env("XBE_D3D11_TRACE_FRAME")) {
             LOGR("d3d11: captured one frame, %zu materials",traced_effects_.size());effect_trace_active_=false;
         }
         const auto now = std::chrono::steady_clock::now();

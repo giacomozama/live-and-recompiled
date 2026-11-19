@@ -7,6 +7,7 @@
 // (x y w h, floats), its layer count at +68 and each layer's texture from +6C. With the setting off the hook skips
 // that one overlay, and only while its color is a neutral grey: one tinted (red, when hurt) is drawn as ever.
 #include "common/vignette.h"
+#include "core/diag.h"
 
 #include <cstdlib>
 #include <cstring>
@@ -39,7 +40,7 @@ bool IsVignette(uint32_t obj) {
 X86_EXTERN_FUNC(__imp__sub_0015CAF0);
 X86_FUNC(sub_0015CAF0) {
     static const bool env_off = [] {
-        const char* e = std::getenv("XBE_VIGNETTE");
+        const char* e = diag::Env("XBE_VIGNETTE");
         return e && *e == '0';
     }();
     if ((!vignette::g_on || env_off) && IsVignette(kernel::R32(ctx.esp + 4))) {

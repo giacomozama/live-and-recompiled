@@ -1,4 +1,5 @@
 #include "common/fur.h"
+#include "core/diag.h"
 
 #include <algorithm>
 #include <array>
@@ -566,7 +567,7 @@ constexpr const char* kStrandPs = R"({
 // girl and multiplayer's SHC Sneeker. XBE_FUR_CHIPMUNK (types, comma separated, 0x for hex) in their place, to try
 std::vector<float> ChipmunkTypes() {
     std::vector<float> out(std::begin(kChipmunkTypes), std::begin(kChipmunkTypes) + kChipmunkCount);
-    if (const char* e = std::getenv("XBE_FUR_CHIPMUNK")) {
+    if (const char* e = diag::Env("XBE_FUR_CHIPMUNK")) {
         out.clear();
         for (const char* p = e; *p && out.size() < 8;) {
             char* end = nullptr;
@@ -592,7 +593,7 @@ std::atomic<int> g_seen_count{0};
 // kFurryModels from
 bool Survey() {
     static const bool on = [] {
-        const char* e = std::getenv("XBE_FUR_SURVEY");
+        const char* e = diag::Env("XBE_FUR_SURVEY");
         return e && *e && *e != '0';
     }();
     return on;
@@ -615,7 +616,7 @@ void See(uint32_t type, bool weasel, bool drawn) {
 
 bool HairTrace() {
     static const bool on = [] {
-        const char* e = std::getenv("XBE_HAIR_TRACE");
+        const char* e = diag::Env("XBE_HAIR_TRACE");
         return e && *e && *e != '0';
     }();
     return on;
@@ -842,7 +843,7 @@ int CrownStrandsBeyond(const float*, const float* top, float* reach) {
 void FillWeaselStrands(float (*xs)[4], const float* tag) { Fill(xs, tag, true); }
 
 float DepthAlpha() {
-    const char* e = std::getenv("XBE_FUR_DEPTH_ALPHA");
+    const char* e = diag::Env("XBE_FUR_DEPTH_ALPHA");
     return e ? float(std::atof(e)) : kDepthAlpha;
 }
 
@@ -850,7 +851,7 @@ float DepthAlpha() {
 
 void fur::Init() {
     const float depth_alpha = DepthAlpha();
-    const char* all = std::getenv("XBE_FUR_SHADE_ALL");
+    const char* all = diag::Env("XBE_FUR_SHADE_ALL");
     const char* skip = all && *all && *all != '0' ? nullptr : kGirlSkip;
     static const std::string body_vs = std::string("#define FUR_HAIRY 1\n#define FUR_POS i.v1\n#define FUR_RIBBONS 9\n"
                                                    "#define FUR_BONE(k) c[clamp(mac_arl(i.v2.x) + 108 + (k), 0, 191)]\n"

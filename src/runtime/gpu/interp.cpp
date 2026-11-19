@@ -1,4 +1,5 @@
 #include "gpu/interp.h"
+#include "core/diag.h"
 
 #include <algorithm>
 #include <array>
@@ -622,7 +623,7 @@ bool Flipped(const float* a, const float* b) {
 
 bool Tracing() {
     static const bool on = [] {
-        const char* e = std::getenv("XBE_INTERP_TRACE");
+        const char* e = diag::Env("XBE_INTERP_TRACE");
         return e && *e && *e != '0';
     }();
     return on;
@@ -687,7 +688,7 @@ bool Follows(const Frame& cur, const State& s, const Reads* reads, int32_t& lead
 constexpr uint32_t kMoveVertices = 64;
 bool Moving() {
     static const bool on = [] {
-        const char* e = std::getenv("XBE_INTERP_VERTICES");
+        const char* e = diag::Env("XBE_INTERP_VERTICES");
         return !e || *e != '0';
     }();
     return on;
@@ -699,7 +700,7 @@ bool Moving() {
 constexpr uint32_t kKeepIndicesMin = 256;
 bool ExtraOn() {
     static const bool on = [] {
-        const char* e = std::getenv("XBE_INTERP_EXTRA");
+        const char* e = diag::Env("XBE_INTERP_EXTRA");
         return !(e && *e == '0');
     }();
     return on;
@@ -1231,7 +1232,7 @@ bool LeaderJumped(const Frame& prev, const Frame& cur, const Snap& sn) {
 }
 void Cut(const Frame& prev, Frame& cur) {
     static const bool off = [] {
-        const char* e = std::getenv("XBE_INTERP_CUT");
+        const char* e = diag::Env("XBE_INTERP_CUT");
         return e && *e == '0';
     }();
     if (off) return;
@@ -1593,7 +1594,7 @@ void EndFrame() {
 // XBE_INTERP_WATCH=all watches every draw, to find which program a glitch is by comparing pictures
 bool WatchingAll() {
     static const bool all = [] {
-        const char* e = std::getenv("XBE_INTERP_WATCH");
+        const char* e = diag::Env("XBE_INTERP_WATCH");
         return e && std::strcmp(e, "all") == 0;
     }();
     return all;
@@ -1602,7 +1603,7 @@ bool Watched(uint64_t program) {
     if (WatchingAll()) return true;
     static const std::vector<uint64_t> w = [] {
         std::vector<uint64_t> v;
-        const char* e = std::getenv("XBE_INTERP_WATCH");
+        const char* e = diag::Env("XBE_INTERP_WATCH");
         for (char* end; e && *e; e = *end ? end + 1 : end) {
             uint64_t p = std::strtoull(e, &end, 16);
             if (end == e) break;
@@ -1698,7 +1699,7 @@ void Watch(uint32_t n, const Snap& sn, Blended how, const std::string& jumped, c
 constexpr uint32_t kHideSuspects = 16;
 uint32_t HideMask() {
     static const uint32_t mask = [] {
-        const char* e = std::getenv("XBE_INTERP_HIDE");
+        const char* e = diag::Env("XBE_INTERP_HIDE");
         return e ? uint32_t(std::strtoul(e, nullptr, 0)) : 0u;
     }();
     return mask;
@@ -1733,7 +1734,7 @@ constexpr float kHabit = 2.0f;        // suspect frames, faded: about one in fiv
 
 bool SuspectOn() {
     static const bool on = [] {
-        const char* e = std::getenv("XBE_INTERP_SUSPECT");
+        const char* e = diag::Env("XBE_INTERP_SUSPECT");
         return e && *e && *e != '0';
     }();
     return on;
@@ -1741,14 +1742,14 @@ bool SuspectOn() {
 bool Suspecting() { return SuspectOn() || Recording() || (HideMask() & kHideSuspects); }
 uint32_t SuspectMask() {
     static const uint32_t mask = [] {
-        const char* e = std::getenv("XBE_INTERP_SUSPECT_MASK");
+        const char* e = diag::Env("XBE_INTERP_SUSPECT_MASK");
         return e ? uint32_t(std::strtoul(e, nullptr, 0)) : uint32_t(kSpike | kBesideGone | kLoneJump);
     }();
     return mask;
 }
 uint32_t AutoSaves() {
     static const uint32_t n = [] {
-        const char* e = std::getenv("XBE_INTERP_AUTO");
+        const char* e = diag::Env("XBE_INTERP_AUTO");
         return e ? uint32_t(std::strtoul(e, nullptr, 10)) : 0u;
     }();
     return n;
@@ -1993,7 +1994,7 @@ Decided* g_deciding = nullptr;  // the entry BlendLeader's blend is being kept i
 // XBE_BLEND_DECIDE=0: every blend decided again at each t, to compare against
 bool DecideOn() {
     static const bool on = [] {
-        const char* e = std::getenv("XBE_BLEND_DECIDE");
+        const char* e = diag::Env("XBE_BLEND_DECIDE");
         return !(e && *e == '0');
     }();
     return on;
@@ -2179,7 +2180,7 @@ Blended BlendDecided(uint32_t n, float t, State& s, Undo& undo) {
     // a draw with anything that jumped is drawn as the frame has it: the rows of one matrix must not part, half
     // taken part way and half not. XBE_INTERP_WHOLE=0 takes each register on its own
     static const bool whole = [] {
-        const char* e = std::getenv("XBE_INTERP_WHOLE");
+        const char* e = diag::Env("XBE_INTERP_WHOLE");
         return !e || *e != '0';
     }();
     Blended how = jumped && whole ? Blended::kJumped : sn.found >= 0 ? Blended::kYes : Blended::kBorrowed;
@@ -2249,7 +2250,7 @@ Kept g_kept;
 // texture from one in what is drawn into it
 bool OffscreenKept() {
     static const bool kept = [] {
-        const char* e = std::getenv("XBE_INTERP_OFFSCREEN");
+        const char* e = diag::Env("XBE_INTERP_OFFSCREEN");
         return e && *e == '0';
     }();
     return kept;
@@ -2351,7 +2352,7 @@ AtMemo* MemoFor(int32_t key) {
 // XBE_MOTION_MEMO=0: every draw blended at each t each pass asks (motion and drawing again), to compare against
 bool AtMemoOn() {
     static const bool on = [] {
-        const char* e = std::getenv("XBE_MOTION_MEMO");
+        const char* e = diag::Env("XBE_MOTION_MEMO");
         return !(e && *e == '0');
     }();
     return on;
@@ -2653,7 +2654,7 @@ struct TriSet {
 // XBE_EXTRA_FLAT=0: the triangle sets in a std::unordered_set, as before
 bool ExtraFlat() {
     static const bool on = [] {
-        const char* e = std::getenv("XBE_EXTRA_FLAT");
+        const char* e = diag::Env("XBE_EXTRA_FLAT");
         return !(e && *e == '0');
     }();
     return on;
@@ -2847,7 +2848,7 @@ void CheckVertices(uint32_t n, const State& s, uint32_t prim, uint32_t start, ui
 
 bool CheckingVertices() {
     static const bool on = [] {
-        const char* e = std::getenv("XBE_INTERP_CHECK_VERTICES");
+        const char* e = diag::Env("XBE_INTERP_CHECK_VERTICES");
         return Recording() && e && std::strtol(e, nullptr, 10) != 0;
     }();
     return on;
@@ -2855,7 +2856,7 @@ bool CheckingVertices() {
 
 uint32_t Recording() {
     static const uint32_t n = [] {
-        const char* e = std::getenv("XBE_INTERP_RECORD");
+        const char* e = diag::Env("XBE_INTERP_RECORD");
         long v = e ? std::strtol(e, nullptr, 10) : 0;
         return uint32_t(std::clamp(v, 0l, 1000l));
     }();

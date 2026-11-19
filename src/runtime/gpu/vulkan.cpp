@@ -843,7 +843,7 @@ bool SameTexture(const Tex& tx, const TextureDesc& d) {
 // XBE_MOTION_VIEW=1..3: motion vectors for the frame's pictures, shown over them (kMotionViewHlsl); 0 when unset
 int MotionView() {
     static const int view = [] {
-        const char* e = std::getenv("XBE_MOTION_VIEW");
+        const char* e = diag::Env("XBE_MOTION_VIEW");
         return e ? std::clamp(std::atoi(e), 0, 3) : 0;
     }();
     return view;
@@ -1093,7 +1093,7 @@ private:
     // XBE_MOTION=0: none under DLSS either (no motion pass, nor what it keeps), for finding what they bring out
     bool MotionOn() const {
         static const bool off = [] {
-            const char* e = std::getenv("XBE_MOTION");
+            const char* e = diag::Env("XBE_MOTION");
             return e && *e == '0';
         }();
         return !off && (MotionWanted() || upscale_);
@@ -2006,7 +2006,7 @@ bool VulkanBackend::CreateInstance() {
                 exts.push_back(VK_EXT_SWAPCHAIN_COLOR_SPACE_EXTENSION_NAME);
     }
     AddDlssInstanceExtensions(exts);
-    bool debug = std::getenv("XBE_VULKAN_DEBUG") != nullptr;
+    bool debug = diag::Env("XBE_VULKAN_DEBUG") != nullptr;
     const char* validation = "VK_LAYER_KHRONOS_validation";
     if (debug) exts.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
     VkApplicationInfo ai{VK_STRUCTURE_TYPE_APPLICATION_INFO};
@@ -5185,7 +5185,7 @@ void VulkanBackend::DeliverReports() {
             pixels += double(n) / q.samples_per_pixel;
         }
         // XBE_REPORTS_VISIBLE: every test passes, an A/B switch for culling problems
-        static const bool all_visible = std::getenv("XBE_REPORTS_VISIBLE") != nullptr;
+        static const bool all_visible = diag::Env("XBE_REPORTS_VISIBLE") != nullptr;
         if (all_visible) pixels = 640.0 * 480.0;
         kernel::W32(r.va + kTime, uint32_t(presents_));
         kernel::W32(r.va + kTimeHigh, 0);
@@ -5386,7 +5386,7 @@ bool VulkanBackend::Motion() { return MotionOn(); }
 // for an upscaler; XBE_JITTER=1 with XBE_MOTION_VIEW too, to see it without one
 // XBE_JITTER=0 turns it off under DLSS too, for finding what the jitter brings out
 bool VulkanBackend::Jittering() const {
-    static const char* e = std::getenv("XBE_JITTER");
+    static const char* e = diag::Env("XBE_JITTER");
     static const bool on = e != nullptr && *e != '0', off = e != nullptr && *e == '0';
     return !off && (upscale_ || (on && MotionWanted()));
 }
@@ -5760,7 +5760,7 @@ void VulkanBackend::DrawMotion(const State& s, const Before& before, uint32_t pr
 // XBE_MOTION_INSTANCED=0: MotionAll's pass draws each place on its own, as before
 bool VulkanBackend::MotionInstanced() {
     static const bool on = [] {
-        const char* e = std::getenv("XBE_MOTION_INSTANCED");
+        const char* e = diag::Env("XBE_MOTION_INSTANCED");
         return !(e && *e == '0');
     }();
     return on;
@@ -5807,7 +5807,7 @@ void VulkanBackend::DrawMotionInstanced(const State& s) {
 // XBE_MOTION_ALL=0: a motion pass for each picture, after it is drawn, as before
 bool VulkanBackend::MotionAll() {
     static const bool on = [] {
-        const char* e = std::getenv("XBE_MOTION_ALL");
+        const char* e = diag::Env("XBE_MOTION_ALL");
         return !(e && *e == '0');
     }();
     return on && MotionOn() && motion_layer_ok_;
@@ -5978,7 +5978,7 @@ void VulkanBackend::DrawMotionAt(uint32_t p, const State& s, const Before& befor
 // XBE_MOTION_REUSE=0: nothing kept, every draw of every pass worked out the whole way, to compare against
 VulkanBackend::MotionKept* VulkanBackend::MotionEntry(uint32_t n, bool make) {
     static const bool reuse = [] {
-        const char* e = std::getenv("XBE_MOTION_REUSE");
+        const char* e = diag::Env("XBE_MOTION_REUSE");
         return !(e && *e == '0');
     }();
     if (!reuse && !make) return nullptr;
@@ -6068,7 +6068,7 @@ void VulkanBackend::IssueKeptGeometry(const Geometry& g) {
 // picture frame generation draws, as before
 bool VulkanBackend::FurReuse() {
     static const bool on = [] {
-        const char* e = std::getenv("XBE_FUR_REUSE");
+        const char* e = diag::Env("XBE_FUR_REUSE");
         return !(e && *e == '0');
     }();
     return on;
@@ -6077,7 +6077,7 @@ bool VulkanBackend::FurReuse() {
 // XBE_MOTION_DC=0: every motion draw taken from the first pass fills and uploads its draw constants again
 bool VulkanBackend::DrawConstantsKept() {
     static const bool on = [] {
-        const char* e = std::getenv("XBE_MOTION_DC");
+        const char* e = diag::Env("XBE_MOTION_DC");
         return !(e && *e == '0');
     }();
     return on;
@@ -6086,7 +6086,7 @@ bool VulkanBackend::DrawConstantsKept() {
 // XBE_MOTION_FRAME=0: a motion draw takes only the frame draw's geometry, its textures, constants and views its own
 bool VulkanBackend::FrameDrawSetup() {
     static const bool on = [] {
-        const char* e = std::getenv("XBE_MOTION_FRAME");
+        const char* e = diag::Env("XBE_MOTION_FRAME");
         return !(e && *e == '0');
     }();
     return on;
@@ -6097,7 +6097,7 @@ bool VulkanBackend::FrameDrawSetup() {
 // XBE_MOTION_GEOMETRY=0: every motion draw worked out uploads its vertices again, to compare against
 const VulkanBackend::KeptOne* VulkanBackend::FrameDrawGeometry(uint32_t serial, const Assembled& a) const {
     static const bool on = [] {
-        const char* e = std::getenv("XBE_MOTION_GEOMETRY");
+        const char* e = diag::Env("XBE_MOTION_GEOMETRY");
         return !(e && *e == '0');
     }();
     if (!on) return nullptr;
@@ -6285,7 +6285,7 @@ app::Scale VulkanBackend::UpscaleScale() {
     // covers
     // XBE_LOD_BIAS=0 leaves the textures as the render size takes them, for finding what the bias brings out
     static const bool no_bias = [] {
-        const char* e = std::getenv("XBE_LOD_BIAS");
+        const char* e = diag::Env("XBE_LOD_BIAS");
         return e && *e == '0';
     }();
     lod_bias_ = no_bias ? 0.0f : -std::log2(std::max(ratio, 1.0f));
@@ -6340,7 +6340,7 @@ void VulkanBackend::Upscale(std::vector<Image*>& shows, const std::vector<Image*
                      m.velocity->h == color.h;
         // XBE_DLSS_DEPTH=0 hands it the far plane everywhere, for finding what the depth brings out
         static const bool no_depth = [] {
-            const char* e = std::getenv("XBE_DLSS_DEPTH");
+            const char* e = diag::Env("XBE_DLSS_DEPTH");
             return e && *e == '0';
         }();
         Image& depth = moved && !no_depth ? *m.depth : *dlss_still_depth_;
@@ -6356,7 +6356,7 @@ void VulkanBackend::Upscale(std::vector<Image*>& shows, const std::vector<Image*
         Transition(*dst, VK_IMAGE_LAYOUT_GENERAL);
         Barrier();
         // XBE_DLSS_JITTER=-1 hands DLSS the jitter the other way round, for finding which way it takes it
-        static const float sign = std::getenv("XBE_DLSS_JITTER") && std::atoi(std::getenv("XBE_DLSS_JITTER")) < 0 ? -1 : 1;
+        static const float sign = diag::Env("XBE_DLSS_JITTER") && std::atoi(diag::Env("XBE_DLSS_JITTER")) < 0 ? -1 : 1;
         std::array<float, 2> jitter = moved ? Jitter(slots[i]) : std::array<float, 2>{};
         jitter[0] *= sign;
         jitter[1] *= sign;
@@ -6841,7 +6841,7 @@ void VulkanBackend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t
     if (cap_) {
         // XBE_CAPTURE_VERTS=N: each draw's inputs for its first N vertices (2 unless set), to read a whole mesh
         static const uint32_t cap_verts = [] {
-            const char* v = std::getenv("XBE_CAPTURE_VERTS");
+            const char* v = diag::Env("XBE_CAPTURE_VERTS");
             return v && *v ? uint32_t(std::max(1, std::atoi(v))) : 2u;
         }();
         CaptureDraw(s, prim, count, k, c, stages);
@@ -7037,7 +7037,7 @@ void VulkanBackend::FillKept(KeptDraw& k, const Assembled& a, const DrawShaders&
 // XBE_KEPT_CONSTANTS=0: a draw in the kept draw's state whose registers changed goes the whole way, as before
 static bool KeptConstantsOn() {
     static const bool on = [] {
-        const char* e = std::getenv("XBE_KEPT_CONSTANTS");
+        const char* e = diag::Env("XBE_KEPT_CONSTANTS");
         return !(e && *e == '0');
     }();
     return on;
@@ -7685,7 +7685,7 @@ void VulkanBackend::EndPicture() {
 // XBE_POST_TRACE: the picture's effects, where they were drawn or why not, logged when that changes from the picture
 // before (the counts and addresses left out of the comparison)
 void VulkanBackend::PostTraceEnd(const Target& front) {
-    static const bool trace = std::getenv("XBE_POST_TRACE") != nullptr;
+    static const bool trace = diag::Env("XBE_POST_TRACE") != nullptr;
     PostTrace pt = std::exchange(post_trace_, {});
     if (!trace || post_trace_lines_ >= 400) return;
     char why[256];
@@ -7798,7 +7798,7 @@ uint32_t VulkanBackend::PictureTimes(float* t, float& step) {
 // counts pixels against them in the frame. XBE_GEN_LIGHT=0 draws every frame whole
 bool VulkanBackend::LightAhead() {
     static const bool off = [] {
-        const char* e = std::getenv("XBE_GEN_LIGHT");
+        const char* e = diag::Env("XBE_GEN_LIGHT");
         return e && *e == '0';
     }();
     const double r = off ? 0 : InStep();
@@ -8148,7 +8148,7 @@ void VulkanBackend::Present(const Surface& front) {
             StartCapture();
         }
     } else if (g_capture.exchange(false) && CaptureOn()) {
-        const char* n = std::getenv("XBE_CAPTURE_FRAMES");
+        const char* n = diag::Env("XBE_CAPTURE_FRAMES");
         cap_more_ = n ? uint32_t(std::max(1l, std::strtol(n, nullptr, 10)) - 1) : 0;
         cap_seq_ = 0;
         StartCapture();
@@ -8256,7 +8256,7 @@ void VulkanBackend::Present(const Surface& front) {
     frame_++;
     shown_base_ += std::max<size_t>(sources.size(), 1);
     pic_slot_ = Pictures() - 1;
-    if (std::getenv("XBE_FRAME_LOG"))
+    if (diag::Env("XBE_FRAME_LOG"))
         LOGI("frame %llu: %u draws, %u opaque, %u counted, %zu reports left", (unsigned long long)presents_,
              frame_draws_, frame_opaque_, frame_counted_, reports_.size());
     frame_draws_ = frame_opaque_ = frame_counted_ = 0;
@@ -8584,7 +8584,7 @@ void VulkanBackend::CapSave(const CapImage& img, const char* name) {
 
 // XBE_CAPTURE_FULL=1: at the target's own size, upscaled as drawn, rather than the console's
 void VulkanBackend::CapSave(Target& t, const char* name) {
-    static const bool full = std::getenv("XBE_CAPTURE_FULL") && std::atoi(std::getenv("XBE_CAPTURE_FULL"));
+    static const bool full = diag::Env("XBE_CAPTURE_FULL") && std::atoi(diag::Env("XBE_CAPTURE_FULL"));
     ResolveSamples(t);
     CapSave({.res = t.res.get(), .view = t.res->Sampled(), .w = full ? t.w : t.gw, .h = full ? t.h : t.gh}, name);
 }
@@ -8592,8 +8592,8 @@ void VulkanBackend::CapSave(Target& t, const char* name) {
 // XBE_CAPTURE_VS=<hex shader handle>, XBE_CAPTURE_RT=<hex surface address>: the color and depth targets before each
 // draw with that vertex shader or into that surface, and before the draw after the last of them
 void VulkanBackend::CapAround(const State& s) {
-    static const char* env = std::getenv("XBE_CAPTURE_VS");
-    static const char* env_rt = std::getenv("XBE_CAPTURE_RT");
+    static const char* env = diag::Env("XBE_CAPTURE_VS");
+    static const char* env_rt = diag::Env("XBE_CAPTURE_RT");
     if (!env && !env_rt) return;
     static const uint32_t vs = env ? uint32_t(std::strtoul(env, nullptr, 16)) : 0;
     static const uint32_t rt = env_rt ? mem::VirtualFromPhysical(uint32_t(std::strtoul(env_rt, nullptr, 16))) : 0;

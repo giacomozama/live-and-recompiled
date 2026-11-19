@@ -460,7 +460,7 @@ void NoteDepthOfField(const PixelKey& k, const float (*pc)[4], uint32_t dst_blen
     // runs of the combiners on the CPU, 2.2 ms a frame in the bloodbath's intro, whose composite stays the same.
     // XBE_FOCUS_MEMO=0 works it out each time, to compare against
     static const bool memo = [] {
-        const char* e = std::getenv("XBE_FOCUS_MEMO");
+        const char* e = diag::Env("XBE_FOCUS_MEMO");
         return !(e && *e == '0');
     }();
     static PixelKey last_k;
@@ -504,7 +504,7 @@ void NoteDepthOfField(const PixelKey& k, const float (*pc)[4], uint32_t dst_blen
     // XBE_FOCUS_TRACE=1: each new table, as the host depths whose pixels blur over 90% (what super fur takes as
     // blurred away) and the least blur in the table, or why a composite gave none
     static const bool trace = [] {
-        const char* e = std::getenv("XBE_FOCUS_TRACE");
+        const char* e = diag::Env("XBE_FOCUS_TRACE");
         return e && *e && *e != '0';
     }();
     if (!depth_only) {
@@ -938,7 +938,7 @@ void CaptureConstantChanges(FILE* f, const State& s, std::array<std::array<float
     // the values of short runs (4 registers or fewer: not the bone matrices), e.g. a fur shell's offset;
     // XBE_CAPTURE_BONES=1: every run's, the bone palettes too
     static const bool bones = [] {
-        const char* v = std::getenv("XBE_CAPTURE_BONES");
+        const char* v = diag::Env("XBE_CAPTURE_BONES");
         return v && *v && *v != '0';
     }();
     for (int r = 0; r < kVsConstants;) {
@@ -1051,7 +1051,7 @@ bool UnitTexcoords(const State& s, const Assembled& a) {
 }
 
 void CountedSkip(const State& s, const char* why) {
-    static const bool trace = std::getenv("XBE_TRACE_REPORTS") != nullptr;
+    static const bool trace = diag::Env("XBE_TRACE_REPORTS") != nullptr;
     static std::atomic<int> n{0};
     if (trace && s.simple[kMCountEnable >> 2] && n++ < 64) LOGR("gpu: counted draw skipped (%s)", why);
 }

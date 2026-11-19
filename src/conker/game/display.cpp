@@ -39,6 +39,7 @@
 // four player split screen, whose quarters each have a HUD of their own (the present interval byte 0x6C0268, 3 there).
 // The setting hud_split (display::g_hud_split) turns it off, as does XBE_HUD_SPLIT=0.
 #include "common/display.h"
+#include "core/diag.h"
 
 #include <algorithm>
 #include <array>
@@ -92,7 +93,7 @@ uint32_t Clamp(uint32_t r) { return r == 0 ? 0 :  r <= 30 ? 30 : std::min((r + k
 // what the setting asks for: the pictures shown a second
 uint32_t Shown() {
     static const uint32_t env = [] {
-        const char* e = std::getenv("XBE_FRAME_RATE");
+        const char* e = diag::Env("XBE_FRAME_RATE");
         return e ? uint32_t(std::atoi(e)) : 0u;
     }();
     uint32_t r = Clamp(env ? env : g_frame_rate);
@@ -124,7 +125,7 @@ uint32_t Rate() {
 constexpr uint32_t kSplitInterval = 0x6C0268;  // the game's present interval, 3 in a three or four player split screen
 bool HudSplit() {
     static const bool off = [] {
-        const char* e = std::getenv("XBE_HUD_SPLIT");
+        const char* e = diag::Env("XBE_HUD_SPLIT");
         return e && *e == '0';
     }();
     return !off && display::g_hud_split && warp::Multiplayer() && !warp::Frontend() && !mouse::GameMenu() &&
@@ -196,7 +197,7 @@ void SendCamera() {
 float Aspect(float d) {
     static const float env = [] {
         float w = 0, h = 0;
-        const char* e = std::getenv("XBE_ASPECT");
+        const char* e = diag::Env("XBE_ASPECT");
         return e && std::sscanf(e, "%f:%f", &w, &h) == 2 && w > 0 && h > 0 ? w / h : 0.0f;
     }();
     if (env) return env;
@@ -244,7 +245,7 @@ float GuestF(uint32_t va) {
 void PutF(uint32_t va, float f) { std::memcpy(mem::Base() + va, &f, 4); }
 
 bool ZoomTrace() {
-    static const bool on = std::getenv("XBE_ZOOM_TRACE") != nullptr;
+    static const bool on = diag::Env("XBE_ZOOM_TRACE") != nullptr;
     return on;
 }
 }  // namespace
@@ -405,7 +406,7 @@ void ConkerFrameTicks(X86Context& ctx, uint8_t* base) {
     // to none (carry -0.5 + 0.9) made the step 0x2D37F4 stores zero, which 0x2DA316 divides by
     int32_t ticks = int32_t(std::min(std::max(t + 0.5, 1.0), 60.0));
     carry = std::clamp(t - ticks, -0.5, 0.5);
-    static const bool trace = std::getenv("XBE_TRACE_TICKS") != nullptr;
+    static const bool trace = diag::Env("XBE_TRACE_TICKS") != nullptr;
     if (trace) LOGR("display: frame %llu us, %d ticks (console's %u), carry %.2f", (unsigned long long)us, ticks, ctx.ecx, carry);
     ctx.ecx = uint32_t(ticks);
     display::g_ticks += ctx.ecx;
@@ -471,7 +472,7 @@ void ConkerCameraFov(X86Context& ctx, uint8_t* base) {
 namespace {
 
 bool HudTrace() {
-    static const bool on = std::getenv("XBE_HUD_TRACE") != nullptr;
+    static const bool on = diag::Env("XBE_HUD_TRACE") != nullptr;
     return on;
 }
 

@@ -28,7 +28,7 @@ if [ -z "$CXX" ]; then
 fi
 JOBS=${JOBS:-$(nproc)}
 BASE="-std=c++20 -mcpu=x86_64_v2 -fno-strict-aliasing"
-HOST="$BASE -O1 -g -I$GS -I$RT -I$GEN -I$H -I$H/compat -DXBE_HEADLESS=1 -DXBE_RAW_VERTICES=0 -DXBE_RENDER_THREAD=0"
+HOST="$BASE -O1 -g -I$GS -I$RT -I$GEN -I$H -I$H/compat -DXBE_HEADLESS=1 -DXBE_DEBUG_FEATURES=1 -DXBE_RAW_VERTICES=0 -DXBE_RENDER_THREAD=0"
 
 # generated code, an object rebuilt only when its partition is newer
 export CXX BASE RT GEN GEN_OBJ

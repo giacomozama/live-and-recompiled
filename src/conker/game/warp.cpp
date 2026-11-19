@@ -32,6 +32,7 @@
 #include <mutex>
 
 #include "xdk/hle.h"
+#include "core/diag.h"
 #include "cpu/x86_ops.h"
 #include "core/log.h"
 
@@ -136,7 +137,7 @@ void ReadCutsceneEnv();
 // number. <checkpoint>@<level>:<spawn> starts at the checkpoint, with its progress, but in that level and spawn: for a
 // checkpoint whose own start is elsewhere (140, It's War's escape: WarBoss in the table, played in BeachRunup)
 void ReadEnv() {
-    if (const char* e = std::getenv("XBE_WARP")) {
+    if (const char* e = diag::Env("XBE_WARP")) {
         std::string s = e;
         if (size_t at = s.find('@'); at != std::string::npos) {
             const std::string where = s.substr(at + 1);
@@ -163,7 +164,7 @@ void ReadEnv() {
 }
 
 void ReadCutsceneEnv() {
-    if (const char* e = std::getenv("XBE_CUTSCENE")) {
+    if (const char* e = diag::Env("XBE_CUTSCENE")) {
         std::string s = e;
         size_t colon = s.find(':');
         int level = ParseLevel(s.substr(0, colon));

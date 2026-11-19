@@ -56,7 +56,6 @@ const app::GameInfo app::kGame = {
     .missing = L"Put the game in the assets folder: its disc image (.iso), or default.xbe with its folders beside it.",
     .images = {{"default.xbe", "Game"}},  // each recompiled xbe and its exe, for title launches
     .options = {{"fps_overlay", &ui::g_fps_overlay, nullptr},  // ImGui settings menu options (src/conker/game/ui.cpp)
-                {"fps_in_title", &ui::g_fps_title, nullptr},
                 {"menu_resizable", &ui::g_menu_resizable, nullptr},  // Debug: the settings menu moved and sized by the mouse (ui.cpp)
                 {"menu_decorations", &ui::g_decorations, nullptr},  // outlines round the settings menu's sections and widgets (ui.cpp)
                 {"ui_accent", nullptr, &ui::g_accent},  // the settings menu's accent color, 0 blue to 6 purple, 4 orange by default (ui_font.cpp)

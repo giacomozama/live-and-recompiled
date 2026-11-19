@@ -39,6 +39,7 @@
 #include <backends/imgui_impl_sdl3.h>
 
 #include "app/app.h"
+#include "core/diag.h"
 #include "core/input.h"
 #include "core/log.h"
 #include "gpu/backend.h"
@@ -246,12 +247,14 @@ bool Handle(const SDL_Event& e) {
             input::Key(e.key.which, vk, true);
             if (!vk || Send(kMsgKeyDown, uintptr_t(vk), e.key.repeat ? 1 << 30 : 0)) break;
             if (!e.key.repeat && (vk == kVkF11 || (vk == 0x0D && (e.key.mod & SDL_KMOD_ALT)))) ToggleWindowed();
-            if (vk == kVkF3) DumpThreads();
-            if (vk == kVkF4 && !e.key.repeat) gpu::g_record_dump = true;
-            if (vk == kVkF5 && !e.key.repeat) x86_profile_dump();
-            if (vk == kVkF6 && !e.key.repeat) x86_profile_mark();
-            if (vk == kVkF7 && !e.key.repeat) gpu::ToggleFreeze();
-            if (vk == kVkF8) gpu::StepFrozen();  // on auto repeat too: frame by frame while held
+            if constexpr (diag::kDebugFeatures) {
+                if (vk == kVkF3) DumpThreads();
+                if (vk == kVkF4 && !e.key.repeat) gpu::g_record_dump = true;
+                if (vk == kVkF5 && !e.key.repeat) x86_profile_dump();
+                if (vk == kVkF6 && !e.key.repeat) x86_profile_mark();
+                if (vk == kVkF7 && !e.key.repeat) gpu::ToggleFreeze();
+                if (vk == kVkF8) gpu::StepFrozen();  // on auto repeat too: frame by frame while held
+            }
             break;
         }
         case SDL_EVENT_TEXT_INPUT:  // UTF-8, a character at a time to the game

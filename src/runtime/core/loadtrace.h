@@ -9,10 +9,12 @@
 #include <cstdint>
 #include <cstdlib>
 
+#include "core/diag.h"
+
 namespace loadtrace {
 
 inline bool On() {
-    static const bool on = std::getenv("XBE_TRACE_LOAD") != nullptr;
+    static const bool on = diag::Env("XBE_TRACE_LOAD") != nullptr;
     return on;
 }
 

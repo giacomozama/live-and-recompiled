@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "core/log.h"
+#include "core/diag.h"
 #include "cpu/x86_ops.h"
 #include "kernel/kernel.h"
 
@@ -45,7 +46,7 @@ struct Trail {
     TrailEntry e[kTrailLen];
 };
 Trail g_trails[kTrailThreads];
-const bool g_trail_on = std::getenv("XBE_CRASH_TRAIL") != nullptr;
+const bool g_trail_on = diag::Env("XBE_CRASH_TRAIL") != nullptr;
 
 void Note(const X86Context& ctx, uint32_t kind, uint32_t target, uint32_t ret) {
     thread_local Trail* t = nullptr;

@@ -85,6 +85,10 @@ set(XBE_CODEGEN_TOOL "xbe_recomp" CACHE FILEPATH "xbe_recomp used for codegen (a
 # Windows builds: CodeView debug info and <target>.pdb beside the exe, for Visual Studio or WinDbg. It is set on the
 # targets, not the compile flags, so a player kit's compile line (XBE_KIT_CXX_FLAGS) stays without it.
 option(XBE_PDB "Windows builds: write <target>.pdb (slower builds, bigger objects)" OFF)
+# the debug features (src/runtime/core/diag.h): the XBE_* environment variables, the F3 to F8 keys and the settings
+# menu's Debug tab. On, the game links <target>_host_debug instead of <target>_host; run-linux.sh and run-proton.sh turn
+# it on. A player kit carries both hosts, and Setup links the debug one when asked (--debug-features)
+option(XBE_DEBUG_FEATURES "Build the game with the debug features (XBE_* variables, F3-F8 keys, the Debug tab)" OFF)
 set(XBE_KIT_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
 # zig's -g0 wins over a -g after it: the toolchain's goes, for the targets from here on (the dependencies above keep it)
 if(XBE_PDB)
@@ -347,18 +351,28 @@ function(add_xbe_image target xbe config partitions game_dir)
     # Everything but the title's own code: the runtime, the game's hooks, ImGui and the xbe's hash. It reads only the
     # addresses in image_symbols.h, so it can be built ahead and linked with game code recompiled on another machine
     # (a player-side build, see add_xbe_player_kit).
-    add_library(${target}_host STATIC ${XBE_RUNTIME_SOURCES} ${XBE_HOST_SOURCES} ${GAME_SOURCES} ${XBE_IMGUI_SOURCES} ${XBE_HASH})
-    add_dependencies(${target}_host recompile_${target})
-    target_include_directories(${target}_host PUBLIC ${XBE_GAME_SRC} ${XBE_ROOT_DIR}/src/runtime ${GEN})
-    target_include_directories(${target}_host SYSTEM PRIVATE ${imgui_SOURCE_DIR})
-    target_compile_options(${target}_host PUBLIC -fno-strict-aliasing)
-    target_compile_definitions(${target}_host PUBLIC ${XBE_HOST_DEFINITIONS})
-    target_link_libraries(${target}_host PUBLIC tomlplusplus::tomlplusplus $<LINK_ONLY:SDL3::SDL3-static> ${XBE_HOST_SYSTEM_LIBS})
-    # the game's hooks see an SDL window (src/conker/game), the runtime's input code hands it the controllers
-    target_compile_definitions(${target}_host PRIVATE XBE_SDL)
-    foreach(lib ${XBE_GLSLANG_LIBS})
-        target_link_libraries(${target}_host PUBLIC $<LINK_ONLY:${lib}>)
+    # Two of it from the same sources: <target>_host without the debug features, <target>_host_debug with them
+    # (XBE_DEBUG_FEATURES, core/diag.h). The game links the one the option names; a player kit carries both.
+    foreach(host ${target}_host ${target}_host_debug)
+        add_library(${host} STATIC ${XBE_RUNTIME_SOURCES} ${XBE_HOST_SOURCES} ${GAME_SOURCES} ${XBE_IMGUI_SOURCES} ${XBE_HASH})
+        add_dependencies(${host} recompile_${target})
+        target_include_directories(${host} PUBLIC ${XBE_GAME_SRC} ${XBE_ROOT_DIR}/src/runtime ${GEN})
+        target_include_directories(${host} SYSTEM PRIVATE ${imgui_SOURCE_DIR})
+        target_compile_options(${host} PUBLIC -fno-strict-aliasing)
+        target_compile_definitions(${host} PUBLIC ${XBE_HOST_DEFINITIONS})
+        target_link_libraries(${host} PUBLIC tomlplusplus::tomlplusplus $<LINK_ONLY:SDL3::SDL3-static> ${XBE_HOST_SYSTEM_LIBS})
+        # the game's hooks see an SDL window (src/conker/game), the runtime's input code hands it the controllers
+        target_compile_definitions(${host} PRIVATE XBE_SDL)
+        foreach(lib ${XBE_GLSLANG_LIBS})
+            target_link_libraries(${host} PUBLIC $<LINK_ONLY:${lib}>)
+        endforeach()
     endforeach()
+    target_compile_definitions(${target}_host PRIVATE XBE_DEBUG_FEATURES=0)
+    target_compile_definitions(${target}_host_debug PRIVATE XBE_DEBUG_FEATURES=1)
+    set(game_host ${target}_host)
+    if(XBE_DEBUG_FEATURES)
+        set(game_host ${target}_host_debug)
+    endif()
 
     add_executable(${target} WIN32 ${GEN_SOURCES})
     add_dependencies(${target} recompile_${target})
@@ -368,13 +382,14 @@ function(add_xbe_image target xbe config partitions game_dir)
     target_include_directories(${target} PRIVATE ${XBE_ROOT_DIR}/src/runtime ${GEN})
     # whole: an archive member is otherwise only taken for a symbol nothing defines yet, and every function the host
     # replaces already has the recompiled weak definition, so the replacements would be left out
-    target_link_libraries(${target} PRIVATE "$<LINK_LIBRARY:XBE_WHOLE_ARCHIVE,${target}_host>")
+    target_link_libraries(${target} PRIVATE "$<LINK_LIBRARY:XBE_WHOLE_ARCHIVE,${game_host}>")
     # lld keeps the recompiled weak functions overridable by the host ones
     target_link_options(${target} PRIVATE -fuse-ld=lld -g)
     if(WIN32)
         target_link_options(${target} PRIVATE -municode -Wl,--subsystem,windows)  # the host's entry is wWinMain; Zig ignores -mwindows, which WIN32 adds
         if(XBE_PDB)
             target_compile_options(${target}_host PRIVATE -g -gcodeview)
+            target_compile_options(${target}_host_debug PRIVATE -g -gcodeview)
             target_compile_options(${target} PRIVATE -g -gcodeview)
             # zig writes <target>.pdb itself for a COFF link with debug info, and takes no --pdb
             target_link_options(${target} PRIVATE -g)
@@ -394,7 +409,7 @@ endfunction()
 #   kit/bin/           xbe_recomp (the packaging script adds the Linux one, and setup-linux beside setup-windows.exe)
 #   kit/config, xdk/   the image's config and the XDK tables
 #   kit/include/       the headers the generated code includes, and image_symbols.h to check the recompile against
-#   kit/lib/<os>/      the prebuilt host (runtime, game hooks, ImGui), glslang and SDL
+#   kit/lib/<os>/      the prebuilt host (runtime, game hooks, ImGui) with and without the debug features, glslang and SDL
 #   kit/files/<os>/    what Setup puts beside the game as it is: the DLSS module and NVIDIA's library (cmake/Dlss.cmake)
 # <os>.toml's [toolchain.windows] and [toolchain.linux] (the archive of the compiler of the version the kit was
 # built with, Zig, for the host it runs on, kit/toolchain/<archive> inside Setup, and its SHA-256) are added by the packaging script; Setup
@@ -477,6 +492,8 @@ function(add_xbe_player_kit target title)
         list(JOIN items ", " items)
         string(APPEND toml "${key} = [${items}]\n")
     endforeach()
+    # the host in libs, and the one Setup links in its place with the debug features (--debug-features)
+    string(APPEND toml "host = \"${lib}/lib${target}_host.a\"\nhost_debug = \"${lib}/lib${target}_host_debug.a\"\n")
     file(GENERATE OUTPUT ${kit}/${os}.toml CONTENT "${toml}")
 
     set(extra)
@@ -502,12 +519,13 @@ function(add_xbe_player_kit target title)
         COMMAND ${CMAKE_COMMAND} -E copy ${XBE_ROOT_DIR}/src/runtime/cpu/x86_ops.h ${XBE_ROOT_DIR}/src/runtime/cpu/x86_context.h
             ${kit}/include/cpu/
         COMMAND ${CMAKE_COMMAND} -E copy ${gen}/image_symbols.h ${kit}/include/
-        COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:${target}_host> $<TARGET_FILE:SDL3::SDL3-static> ${kit}/${lib}/
+        COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:${target}_host> $<TARGET_FILE:${target}_host_debug>
+            $<TARGET_FILE:SDL3::SDL3-static> ${kit}/${lib}/
         COMMAND ${CMAKE_COMMAND} -E copy ${glslang_libs} ${kit}/${lib}/
         ${copy_files}
         ${extra}
         COMMAND ${CMAKE_COMMAND} -E copy ${XBE_ROOT_DIR}/THIRD_PARTY.txt ${pkg}/
-        DEPENDS ${target}_host setup xbe_recomp SDL3::SDL3-static ${XBE_GLSLANG_LIBS} ${sha1_file}
+        DEPENDS ${target}_host ${target}_host_debug setup xbe_recomp SDL3::SDL3-static ${XBE_GLSLANG_LIBS} ${sha1_file}
             $<TARGET_NAME_IF_EXISTS:xbe_dlss>
         COMMENT "Staging the ${os} player kit for ${target} in ${pkg}"
         VERBATIM)

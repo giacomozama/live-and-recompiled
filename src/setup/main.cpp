@@ -12,14 +12,17 @@
 //   setup-windows.exe, setup-linux                      a window: pick the game, the working folder and the folder
 //                                                       the game is made in (the last two start as the defaults)
 //   setup-windows.exe, setup-linux --cli --source PATH [--work DIR] [--game-dir DIR]
-//                                  [--jobs N] [--keep] [--portable] [--toolchain DIR] [--root DIR] [--fetch-toolchain]
+//                                  [--jobs N] [--keep] [--portable] [--debug-features] [--toolchain DIR] [--root DIR]
+//                                  [--fetch-toolchain]
 //
 // Run with no arguments, Setup opens the window (when there is a display), with any it runs on the console. --source
 // is the game: its DefaultPackage (the digital release's package, unpacked for you), a disc image (.iso), a folder
 // with the extracted default.xbe, or a folder holding one of these. The game's files are put in
 // assets/ below the game folder, where the game looks for them, unless they are already there. --work is where the
 // kit, the compiler and, while building, the generated code and objects go (work, beside Setup); --game-dir is where the game is linked (game, beside Setup). Both are made when missing.
-// --portable puts portable.txt in the game folder, so the game keeps its settings and saves there. --keep leaves the generated code and the unpacked kit in the work folder (the unpacked compiler is always removed
+// --portable puts portable.txt in the game folder, so the game keeps its settings and saves there. --debug-features
+// links the kit's host with the debug features (the XBE_* variables, the F3 to F8 keys, the settings menu's Debug tab)
+// in place of the one without. --keep leaves the generated code and the unpacked kit in the work folder (the unpacked compiler is always removed
 // when done); --toolchain uses another copy of the target's
 // compiler of the kit's version; --root is the folder Setup
 // would be in; --fetch-toolchain only unpacks the compiler.
@@ -110,6 +113,7 @@ struct Kit {
     std::vector<fs::path> include;
     std::vector<std::string> driver;  // the compiler's own first arguments (zig's "c++"), before every command
     std::vector<std::string> cxxflags, ldflags, libs;
+    std::string host, host_debug;                 // the host in libs, and the one with the debug features
     std::vector<fs::path> files;                  // put beside the game as it is (the DLSS module and NVIDIA's library)
     fs::path toolchain;                           // work/toolchain/<os>-<host>, cxx is in it
     std::string toolchain_archive, toolchain_sha256;  // [toolchain.<host>]: the compiler's archive inside the kit, and its checksum
@@ -301,6 +305,8 @@ bool LoadKit(const fs::path& kit_dir, Kit& k, std::string& error) {
     k.ldflags = Strings(o["ldflags"]);
     for (auto& s : Strings(o["libs"])) k.libs.push_back(s.rfind("-", 0) == 0 ? s : (kit_dir / s).generic_string());
     for (auto& s : Strings(o["files"])) k.files.push_back(kit_dir / s);
+    if (auto s = o["host"].value<std::string>()) k.host = (kit_dir / *s).generic_string();
+    if (auto s = o["host_debug"].value<std::string>()) k.host_debug = (kit_dir / *s).generic_string();
     k.toolchain_archive = o["toolchain"][kHost]["archive"].value_or(std::string());
     k.toolchain_sha256 = o["toolchain"][kHost]["sha256"].value_or(std::string());
     if (k.exe.empty() || k.xbe.empty() || k.sha1.size() != 40) {
@@ -1068,7 +1074,11 @@ bool Build(const Options& opt) {
     if (failed) return fail();
 
     // 4. link in the game folder; a response file keeps the command line short
-    Say("Step 3 of 3: putting %s together ...\n", k.Game().c_str());
+    if (opt.debug_features && (k.host_debug.empty() || !fs::exists(k.host_debug, ec))) {
+        Say("This Setup's kit has no host with the debug features. Build without them, or use a newer release.\n");
+        return fail();
+    }
+    Say("Step 3 of 3: putting %s together%s ...\n", k.Game().c_str(), opt.debug_features ? " with the debug features" : "");
     fs::create_directories(game_dir, ec);
     fs::path rsp = work / "link.rsp", out = game_dir / k.Game(), tmp = game_dir / (k.exe + ".new");
     {
@@ -1085,7 +1095,8 @@ bool Build(const Options& opt) {
         std::sort(order.begin(), order.end(), [&](const fs::path& a, const fs::path& b) { return rank(a) < rank(b); });
         for (auto& o : order) put(o.generic_string());
         for (auto& s : k.ldflags) put(s);
-        for (auto& s : k.libs) put(s);
+        // with the debug features, their host in place of the other
+        for (auto& s : k.libs) put(opt.debug_features && s == k.host ? k.host_debug : s);
         put("-o");
         put(tmp.generic_string());
     }
@@ -1142,6 +1153,7 @@ int main(int argc, char** argv) {
         if (a == "--jobs" && more) opt.jobs = unsigned(std::max(1, std::atoi(argv[++i])));
         else if (a == "--keep") opt.keep = true;
         else if (a == "--portable") opt.portable = true;
+        else if (a == "--debug-features") opt.debug_features = true;
         else if (a == "--fetch-toolchain") fetch_only = true;
         else if (a == "--cli") cli = true;
         else if (a == "--gui") gui = true;
@@ -1160,12 +1172,12 @@ int main(int argc, char** argv) {
         else if (a == "--help" || a == "-h") {
             std::printf("Live & Recompiled Setup " XBE_VERSION "\n"
                         "usage: setup [--cli] [--source GAME] [--work DIR] [--game-dir DIR] "
-                        "[--jobs N] [--keep] [--portable] [--toolchain DIR] [--root DIR] [--fetch-toolchain]\n"
+                        "[--jobs N] [--keep] [--portable] [--debug-features] [--toolchain DIR] [--root DIR] [--fetch-toolchain]\n"
                         "  no options: a window with the same choices\n");
             return 0;
         } else {
             std::fprintf(stderr, "usage: setup [--cli] [--source GAME] [--work DIR] [--game-dir DIR] "
-                                 "[--jobs N] [--keep] [--portable] [--toolchain DIR] [--root DIR] [--fetch-toolchain] "
+                                 "[--jobs N] [--keep] [--portable] [--debug-features] [--toolchain DIR] [--root DIR] [--fetch-toolchain] "
                                  "[--unpack PACKAGE OUTDIR]\n");
             return 2;
         }

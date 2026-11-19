@@ -67,7 +67,7 @@ X86_FUNC(sub_004E2801) {
 // out. XBE_CONSOLE_CACHE_COPY keeps the one step a frame.
 X86_EXTERN_FUNC(__imp__sub_000601D0);
 X86_FUNC(sub_000601D0) {
-    static const bool console = std::getenv("XBE_CONSOLE_CACHE_COPY") != nullptr;
+    static const bool console = diag::Env("XBE_CONSOLE_CACHE_COPY") != nullptr;
     static thread_local bool inner = false;
     if (console || inner) {
         __imp__sub_000601D0(ctx, base);
@@ -218,7 +218,7 @@ float cutscenes::Hold() {
 
 X86_EXTERN_FUNC(__imp__sub_0004FF00);
 X86_FUNC(sub_0004FF00) {
-    static const bool env = std::getenv("XBE_SKIPPABLE_CUTSCENES") != nullptr;
+    static const bool env = diag::Env("XBE_SKIPPABLE_CUTSCENES") != nullptr;
     using kernel::R32;
     uint32_t mode = R32(0x7FA1F8);
     if ((env || cutscenes::g_skippable) && mode != 0x21) {
@@ -260,11 +260,11 @@ EvenClock g_even_clock[2];
 void StepEvenClock(uint32_t slot, float secs_before, uint8_t* base) {
     using kernel::R32;
     static const bool off = [] {
-        const char* e = std::getenv("XBE_CUT_CLOCK");
+        const char* e = diag::Env("XBE_CUT_CLOCK");
         return e && *e == '0';
     }();
     static const bool trace = [] {
-        const char* e = std::getenv("XBE_CUT_CLOCK_TRACE");
+        const char* e = diag::Env("XBE_CUT_CLOCK_TRACE");
         return e && *e && *e != '0';
     }();
     EvenClock& c = g_even_clock[slot];
@@ -394,7 +394,7 @@ bool grass::g_wind = true;
 
 X86_EXTERN_FUNC(__imp__sub_001A9540);
 X86_FUNC(sub_001A9540) {
-    static const char* env = std::getenv("XBE_GRASS_WIND");
+    static const char* env = diag::Env("XBE_GRASS_WIND");
     constexpr uint32_t kWind = 0x6B89A4, kFade = 0x6B89DC;
     uint32_t wind = kernel::R32(kWind), fade = kernel::R32(kFade);
     if (!(env ? env[0] != '0' : grass::g_wind) || !wind) {
@@ -472,7 +472,7 @@ void ConkerFurTag(X86Context& ctx, uint8_t* base) {
 }
 
 static bool FurDistant() {
-    static const char* env = std::getenv("XBE_FUR_DISTANT");
+    static const char* env = diag::Env("XBE_FUR_DISTANT");
     return env ? env[0] != '0' : fur::g_distant;
 }
 
@@ -707,7 +707,7 @@ X86_EXTERN_FUNC(sub_0005E4E0);
 X86_EXTERN_FUNC(sub_00061ED0);
 static void SurveyLevelModels(X86Context& ctx, uint8_t* base) {
     static const bool on = [] {
-        const char* e = std::getenv("XBE_FUR_SURVEY");
+        const char* e = diag::Env("XBE_FUR_SURVEY");
         return e && *e && *e != '0';
     }();
     static uint32_t last = ~0u;
@@ -908,7 +908,7 @@ static uint32_t g_effect_player = 0;
 // [player+0x64] and state byte [player+0xA1]. To find what marks the shield up after a respawn or a class change
 static void TraceShield(uint32_t player, uint32_t owner) {
     static const bool on = [] {
-        const char* e = std::getenv("XBE_SHIELD_TRACE");
+        const char* e = diag::Env("XBE_SHIELD_TRACE");
         return e && *e && *e != '0';
     }();
     if (!on || owner < 0x10000) return;
@@ -966,7 +966,7 @@ static bool EffectOn(uint32_t player, uint32_t kind, uint32_t model, uint32_t vi
 // draws of that kind since the last line
 static void TraceMenuEffects(X86Context& ctx, uint32_t player, bool swap) {
     static const bool on = [] {
-        const char* e = std::getenv("XBE_MENU_EFFECT_TRACE");
+        const char* e = diag::Env("XBE_MENU_EFFECT_TRACE");
         return e && *e && *e != '0';
     }();
     if (!on) return;
@@ -1028,7 +1028,7 @@ static std::string PartKey(std::string n) {
 
 static bool PartsTrace() {
     static const bool on = [] {
-        const char* e = std::getenv("XBE_MENU_PARTS_TRACE");
+        const char* e = diag::Env("XBE_MENU_PARTS_TRACE");
         return e && *e && *e != '0';
     }();
     return on;
@@ -1355,7 +1355,7 @@ static void Voice3d(uint32_t obj, uint32_t d) {
         std::memcpy(&v, &u, 4);
         return v;
     };
-    static const bool trace = std::getenv("XBE_TRACE_DSOUND") != nullptr;
+    static const bool trace = diag::Env("XBE_TRACE_DSOUND") != nullptr;
     if (trace)
         LOGR("dsound3d: %08X flags %02X dist %d cone %d pairA %d %d pairB %d %d i3dl2 %d %d pitch %d ang %.1f %.2f "
              "filter %d %d",
@@ -1711,7 +1711,7 @@ X86_FUNC(sub_0006A720) {
 X86_EXTERN_FUNC(__imp__sub_0006A390);
 X86_FUNC(sub_0006A390) {
     g_object_frame++;
-    static const bool trace = std::getenv("XBE_OBJ_TRACE") != nullptr;
+    static const bool trace = diag::Env("XBE_OBJ_TRACE") != nullptr;
     if (!trace) {
         __imp__sub_0006A390(ctx, base);
         return;
@@ -1835,7 +1835,7 @@ void ConkerAirSubsteps(X86Context& ctx, uint8_t* base) {
 // eases once a console frame (two ticks), as on the console.
 X86_EXTERN_FUNC(__imp__sub_002D9FD0);
 X86_FUNC(sub_002D9FD0) {
-    static const bool every = std::getenv("XBE_EASE_EVERY_FRAME") != nullptr;
+    static const bool every = diag::Env("XBE_EASE_EVERY_FRAME") != nullptr;
     if (every || display::GameRate() <= 30) {
         __imp__sub_002D9FD0(ctx, base);
         return;
@@ -1864,7 +1864,7 @@ X86_FUNC(sub_002D9FD0) {
 // start on the console's grid. XBE_EMITTER_EVERY_FRAME counts them every frame again.
 X86_EXTERN_FUNC(__imp__sub_0001A510);
 X86_FUNC(sub_0001A510) {
-    static const bool every = std::getenv("XBE_EMITTER_EVERY_FRAME") != nullptr;
+    static const bool every = diag::Env("XBE_EMITTER_EVERY_FRAME") != nullptr;
     if (every || display::GameRate() <= 30) {
         __imp__sub_0001A510(ctx, base);
         return;
@@ -1945,7 +1945,7 @@ X86_FUNC(sub_00352320) {
 // [esi+0x28] + [esi+0x2C], name [esi+0x18]. Each logs when what it saw changes.
 namespace {
 bool TraceFilter() {
-    static const bool on = std::getenv("XBE_TRACE_FILTER") != nullptr;
+    static const bool on = diag::Env("XBE_TRACE_FILTER") != nullptr;
     return on;
 }
 std::mutex g_filter_mu;

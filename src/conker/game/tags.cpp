@@ -26,7 +26,7 @@ namespace {
 // distance alone, as before), to compare
 bool Tagging() {
     static const bool off = [] {
-        const char* e = std::getenv("XBE_INTERP_TAGS");
+        const char* e = diag::Env("XBE_INTERP_TAGS");
         return e && *e == '0';
     }();
     return !off && (app::Get().frame_generation > 1 || gpu::interp::Recording() || gpu::interp::Tracing());

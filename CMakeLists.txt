@@ -38,8 +38,12 @@ set(XBE_ALSO_SHA1 68a37f0d03d73dabc86a848df5ec1820dd551254)
 add_xbe_image(Game default.xbe game.toml ${GAME_PARTITIONS} game)
 
 # the version the settings menu shows (generated/version.h, version_header in cmake/XbeRecomp.cmake)
-add_dependencies(Game_host version_header)
-target_include_directories(Game_host PRIVATE ${CMAKE_BINARY_DIR}/generated)
+foreach(host Game_host Game_host_debug)
+    if(TARGET ${host})
+        add_dependencies(${host} version_header)
+        target_include_directories(${host} PRIVATE ${CMAKE_BINARY_DIR}/generated)
+    endif()
+endforeach()
 
 # a player kit (the Zig builds, with the game in assets/): Setup and everything but the game code, for players to build
 # from their own copy

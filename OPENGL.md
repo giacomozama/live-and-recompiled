@@ -1,8 +1,8 @@
 # OpenGL
 
 Set `renderer = "opengl"` in `settings.toml`, or pick **OpenGL** under
-Graphics, Display. The `XBE_RENDERER=opengl` environment variable overrides the
-setting for one launch. Vulkan remains the default. OpenGL is for GPUs whose
+Graphics, Display. In a build with the debug features, the `XBE_RENDERER=opengl`
+environment variable overrides the setting for one launch. Vulkan remains the default. OpenGL is for GPUs whose
 Vulkan driver is missing or incomplete, such as Ivy Bridge's HD 4000 on Mesa.
 
 The renderer needs an OpenGL 4.1 core context with `ARB_clip_control`, and it
@@ -21,8 +21,9 @@ DLSS or HDR output.
 
 The outlines and the depth texture's stencil bytes need `ARB_stencil_texturing`
 (OpenGL 4.3). On a driver without it, the log says so and both are left out.
-`XBE_GL_DEBUG=1` asks for a debug context and logs the driver's errors and
-warnings. `XBE_PERF=1` adds render timing to `logs/game.log`.
+With the debug features, `XBE_GL_DEBUG=1` asks for a debug context and logs the
+driver's errors and warnings, and `XBE_PERF=1` adds render timing to
+`logs/game.log`.
 
 `tools/opengl-shader-smoke.cpp` checks the shader translation on a real GL
 context. It translates, compiles and links representative generated shaders and

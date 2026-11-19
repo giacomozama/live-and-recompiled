@@ -26,6 +26,7 @@
 #include <backends/imgui_impl_opengl3.h>
 
 #include "app/app.h"
+#include "core/diag.h"
 #include "core/log.h"
 #include "gpu/backend.h"
 #include "gpu/draw.h"
@@ -2293,7 +2294,7 @@ public:
             LOGE("opengl: the window was made for another renderer");
             return false;
         }
-        const bool debug = std::getenv("XBE_GL_DEBUG") != nullptr;
+        const bool debug = diag::Env("XBE_GL_DEBUG") != nullptr;
         SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
         SDL_GL_SetAttribute(SDL_GL_CONTEXT_FLAGS, debug ? SDL_GL_CONTEXT_DEBUG_FLAG : 0);
         for (int minor : {2, 1}) {
@@ -2333,7 +2334,7 @@ public:
         LOGR("opengl: GLSL %u, stencil textures %s, S3TC %s", glsl_version_, stencil_texturing_ ? "yes" : "no",
              s3tc_ ? "yes" : "no");
         {
-            const char* e = std::getenv("XBE_GL_PERSISTENT");
+            const char* e = diag::Env("XBE_GL_PERSISTENT");
             persistent_ = gl::BufferStorage && (major > 4 || (major == 4 && minor >= 4) || has("GL_ARB_buffer_storage")) &&
                           !(e && *e == '0');
             if (persistent_) {  // written a frame or more ahead of the GPU: room for a few frames' worth per store

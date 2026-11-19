@@ -21,6 +21,7 @@
 #include <cstdlib>
 
 #include "core/log.h"
+#include "core/diag.h"
 #include "cpu/x86_ops.h"
 #include "kernel/kernel.h"
 
@@ -37,7 +38,7 @@ constexpr uint32_t kByte = 0x2C;        //             the byte
 constexpr uint32_t kReceived = 0x34;    //             the bytes received
 
 bool Trace() {
-    static const bool on = std::getenv("XBE_NET_TRACE") != nullptr;
+    static const bool on = diag::Env("XBE_NET_TRACE") != nullptr;
     return on;
 }
 

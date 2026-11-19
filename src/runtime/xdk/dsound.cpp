@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "app/app.h"
+#include "core/diag.h"
 #include "audio/audio.h"
 #include "kernel/memory.h"
 #include "xbe/xbe.h"
@@ -258,10 +259,10 @@ std::array<uint8_t, kBins> g_bin_headroom = DefaultBinHeadroom();
 uint32_t g_ds = 0;
 dsfx::I3dl2 g_i3dl2{-10000, 0, 0, 1, 0.5f, -10000, 0, -10000, 0, 0, 0, 5000};  // F3: the last listener
 
-const bool g_trace = std::getenv("XBE_TRACE_DSOUND") != nullptr;
+const bool g_trace = diag::Env("XBE_TRACE_DSOUND") != nullptr;
 // XBE_TRACE_RELEASE: every release envelope a stop or flush starts, how long it was meant to take and took, and how
 // often the title polled the voice meanwhile (a title waiting on it before it goes on)
-const bool g_trace_rel = std::getenv("XBE_TRACE_RELEASE") != nullptr;
+const bool g_trace_rel = diag::Env("XBE_TRACE_RELEASE") != nullptr;
 int64_t NowMs();
 uint32_t ReleaseMs(const Voice& v) { return uint32_t(uint64_t(v.ea.release) * 512 * 1000 / 48000); }
 // a title still polling a voice long after it asked it to stop: it waits on it, so its whole state
@@ -1026,7 +1027,7 @@ void Render(float* out, uint32_t frames) {
     // XBE_AUDIO_RECORD=<file>: the game's mix before the volume setting, raw interleaved float32 at 48 kHz, to compare
     // with a console recording (ffmpeg -f f32le -ar 48000 -ac <speakers> -i <file> out.wav)
     static FILE* record = [] {
-        const char* p = std::getenv("XBE_AUDIO_RECORD");
+        const char* p = diag::Env("XBE_AUDIO_RECORD");
         FILE* f = p && *p ? std::fopen(p, "wb") : nullptr;
         if (f) LOGR("dsound: recording the mix to %s (%u channels)", p, audio::Channels());
         return f;
@@ -1602,7 +1603,7 @@ template <class A>
 static void Trace(const char* kind, const char* name, int nargs, const A& a) {
     static const char* const kQuiet[] = {"GetStatus", "Process", "GetCurrentPosition", "GetInfo", "SetPosition",
                                          "SetMixBinVolumes", "SetVolume", "SetFrequency", "SetFilter", "SetHeadroom"};
-    static const bool all = g_trace && !std::strcmp(std::getenv("XBE_TRACE_DSOUND"), "all");
+    static const bool all = g_trace && !std::strcmp(diag::Env("XBE_TRACE_DSOUND"), "all");
     if (!g_trace) return;
     for (const char* q : kQuiet)
         if (!std::strcmp(q, name) && (!all || !std::strcmp(q, "GetStatus") || !std::strcmp(q, "Process"))) return;
@@ -1867,7 +1868,7 @@ STREAM(GetStatus, 2) {
     if (v.released) st |= 0x80000;
     W32(a[1], st);
     TraceStopPoll(v, st);
-    static const char* watch_env = std::getenv("XBE_TRACE_VOICE");
+    static const char* watch_env = diag::Env("XBE_TRACE_VOICE");
     static const uint32_t watch = watch_env ? uint32_t(std::strtoul(watch_env, nullptr, 16)) : 0;
     if (watch == v.obj) LOGR("dsound: %08X GetStatus -> %X (%zu packets)", v.obj, st, v.packets.size());
     return 0;

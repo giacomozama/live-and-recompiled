@@ -11,6 +11,7 @@
 #include <thread>
 
 #include "core/loadtrace.h"
+#include "core/diag.h"
 #include "kernel/disc.h"
 #include "kernel/kernel.h"
 #include "kernel/exports.h"
@@ -584,7 +585,7 @@ bool ReadGameFile(const std::string& xbox_path, std::vector<uint8_t>& out) {
 // XBE_TRACE_OPENS=1: each file the title opens, by its own path (and the level then, for a game that keeps one)
 static void TraceOpen(const char* how, const std::string& name) {
     static const bool on = [] {
-        const char* e = std::getenv("XBE_TRACE_OPENS");
+        const char* e = diag::Env("XBE_TRACE_OPENS");
         return e && *e && *e != '0';
     }();
     if (on) LOGR("files: %s %s", how, name.c_str());
@@ -846,13 +847,13 @@ static uint32_t Transfer(const Args& a, bool write, uint32_t pages) {
     f->pos = pos + n;
     if (write) g_host_changes++;
     trace.bytes = n;
-    static const bool trace_xwb = std::getenv("XBE_TRACE_DSOUND") != nullptr;
+    static const bool trace_xwb = diag::Env("XBE_TRACE_DSOUND") != nullptr;
     if (trace_xwb && !write && !pages && f->xbox.size() > 4 && f->xbox.compare(f->xbox.size() - 4, 4, ".xwb") == 0)
         LOGR("xwb read %s %llX %X -> %08X", f->xbox.c_str(), (unsigned long long)pos, n, buf);
     // XBE_TRACE_OPENS: a package's first read too (.rbm, or its copy on the hard disk), with the code addresses on the
     // guest stack, to find who loads it
     static const bool trace_rbm = [] {
-        const char* e = std::getenv("XBE_TRACE_OPENS");
+        const char* e = diag::Env("XBE_TRACE_OPENS");
         return e && *e && *e != '0';
     }();
     const bool package = (f->xbox.size() > 4 && f->xbox.compare(f->xbox.size() - 4, 4, ".rbm") == 0) ||

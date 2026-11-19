@@ -17,6 +17,7 @@
 // Found so far: the player camera is [[0x8470DC] + 4], yaw at +0x60 (mouse.cpp turns it). Its +0x970 moves with the
 // stick's y and keeps a written value, but writing it does not tilt the view.
 #include "common/camscan.h"
+#include "core/diag.h"
 
 #if !defined(XBE_HEADLESS)
 
@@ -236,7 +237,7 @@ bool Pressed(int vk, bool& was) {
 
 void Tick(const input::Pad& pad) {
     static const bool enabled = [] {
-        const char* e = std::getenv("XBE_CAMSCAN");
+        const char* e = diag::Env("XBE_CAMSCAN");
         return e && *e && *e != '0';
     }();
     if (!enabled) return;

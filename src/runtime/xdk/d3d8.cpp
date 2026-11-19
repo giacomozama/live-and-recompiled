@@ -499,7 +499,7 @@ void TextureForNextDraw(uint32_t stage, uint32_t tex) {
 // detail picked another mesh. LodTraceRun says where a push buffer first ran from, the code that picked it.
 bool LodTrace() {
     static const bool on = [] {
-        const char* e = std::getenv("XBE_LOD_TRACE");
+        const char* e = diag::Env("XBE_LOD_TRACE");
         return e && *e && *e != '0';
     }();
     return on;
@@ -676,7 +676,7 @@ gpu::interp::Tag TagOfDraw() {
     t.source = g_lod_source;
     t.walked = g_walked;
     // XBE_TRACE_STACKS: everywhere, not only in what g_hud_split places
-    static const bool stacks = std::getenv("XBE_TRACE_STACKS") != nullptr;
+    static const bool stacks = diag::Env("XBE_TRACE_STACKS") != nullptr;
     if (stacks || gpu::g_hud_split.load(std::memory_order_relaxed)) GuestStack(t.stack);
     t.hud_depth = uint32_t(g_hud_scopes.size());
     for (size_t i = 0; i < t.hud.size() && i < g_hud_scopes.size(); i++)
@@ -1037,7 +1037,7 @@ struct OutlineCounts {
 };
 OutlineCounts g_outline_counts;
 bool OutlineTrace() {
-    static const bool on = std::getenv("XBE_OUTLINE_TRACE") != nullptr;
+    static const bool on = diag::Env("XBE_OUTLINE_TRACE") != nullptr;
     return on;
 }
 void OutlineTraceTick() {
@@ -1079,7 +1079,7 @@ uint8_t d3d::OutlineObject(uint8_t scope) {
 
 bool d3d::LoadingScreenWanted() {
     using clock = std::chrono::steady_clock;
-    static const bool always = std::getenv("XBE_LOADING_SCREEN") != nullptr;
+    static const bool always = diag::Env("XBE_LOADING_SCREEN") != nullptr;
     if (always) return true;
     std::lock_guard<std::recursive_mutex> lock(g_lock);
     g_front_skip = true;
@@ -1800,7 +1800,7 @@ const std::vector<uint32_t>& ChipProgram(uint64_t& hash) {
         }
         h |= 1;
         // XBE_DUMP_PROGRAM: each distinct chip program once, start slot and words
-        static const bool dump = std::getenv("XBE_DUMP_PROGRAM") != nullptr;
+        static const bool dump = diag::Env("XBE_DUMP_PROGRAM") != nullptr;
         static std::unordered_set<uint64_t> seen;
         if (dump && seen.insert(h).second) {
             std::fprintf(stderr, "CHIPPROG %016llX start %u n %zu\n", (unsigned long long)h, g_prog_start, prog.size() / 4);
@@ -2285,7 +2285,7 @@ uint32_t InlineTexture(uint32_t offset, uint32_t format) {
     W32(h + 8, 0);
     W32(h + 12, format);
     W32(h + 16, 0);  // no linear size: the log2 dimensions in the format word are what describe the surface
-    if (std::getenv("XBE_TRACE_WALK"))
+    if (diag::Env("XBE_TRACE_WALK"))
         std::fprintf(stderr, "INLINETEX header=%08X offset=%08X format=%08X\n", h, offset, format);
     return h;
 }
@@ -2364,7 +2364,7 @@ struct HeldDraw {
 HeldDraw g_held;
 
 bool MergeDraws() {
-    static const bool on = std::getenv("XBE_NO_DRAW_MERGE") == nullptr;
+    static const bool on = diag::Env("XBE_NO_DRAW_MERGE") == nullptr;
     return on;
 }
 
@@ -2463,7 +2463,7 @@ bool Changes(uint32_t m, uint32_t method, uint32_t v) {
 // are run, the rest is skipped
 void Walk(uint32_t end) {
     // the two silent exits below drop every command that follows, so make them observable
-    static const bool trace = std::getenv("XBE_TRACE_WALK") != nullptr;
+    static const bool trace = diag::Env("XBE_TRACE_WALK") != nullptr;
     if (!g_walk || end < g_walk || end > g_scratch_push + g_scratch_size) {
         if (trace) {
             static uint32_t seen = 0;
@@ -2490,7 +2490,7 @@ void Walk(uint32_t end) {
     g_walked = kernel::Current() ? R32(kernel::CurrentContext().esp) : 0;
     // jump targets land on real blocks (vertex-program words, prebuilt stream bindings), so following them is the
     // xemu behaviour; XBE_NO_WALK_JUMPS restores the old "stop at the first jump" for comparison
-    static const bool follow = std::getenv("XBE_NO_WALK_JUMPS") == nullptr;
+    static const bool follow = diag::Env("XBE_NO_WALK_JUMPS") == nullptr;
     auto aim = [&](uint32_t t) {
         // a target inside the buffer we were handed stays bounded by it, anything else is read as physical RAM.
         // The scratch buffer is a ring: a jump to the put pointer is the end of the stream (the chip stops there),

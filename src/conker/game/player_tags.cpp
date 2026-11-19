@@ -48,6 +48,7 @@
 #include <vector>
 
 #include "common/display.h"
+#include "core/diag.h"
 #include "common/menus.h"
 #include "cpu/x86_ops.h"
 #include "kernel/kernel.h"
@@ -153,7 +154,7 @@ bool TagPlayer(const X86Context& ctx, uint32_t& player, uint32_t& view) {
 // its vehicle byte +0x135), with the frame (0x346C90's calls); 600 lines at most
 uint32_t g_bar_frame = 0;
 bool BarTrace() {
-    static const bool on = std::getenv("XBE_BAR_TRACE") != nullptr;
+    static const bool on = diag::Env("XBE_BAR_TRACE") != nullptr;
     return on;
 }
 void TraceBar(uint64_t key, uint64_t now, const char* fmt, ...) __attribute__((format(printf, 3, 4)));
@@ -648,7 +649,7 @@ constexpr uint32_t kCameras = 0x8470DC, kCameraSize = 0x770, kCameraPlayer = 0x3
 
 // XBE_OUTLINE_TRACE=1: a line each time a view's player's outline changes (the viewer found, the mark)
 bool OutlineTrace() {
-    static const bool on = std::getenv("XBE_OUTLINE_TRACE") != nullptr;
+    static const bool on = diag::Env("XBE_OUTLINE_TRACE") != nullptr;
     return on;
 }
 void TraceOutline(uint32_t site, uint32_t kind, uint32_t view, uint32_t index, uint32_t player, uint32_t viewer,

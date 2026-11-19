@@ -30,6 +30,7 @@
 #include <cstring>
 
 #include "common/rope.h"
+#include "core/diag.h"
 #include "core/log.h"
 #include "cpu/x86_ops.h"
 #include "kernel/kernel.h"
@@ -79,7 +80,7 @@ struct Arrival {
 Arrival g_arrival;
 
 bool Trace() {
-    static const bool trace = std::getenv("XBE_TRACE_ROPE") != nullptr;
+    static const bool trace = diag::Env("XBE_TRACE_ROPE") != nullptr;
     return trace;
 }
 

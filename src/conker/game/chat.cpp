@@ -26,6 +26,7 @@
 //
 // XBE_CHAT_TRACE=1 logs each line sent and received, and this copy's name and team as they change.
 #include "common/chat.h"
+#include "core/diag.h"
 
 #if __has_include(<imgui.h>) && !defined(XBE_HEADLESS)
 
@@ -107,7 +108,7 @@ double Now() {
 
 bool Trace() {
     static const bool on = [] {
-        const char* v = std::getenv("XBE_CHAT_TRACE");
+        const char* v = diag::Env("XBE_CHAT_TRACE");
         return v && *v && *v != '0';
     }();
     return on;

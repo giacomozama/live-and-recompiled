@@ -14,6 +14,7 @@
 // out), F11 again. Each reader is logged once with its access count, fields and callers. Linux (the native build)
 // only: the Windows build logs that it has no watch.
 #include "common/stickwatch.h"
+#include "core/diag.h"
 
 #if !defined(XBE_HEADLESS)
 
@@ -245,7 +246,7 @@ void Disarm() {
 
 void Tick() {
     static const bool enabled = [] {
-        const char* e = std::getenv("XBE_STICK_WATCH");
+        const char* e = diag::Env("XBE_STICK_WATCH");
         return e && *e && *e != '0';
     }();
     if (!enabled) return;
@@ -266,7 +267,7 @@ void Tick() {
 namespace stickwatch {
 
 void Tick() {
-    static const bool enabled = std::getenv("XBE_STICK_WATCH") != nullptr;
+    static const bool enabled = diag::Env("XBE_STICK_WATCH") != nullptr;
     if (enabled) LOG_FIRST(1, "stickwatch: the watch is Linux only (the native build)");
 }
 

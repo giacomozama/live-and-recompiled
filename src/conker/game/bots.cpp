@@ -43,6 +43,7 @@
 #include <cstdlib>
 
 #include "core/log.h"
+#include "core/diag.h"
 #include "cpu/x86_ops.h"
 #include "kernel/kernel.h"
 #include "kernel/memory.h"
@@ -60,7 +61,7 @@ constexpr uint32_t kActions = 0x763260, kActionsSize = 0x1B0;
 constexpr uint32_t kMode = 0x863D04;     // 1 Dumbots, 2 system link
 
 bool Trace() {
-    static const bool on = std::getenv("XBE_BOT_TRACE") != nullptr;
+    static const bool on = diag::Env("XBE_BOT_TRACE") != nullptr;
     return on;
 }
 
