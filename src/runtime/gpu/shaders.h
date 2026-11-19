@@ -239,6 +239,11 @@ PixelKey MakePixelKey(const State& s, const TexInfo tex[4]);
 // in b0) and hands on both positions, for the pixel shader PixelHlsl makes with motion
 std::string VertexProgramHlsl(const std::vector<uint32_t>& program, uint16_t regs, uint64_t decode = 0,
                               uint32_t shading = 0, bool motion = false);
+// a motion shader of VertexProgramHlsl's made for all the frame's pictures in one instanced draw: instance i reads
+// its picture's registers and the picture before's from bank i of b0 (cb_, kMotionBank floats4 each: c then cp) and
+// goes to viewport i (SV_ViewportArrayIndex); empty for a shader it can't make so (the fixed function's transform)
+constexpr uint32_t kMotionBank = 384;
+std::string MotionInstancedHlsl(std::string motion_vs);
 // the g_program_shading entries a program matches, bit i for entry i + 1 (the first 64), whether they are on or not
 uint64_t MatchProgramShading(const std::vector<uint32_t>& program);
 // the g_program_watch entries a program matches, bit i for entry i (the first 64): each sees the draw

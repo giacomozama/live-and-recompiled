@@ -832,6 +832,50 @@ std::string VertexProgramHlsl(const std::vector<uint32_t>& prog, uint16_t regs, 
     return s + kVsReturn;
 }
 
+std::string MotionInstancedHlsl(std::string s) {
+    const std::string vc = "cbuffer VC : register(b0) { float4 c[192]; float4 cp[192]; float4x4 mwvp; };";
+    const std::string head = "VOut main(VRaw ri) {";
+    const std::string ret = kVsReturn;
+    const size_t at_vc = s.find(vc), at_out = s.find(kMotionOut), at_main = s.find(head), at_ret = s.rfind(ret);
+    if (at_vc == std::string::npos || at_out == std::string::npos || at_main == std::string::npos ||
+        at_ret == std::string::npos || s.find("mwvp", at_vc + vc.size()) != std::string::npos)
+        return {};
+    // the body's reads of c and cp (not pc[, tc[ and the like) into the instance's bank
+    std::string out;
+    out.reserve(s.size() + s.size() / 4);
+    auto ident = [](char ch) { return std::isalnum(static_cast<unsigned char>(ch)) || ch == '_'; };
+    for (size_t i = 0; i < s.size(); i++) {
+        if (i >= at_vc && i < at_vc + vc.size()) {
+            if (i == at_vc)
+                out += F("cbuffer VC : register(b0) { float4 cb_[%u]; };\nstatic uint mbank_c = 0, mbank_p = 192;",
+                         kMotionBank * 4);
+            continue;
+        }
+        // after the bank's declaration: a shading's functions before main read c too
+        const bool start = i > at_vc && !ident(s[i - 1]);
+        if (start && s.compare(i, 2, "c[") == 0) {
+            out += "cb_[mbank_c + ";
+            i += 1;
+        } else if (start && s.compare(i, 3, "cp[") == 0) {
+            out += "cb_[mbank_p + ";
+            i += 2;
+        } else {
+            out += s[i];
+        }
+    }
+    s = std::move(out);
+    auto replace_first = [&](const std::string& from, const std::string& to) {
+        const size_t at = s.find(from);
+        if (at != std::string::npos) s.replace(at, from.size(), to);
+    };
+    replace_first(kMotionOut, std::string(kMotionOut) + "    uint mvp : SV_ViewportArrayIndex;\n");
+    replace_first(head, head + F("\n    mbank_c = mbank_i * %u;\n    mbank_p = mbank_c + 192;", kMotionBank));
+    replace_first(head, "VOut main(VRaw ri, uint mbank_i : SV_InstanceID) {");
+    const size_t r = s.rfind(ret);
+    s.replace(r, ret.size(), "    o.mvp = mbank_i;\n" + ret);
+    return s;
+}
+
 uint64_t MatchProgramShading(const std::vector<uint32_t>& prog) {
     if (g_program_shading.empty()) return 0;
     std::string s = VertexProgramHlsl(prog, 0xFFFF);
