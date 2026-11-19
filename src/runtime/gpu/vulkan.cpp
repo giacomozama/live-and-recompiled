@@ -1405,6 +1405,11 @@ public:
     void DrawMotion(const State& s, const Before& before, uint32_t prim, uint32_t start, uint32_t count,
                     const uint8_t* indices) override;
     bool MotionSkips() override;
+    bool MotionAll() override;
+    void MotionDepth() override;
+    void MotionPasses(bool on, const uint32_t* slots, uint32_t n) override;
+    void DrawMotionAt(uint32_t p, const State& s, const Before& before, uint32_t prim, uint32_t start, uint32_t count,
+                      const uint8_t* indices) override;
     // XBE_INTERP_RECORD: the pictures shown, kept at the console's size w x h, and F4's saving of them
     void RecordPictures(const std::vector<Image*>& sources, const std::vector<std::string>& notes, uint32_t w, uint32_t h);
     void SaveRecorded();
@@ -1583,7 +1588,7 @@ private:
                               const VkShaderStageFlagBits stages[], uint32_t n) const;
     app::Scale PointScale() const;  // host pixels per console pixel of the bound target, across and down
     void UploadConstants(const State& s, const DrawShaders& sh, const PsoKey& k, const DrawTextures& stages,
-                         GuestExtent size, DrawConstants& c, Bindings& b);
+                         GuestExtent size, DrawConstants& c, Bindings& b, bool vc = true);
     void CaptureDraw(const State& s, uint32_t prim, uint32_t count, const PsoKey& k, const DrawConstants& c,
                      const DrawTextures& stages);
     void CaptureTextures(const State& s, const DrawTextures& stages);
@@ -2176,11 +2181,44 @@ private:
         ConstReads reads;
         GuestExtent size;
         Geometry g;
+        // its draw constants (cb[1]) as the first pass uploaded them, for the frame's other passes: they come of the
+        // render states alone, but for the fixed function's transforms and a shading's registers (dc_kept false)
+        VkDescriptorBufferInfo dc{};
+        bool dc_kept = false;
     };
     std::vector<MotionKept> motion_kept_;
     uint32_t motion_n_ = 0, ring_gen_ = 0;
     MotionKept* MotionEntry(uint32_t n, bool make);
     void DrawMotionKept(const State& s, const Before& before, MotionKept& e, Target* rt);
+    // the frame's own draw serial (its pass_serial_) kept for drawing again, when its geometry is the one a assembles;
+    // and kept geometry bound and drawn
+    const KeptOne* FrameDrawGeometry(uint32_t serial, const Assembled& a) const;
+    void DrawKeptGeometry(const Geometry& g);
+    static bool DrawConstantsKept();
+    static bool FrameDrawSetup();
+    // MotionAll's pass: each picture's place side by side in one velocity and one depth (its depth copied in, its
+    // velocity copied out to its slot's after), -1 for a picture without its depth kept; the draw's setup as the first
+    // picture with a place worked it out, for the others
+    bool motion_all_ = false;
+    uint32_t motion_all_n_ = 0, motion_all_first_ = 0, motion_all_w_ = 0;
+    int32_t motion_all_place_[kMaxGen + 1] = {};
+    uint32_t motion_all_slot_[kMaxGen + 1] = {};
+    ImageRef motion_all_vel_, motion_all_z_;
+    struct MotionCur {
+        bool ok = false;
+        VkPipeline pso = VK_NULL_HANDLE;
+        DrawShaders sh;
+        PsoKey k;
+        DrawTextures stages;
+        ConstReads reads;
+        GuestExtent size;
+        Geometry g;
+        Bindings b;
+        bool dc_kept = false;
+        Target* rt = nullptr;
+    };
+    MotionCur motion_cur_;
+    float view_x_ = 0;  // the viewport and scissor moved across by this (a picture's place in MotionAll's pass)
     // the motion constants last uploaded (both banks and mwvp) and where, for a draw reading the same in its registers
     std::array<std::array<float, 4>, kConstRegs> mc_now_{}, mc_was_{};
     float mc_wvp_[16] = {};
@@ -4693,11 +4731,13 @@ void VulkanBackend::BuildPipelineKey(const State& s, const Assembled& a, uint64_
     KeyRasterizer(s, a, k);
 }
 
+// vc false: the vertex constants left to the caller (a motion draw's go with the picture before's, MotionConstants)
 void VulkanBackend::UploadConstants(const State& s, const DrawShaders& sh, const PsoKey& k,
-                                    const DrawTextures& stages, GuestExtent size, DrawConstants& c, Bindings& b) {
+                                    const DrawTextures& stages, GuestExtent size, DrawConstants& c, Bindings& b,
+                                    bool vc) {
     // the last draw's constants again when this one reads the same: a level drawn in thousands of small draws
     // changing a register they don't read would otherwise fill the ring and wait for the GPU every frame
-    bool same_vc = last_vc_ok_ && sh.reads.Same(s.vsc.data(), last_vsc_.data());
+    bool same_vc = !vc || (last_vc_ok_ && sh.reads.Same(s.vsc.data(), last_vsc_.data()));
     if (!same_vc) {
         last_vc_ = Upload(sizeof(s.vsc.v));
         std::memcpy(last_vc_.cpu, s.vsc.data(), sizeof(s.vsc.v));
@@ -4738,7 +4778,7 @@ void VulkanBackend::UploadConstants(const State& s, const DrawShaders& sh, const
         last_c_ = c;
         last_dc_ok_ = true;
     }
-    b.cb[0] = {last_vc_.buf, last_vc_.off, sizeof(s.vsc.v)};
+    if (vc) b.cb[0] = {last_vc_.buf, last_vc_.off, sizeof(s.vsc.v)};
     b.cb[1] = {last_dc_.buf, last_dc_.off, sizeof(DrawConstants)};
 }
 
@@ -4884,8 +4924,8 @@ void VulkanBackend::SetViewportScissor(const State& s, GuestExtent size) {
     x1 = std::clamp<int32_t>(x1, 0, int32_t(W));
     y1 = std::clamp<int32_t>(y1, 0, int32_t(H));
     // as SetViewport and SetScissor make them, moved by the draw's jitter
-    VkViewport vp{vx + jitter_[0], H + jitter_[1], vw, -H, 0, 1};
-    VkRect2D r{{x0, y0}, {uint32_t(std::max(x1 - x0, 0)), uint32_t(std::max(y1 - y0, 0))}};
+    VkViewport vp{vx + jitter_[0] + view_x_, H + jitter_[1], vw, -H, 0, 1};
+    VkRect2D r{{x0 + int32_t(view_x_), y0}, {uint32_t(std::max(x1 - x0, 0)), uint32_t(std::max(y1 - y0, 0))}};
     if (drawn_.view && std::memcmp(&vp, &drawn_.vp, sizeof(vp)) == 0 && std::memcmp(&r, &drawn_.sc, sizeof(r)) == 0)
         return;
     FlushRun();
@@ -5778,7 +5818,7 @@ void VulkanBackend::KeepMotionDepth(bool again) {
         if (m.depth) Retire(m.depth);
         m.depth = NewImage({.fmt = depth_fmt_, .w = z->w, .h = z->h,
                             .usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
-                                     VK_IMAGE_USAGE_TRANSFER_DST_BIT});
+                                     VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT});
         if (!m.depth) return;
     }
     if (cap_)
@@ -5803,6 +5843,7 @@ void VulkanBackend::MotionPass(bool on, uint32_t slot) {
     kept_.ok = false;
     bound_rt_ = bound_ds_ = nullptr;
     jitter_ = {};
+    view_x_ = 0;
     motion_pass_ = false;
     motion_n_ = 0;
     if (!on) return;
@@ -5854,6 +5895,10 @@ void VulkanBackend::DrawMotion(const State& s, const Before& before, uint32_t pr
     MotionSlot& m = motion_[motion_slot_];
     static const bool perf = diag::Perf();
     const auto perf_t = perf ? PerfClock::now() : PerfClock::time_point{};
+    auto lap = perf_t;
+    auto step = [&](int i) {
+        if (perf) g_perf.ms_steps[i] += PerfLap(lap);
+    };
     if (MotionKept* kept = MotionEntry(n, false)) {
         if (kept->skip) {
             g_perf.motion_skipped++;
@@ -5889,12 +5934,16 @@ void VulkanBackend::DrawMotion(const State& s, const Before& before, uint32_t pr
     if (!rt || rt->data != m.rt) return;  // the slot's target: another pass's may differ
     Assembled& a = asm_;
     if (!AssembleDraw(s, prim, start, count, indices, a, false) || ScreenSpaceDraw(s, a)) return skip();
+    // the frame's own draw of it, kept for drawing again: its geometry, stage textures, draw constants and views are
+    // this draw's (the motion pass counts the frame's draws as it did)
+    const KeptOne* fr = FrameDrawGeometry(n + 1, a);
     DrawShaders sh;
     ClassifyShaders(s, a, count, sh);
     if (sh.quad || (!sh.prog && a.pretransformed)) return skip();
     if (sh.prog) EnsureProgramHash(s);
     sh.shading = DrawShading(s, sh);
     g_perf.motion_slow++;
+    step(0);
 
     uint64_t vkey = VertexKey(s, a, sh) ^ kMotionVertexSalt, hash;
     auto vit = motion_shaders_.find(vkey);
@@ -5904,12 +5953,18 @@ void VulkanBackend::DrawMotion(const State& s, const Before& before, uint32_t pr
     }
     sh.vs_code = vit->second.code;
     ConstReads reads = vit->second.reads;
+    step(1);
 
     // the stages for its alpha tests and discards; the draw's targets are not bound
     DrawTextures stages{};
-    draw_rt_ = draw_ds_ = nullptr;
-    stages.sampled = SampledStages(s);
-    for (int i = 0; i < 4; i++) stages.res[i] = BindTexture(s, i, stages);
+    if (fr && FrameDrawSetup()) {
+        stages = fr->kept.stages;
+    } else {
+        draw_rt_ = draw_ds_ = nullptr;
+        stages.sampled = SampledStages(s);
+        for (int i = 0; i < 4; i++) stages.res[i] = BindTexture(s, i, stages);
+    }
+    step(2);
     PixelKey pk = MakePixelKey(s, stages.info);
     pk.shading = sh.shading;
     // a draw tested equal to the depth it wrote needs no discards of its own: the test passes only where it wrote. Its
@@ -5924,6 +5979,7 @@ void VulkanBackend::DrawMotion(const State& s, const Before& before, uint32_t pr
     sh.ps_code = pit->second.code;
     reads |= pit->second.reads;
     if (!sh.vs_code || !sh.ps_code) return;
+    step(3);
 
     // the pipeline, its shaders by their keys: the velocity as its colour, the depth tested and kept, no blend or
     // stencil
@@ -5949,16 +6005,25 @@ void VulkanBackend::DrawMotion(const State& s, const Before& before, uint32_t pr
         if (!pso->second) LOGE("vulkan: motion pipeline creation failed");
     }
     if (!pso->second) return;
+    step(4);
 
     // the constants, then those the picture before had after them (cp), then its fixed function transform (mwvp)
     GuestExtent size;
     SurfaceSize(s.rt, size.w, size.h);
     DrawConstants c{};
     Bindings b;
-    UploadConstants(s, sh, k, stages, size, c, b);
+    if (fr && FrameDrawSetup() && !sh.fixed_transform && !sh.shading && fr->kept.plain)
+        b.cb[1] = fr->kept.b.cb[1];
+    else
+        UploadConstants(s, sh, k, stages, size, c, b, false);
+    step(5);
     MotionConstants(s, before, sh, reads, c.wvp, size, b);
+    step(6);
 
-    SetTargets(m.velocity.get(), m.depth.get());
+    if (motion_all_)
+        SetTargets(motion_all_vel_.get(), motion_all_z_.get());
+    else
+        SetTargets(m.velocity.get(), m.depth.get());
     bound_rt_ = rt;  // the viewport's size, the velocity's
     bound_ds_ = nullptr;
     EnsureRendering();
@@ -5966,12 +6031,33 @@ void VulkanBackend::DrawMotion(const State& s, const Before& before, uint32_t pr
         vkCmdBindPipeline(cmd_, VK_PIPELINE_BIND_POINT_GRAPHICS, pso->second);
         drawn_.pso = pso->second;
     }
-    SetTextureViewsAndSamplers(s, a, stages, b);
+    SetTextureViewsAndSamplers(s, a, stages, b, fr && FrameDrawSetup() ? &fr->kept.filled : nullptr);
     jitter_ = Jitter(motion_slot_);
     SetViewportScissor(s, size);
     SetBlendFactorStencilRef(s);
-    DrawGeometry(a);
+    // the frame's own draw uploaded these vertices already
+    if (fr)
+        DrawKeptGeometry(fr->g);
+    else
+        DrawGeometry(a);
+    step(7);
     if (perf) g_perf.motion_slow_ms += PerfMs(perf_t);
+
+    // MotionAll's other pictures: this one's setup, their constants their own
+    if (motion_all_) {
+        MotionCur& mc = motion_cur_;
+        mc.ok = true;
+        mc.pso = pso->second;
+        mc.sh = sh;
+        mc.k = k;
+        mc.stages = stages;
+        mc.reads = reads;
+        mc.size = size;
+        mc.g = geom_;
+        mc.b = b;
+        mc.dc_kept = !sh.fixed_transform && DrawConstantsKept();
+        mc.rt = rt;
+    }
 
     // a plain draw reads none of its textures: the frame's other passes take it whole, its constants made again. One
     // with discards reads them, and they may be others by then (a target drawn again between the pictures)
@@ -5988,6 +6074,166 @@ void VulkanBackend::DrawMotion(const State& s, const Before& before, uint32_t pr
     e.reads = reads;
     e.size = size;
     e.g = geom_;
+    e.dc = b.cb[1];
+    e.dc_kept = !sh.fixed_transform && !sh.shading && DrawConstantsKept();
+}
+
+// XBE_MOTION_ALL=0: a motion pass for each picture, after it is drawn, as before
+bool VulkanBackend::MotionAll() {
+    static const bool on = [] {
+        const char* e = std::getenv("XBE_MOTION_ALL");
+        return !(e && *e == '0');
+    }();
+    return on && MotionOn();
+}
+
+// the picture just drawn: its depth kept now if the 3D went on after it was kept (as MotionPass does for its slot)
+void VulkanBackend::MotionDepth() { KeepMotionDepth(true); }
+
+void VulkanBackend::MotionPasses(bool on, const uint32_t* slots, uint32_t n) {
+    FlushRun();
+    EndRendering();
+    ForgetDrawCmd();
+    kept_.ok = false;
+    bound_rt_ = bound_ds_ = nullptr;
+    jitter_ = {};
+    view_x_ = 0;
+    motion_pass_ = false;
+    motion_n_ = 0;
+    motion_cur_.ok = false;
+    if (!on) {
+        if (!motion_all_) return;
+        motion_all_ = false;
+        // each picture's velocity out to its slot's, where Upscale and the motion view take it
+        Image& all = *motion_all_vel_;
+        const uint32_t w = motion_all_w_, h = all.h;
+        Transition(all, kSrc);
+        for (uint32_t p = 0; p < motion_all_n_; p++) {
+            if (motion_all_place_[p] < 0) continue;
+            MotionSlot& m = motion_[motion_all_slot_[p]];
+            if (!m.velocity || m.velocity->w != w || m.velocity->h != h) {
+                if (m.velocity) Retire(m.velocity);
+                m.velocity = NewImage({.fmt = VK_FORMAT_R16G16_SFLOAT, .w = w, .h = h,
+                                       .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+                                                VK_IMAGE_USAGE_TRANSFER_DST_BIT});
+                if (!m.velocity) {
+                    motion_all_place_[p] = -1;
+                    continue;
+                }
+            }
+            Transition(*m.velocity, kDst);
+        }
+        Barrier();
+        for (uint32_t p = 0; p < motion_all_n_; p++) {
+            if (motion_all_place_[p] < 0) continue;
+            MotionSlot& m = motion_[motion_all_slot_[p]];
+            VkImageCopy r{};
+            r.srcSubresource = r.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+            r.srcOffset = {int32_t(uint32_t(motion_all_place_[p]) * w), 0, 0};
+            r.extent = {w, h, 1};
+            vkCmdCopyImage(cmd_, all.image, kSrc, m.velocity->image, kDst, 1, &r);
+            m.drawn = presents_ + 1;
+        }
+        return;
+    }
+    // the pictures with their depth kept, of one target and size, take a place each
+    n = std::min(n, kMaxGen);
+    motion_all_n_ = n;
+    uint32_t places = 0, rt = 0, w = 0, h = 0;
+    for (uint32_t p = 0; p < n; p++) {
+        const uint32_t slot = slots[p] % kMaxGen;
+        MotionSlot& m = motion_[slot];
+        motion_all_slot_[p] = slot;
+        motion_all_place_[p] = -1;
+        if (m.taken != presents_ + 1 || !m.depth) continue;
+        if (!places) {
+            rt = m.rt, w = m.depth->w, h = m.depth->h;
+            motion_all_first_ = p;
+        }
+        if (m.rt != rt || m.depth->w != w || m.depth->h != h) continue;
+        motion_all_place_[p] = int32_t(places++);
+    }
+    if (!places) return;
+    const uint32_t aw = w * places;
+    if (!motion_all_vel_ || motion_all_vel_->w != aw || motion_all_vel_->h != h || !motion_all_z_ ||
+        motion_all_z_->format != depth_fmt_) {
+        for (ImageRef* r : {&motion_all_vel_, &motion_all_z_})
+            if (*r) Retire(*r);
+        motion_all_vel_ = NewImage({.fmt = VK_FORMAT_R16G16_SFLOAT, .w = aw, .h = h,
+                                    .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+                                             VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT});
+        motion_all_z_ = NewImage({.fmt = depth_fmt_, .w = aw, .h = h,
+                                  .usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT});
+        if (!motion_all_vel_ || !motion_all_z_) return;
+    }
+    // each picture's depth into its place
+    for (uint32_t p = 0; p < n; p++)
+        if (motion_all_place_[p] >= 0) Transition(*motion_[motion_all_slot_[p]].depth, kSrc);
+    Transition(*motion_all_z_, kDst);
+    Barrier();
+    for (uint32_t p = 0; p < n; p++) {
+        if (motion_all_place_[p] < 0) continue;
+        Image& d = *motion_[motion_all_slot_[p]].depth;
+        VkImageCopy r{};
+        r.srcSubresource = {d.aspect, 0, 0, 1};
+        r.dstSubresource = {motion_all_z_->aspect, 0, 0, 1};
+        r.dstOffset = {int32_t(uint32_t(motion_all_place_[p]) * w), 0, 0};
+        r.extent = {w, h, 1};
+        vkCmdCopyImage(cmd_, d.image, kSrc, motion_all_z_->image, kDst, 1, &r);
+    }
+    ClearWhole(*motion_all_vel_);  // what no draw covers stood still
+    motion_all_w_ = w;
+    motion_all_ = true;
+    motion_pass_ = true;
+}
+
+// the draw for picture p of MotionAll's pass: the first picture with a place works it out (DrawMotion, counting the
+// draw), the others record it again with their constants, jitter and place
+void VulkanBackend::DrawMotionAt(uint32_t p, const State& s, const Before& before, uint32_t prim, uint32_t start,
+                                 uint32_t count, const uint8_t* indices) {
+    if (!motion_all_ || p >= motion_all_n_ || motion_all_place_[p] < 0) return;
+    const float x = float(uint32_t(motion_all_place_[p]) * motion_all_w_);
+    if (p == motion_all_first_) {
+        motion_cur_.ok = false;
+        motion_slot_ = motion_all_slot_[p];
+        view_x_ = x;
+        DrawMotion(s, before, prim, start, count, indices);
+        return;
+    }
+    if (!motion_cur_.ok) return;
+    static const bool perf = diag::Perf();
+    auto lap = perf ? PerfClock::now() : PerfClock::time_point{};
+    const auto start_t = lap;
+    const MotionCur& e = motion_cur_;
+    DrawConstants c{};  // its wvp zero but for the fixed function's, whose transforms are this picture's
+    Bindings b = e.b;
+    if (!e.dc_kept) UploadConstants(s, e.sh, e.k, e.stages, e.size, c, b, false);
+    if (perf) g_perf.ms_steps[8] += PerfLap(lap);
+    MotionConstants(s, before, e.sh, e.reads, c.wvp, e.size, b);
+    if (perf) g_perf.ms_steps[9] += PerfLap(lap);
+    bound_rt_ = e.rt;
+    bound_ds_ = nullptr;
+    EnsureRendering();
+    if (e.pso != drawn_.pso) {
+        vkCmdBindPipeline(cmd_, VK_PIPELINE_BIND_POINT_GRAPHICS, e.pso);
+        drawn_.pso = e.pso;
+    }
+    if (!drawn_.bound || !SameBytes(b, drawn_.b)) {
+        FlushRun();
+        PushRaw(b);
+        drawn_.b = b;
+        drawn_.bound = true;
+    }
+    jitter_ = Jitter(motion_all_slot_[p]);
+    view_x_ = x;
+    SetViewportScissor(s, e.size);
+    SetBlendFactorStencilRef(s);
+    DrawKeptGeometry(e.g);
+    if (perf) {
+        g_perf.ms_steps[10] += PerfLap(lap);
+        g_perf.motion_reused_ms += PerfMs(start_t);
+    }
+    g_perf.motion_reused++;
 }
 
 // the frame's motion pass draw n as the first pass worked it out, null when that pass didn't or what it kept is gone
@@ -6023,10 +6269,17 @@ bool VulkanBackend::MotionSkips() {
 // a kept plain draw in this pass: its pipeline, views and geometry as kept, its constants this picture's
 void VulkanBackend::DrawMotionKept(const State& s, const Before& before, MotionKept& e, Target* rt) {
     MotionSlot& m = motion_[motion_slot_];
-    DrawConstants c{};
+    static const bool perf = diag::Perf();
+    auto lap = perf ? PerfClock::now() : PerfClock::time_point{};
+    DrawConstants c{};  // its wvp zero but for the fixed function's, which uploads them again
     Bindings b;
-    UploadConstants(s, e.sh, e.k, e.stages, e.size, c, b);
+    if (e.dc_kept)
+        b.cb[1] = e.dc;
+    else
+        UploadConstants(s, e.sh, e.k, e.stages, e.size, c, b, false);
+    if (perf) g_perf.ms_steps[8] += PerfLap(lap);
     MotionConstants(s, before, e.sh, e.reads, c.wvp, e.size, b);
+    if (perf) g_perf.ms_steps[9] += PerfLap(lap);
     SetTargets(m.velocity.get(), m.depth.get());
     bound_rt_ = rt;
     bound_ds_ = nullptr;
@@ -6047,7 +6300,12 @@ void VulkanBackend::DrawMotionKept(const State& s, const Before& before, MotionK
     jitter_ = Jitter(motion_slot_);
     SetViewportScissor(s, e.size);
     SetBlendFactorStencilRef(s);
-    const Geometry& g = e.g;
+    DrawKeptGeometry(e.g);
+    if (perf) g_perf.ms_steps[10] += PerfLap(lap);
+    g_perf.motion_reused++;
+}
+
+void VulkanBackend::DrawKeptGeometry(const Geometry& g) {
     if (g.buffers) vkCmdBindVertexBuffers2(cmd_, 0, g.buffers, g.bufs, g.offs, g.sizes, g.strides);
     if (g.topo != drawn_.topo) {
         vkCmdSetPrimitiveTopology(cmd_, VkPrimitiveTopology(g.topo));
@@ -6059,7 +6317,52 @@ void VulkanBackend::DrawMotionKept(const State& s, const Before& before, MotionK
     } else {
         vkCmdDraw(cmd_, g.draw_count, 1, 0, 0);
     }
-    g_perf.motion_reused++;
+    geom_ = g;
+}
+
+// XBE_MOTION_DC=0: every motion draw taken from the first pass fills and uploads its draw constants again
+bool VulkanBackend::DrawConstantsKept() {
+    static const bool on = [] {
+        const char* e = std::getenv("XBE_MOTION_DC");
+        return !(e && *e == '0');
+    }();
+    return on;
+}
+
+// XBE_MOTION_FRAME=0: a motion draw takes only the frame draw's geometry, its textures, constants and views its own
+bool VulkanBackend::FrameDrawSetup() {
+    static const bool on = [] {
+        const char* e = std::getenv("XBE_MOTION_FRAME");
+        return !(e && *e == '0');
+    }();
+    return on;
+}
+
+// kept_draws_ are in serial order; one there is still in the ring (a Submit that starts it over clears them), as
+// ReuseDraw takes them. Its inputs and counts must be a's: the motion pass's pipeline is made for a's layout.
+// XBE_MOTION_GEOMETRY=0: every motion draw worked out uploads its vertices again, to compare against
+const VulkanBackend::KeptOne* VulkanBackend::FrameDrawGeometry(uint32_t serial, const Assembled& a) const {
+    static const bool on = [] {
+        const char* e = std::getenv("XBE_MOTION_GEOMETRY");
+        return !(e && *e == '0');
+    }();
+    if (!on) return nullptr;
+    auto it = std::lower_bound(kept_draws_.begin(), kept_draws_.end(), serial,
+                               [](const KeptOne& o, uint32_t v) { return o.serial < v; });
+    if (it == kept_draws_.end() || it->serial != serial) return nullptr;
+    const KeptOne& r = *it;
+    const KeptDraw& k = r.kept;
+    if (k.regs != a.regs || k.decode != a.decode || k.topology != a.topology || k.strip != a.strip ||
+        k.pretransformed != a.pretransformed || r.g.index_count != a.index_count ||
+        r.g.draw_count != a.draw_count || r.g.base_vertex != a.base_vertex ||
+        r.g.topo != int(PrimitiveTopology(a)) || (a.index_count && !r.g.ib))
+        return nullptr;
+    for (int i = 0; i < 16; i++) {
+        if (!(a.regs >> i & 1)) continue;
+        const VertexElement &x = a.elements[size_t(i)], &y = k.elements[size_t(i)];
+        if (x.format != y.format || x.buffer != y.buffer || x.offset != y.offset) return nullptr;
+    }
+    return &r;
 }
 
 // the motion pass's cbuffer: the draw's registers (c), the picture before's (cp: before's over them) and the fixed
@@ -6613,17 +6916,40 @@ void VulkanBackend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t
         ProgramPerf* pp = nullptr;
         ProgramPerf::Why why = ProgramPerf::kFast;
         PerfClock::time_point t;
+        // the slowest draw (g_slow_draw): the counters at the start, what the draw was
+        double was[kSlowSteps] = {};
+        uint64_t prog = 0;
+        uint32_t count = 0, shading = 0;
+        bool flat = false, whole = false, skipped = true, counted = false;
+        double rec[6] = {};
+        PerfClock::time_point lap;
+        void Rec(int i) {
+            if (pp) rec[i] += PerfLap(lap);
+        }
         ~ProgramScope() {
             if (!pp) return;
-            pp->ms += PerfMs(t);
+            const double ms = PerfMs(t);
+            pp->ms += ms;
             pp->why[why]++;
+            if (ms <= g_slow_draw.ms) return;
+            SlowDraw& d = g_slow_draw;
+            d.ms = ms;
+            SlowSteps(g_perf, d.steps);
+            for (size_t i = 0; i < kSlowSteps; i++) d.steps[i] -= was[i];
+            d.prog = prog, d.count = count, d.shading = shading, d.flat = flat;
+            d.way = !whole ? "fast" : skipped ? "whole, skipped" : "whole";
+            for (int i = 0; i < 6; i++) d.rec[i] = rec[i];
+            d.counted = counted;
         }
     } prog_scope;
     if (diag::Perf() && !replay_) {
         bool prog = (s.vs_handle & 1) && s.vs && !s.vs->program.empty();
-        prog_scope.pp = &g_perf_programs[prog ? s.vs->hash : s.vs_handle];
+        prog_scope.prog = prog ? s.vs->hash : s.vs_handle;
+        prog_scope.pp = &g_perf_programs[prog_scope.prog];
         prog_scope.pp->draws++;
         prog_scope.pp->verts += count;
+        prog_scope.count = count;
+        SlowSteps(g_perf, prog_scope.was);
         prog_scope.t = PerfClock::now();
     }
     g_perf.draws++;
@@ -6650,6 +6976,7 @@ void VulkanBackend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t
                      : fast_why_ != ProgramPerf::kFast ? fast_why_
                                                        : ProgramPerf::kGated;
     kept_.ok = false;
+    prog_scope.whole = true;
     FlushRun();
     if (replay_ && &s != &sprite_ && !cap_) {
         if (!as_drawn) g_perf.redraw_changed++;
@@ -6662,6 +6989,7 @@ void VulkanBackend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t
     if (!AssembleDraw(s, prim, start, count, indices, a, patches)) return CountedSkip(s, "assemble");
     lap = PerfClock::now();
     bool flat = (cap_ || PostWanted()) && ScreenSpaceDraw(s, a);
+    prog_scope.flat = flat;
     TrackPost(s, flat);
     // past the ring every upload is a buffer of its own: seconds lost on a frame that draws a whole level once
     if (CurrentFrame().used > kUploadSize - kUploadReserve) Submit(true);
@@ -6676,6 +7004,7 @@ void VulkanBackend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t
     ClassifyShaders(s, a, count, sh);
     if (sh.prog) EnsureProgramHash(s);
     sh.shading = DrawShading(s, sh);
+    prog_scope.shading = sh.shading;
     sh.vkey = VertexKey(s, a, sh);
     EnsureVertexShader(s, a, sh);
     g_perf.d_vs += PerfLap(lap);
@@ -6825,7 +7154,10 @@ void VulkanBackend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t
 
     // the render pass, the pipeline, texture views and samplers, viewport and scissor, blend factor and stencil
     // reference; nothing after this ends the pass before the draw
+    prog_scope.skipped = false;
+    if (prog_scope.pp) prog_scope.lap = PerfClock::now();
     EnsureRendering();
+    prog_scope.Rec(0);
     if (pso != drawn_.pso) {
         vkCmdBindPipeline(cmd_, VK_PIPELINE_BIND_POINT_GRAPHICS, pso);
         drawn_.pso = pso;
@@ -6836,12 +7168,17 @@ void VulkanBackend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t
 
     // geometry, counted while the title runs a visibility test; a shading's shells between go first, uncounted
     bool bound = sh.shading && DrawBetweenShells(s, a, sh.shading, b);
+    prog_scope.Rec(1);
     uint32_t query = BeginCountedDraw(s);
+    prog_scope.counted = query != kNoQuery;
+    prog_scope.Rec(2);
     if (bound)
         IssueGeometry(a);
     else
         DrawGeometry(a);
+    prog_scope.Rec(3);
     EndCountedDraw(query);
+    prog_scope.Rec(4);
     if (sh.shading) DrawBeyondShells(s, a, sh.shading, b);  // uncounted too, before the draw's depth pass
     if (hud_bars_ && bound_rt_) {  // the sides a frame wide HUD draw no longer covers, black (kHudInPlaceBars)
         // over the draw's own edge by a console pixel: its outermost texels blend with what lies under, a hairline
@@ -6880,6 +7217,7 @@ void VulkanBackend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t
             one.g = geom_;
         }
     }
+    prog_scope.Rec(5);
     g_perf.d_record += PerfLap(lap);
 }
 

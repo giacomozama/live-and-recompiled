@@ -91,6 +91,10 @@ struct Perf {
     // motion passes' draws: worked out the whole way, taken whole from the frame's first pass, left out
     uint64_t motion_slow = 0, motion_reused = 0, motion_skipped = 0;
     double motion_slow_ms = 0, motion_reused_ms = 0;  // the backend's time for each kind
+    // inside them, logged as 'perf: motion draw steps': worked out (assemble and classify, vertex shader, textures,
+    // pixel shader, pipeline, constants, the picture before's constants, recording), then taken from the first pass
+    // (constants, the picture before's, recording)
+    double ms_steps[11] = {};
 };
 inline Perf g_perf;
 // XBE_PERF: the frame's own draws (not frame generation's) per vertex program (its hash, or the fixed function's
@@ -103,6 +107,27 @@ struct ProgramPerf {
     uint64_t why[kWhyCount] = {};
 };
 inline std::unordered_map<uint64_t, ProgramPerf> g_perf_programs;
+// XBE_PERF: the frame's own draw (not frame generation's) that took the render thread longest this second, with the
+// counters it added to, logged as 'perf: slowest draw'. kSlowSteps: assemble, bind, hash checks, texture uploads,
+// compiles, copies, syncs, clears, then Draw's steps setup, vs, ps, pso, consts, record
+constexpr size_t kSlowSteps = 14;
+struct SlowDraw {
+    double ms = 0;
+    double steps[kSlowSteps] = {};
+    uint64_t prog = 0;
+    uint32_t count = 0, shading = 0;
+    bool flat = false;
+    const char* way = "";  // fast, whole, skipped
+    // inside its record step: render pass, binds, query begun, geometry, query ended, the rest
+    double rec[6] = {};
+    bool counted = false;  // drawn while the title counts visible pixels (an occlusion query)
+};
+inline SlowDraw g_slow_draw;
+inline void SlowSteps(const Perf& p, double* out) {
+    const double v[kSlowSteps] = {p.assemble, p.bind,  p.sig,  p.texup, p.compile, p.copy,     p.sync,
+                                  p.clear,    p.d_setup, p.d_vs, p.d_ps, p.d_pso,   p.d_consts, p.d_record};
+    for (size_t i = 0; i < kSlowSteps; i++) out[i] = v[i];
+}
 // the milliseconds since t, then t is now
 inline double PerfLap(PerfClock::time_point& t) {
     auto now = PerfClock::now();

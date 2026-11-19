@@ -1965,7 +1965,82 @@ bool BorrowAcross(const Frame& cur, const Frame& prev, uint32_t n, std::vector<s
     return borrowed;
 }
 
+// What a leader's blend decided, for the frame: whether it was found, jumped, and for each register (or transform)
+// taken part way the value it had in the frame before (with its sign, Flipped) and its reach. All of it holds at any
+// t, the part way alone differs: a second t (the motion passes' picture before, a third picture) is a lerp of the
+// registers kept here, where it was the whole blend again (in a cutscene's crowd of characters 1.7 ms a t). Good for
+// the frame Match matched (g_at_frame), and only where no note is recorded (g_pass.on counts each blend)
+struct Decided {
+    uint32_t frame = 0;
+    Blended how = Blended::kNotFound;
+    uint32_t vsc_at = 0, vsc_n = 0, xf_at = 0, xf_n = 0;
+};
+struct DecidedReg {
+    uint32_t r;
+    float sign;
+    std::array<float, 4> old;
+};
+struct DecidedXf {
+    uint32_t i;
+    std::array<float, 16> old, reach;
+};
+std::vector<Decided> g_decided;
+std::vector<DecidedReg> g_decided_vsc;
+std::vector<DecidedXf> g_decided_xf;
+uint32_t g_decided_frame = 0;
+Decided* g_deciding = nullptr;  // the entry BlendLeader's blend is being kept in, null for none
+
+// XBE_BLEND_DECIDE=0: every blend decided again at each t, to compare against
+bool DecideOn() {
+    static const bool on = [] {
+        const char* e = std::getenv("XBE_BLEND_DECIDE");
+        return !(e && *e == '0');
+    }();
+    return on;
+}
+
+Blended BlendDecided(uint32_t n, float t, State& s, Undo& undo);
+
 Blended BlendLeader(uint32_t n, float t, State& s, Undo& undo) {
+    const Frame& cur = g_frames[g_cur];
+    if (g_pass.on || !DecideOn() || n >= cur.snaps.size() || cur.cut) return BlendDecided(n, t, s, undo);
+    if (cur.snaps[n].leader >= 0) n = uint32_t(cur.snaps[n].leader);
+    if (g_decided_frame != g_at_frame) {
+        g_decided_frame = g_at_frame;
+        g_decided.clear();
+        g_decided_vsc.clear();
+        g_decided_xf.clear();
+    }
+    if (n >= g_decided.size()) g_decided.resize(size_t(n) + 1);
+    Decided& d = g_decided[n];
+    if (d.frame == g_at_frame) {
+        for (uint32_t k = d.vsc_at; k < d.vsc_at + d.vsc_n; k++) {
+            const DecidedReg& e = g_decided_vsc[k];
+            auto& v = s.vsc.v[e.r];
+            undo.vsc.emplace_back(e.r, v);
+            for (size_t i = 0; i < 4; i++) v[i] = e.sign * e.old[i] + (v[i] - e.sign * e.old[i]) * t;
+        }
+        for (uint32_t k = d.xf_at; k < d.xf_at + d.xf_n; k++) {
+            const DecidedXf& e = g_decided_xf[k];
+            auto& m = s.transforms[e.i];
+            undo.xf.emplace_back(e.i, m);
+            Lerp(e.old.data(), m.data(), 16, t, m.data(), e.reach.data());
+        }
+        return d.how;
+    }
+    d.frame = g_at_frame;
+    d.vsc_at = uint32_t(g_decided_vsc.size());
+    d.xf_at = uint32_t(g_decided_xf.size());
+    g_deciding = &d;
+    Blended how = BlendDecided(n, t, s, undo);
+    g_deciding = nullptr;
+    d.how = how;
+    d.vsc_n = uint32_t(g_decided_vsc.size()) - d.vsc_at;
+    d.xf_n = uint32_t(g_decided_xf.size()) - d.xf_at;
+    return how;
+}
+
+Blended BlendDecided(uint32_t n, float t, State& s, Undo& undo) {
     const Frame& cur = g_frames[g_cur];
     const Frame& prev = g_frames[g_cur ^ 1];
     if (g_pass.on) g_pass.draws++;
@@ -2140,6 +2215,7 @@ Blended BlendLeader(uint32_t n, float t, State& s, Undo& undo) {
             if (keep[j] == 1 || std::memcmp(&old[j], &s.vsc.v[r], 16) == 0) continue;
             undo.vsc.emplace_back(uint32_t(r), s.vsc.v[r]);
             float sign = keep[j] == kFlip ? -1.0f : 1.0f;
+            if (g_deciding) g_decided_vsc.push_back({uint32_t(r), sign, old[j]});
             for (size_t i = 0; i < 4; i++) s.vsc.v[r][i] = sign * old[j][i] + (s.vsc.v[r][i] - sign * old[j][i]) * t;
         }
         return how;
@@ -2148,7 +2224,9 @@ Blended BlendLeader(uint32_t n, float t, State& s, Undo& undo) {
         auto& m = s.transforms[size_t(kTransforms[i])];
         if (std::memcmp(&(*old_xf)[i], &m, sizeof(m)) == 0) continue;
         undo.xf.emplace_back(uint32_t(kTransforms[i]), m);
-        Lerp((*old_xf)[i].data(), m.data(), 16, t, m.data(), Reach16((*old_xf)[i], m).data());
+        const auto reach = Reach16((*old_xf)[i], m);
+        if (g_deciding) g_decided_xf.push_back({uint32_t(kTransforms[i]), (*old_xf)[i], reach});
+        Lerp((*old_xf)[i].data(), m.data(), 16, t, m.data(), reach.data());
     }
     return how;
 }
@@ -2352,8 +2430,10 @@ Blended Blend(uint32_t n, float t, State& s, Undo& undo) {
     return how;
 }
 
-// the motion passes' own kept blends, one per t they take, and their own pass ids
-Kept g_motion_kept[2];
+// the motion passes' own kept blends, one per t they take (slot: two a picture in a pass of them all, MotionAll),
+// and their own pass ids
+constexpr uint32_t kMotionKept = 10;
+Kept g_motion_kept[kMotionKept];
 uint32_t g_motion_id = 0;
 
 void BeginMotion() { g_motion_id++; }
@@ -2361,7 +2441,7 @@ void BeginMotion() { g_motion_id++; }
 Blended At(uint32_t n, float t, uint32_t slot, State& s, Undo& undo) {
     return Memoized(n, t, s, undo, [&] {
         bool on = std::exchange(g_pass.on, false);
-        Blended how = BlendDraw(n, t, s, undo, g_motion_kept[slot & 1], g_motion_id);
+        Blended how = BlendDraw(n, t, s, undo, g_motion_kept[slot % kMotionKept], g_motion_id);
         g_pass.on = on;
         return how;
     });

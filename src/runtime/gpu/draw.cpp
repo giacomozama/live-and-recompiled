@@ -456,6 +456,26 @@ void NoteDepthOfField(const PixelKey& k, const float (*pc)[4], uint32_t dst_blen
     if (!k.programmable || dst_blend != 0x303 || !(k.tex[0].flags & kTexDepthBytes) || (k.tex_modes & 0x1F) != 1)
         return;
     g_dof_idle = 0;
+    // the table worked out again only for a composite of other combiners or constants than the last: each is 4608
+    // runs of the combiners on the CPU, 2.2 ms a frame in the bloodbath's intro, whose composite stays the same.
+    // XBE_FOCUS_MEMO=0 works it out each time, to compare against
+    static const bool memo = [] {
+        const char* e = std::getenv("XBE_FOCUS_MEMO");
+        return !(e && *e == '0');
+    }();
+    static PixelKey last_k;
+    static float last_pc[18][4];
+    static bool last_set = false, last_table = false;  // last_table: the last gave a table (its alpha the depth's alone)
+    static uint64_t last_version = 0;  // the table's version it left (an idle spell's clear moves it on)
+    if (memo && last_set && last_version == g_focus_version && k == last_k &&
+        std::memcmp(last_pc, pc, sizeof(last_pc)) == 0) {
+        if (last_table) g_focus_idle = 0;
+        return;
+    }
+    last_k = k;
+    std::memcpy(last_pc, pc, sizeof(last_pc));
+    last_set = true;
+    last_table = false;
     float order[4];
     DepthLayoutOrder(k.tex[0].flags >> kTexDepthLayoutShift, order);
     // the alpha at a depth, with what the CPU doesn't know (the other stages, the vertex colors, fog) at 0 and then at
@@ -490,9 +510,11 @@ void NoteDepthOfField(const PixelKey& k, const float (*pc)[4], uint32_t dst_blen
     if (!depth_only) {
         static int told = 0;
         if (trace && told++ < 4) LOGR("focus: a depth of field composite whose alpha hangs on more than the depth, no table");
+        last_version = g_focus_version;
         return;
     }
     g_focus_idle = 0;
+    last_table = true;
     bool same = true;
     for (uint32_t i = 0; i < kFocusBins; i++) {
         const float v = std::min({bins[i], bins[i ? i - 1 : 0], bins[std::min(i + 1, kFocusBins - 1)]});
@@ -500,6 +522,7 @@ void NoteDepthOfField(const PixelKey& k, const float (*pc)[4], uint32_t dst_blen
         g_focus[i] = v;
     }
     if (!same) g_focus_version++;
+    last_version = g_focus_version;
     if (trace && !same) {
         std::string spans;
         float least = 1;
@@ -1171,6 +1194,32 @@ void LogPerf() {
                      pp.ms / n, pp.draws / n, pp.verts / n / 1000.0, why.c_str());
             }
             g_perf_programs.clear();
+        }
+        if (p.motion_slow || p.motion_reused) {
+            const double* m = p.ms_steps;
+            LOGR("perf: motion draw steps per frame: worked out %.0f: assemble %.2f vs %.2f textures %.2f ps %.2f pso %.2f "
+                 "consts %.2f before %.2f record %.2f | taken %.0f: consts %.2f before %.2f record %.2f",
+                 p.motion_slow / n, m[0] / n, m[1] / n, m[2] / n, m[3] / n, m[4] / n, m[5] / n, m[6] / n, m[7] / n,
+                 p.motion_reused / n, m[8] / n, m[9] / n, m[10] / n);
+        }
+        if (g_slow_draw.ms > 0) {
+            const SlowDraw& d = g_slow_draw;
+            static const char* const kStep[kSlowSteps] = {"assemble", "bind", "checks", "tex uploads", "compile",
+                                                          "copy",     "sync", "clear",  "setup",       "vs",
+                                                          "ps",       "pso",  "consts", "record"};
+            std::string steps;
+            for (size_t i = 0; i < kSlowSteps; i++) {
+                if (d.steps[i] < 0.01) continue;
+                char part[48];
+                std::snprintf(part, sizeof(part), " %s %.2f", kStep[i], d.steps[i]);
+                steps += part;
+            }
+            LOGR("perf: slowest draw: %llX %.2f ms, %u vertices, %s%s%s, shading %u |%s | record: pass %.2f binds %.2f "
+                 "query %.2f geometry %.2f query end %.2f rest %.2f",
+                 (unsigned long long)d.prog, d.ms, d.count, d.way, d.flat ? ", screen space" : "",
+                 d.counted ? ", counted" : "", d.shading, steps.c_str(), d.rec[0], d.rec[1], d.rec[2], d.rec[3], d.rec[4],
+                 d.rec[5]);
+            g_slow_draw = SlowDraw{};
         }
         g_perf = Perf{};
         perf_start = PerfClock::now();

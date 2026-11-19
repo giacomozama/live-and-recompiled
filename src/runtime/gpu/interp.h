@@ -129,7 +129,7 @@ enum class Blended { kNotFound, kJumped, kBorrowed, kYes };
 Blended Blend(uint32_t n, float t, State& s, Undo& undo);
 // Motion vectors (a temporal upscaler's): the frame's draw n at t as Blend takes it, counted in no picture's note.
 // Each motion pass begins with BeginMotion; slot (0 or 1) keeps apart the two t a pass asks each draw for, the
-// picture's own and the one before it
+// picture's own and the one before it (a pass of all the pictures, 2p and 2p + 1 for picture p, up to 10)
 void BeginMotion();
 Blended At(uint32_t n, float t, uint32_t slot, State& s, Undo& undo);
 // A 2D draw the game places on the CPU (a speech bubble, a marker over a character) moves in its vertices, not its

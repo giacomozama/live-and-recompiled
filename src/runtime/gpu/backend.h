@@ -96,6 +96,15 @@ public:
     // asked before each draw of a motion pass: true, the backend leaves it out (it counted it), so its constants for
     // the picture before and this one needn't be worked out
     virtual bool MotionSkips() { return false; }
+    // MotionAll: the backend takes all the frame's pictures in one pass after the last is drawn. Each picture's depth is
+    // kept right after it is drawn (MotionDepth), then between MotionPasses(true, slots, n) and MotionPasses(false, ..)
+    // each draw comes through DrawMotionAt once for each picture p (0..n-1, slots[p] its slot), in turn, the first's
+    // MotionSkips asked once for all
+    virtual bool MotionAll() { return false; }
+    virtual void MotionDepth() {}
+    virtual void MotionPasses(bool /*on*/, const uint32_t* /*slots*/, uint32_t /*n*/) {}
+    virtual void DrawMotionAt(uint32_t /*p*/, const State& /*s*/, const Before& /*before*/, uint32_t /*prim*/,
+                              uint32_t /*start*/, uint32_t /*count*/, const uint8_t* /*indices*/) {}
     // the CPU is about to touch this resource's memory: write GPU results back first
     virtual void Sync(uint32_t data_va, uint32_t size) = 0;
     // a lock that does not wait for the GPU (NOOVERWRITE): a result a frame or two old is what the console gives too

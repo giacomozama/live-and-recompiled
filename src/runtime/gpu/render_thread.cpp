@@ -917,6 +917,53 @@ private:
         if (perf) gen_motion_ns_ += Ns(motion_start);
     }
 
+    // the frame's draws again once for the motion vectors of all its pictures (Backend::MotionAll): each draw recorded
+    // for each picture in turn, at its t (ts) with its constants as the picture before it had them (befores), its
+    // setup worked out once. Shading (fur) is tracked once, at the frame's own t
+    void MotionAll(const Batch& last, uint32_t n, const uint32_t* slots, const float* ts, const float* befores) {
+        static const bool perf = diag::Perf();
+        auto motion_start = perf ? PerfClock::now() : PerfClock::time_point{};
+        State& rs = replay_state_;
+        rs = frame_start_;
+        uint32_t k = 0;
+        interp::Undo undo;
+        Before was;
+        interp::BeginMotion();
+        ShadingReplay(true, 1);
+        inner_->MotionPasses(true, slots, n);
+        auto run = [&](const Batch& b) {
+            ShowDue();
+            for (const Cmd& c : b.cmds) {
+                const uint8_t* data = b.bytes.data() + c.data;
+                if (c.op == Op::State) Apply(rs, b, c, nullptr);
+                if (c.op != Op::Draw) continue;
+                if (inner_->MotionSkips()) {
+                    k++;
+                    continue;
+                }
+                for (uint32_t p = 0; p < n; p++) {
+                    was.vsc.clear();
+                    was.xf.clear();
+                    auto at_start = perf ? PerfClock::now() : PerfClock::time_point{};
+                    interp::At(k, befores[p], 2 * p, rs, undo);
+                    for (const auto& [r, v] : undo.vsc) was.vsc.emplace_back(r, rs.vsc.v[r]);
+                    for (const auto& [i, m] : undo.xf) was.xf.emplace_back(i, rs.transforms[i]);
+                    undo.Restore(rs);
+                    if (ts[p] < 1) interp::At(k, ts[p], 2 * p + 1, rs, undo);
+                    if (perf) gen_motion_at_ns_ += Ns(at_start);
+                    inner_->DrawMotionAt(p, rs, was, c.a, c.b, c.c, c.d ? data : nullptr);
+                    undo.Restore(rs);
+                }
+                k++;
+            }
+        };
+        for (const Batch* b : frame_) run(*b);
+        run(last);
+        inner_->MotionPasses(false, slots, n);
+        ShadingReplay(false);
+        if (perf) gen_motion_ns_ += Ns(motion_start);
+    }
+
     // a frame's Present: with frame generation, the pictures between the frame before and it drawn first; with motion
     // vectors, each picture's after it is drawn
     void Present(const Batch& b, const Cmd& c) {
@@ -963,7 +1010,19 @@ private:
             // the frame's own picture takes the last slot, those drawn again the first ones in turn
             const uint32_t own_slot = std::max(inner_->Pictures(), 1u) - 1;
             inner_->Keep(c.s1, own);
-            if (motion && own) Motion(b, own_slot, 1, before(pictures - 1));
+            // all the pictures' motion in one pass after the last is drawn (each picture's depth kept as it is drawn,
+            // MotionDepth), else each picture's pass after it
+            const bool all = motion && inner_->MotionAll();
+            uint32_t all_n = 0, all_slots[Backend::kMostPictures + 1];
+            float all_t[Backend::kMostPictures + 1], all_before[Backend::kMostPictures + 1];
+            if (motion && own) {
+                if (all) {
+                    inner_->MotionDepth();
+                    all_slots[all_n] = own_slot, all_t[all_n] = 1, all_before[all_n++] = before(pictures - 1);
+                } else {
+                    Motion(b, own_slot, 1, before(pictures - 1));
+                }
+            }
             const uint32_t again = own ? pictures - 1 : pictures;
             for (uint32_t i = 1; i <= again; i++) {
                 float t = times[i - 1];
@@ -977,8 +1036,14 @@ private:
                 auto between_start = PerfClock::now();
                 inner_->Between(c.s1, i);
                 gen_between_ns_ += Ns(between_start);
-                if (motion) Motion(b, i - 1, t, before(i - 1));
+                if (motion && all) {
+                    inner_->MotionDepth();
+                    all_slots[all_n] = i - 1, all_t[all_n] = t, all_before[all_n++] = before(i - 1);
+                } else if (motion) {
+                    Motion(b, i - 1, t, before(i - 1));
+                }
             }
+            if (all && all_n) MotionAll(b, all_n, all_slots, all_t, all_before);
             changed_ = true;
         } else if (motion) {
             // its own picture alone: in its own slot, from the picture shown before (the whole frame without frame
