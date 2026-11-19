@@ -241,12 +241,75 @@ X86_FUNC(sub_0004FF00) {
 // can land a hair under the next whole frame (3.0 + 0.01666 -> 180.9999 -> 180): the clock had not left the start,
 // the window was empty, and Birdy's scene lost its voice stream (command 0xB at frame 175) and with it the lip sync.
 // The last is made -1 then too.
+//
+// The clock's frame is trunc(fps [0x7F9F5C] * seconds [0x847118]), the seconds summing each frame's measured time
+// ([0x7FA21C]). At 60 a frame is about one of the clock's, and the measured times jitter, so the frame stepped 1, 0, 2
+// as the seconds landed either side of a whole frame: what the tracks move held still for a frame and caught up the
+// next (Conker falling into the pit in the waterfall cave, captures 123844/123852: frames 1687, 1691, 1696, 1705,
+// 1708 still). Above 30 the frame steps by the frame's ticks ([0x7FA20C], evened with their remainder carried,
+// display.cpp) instead, at fps / 60 each, kept within a frame of the seconds' (past that it takes theirs again, as
+// after a long frame). A clock held (a voice stream preparing: the seconds don't move) holds it too.
+// XBE_CUT_CLOCK=0 leaves the game's; XBE_CUT_CLOCK_TRACE=1 logs each step
+namespace {
+struct EvenClock {
+    bool on = false;
+    double at = 0;  // the frame, with its fraction: half way between whole frames when taken from the seconds
+};
+EvenClock g_even_clock[2];
+
+void StepEvenClock(uint32_t slot, float secs_before, uint8_t* base) {
+    using kernel::R32;
+    static const bool off = [] {
+        const char* e = std::getenv("XBE_CUT_CLOCK");
+        return e && *e == '0';
+    }();
+    static const bool trace = [] {
+        const char* e = std::getenv("XBE_CUT_CLOCK_TRACE");
+        return e && *e && *e != '0';
+    }();
+    EvenClock& c = g_even_clock[slot];
+    // playing, its first commands handed on (the first step's window is the one above), the game at 60
+    if (off || base[0x76F0E0 + slot] != 1 || !base[0x76F0D8 + slot] || display::GameRate() <= 30) {
+        c.on = false;
+        return;
+    }
+    float secs, fps;
+    std::memcpy(&secs, base + 0x847118, 4);
+    std::memcpy(&fps, base + 0x7F9F5C, 4);
+    if (secs == secs_before) return;  // held
+    const int32_t now = int32_t(R32(0x76F0F8 + slot * 4)), last = int32_t(R32(0x76F0F0 + slot * 4));
+    const int32_t end = int32_t(R32(0x76F0E8 + slot * 4));
+    if (!c.on || last < 0 || !(fps > 0.0f)) {
+        c.on = last >= 0 && fps > 0.0f;
+        c.at = now + 0.5;
+        return;
+    }
+    const uint32_t ticks = R32(0x7FA20C);
+    c.at += double(ticks) * double(fps) / 60.0;
+    int32_t even = int32_t(std::floor(c.at));
+    const bool resync = std::abs(even - now) > 1;
+    if (resync) {
+        c.at = now + 0.5;
+        even = now;
+    }
+    even = std::min(std::max(even, last), end);
+    if (trace)
+        LOGR("cutscene clock: slot %u secs %.4f, game's frame %d, even %d (last %d, ticks %u)%s", slot, secs, now, even,
+             last, ticks, resync ? ", taken from the seconds" : "");
+    kernel::W32(0x76F0F8 + slot * 4, uint32_t(even));
+}
+}  // namespace
+
 X86_EXTERN_FUNC(__imp__sub_000501F0);
 X86_FUNC(sub_000501F0) {
     using kernel::R32;
     const uint32_t slot = ctx.esi;
+    float secs_before;
+    std::memcpy(&secs_before, base + 0x847118, 4);
     __imp__sub_000501F0(ctx, base);
-    if (slot > 1 || base[0x76F0E0 + slot] != 1 || base[0x76F0D8 + slot]) return;
+    if (slot > 1) return;
+    StepEvenClock(slot, secs_before, base);
+    if (base[0x76F0E0 + slot] != 1 || base[0x76F0D8 + slot]) return;
     const uint32_t start = kernel::R16(0x7655F4);
     if (R32(0x76F0F0 + slot * 4) == start && R32(0x76F0F8 + slot * 4) == start)
         kernel::W32(0x76F0F0 + slot * 4, 0xFFFFFFFFu);
