@@ -876,6 +876,20 @@ std::string MotionInstancedHlsl(std::string s) {
     return s;
 }
 
+std::string MotionLayeredHlsl(std::string s, bool instanced) {
+    const size_t at_out = s.find(kMotionOut), at_ret = s.rfind("    return o;");
+    if (at_out == std::string::npos || at_ret == std::string::npos) return {};
+    s.insert(at_ret, instanced ? "    o.mlayer = mbank_i;\n" : "    o.mlayer = (uint)mlayer_c.x;\n");
+    s.insert(at_out + std::strlen(kMotionOut), "    uint mlayer : SV_RenderTargetArrayIndex;\n");
+    if (!instanced) {
+        const std::string vc = "float4 cp[192]; float4x4 mwvp; };";
+        const size_t at_vc = s.find(vc);
+        if (at_vc == std::string::npos) return {};
+        s.replace(at_vc, vc.size(), "float4 cp[192]; float4x4 mwvp; float4 mlayer_c; };");
+    }
+    return s;
+}
+
 uint64_t MatchProgramShading(const std::vector<uint32_t>& prog) {
     if (g_program_shading.empty()) return 0;
     std::string s = VertexProgramHlsl(prog, 0xFFFF);

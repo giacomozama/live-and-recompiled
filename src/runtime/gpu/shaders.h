@@ -244,6 +244,9 @@ std::string VertexProgramHlsl(const std::vector<uint32_t>& program, uint16_t reg
 // goes to viewport i (SV_ViewportArrayIndex); empty for a shader it can't make so (the fixed function's transform)
 constexpr uint32_t kMotionBank = 384;
 std::string MotionInstancedHlsl(std::string motion_vs);
+// a motion vertex shader drawing into a layer of an array target (SV_RenderTargetArrayIndex): MotionInstancedHlsl's
+// the instance's, others the layer after mwvp in b0 (mlayer_c.x); empty for one it can't make so
+std::string MotionLayeredHlsl(std::string motion_vs, bool instanced);
 // the g_program_shading entries a program matches, bit i for entry i + 1 (the first 64), whether they are on or not
 uint64_t MatchProgramShading(const std::vector<uint32_t>& program);
 // the g_program_watch entries a program matches, bit i for entry i (the first 64): each sees the draw

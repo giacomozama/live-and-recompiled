@@ -876,6 +876,7 @@ struct Image : std::enable_shared_from_this<Image> {
     VkFormat format = VK_FORMAT_UNDEFINED;
     VkImageAspectFlags aspect = VK_IMAGE_ASPECT_COLOR_BIT;
     uint32_t w = 1, h = 1, d = 1;
+    uint32_t layers = 1;  // an array's: rendered to all at once (EnsureRendering), a shader picking the layer
     VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT;
     VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED;
     ~Image() {
@@ -1581,8 +1582,9 @@ private:
     VkPipeline EnsurePipeline(const PsoKey& k, const DrawShaders& sh);
     VkPipeline FindPipeline(const PsoKey& k, const DrawShaders& sh);
     // any thread: a draw's pipeline, a point list's expanded by gs, patches tessellated by hs and ds
+    // viewports: the motion pass's instanced draw takes one a picture
     VkPipeline CreateDrawPipeline(const PsoKey& k, const Spirv& vs, const Spirv& ps, const Spirv* gs,
-                                  const Spirv* hs = nullptr, const Spirv* dms = nullptr) const;
+                                  const Spirv* hs = nullptr, const Spirv* dms = nullptr, uint32_t viewports = 1) const;
     VkPipeline CreateFullScreenPipeline(const Spirv& vs, const Spirv& ps, const FullScreenDesc& d) const;
     VkPipeline CreatePipeline(VkGraphicsPipelineCreateInfo& ci, const Spirv* const code[],
                               const VkShaderStageFlagBits stages[], uint32_t n) const;
@@ -2210,16 +2212,21 @@ private:
     static bool FurReuse();
     static bool DrawConstantsKept();
     static bool FrameDrawSetup();
-    // MotionAll's pass: each picture's place side by side in one velocity and one depth (its depth copied in, its
-    // velocity copied out to its slot's after), -1 for a picture without its depth kept; the draw's setup as the first
-    // picture with a place worked it out, for the others
+    // MotionAll's pass: each picture's place a layer of one velocity and one depth (its depth copied in, its velocity
+    // copied out to its slot's after), -1 for a picture without its depth kept; the draw's setup as the first picture
+    // with a place worked it out, for the others
     bool motion_all_ = false;
     uint32_t motion_all_n_ = 0, motion_all_first_ = 0, motion_all_w_ = 0;
     uint32_t motion_all_places_ = 0, motion_all_last_ = 0;  // pictures with a place, the last of them
     // one instanced draw for all the places (MotionInstancedHlsl): the device takes a viewport index from the vertex
-    // shader; the pipelines made meanwhile take this many viewports
+    // shader
     bool motion_inst_ok_ = false;
-    uint32_t draw_viewports_ = 1;
+    // MotionAll's places are layers of one array target, the vertex shader picking its picture's (MotionLayeredHlsl):
+    // each picture drawn at its own origin, as its picture was. Side by side, the viewport moved a picture or two
+    // across left fewer bits for the jitter's fraction, a vertex now and then snapped to another sub-pixel and its
+    // depth no longer equal to the picture's: pixels without motion, DLSS's specks
+    bool motion_layer_ok_ = false;
+    uint32_t motion_layer_ = 0;  // the layer a motion draw that isn't instanced goes to (MotionConstants)
     static bool MotionInstanced();
     void WriteMotionBank(uint32_t place, const State& s, const Before& before, const ConstReads& reads);
     void DrawMotionInstanced(const State& s);
@@ -2242,13 +2249,12 @@ private:
         Alloc bank{};
     };
     MotionCur motion_cur_;
-    float view_x_ = 0;  // the viewport and scissor moved across by this (a picture's place in MotionAll's pass)
     // the motion constants last uploaded (both banks and mwvp) and where, for a draw reading the same in its registers
     std::array<std::array<float, 4>, kConstRegs> mc_now_{}, mc_was_{};
     float mc_wvp_[16] = {};
     Alloc mc_last_{};
     bool mc_ok_ = false;
-    uint32_t mc_ring_ = 0;
+    uint32_t mc_ring_ = 0, mc_layer_ = 0;
     std::array<std::array<float, 4>, kConstRegs> mc_tmp_{};
     void MotionConstants(const State& s, const Before& before, const DrawShaders& sh, const ConstReads& reads,
                          const float* wvp, GuestExtent size, Bindings& b);
@@ -2688,6 +2694,8 @@ bool VulkanBackend::CreateDevice() {
         VkPhysicalDeviceFeatures2 h{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, &h12};
         vkGetPhysicalDeviceFeatures2(phys_, &h);
         motion_inst_ok_ = h.features.multiViewport && h12.shaderOutputViewportIndex;
+        motion_layer_ok_ = h12.shaderOutputLayer;
+        f12.shaderOutputLayer = motion_layer_ok_;
         if (!motion_inst_ok_) LOGR("vulkan: no viewport index from vertex shaders, motion vectors drawn a picture at a time");
         f.features.multiViewport = motion_inst_ok_;
         f12.shaderOutputViewportIndex = motion_inst_ok_;
@@ -3080,6 +3088,7 @@ ImageRef VulkanBackend::NewImage(const ImageSpec& s) {
     im->w = s.w;
     im->h = s.h;
     im->d = s.d;
+    im->layers = s.layers;
     im->samples = s.samples;
     bool depth = IsDepth(s.fmt);
     bool stencil = HasStencil(s.fmt);
@@ -3328,7 +3337,7 @@ void VulkanBackend::EnsureRendering() {
         h = std::min(h, z->h);
     }
     ri.renderArea = {{0, 0}, {w, h}};
-    ri.layerCount = 1;
+    ri.layerCount = c && z ? std::min(c->layers, z->layers) : c ? c->layers : z->layers;
     vkCmdBeginRendering(cmd_, &ri);
     rendering_ = true;
     active_ = desired_;
@@ -3936,7 +3945,7 @@ Image* VulkanBackend::Feedback(Target& t) {
 }
 
 VkPipeline VulkanBackend::CreateDrawPipeline(const PsoKey& k, const Spirv& vs, const Spirv& ps, const Spirv* gs,
-                                             const Spirv* hs, const Spirv* dms) const {
+                                             const Spirv* hs, const Spirv* dms, uint32_t viewports) const {
     // vertex attributes at their registers' locations, each buffer's stride set as it is bound
     VkVertexInputAttributeDescription attr[16];
     VkVertexInputBindingDescription bind[16];
@@ -3961,7 +3970,7 @@ VkPipeline VulkanBackend::CreateDrawPipeline(const PsoKey& k, const Spirv& vs, c
     VkPipelineInputAssemblyStateCreateInfo ia{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
     ia.topology = TopologyClass(k.topo);
     VkPipelineViewportStateCreateInfo vp{VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
-    vp.viewportCount = vp.scissorCount = draw_viewports_;
+    vp.viewportCount = vp.scissorCount = viewports;
     // a point is drawn as its whole console pixel by the geometry shader, solid, front facing and never culled
     bool points = k.topo == uint32_t(Topology::Points);
     VkPipelineRasterizationStateCreateInfo rs{VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
@@ -4116,7 +4125,9 @@ void VulkanBackend::StartWarmUp() {
 void VulkanBackend::WarmUp(std::vector<shader_record::Entry> entries, shader_record::Programs programs) {
     auto t = std::chrono::steady_clock::now();
     std::vector<const shader_record::Entry*> shaders, pipelines;
-    for (const auto& e : entries) (e.kind == shader_record::kPipeline ? pipelines : shaders).push_back(&e);
+    for (const auto& e : entries)
+        (e.kind == shader_record::kPipeline || e.kind == shader_record::kMotionPipeline ? pipelines : shaders)
+            .push_back(&e);
     std::unordered_map<uint64_t, WarmShader> made;  // by record id
     WarmShaders(shaders, programs, made);
     size_t psos = WarmPipelines(pipelines, made);
@@ -4147,6 +4158,22 @@ void VulkanBackend::WarmShaders(const std::vector<const shader_record::Entry*>& 
             if (pk.shading > g_program_shading.size()) return;
             src = PixelHlsl(pk);
             profile = "ps_5_0";
+        } else if (e.kind == shader_record::kMotionVertex && e.bytes.size() == sizeof(MotionVertexEntry)) {
+            MotionVertexEntry mv;
+            std::memcpy(&mv, e.bytes.data(), sizeof(mv));
+            if (mv.v.shading > g_program_shading.size() || (mv.instanced && !motion_inst_ok_)) return;
+            auto p = programs.find(mv.v.program);
+            if (mv.v.program && p == programs.end()) return;
+            src = MotionVertexHlsl(mv.v, mv.v.program ? p->second : none);
+            if (mv.instanced) src = MotionInstancedHlsl(std::move(src));
+            if (motion_layer_ok_ && !src.empty()) src = MotionLayeredHlsl(std::move(src), mv.instanced);
+            if (src.empty()) return;
+        } else if (e.kind == shader_record::kMotionPixel && e.bytes.size() == sizeof(MotionPixelEntry)) {
+            MotionPixelEntry mp;
+            std::memcpy(&mp, e.bytes.data(), sizeof(mp));
+            if (mp.pk.shading > g_program_shading.size()) return;
+            src = PixelHlsl(mp.pk, true, !mp.plain);
+            profile = "ps_5_0";
         } else {
             return;
         }
@@ -4173,6 +4200,27 @@ size_t VulkanBackend::WarmPipelines(const std::vector<const shader_record::Entry
     std::atomic<size_t> n{0};
     ParallelFor(list.size(), warm_.stop, [&](size_t i) {
         const shader_record::Entry& e = *list[i];
+        if (e.kind == shader_record::kMotionPipeline) {
+            // the motion pass's: its key as made, its shaders' hashes in it its own (MotionVertexSalt and the like)
+            if (e.bytes.size() != sizeof(MotionPipelineEntry)) return;
+            MotionPipelineEntry me;
+            std::memcpy(&me, e.bytes.data(), sizeof(me));
+            auto vs = made.find(me.vs_id);
+            auto ps = made.find(me.ps_id);
+            if (vs == made.end() || ps == made.end() || (me.viewports > 1 && !motion_inst_ok_)) return;
+            PsoKey k;
+            std::memcpy(&k, &me.k, sizeof(k));
+            VkPipeline pso =
+                CreateDrawPipeline(k, *vs->second.code, *ps->second.code, nullptr, nullptr, nullptr, me.viewports);
+            if (!pso) return;
+            std::lock_guard<std::mutex> lock(warm_.lock);
+            if (!warm_.psos.emplace(Hash(&k, sizeof(k)), pso).second) {
+                vkDestroyPipeline(dev_, pso, nullptr);
+                return;
+            }
+            n++;
+            return;
+        }
         if (e.bytes.size() != sizeof(PipelineEntry)) return;
         PipelineEntry p;
         std::memcpy(&p, e.bytes.data(), sizeof(p));
@@ -4958,8 +5006,8 @@ void VulkanBackend::ViewportScissorFor(const State& s, GuestExtent size, VkViewp
     x1 = std::clamp<int32_t>(x1, 0, int32_t(W));
     y1 = std::clamp<int32_t>(y1, 0, int32_t(H));
     // as SetViewport and SetScissor make them, moved by the draw's jitter
-    vp = {vx + jitter_[0] + view_x_, H + jitter_[1], vw, -H, 0, 1};
-    r = {{x0 + int32_t(view_x_), y0}, {uint32_t(std::max(x1 - x0, 0)), uint32_t(std::max(y1 - y0, 0))}};
+    vp = {vx + jitter_[0], H + jitter_[1], vw, -H, 0, 1};
+    r = {{x0, y0}, {uint32_t(std::max(x1 - x0, 0)), uint32_t(std::max(y1 - y0, 0))}};
 }
 
 void VulkanBackend::SetViewportScissor(const State& s, GuestExtent size) {
@@ -5916,7 +5964,7 @@ void VulkanBackend::MotionPass(bool on, uint32_t slot) {
     kept_.ok = false;
     bound_rt_ = bound_ds_ = nullptr;
     jitter_ = {};
-    view_x_ = 0;
+    motion_layer_ = 0;
     motion_pass_ = false;
     motion_n_ = 0;
     if (!on) return;
@@ -6021,9 +6069,21 @@ void VulkanBackend::DrawMotion(const State& s, const Before& before, uint32_t pr
 
     uint64_t vkey = VertexKey(s, a, sh) ^ kMotionVertexSalt, hash;
     auto vit = motion_shaders_.find(vkey);
+    // the shaders and pipelines as shaders.rec keeps them, for the next run to make ahead (WarmUp)
+    auto motion_vs = [&](bool instanced) {
+        MotionVertexEntry mv;
+        std::memset(&mv, 0, sizeof(mv));
+        mv.v = MakeVertexEntry(s, a, sh);
+        mv.instanced = instanced;
+        return mv;
+    };
     if (vit == motion_shaders_.end()) {
-        std::string src = MotionVertexHlsl(MakeVertexEntry(s, a, sh), DrawProgram(s, sh));
-        vit = motion_shaders_.emplace(vkey, MotionShader{Compile(src, "main", "vs_5_0", hash), ReadsOf(src)}).first;
+        const MotionVertexEntry mv = motion_vs(false);
+        std::string src = MotionVertexHlsl(mv.v, DrawProgram(s, sh));
+        if (motion_layer_ok_) src = MotionLayeredHlsl(std::move(src), false);
+        const Spirv* code = Compile(src, "main", "vs_5_0", hash);
+        if (code) record_.Add(shader_record::kMotionVertex, &mv, sizeof(mv));
+        vit = motion_shaders_.emplace(vkey, MotionShader{code, ReadsOf(src)}).first;
     }
     sh.vs_code = vit->second.code;
     ConstReads reads = vit->second.reads;
@@ -6034,8 +6094,11 @@ void VulkanBackend::DrawMotion(const State& s, const Before& before, uint32_t pr
     if (inst) {
         auto iit = motion_shaders_.find(ikey);
         if (iit == motion_shaders_.end()) {
-            std::string src = MotionInstancedHlsl(MotionVertexHlsl(MakeVertexEntry(s, a, sh), DrawProgram(s, sh)));
+            const MotionVertexEntry mv = motion_vs(true);
+            std::string src = MotionInstancedHlsl(MotionVertexHlsl(mv.v, DrawProgram(s, sh)));
+            if (!src.empty()) src = MotionLayeredHlsl(std::move(src), true);
             const Spirv* code = src.empty() ? nullptr : Compile(src, "main", "vs_5_0", hash);
+            if (code) record_.Add(shader_record::kMotionVertex, &mv, sizeof(mv));
             static bool told = false;
             if (!code && !src.empty() && !std::exchange(told, true))
                 LOGR("vulkan: a motion shader for all the pictures at once didn't compile, its draws go a picture at a "
@@ -6064,9 +6127,15 @@ void VulkanBackend::DrawMotion(const State& s, const Before& before, uint32_t pr
     const bool plain = zwrite || tess;
     uint64_t pkey = Hash(&pk, sizeof(pk)) ^ (plain ? kMotionPlainSalt : kMotionPixelSalt);
     auto pit = motion_shaders_.find(pkey);
+    MotionPixelEntry mp;
+    std::memset(&mp, 0, sizeof(mp));
+    mp.pk = pk;
+    mp.plain = plain;
     if (pit == motion_shaders_.end()) {
         std::string src = PixelHlsl(pk, true, !plain);
-        pit = motion_shaders_.emplace(pkey, MotionShader{Compile(src, "main", "ps_5_0", hash), ReadsOf(src)}).first;
+        const Spirv* code = Compile(src, "main", "ps_5_0", hash);
+        if (code) record_.Add(shader_record::kMotionPixel, &mp, sizeof(mp));
+        pit = motion_shaders_.emplace(pkey, MotionShader{code, ReadsOf(src)}).first;
     }
     sh.ps_code = pit->second.code;
     reads |= pit->second.reads;
@@ -6093,10 +6162,29 @@ void VulkanBackend::DrawMotion(const State& s, const Before& before, uint32_t pr
     k.sten = k.sfunc = k.smask = k.swmask = k.sfail = k.szfail = k.spass = 0;
     auto [pso, fresh] = motion_psos_.try_emplace(Hash(&k, sizeof(k)), VK_NULL_HANDLE);
     if (fresh) {
-        draw_viewports_ = inst ? motion_all_places_ : 1;
-        pso->second = CreateDrawPipeline(k, *sh.vs_code, *sh.ps_code, nullptr);
-        draw_viewports_ = 1;
-        if (!pso->second) LOGE("vulkan: motion pipeline creation failed");
+        const uint32_t viewports = inst ? motion_all_places_ : 1;
+        const uint64_t h = Hash(&k, sizeof(k));
+        {
+            std::lock_guard<std::mutex> lock(warm_.lock);
+            auto w = warm_.psos.find(h);
+            if (w != warm_.psos.end()) {
+                pso->second = w->second;
+                warm_.psos.erase(w);
+            }
+        }
+        if (!pso->second) pso->second = CreateDrawPipeline(k, *sh.vs_code, *sh.ps_code, nullptr, nullptr, nullptr, viewports);
+        if (!pso->second) {
+            LOGE("vulkan: motion pipeline creation failed");
+        } else {
+            MotionPipelineEntry me;
+            std::memset(&me, 0, sizeof(me));
+            const MotionVertexEntry mv = motion_vs(inst);
+            me.vs_id = shader_record::Id(shader_record::kMotionVertex, &mv, sizeof(mv));
+            me.ps_id = shader_record::Id(shader_record::kMotionPixel, &mp, sizeof(mp));
+            std::memcpy(&me.k, &k, sizeof(k));
+            me.viewports = viewports;
+            record_.Add(shader_record::kMotionPipeline, &me, sizeof(me));
+        }
     }
     if (!pso->second) return;
     step(4);
@@ -6228,7 +6316,6 @@ void VulkanBackend::DrawMotionInstanced(const State& s) {
         const int32_t place = motion_all_place_[p];
         if (place < 0) continue;
         jitter_ = Jitter(motion_all_slot_[p]);
-        view_x_ = float(uint32_t(place) * motion_all_w_);
         ViewportScissorFor(s, e.size, vps[place], scs[place]);
     }
     EnsureRendering();
@@ -6248,7 +6335,7 @@ bool VulkanBackend::MotionAll() {
         const char* e = std::getenv("XBE_MOTION_ALL");
         return !(e && *e == '0');
     }();
-    return on && MotionOn();
+    return on && MotionOn() && motion_layer_ok_;
 }
 
 // the picture just drawn: its depth kept now if the 3D went on after it was kept (as MotionPass does for its slot)
@@ -6261,7 +6348,6 @@ void VulkanBackend::MotionPasses(bool on, const uint32_t* slots, uint32_t n) {
     kept_.ok = false;
     bound_rt_ = bound_ds_ = nullptr;
     jitter_ = {};
-    view_x_ = 0;
     motion_pass_ = false;
     motion_n_ = 0;
     motion_cur_.ok = false;
@@ -6292,8 +6378,8 @@ void VulkanBackend::MotionPasses(bool on, const uint32_t* slots, uint32_t n) {
             if (motion_all_place_[p] < 0) continue;
             MotionSlot& m = motion_[motion_all_slot_[p]];
             VkImageCopy r{};
-            r.srcSubresource = r.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-            r.srcOffset = {int32_t(uint32_t(motion_all_place_[p]) * w), 0, 0};
+            r.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, uint32_t(motion_all_place_[p]), 1};
+            r.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
             r.extent = {w, h, 1};
             vkCmdCopyImage(cmd_, all.image, kSrc, m.velocity->image, kDst, 1, &r);
             m.drawn = presents_ + 1;
@@ -6320,15 +6406,17 @@ void VulkanBackend::MotionPasses(bool on, const uint32_t* slots, uint32_t n) {
     }
     motion_all_places_ = places;
     if (!places) return;
-    const uint32_t aw = w * places;
-    if (!motion_all_vel_ || motion_all_vel_->w != aw || motion_all_vel_->h != h || !motion_all_z_ ||
-        motion_all_z_->format != depth_fmt_) {
+    // a layer a place
+    if (!motion_all_vel_ || motion_all_vel_->w != w || motion_all_vel_->h != h || motion_all_vel_->layers != places ||
+        !motion_all_z_ || motion_all_z_->format != depth_fmt_) {
         for (ImageRef* r : {&motion_all_vel_, &motion_all_z_})
             if (*r) Retire(*r);
-        motion_all_vel_ = NewImage({.fmt = VK_FORMAT_R16G16_SFLOAT, .w = aw, .h = h,
+        motion_all_vel_ = NewImage({.fmt = VK_FORMAT_R16G16_SFLOAT, .w = w, .h = h, .layers = places,
+                                    .type = VK_IMAGE_VIEW_TYPE_2D_ARRAY,
                                     .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
                                              VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT});
-        motion_all_z_ = NewImage({.fmt = depth_fmt_, .w = aw, .h = h,
+        motion_all_z_ = NewImage({.fmt = depth_fmt_, .w = w, .h = h, .layers = places,
+                                  .type = VK_IMAGE_VIEW_TYPE_2D_ARRAY,
                                   .usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT});
         if (!motion_all_vel_ || !motion_all_z_) return;
     }
@@ -6342,8 +6430,7 @@ void VulkanBackend::MotionPasses(bool on, const uint32_t* slots, uint32_t n) {
         Image& d = *motion_[motion_all_slot_[p]].depth;
         VkImageCopy r{};
         r.srcSubresource = {d.aspect, 0, 0, 1};
-        r.dstSubresource = {motion_all_z_->aspect, 0, 0, 1};
-        r.dstOffset = {int32_t(uint32_t(motion_all_place_[p]) * w), 0, 0};
+        r.dstSubresource = {motion_all_z_->aspect, 0, uint32_t(motion_all_place_[p]), 1};
         r.extent = {w, h, 1};
         vkCmdCopyImage(cmd_, d.image, kSrc, motion_all_z_->image, kDst, 1, &r);
     }
@@ -6358,11 +6445,10 @@ void VulkanBackend::MotionPasses(bool on, const uint32_t* slots, uint32_t n) {
 void VulkanBackend::DrawMotionAt(uint32_t p, const State& s, const Before& before, uint32_t prim, uint32_t start,
                                  uint32_t count, const uint8_t* indices) {
     if (!motion_all_ || p >= motion_all_n_ || motion_all_place_[p] < 0) return;
-    const float x = float(uint32_t(motion_all_place_[p]) * motion_all_w_);
+    motion_layer_ = uint32_t(motion_all_place_[p]);  // a draw that isn't instanced goes to its picture's layer
     if (p == motion_all_first_) {
         motion_cur_.ok = false;
         motion_slot_ = motion_all_slot_[p];
-        view_x_ = x;
         DrawMotion(s, before, prim, start, count, indices);
         return;
     }
@@ -6402,7 +6488,6 @@ void VulkanBackend::DrawMotionAt(uint32_t p, const State& s, const Before& befor
         drawn_.bound = true;
     }
     jitter_ = Jitter(motion_all_slot_[p]);
-    view_x_ = x;
     SetViewportScissor(s, e.size);
     SetBlendFactorStencilRef(s);
     DrawKeptGeometry(e.g);
@@ -6586,20 +6671,25 @@ void VulkanBackend::MotionConstants(const State& s, const Before& before, const 
         for (const auto& [i, mtx] : put) w.transforms[i] = mtx;
         std::memcpy(pw, pc.wvp, kWvp);
     }
-    const bool same = mc_ok_ && mc_ring_ == ring_gen_ && reads.Same(s.vsc.data(), mc_now_.data()) &&
-                      reads.Same(was.data(), mc_was_.data()) && std::memcmp(pw, mc_wvp_, kWvp) == 0;
+    // the layer after mwvp (MotionLayeredHlsl's mlayer_c), for a shader drawing into an array target
+    const float layer[4] = {float(motion_layer_), 0, 0, 0};
+    const bool same = mc_ok_ && mc_ring_ == ring_gen_ && mc_layer_ == motion_layer_ &&
+                      reads.Same(s.vsc.data(), mc_now_.data()) && reads.Same(was.data(), mc_was_.data()) &&
+                      std::memcmp(pw, mc_wvp_, kWvp) == 0;
     if (!same) {
-        mc_last_ = Upload(kVc * 2 + kWvp);
+        mc_last_ = Upload(kVc * 2 + kWvp + sizeof(layer));
         std::memcpy(mc_last_.cpu, s.vsc.data(), kVc);
         std::memcpy(mc_last_.cpu + kVc, was.data(), kVc);
         std::memcpy(mc_last_.cpu + kVc * 2, pw, kWvp);
+        std::memcpy(mc_last_.cpu + kVc * 2 + kWvp, layer, sizeof(layer));
+        mc_layer_ = motion_layer_;
         mc_now_ = s.vsc.v;
         mc_was_ = was;
         std::memcpy(mc_wvp_, pw, kWvp);
         mc_ok_ = true;
         mc_ring_ = ring_gen_;
     }
-    b.cb[0] = {mc_last_.buf, mc_last_.off, kVc * 2 + kWvp};
+    b.cb[0] = {mc_last_.buf, mc_last_.off, kVc * 2 + kWvp + sizeof(layer)};
 }
 
 // each picture with a motion pass drawn this frame through the view, in its place; then the last picture kept

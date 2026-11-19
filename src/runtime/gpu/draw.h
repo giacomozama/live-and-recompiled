@@ -269,6 +269,24 @@ struct PipelineEntry {
     uint64_t ps_id;
     PsoKey k;
 };
+// the motion pass's in shaders.rec, zeroed before they are filled (their padding is hashed): its vertex shader
+// (MotionVertexHlsl, instanced: MotionInstancedHlsl over it), its pixel shader (PixelHlsl's motion, plain: without the
+// draw's discards) and its pipeline, the key as the motion pass made it and the viewports it takes
+struct MotionVertexEntry {
+    shader_record::VertexEntry v;
+    uint32_t instanced;
+    uint32_t pad;
+};
+struct MotionPixelEntry {
+    PixelKey pk;
+    uint32_t plain;
+};
+struct MotionPipelineEntry {
+    uint64_t vs_id;
+    uint64_t ps_id;
+    PsoKey k;
+    uint32_t viewports;
+};
 // the record layouts shaders.rec was written with; bump kRecordRevision when what a record makes changes meaning
 constexpr uint64_t kRecordRevision = 1;
 constexpr uint64_t kRecordLayout = kRecordRevision << 48 | uint64_t(sizeof(PixelKey)) << 32 |

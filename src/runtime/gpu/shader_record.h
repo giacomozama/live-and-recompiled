@@ -13,7 +13,8 @@
 
 namespace gpu::shader_record {
 
-enum Kind : uint8_t { kVertex = 1, kPixel = 2, kPipeline = 3 };
+// kMotion*: the motion pass's (MotionVertexEntry, MotionPixelEntry, MotionPipelineEntry in gpu/draw.h)
+enum Kind : uint8_t { kVertex = 1, kPixel = 2, kPipeline = 3, kMotionVertex = 4, kMotionPixel = 5, kMotionPipeline = 6 };
 
 // a vertex shader's inputs: VertexProgramHlsl's with a program, else FixedVertexHlsl's
 struct VertexEntry {
