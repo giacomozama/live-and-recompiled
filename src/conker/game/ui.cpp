@@ -2657,10 +2657,13 @@ void Draw(double fps) {
                     // each time it changes (xnet.cpp JoinAddress), and a half typed name is a DNS lookup
                     static char host[256];
                     if (ImGui::IsWindowAppearing()) std::snprintf(host, sizeof host, "%s", s.join_ip.c_str());
+                    static char lan_line[160];
+                    std::snprintf(lan_line, sizeof lan_line, T("hint_your_lan_address_is"), lan.c_str());
                     InfoCard({"hint_leave_empty_to_host_or",
                               "hint_for_lan_hosts_outside_your",
                               "hint_for_hosts_over_the_internet",
-                              "hint_for_hosts_on_a_port"}, true);
+                              "hint_for_hosts_on_a_port",
+                              lan_line}, true);
                     ImGui::InputTextWithHint(Beside("host_address"), T("leave_empty_to"), host, sizeof host);
                     if (ImGui::IsItemDeactivatedAfterEdit()) s.join_ip = host;
                     if (!app::JoinArg().empty()) ImGui::Text(T("this_copy_joins"), app::JoinArg().c_str());
@@ -2673,6 +2676,12 @@ void Draw(double fps) {
                     if (ImGui::InputInt(Beside("online_play_port"), &port, 0, 0)) s.system_link_port = uint32_t(std::clamp(port, 1, 65535));
                     ImGui::EndDisabled();
                     if (app::PortArg()) ImGui::Text(T("this_copy_uses"), app::PortArg());
+                    if (in_use && error) {
+                        static char port_line[200];
+                        std::snprintf(port_line, sizeof port_line, T("udp_u_couldn"), in_use,
+                                      error == 10048 ? T("another_program_or") : T("blocked"));
+                        WarningCard(port_line);
+                    }
                     static const uint32_t start_port = s.system_link_port;
                     if (s.system_link_port != start_port) WarningCard("hint_restart_the_game_for_this");
                 }
@@ -2695,15 +2704,6 @@ void Draw(double fps) {
                     Hint("hint_the_colors_a_match_tells", true);
                     Check("readable_menu_hints", &menus::g_bright_hints);
                     Hint("hint_the_hints_above_and_below", true);
-                }
-                if (Section("this_pc")) {
-                    SubHeading("lan_ip");
-                    ImGui::TextUnformatted(lan.c_str());
-                    SubHeading("port");
-                    if (!in_use) ImGui::TextUnformatted(T("not_open_yet"));
-                    else if (!error) ImGui::Text(T("udp_u"), in_use);
-                    else ImGui::TextColored(ImVec4(1.0f, 0.45f, 0.35f, 1.0f), T("udp_u_couldn"), in_use,
-                                            error == 10048 ? T("another_program_or") : T("blocked"));
                 }
                 end_tab();
             }
