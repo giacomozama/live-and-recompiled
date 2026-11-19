@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <chrono>
 #include <cstdio>
@@ -77,6 +78,10 @@ struct Listed {
     bool dir = false;
 };
 
+// counts changes to host files through any handle (writes, resizes, creates, renames, deletes): a handle's HostInfo
+// holds until it moves
+std::atomic<uint64_t> g_host_changes{1};
+
 struct File : Object {
     fs::path host;
     std::string xbox;
@@ -87,6 +92,8 @@ struct File : Object {
     bool on_cd = false;     // on D:, where the mods' files show through
     std::string cd;         // there: the path from D:'s root, upper case, "" the root itself
     uint64_t pos = 0;
+    // the host file's size and time as last asked of the system (HostInfo), good while g_host_changes is info_at
+    uint64_t info_at = 0, info_size = 0, info_time = 0;
     std::vector<Listed> listing;
     size_t next = 0;
     bool listed = false;
@@ -99,6 +106,7 @@ struct File : Object {
         if (delete_on_close) {
             std::error_code ec;
             fs::remove(host, ec);
+            g_host_changes++;
         }
     }
 };
@@ -129,6 +137,22 @@ void FillNetworkInfo(uint32_t out, const fs::path& p) {
 
 void FillNetworkInfo(uint32_t out, const Disc::Entry& e) {
     FillNetworkInfo(out, MountedDisc()->Time(), e.dir ? 0 : e.size, e.dir);
+}
+
+// a host file's size and last write time for NtQueryInformationFile, asked of the system again only after a host file
+// changed (g_host_changes): a stat is over half a millisecond under Wine, and a multiplayer level load asks thousands
+// of times (5.6 of its 5.9 s)
+void HostInfo(File& f, uint64_t& size, uint64_t& time) {
+    const uint64_t at = g_host_changes.load();
+    if (f.info_at != at) {
+        std::error_code ec;
+        if (f.fp) std::fflush(f.fp);
+        f.info_size = f.dir ? 0 : fs::file_size(f.host, ec);
+        f.info_time = ToFileTime(fs::last_write_time(f.host, ec));
+        f.info_at = at;
+    }
+    size = f.info_size;
+    time = f.info_time;
 }
 
 Listed ListHost(const fs::path& p) {
@@ -651,6 +675,7 @@ KERNEL_EXPORT(190, NtCreateFile, 9) {
     }
     FILE* fp = std::fopen(host.c_str(), mode);
     if (!fp && std::string(mode) == "r+b") fp = std::fopen(host.c_str(), "rb");  // read only media
+    if (fp && std::string(mode) == "w+b") g_host_changes++;  // made or emptied
     if (!fp) {
         LOGW("NtCreateFile: cannot open %s", host.c_str());
         IoStatus(iosb, kAccessDenied, 0);
@@ -819,6 +844,7 @@ static uint32_t Transfer(const Args& a, bool write, uint32_t pages) {
         if (done < chunk) break;
     }
     f->pos = pos + n;
+    if (write) g_host_changes++;
     trace.bytes = n;
     static const bool trace_xwb = std::getenv("XBE_TRACE_DSOUND") != nullptr;
     if (trace_xwb && !write && !pages && f->xbox.size() > 4 && f->xbox.compare(f->xbox.size() - 4, 4, ".xwb") == 0)
@@ -860,29 +886,36 @@ KERNEL_EXPORT(211, NtQueryInformationFile, 5) {
     auto f = FileFromHandle(h);
     if (!f) return kInvalidHandle;
     std::error_code ec;
-    uint64_t size = f->dir ? 0 : f->entry ? f->entry->size : fs::file_size(f->host, ec);
-    if (f->fp) {
-        std::fflush(f->fp);
-        size = fs::file_size(f->host, ec);
-    }
+    // the size and time asked of the system only for a class that reports them, and then once until a host file
+    // changes (HostInfo)
+    auto size_of = [&]() -> uint64_t {
+        if (f->dir) return 0;
+        if (f->entry) return f->entry->size;
+        uint64_t size, time;
+        HostInfo(*f, size, time);
+        return size;
+    };
     std::memset(HostPtr(out), 0, len);
     switch (cls) {
         case 4: {  // FileBasicInformation
-            uint64_t t = f->entry               ? MountedDisc()->Time()
-                         : f->host.empty() ? ModDirTime(f->cd)
-                                           : ToFileTime(fs::last_write_time(f->host, ec));
+            uint64_t t = 0, size;
+            if (f->entry) t = MountedDisc()->Time();
+            else if (f->host.empty()) t = ModDirTime(f->cd);
+            else HostInfo(*f, size, t);
             for (int i = 0; i < 4; i++) W64(out + i * 8, t);
             W32(out + 0x20, f->dir ? 0x10 : 0x80);
             IoStatus(iosb, kSuccess, 0x28);
             return kSuccess;
         }
-        case 5:  // FileStandardInformation
+        case 5: {  // FileStandardInformation
+            const uint64_t size = size_of();
             W64(out, (size + 0xFFF) & ~0xFFFull);
             W64(out + 8, size);
             W32(out + 0x10, 1);  // NumberOfLinks
             G<uint8_t>(out + 0x15) = f->dir;  // Directory, after DeletePending
             IoStatus(iosb, kSuccess, 0x18);
             return kSuccess;
+        }
         case 14:  // FilePositionInformation
             W64(out, f->pos);
             IoStatus(iosb, kSuccess, 8);
@@ -890,7 +923,11 @@ KERNEL_EXPORT(211, NtQueryInformationFile, 5) {
         case 34:  // FileNetworkOpenInformation
             if (f->entry) FillNetworkInfo(out, *f->entry);
             else if (f->host.empty()) FillNetworkInfo(out, ModDirTime(f->cd), 0, true);
-            else FillNetworkInfo(out, f->host);
+            else {
+                uint64_t size, t;
+                HostInfo(*f, size, t);
+                FillNetworkInfo(out, t, f->dir ? 0 : size, f->dir);
+            }
             IoStatus(iosb, kSuccess, 0x38);
             return kSuccess;
         case 22:  // FileModeInformation
@@ -920,6 +957,7 @@ KERNEL_EXPORT(226, NtSetInformationFile, 5) {
                 std::fflush(f->fp);
                 uint64_t size = fs::file_size(f->host, ec);
                 if (cls == 20 || R64(in) < size) fs::resize_file(f->host, R64(in), ec);
+                g_host_changes++;
             }
             break;
         case 13:  // disposition
@@ -934,6 +972,7 @@ KERNEL_EXPORT(226, NtSetInformationFile, 5) {
             if (host.empty()) return kObjectPathNotFound;
             if (f->fp) std::fflush(f->fp);
             fs::rename(f->host, host, ec);
+            g_host_changes++;
             if (ec) return kAccessDenied;
             f->host = host;
             break;
@@ -1074,6 +1113,7 @@ KERNEL_EXPORT(195, NtDeleteFile, 1) {
     const std::string& host = t.host;
     std::error_code ec;
     if (host.empty() || !fs::remove(host, ec)) return kObjectNameNotFound;
+    g_host_changes++;
     return kSuccess;
 }
 
