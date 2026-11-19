@@ -2586,6 +2586,79 @@ uint64_t MeshKey(const Snap& w) {
 // part of (of the smaller): materials of one vertex buffer share no triangles, passes over the same ones all of them
 constexpr size_t kSharedPart = 4;  // a quarter
 
+// BuildExtra's triangles: open addressing over keys + 1 (0 free), a slot taken while its stamp is the set's; cleared by
+// a new stamp, kept from frame to frame. A std::unordered_set, a node a triangle, was a fifth of the render thread's
+// time in the bloodbath intro at 3 pictures
+struct TriSet {
+    std::vector<uint64_t> keys;
+    std::vector<uint32_t> stamps;
+    uint32_t stamp = 0, mask = 0;
+    size_t used = 0;
+    // emptied, with room for n
+    void Reset(size_t n) {
+        size_t cap = 64;
+        while (cap < n * 2) cap <<= 1;
+        if (cap > keys.size()) {
+            keys.assign(cap, 0);
+            stamps.assign(cap, 0);
+            stamp = 0;
+        }
+        mask = uint32_t(keys.size() - 1);
+        if (++stamp == 0) {
+            std::fill(stamps.begin(), stamps.end(), 0u);
+            stamp = 1;
+        }
+        used = 0;
+    }
+    size_t Slot(uint64_t k) const {
+        uint64_t h = k * 0x9E3779B97F4A7C15ull;
+        return size_t(h >> 32) & mask;
+    }
+    // true when k was not in yet
+    bool Insert(uint64_t k) {
+        k += 1;
+        if ((used + 1) * 2 > keys.size()) Grow();
+        for (size_t i = Slot(k);; i = (i + 1) & mask) {
+            if (stamps[i] != stamp) {
+                stamps[i] = stamp;
+                keys[i] = k;
+                used++;
+                return true;
+            }
+            if (keys[i] == k) return false;
+        }
+    }
+    bool Has(uint64_t k) const {
+        k += 1;
+        for (size_t i = Slot(k);; i = (i + 1) & mask) {
+            if (stamps[i] != stamp) return false;
+            if (keys[i] == k) return true;
+        }
+    }
+    size_t size() const { return used; }
+    void Grow() {
+        std::vector<uint64_t> old;
+        old.reserve(used);
+        for (size_t i = 0; i < keys.size(); i++)
+            if (stamps[i] == stamp) old.push_back(keys[i]);
+        keys.assign(keys.size() * 2, 0);
+        stamps.assign(keys.size(), 0);
+        stamp = 1;
+        mask = uint32_t(keys.size() - 1);
+        used = 0;
+        for (uint64_t k : old) Insert(k - 1);
+    }
+};
+
+// XBE_EXTRA_FLAT=0: the triangle sets in a std::unordered_set, as before
+bool ExtraFlat() {
+    static const bool on = [] {
+        const char* e = std::getenv("XBE_EXTRA_FLAT");
+        return !(e && *e == '0');
+    }();
+    return on;
+}
+
 void BuildExtra(Frame& cur, const Frame& prev) {
     cur.extra_built = true;
     struct Group {
@@ -2621,18 +2694,32 @@ void BuildExtra(Frame& cur, const Frame& prev) {
     uint32_t by_shared = 0, none = 0;
     std::array<uint32_t, 6> differ{};  // of materials found by triangles: program, combiner, texture stages 0-3
     std::string examples;
-    std::unordered_set<uint64_t> have;
+    static TriSet flat;
+    std::unordered_set<uint64_t> slow;
+    const bool use_flat = ExtraFlat();
+    auto have_clear = [&](size_t n) {
+        if (use_flat)
+            flat.Reset(n);
+        else
+            slow.clear();
+    };
+    auto have_insert = [&](uint64_t k) { return use_flat ? flat.Insert(k) : slow.insert(k).second; };
+    auto have_has = [&](uint64_t k) { return use_flat ? flat.Has(k) : slow.count(k) != 0; };
+    auto have_size = [&] { return use_flat ? flat.size() : slow.size(); };
     for (auto& [key, g] : groups) {
         const uint32_t owner = g.now.front();  // the lowest: draws were pushed in order
         std::pair<uint32_t, uint32_t> at{0, 0};
         int why = -1;
         bool built = false;
         auto build = [&] {
-            have.clear();
+            size_t n_idx = 0;  // room for this frame's triangles and the frame before's it adds
+            for (uint32_t n : g.now) n_idx += cur.snaps[n].idx_count;
+            for (uint32_t q : g.before) n_idx += prev.snaps[q].idx_count;
+            have_clear(n_idx);
             for (uint32_t n : g.now) {
                 const Snap& w = cur.snaps[n];
                 EachTriangle(w.prim, cur.indices.data() + w.idx_at, w.idx_count,
-                             [&](uint16_t a, uint16_t b, uint16_t c) { have.insert(TriangleKey(a, b, c)); });
+                             [&](uint16_t a, uint16_t b, uint16_t c) { have_insert(TriangleKey(a, b, c)); });
             }
             built = true;
         };
@@ -2648,10 +2735,10 @@ void BuildExtra(Frame& cur, const Frame& prev) {
                         EachTriangle(w.prim, prev.indices.data() + w.idx_at, w.idx_count,
                                      [&](uint16_t a, uint16_t b, uint16_t c) {
                                          total++;
-                                         shared += have.count(TriangleKey(a, b, c));
+                                         shared += have_has(TriangleKey(a, b, c));
                                      });
                     }
-                    if (!total || shared * kSharedPart < std::min(total, have.size())) continue;
+                    if (!total || shared * kSharedPart < std::min(total, have_size())) continue;
                     g.before.insert(g.before.end(), list.begin(), list.end());
                     const Snap& a = cur.snaps[owner];
                     const Snap& b = prev.snaps[list.front()];
@@ -2694,7 +2781,7 @@ void BuildExtra(Frame& cur, const Frame& prev) {
                 EachTriangle(w.prim, prev.indices.data() + w.idx_at, w.idx_count,
                              [&](uint16_t a, uint16_t b, uint16_t c) {
                                  // inserted: a triangle two draws of the frame before had comes out once
-                                 if (!have.insert(TriangleKey(a, b, c)).second) return;
+                                 if (!have_insert(TriangleKey(a, b, c))) return;
                                  const uint16_t t[3] = {a, b, c};
                                  const uint8_t* p = reinterpret_cast<const uint8_t*>(t);
                                  cur.extra_idx.insert(cur.extra_idx.end(), p, p + 6);
