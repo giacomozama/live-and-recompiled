@@ -2,6 +2,7 @@
 #include <string_view>
 #include <type_traits>
 
+#include "core/loadtrace.h"
 #include "image_symbols.h"
 #include "kernel/kernel.h"
 
@@ -99,6 +100,8 @@ inline uint32_t Call(X86Context& ctx, uint32_t fn, const Map& m, std::initialize
     static uint32_t fn(X86Context& ctx, const A& a);     \
     X86_FUNC(guest) {                                    \
         (void)base;                                      \
+        static ::loadtrace::Named fn##_named{#fn};       \
+        ::loadtrace::NamedScope fn##_scope{fn##_named};  \
         A args{ctx};                                     \
         uint32_t r = fn(ctx, args);                      \
         ::kernel::Return(ctx, r, pops);                  \

@@ -6,6 +6,12 @@
 #include <time.h>
 #endif
 
+#include <algorithm>
+#include <cstdio>
+#include <cstring>
+#include <string>
+#include <vector>
+
 #include "core/log.h"
 #include "kernel/memory.h"
 
@@ -53,6 +59,25 @@ void Frame(uint32_t frame, double ms) {
              c.reserved);
         LOGR("load:  loading screen draws %llu %.0f ms, their presents %llu %.0f ms; title hooks %llu %.0f ms",
              N(kScreen), Ms(kScreen), N(kShowFront), Ms(kShowFront), N(kGuest), Ms(kGuest));
+        // the host functions the presenting thread spent the most in (nested ones counted in each)
+        std::vector<Named*> named;
+        for (Named* f = g_named.load(std::memory_order_acquire); f; f = f->next)
+            if (f->n.load()) named.push_back(f);
+        std::sort(named.begin(), named.end(), [](Named* x, Named* y) { return x->ns.load() > y->ns.load(); });
+        std::string line;
+        for (size_t i = 0; i < named.size() && i < 12; i++) {
+            const char* name = named[i]->name;
+            if (const char* u = std::strchr(name, '_')) name = u + 1;  // hle_, kimpl_
+            char t[128];
+            std::snprintf(t, sizeof t, "%s%s %llu %.0f ms", i ? ", " : "", name,
+                          (unsigned long long)named[i]->n.load(), double(named[i]->ns.load()) / 1e6);
+            line += t;
+        }
+        if (!line.empty()) LOGR("load:  host functions %s", line.c_str());
+    }
+    for (Named* f = g_named.load(std::memory_order_acquire); f; f = f->next) {
+        f->ns = 0;
+        f->n = 0;
     }
     for (Counter& k : g) {
         k.ns = 0;

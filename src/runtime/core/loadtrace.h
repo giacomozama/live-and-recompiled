@@ -71,6 +71,37 @@ private:
     uint64_t t0_;
 };
 
+// a host function the title calls (HLE_BODY_, KERNEL_EXPORT), timed on the presenting thread for the "host
+// functions" line: its time includes any guest code it calls back (DoWork's callbacks). Listed in g_named the first
+// time it runs while tracing
+struct Named {
+    const char* name;
+    std::atomic<uint64_t> ns{0}, n{0};
+    std::atomic<bool> listed{false};
+    Named* next = nullptr;
+    constexpr explicit Named(const char* text) : name(text) {}
+};
+inline std::atomic<Named*> g_named{nullptr};
+inline void List(Named& f) {
+    f.next = g_named.load(std::memory_order_relaxed);
+    while (!g_named.compare_exchange_weak(f.next, &f, std::memory_order_release, std::memory_order_relaxed)) {
+    }
+}
+class NamedScope {
+public:
+    explicit NamedScope(Named& f) : f_(On() && g_main ? &f : nullptr), t0_(f_ ? Now() : 0) {}
+    ~NamedScope() {
+        if (!f_) return;
+        f_->ns.fetch_add(Now() - t0_, std::memory_order_relaxed);
+        f_->n.fetch_add(1, std::memory_order_relaxed);
+        if (!f_->listed.exchange(true)) List(*f_);
+    }
+
+private:
+    Named* f_;
+    uint64_t t0_;
+};
+
 // called at each present with the time since the last: on the first call the calling thread becomes the presenting
 // thread; a frame over 250 ms is logged with what the counters gathered, then they start over
 void Frame(uint32_t frame, double ms);
