@@ -14,11 +14,11 @@ struct Options {
                                       // folder holding one of these
     std::filesystem::path work;       // the kit, the compiler and, while building, the generated code and objects
     std::filesystem::path game_dir;   // where the game is made: its executable, and the game's files in its assets folder
-    std::filesystem::path toolchain;  // another copy of the target's compiler (testing)
     unsigned jobs = 1;
     bool portable = false;            // put portable.txt in the game folder: settings and saves stay beside the game
     bool keep = false;                // leave the generated code, the objects and the unpacked kit in the work folder
     bool debug_features = false;      // link the host with the debug features (XBE_* variables, F3-F8, the Debug tab)
+    bool launcher = false;            // start the game, building it first when it is missing or from another kit
 };
 
 // the kit's own facts: what the window shows before anything is chosen
@@ -32,6 +32,14 @@ KitInfo ReadKit();
 
 // the default of every choice but the game: the working folder (work) and the game folder (game), both beside Setup
 Options Defaults(const std::filesystem::path& root);
+
+// the game Setup made in the game folder, when it is there and was made from this kit with the same debug features;
+// empty otherwise (missing, from another Setup, or linked the other way)
+std::filesystem::path BuiltGame(const Options& opt);
+
+// runs the game from its folder; on Linux in place of Setup, on Windows waiting for it. Returns its exit code (or 1
+// when it cannot be started)
+int Launch(const std::filesystem::path& game);
 
 // where the Microsoft Store installed the game (Windows), for the window to start with; empty when it isn't found
 std::filesystem::path FindStoreInstall();

@@ -12,8 +12,7 @@
 //   setup-windows.exe, setup-linux                      a window: pick the game, the working folder and the folder
 //                                                       the game is made in (the last two start as the defaults)
 //   setup-windows.exe, setup-linux --cli --source PATH [--work DIR] [--game-dir DIR]
-//                                  [--jobs N] [--keep] [--portable] [--debug-features] [--toolchain DIR] [--root DIR]
-//                                  [--fetch-toolchain]
+//                                  [--jobs N] [--keep] [--portable] [--debug-features] [--launcher] [--root DIR]
 //
 // Run with no arguments, Setup opens the window (when there is a display), with any it runs on the console. --source
 // is the game: its DefaultPackage (the digital release's package, unpacked for you), a disc image (.iso), a folder
@@ -23,9 +22,8 @@
 // --portable puts portable.txt in the game folder, so the game keeps its settings and saves there. --debug-features
 // links the kit's host with the debug features (the XBE_* variables, the F3 to F8 keys, the settings menu's Debug tab)
 // in place of the one without. --keep leaves the generated code and the unpacked kit in the work folder (the unpacked compiler is always removed
-// when done); --toolchain uses another copy of the target's
-// compiler of the kit's version; --root is the folder Setup
-// would be in; --fetch-toolchain only unpacks the compiler.
+// when done); --launcher starts the game, building it first when it is missing or was made by another kit (on the
+// console); --root is the folder Setup would be in. --help lists them all with their defaults.
 #include <miniz.h>
 #include <toml++/toml.hpp>
 
@@ -33,11 +31,13 @@
 #include <atomic>
 #include <chrono>
 #include <cstdarg>
+#include <cerrno>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <iterator>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -227,7 +227,7 @@ bool UnpackKit(const fs::path& dir, std::string& error) {
     }
     if (ours && line == g_kit_stamp && fs::exists(dir / "kit.toml", ec)) return true;
     if (ours) {
-        for (const char* d : {"bin", "config", "xdk", "include", "lib"}) fs::remove_all(dir / d, ec);
+        for (const char* d : {"bin", "config", "xdk", "include", "lib", "files"}) fs::remove_all(dir / d, ec);
         for (const char* f : {"kit.toml", "windows.toml", "linux.toml", ".payload"}) fs::remove(dir / f, ec);
     }
 
@@ -851,6 +851,57 @@ KitInfo ReadKit() {
     return info;
 }
 
+// beside the game Setup made: the kit it came from (the checksum of the kit inside Setup) and which host it linked
+const char kStampName[] = ".setup";
+std::string BuildStamp(bool debug_features) {
+    return g_kit_stamp + "\n" + (debug_features ? "debug features" : "no debug features") + "\n";
+}
+
+fs::path BuiltGame(const Options& opt) {
+    Kit k;
+    std::string error;
+    fs::path work = opt.work.empty() ? opt.root / "work" : opt.work;
+    if (!LoadKit(work, k, error)) return {};
+    fs::path game_dir = opt.game_dir.empty() ? opt.root / "game" : opt.game_dir, game = game_dir / k.Game();
+    std::error_code ec;
+    std::ifstream f(game_dir / kStampName, std::ios::binary);
+    std::string have((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+    if (!f || !fs::is_regular_file(game, ec) || have != BuildStamp(opt.debug_features)) return {};
+    return game;
+}
+
+int Launch(const fs::path& game) {
+    std::fflush(stdout);
+#ifdef _WIN32
+    std::wstring cmd = L"\"" + game.wstring() + L"\"";
+    STARTUPINFOW si{};
+    si.cb = sizeof(si);
+    PROCESS_INFORMATION pi{};
+    if (!CreateProcessW(game.c_str(), cmd.data(), nullptr, nullptr, FALSE, 0, nullptr, game.parent_path().c_str(), &si,
+                        &pi)) {
+        Say("Could not start %s (error %lu).\n", game.string().c_str(), GetLastError());
+        return 1;
+    }
+    CloseHandle(pi.hThread);
+    // a console only Setup has (started by a launcher, not from a terminal) goes, so only the game shows
+    DWORD ids[2];
+    if (GetConsoleProcessList(ids, 2) <= 1) FreeConsole();
+    WaitForSingleObject(pi.hProcess, INFINITE);
+    DWORD code = 1;
+    GetExitCodeProcess(pi.hProcess, &code);
+    CloseHandle(pi.hProcess);
+    return int(code);
+#else
+    std::string path = game.string();
+    if (chdir(game.parent_path().c_str()) == 0) {
+        char* args[] = {path.data(), nullptr};
+        execv(path.c_str(), args);
+    }
+    Say("Could not start %s: %s\n", path.c_str(), std::strerror(errno));
+    return 1;
+#endif
+}
+
 Options Defaults(const fs::path& root) {
     Options o;
     o.root = root;
@@ -928,13 +979,10 @@ bool Build(const Options& opt) {
         Say("%s\n", error.c_str());
         return fail();
     }
-    if (!opt.toolchain.empty()) k.cxx = opt.toolchain / k.cxx.lexically_relative(k.toolchain);
     fs::path game_dir = opt.game_dir.empty() ? root / "game" : opt.game_dir;
     fs::create_directories(game_dir, ec);
-    // Zig's caches: the C++ library it builds for the target once beside the unpacked compiler (with --toolchain, in
-    // the work folder like the rest)
-    fs::path zig_cache = opt.toolchain.empty() ? k.toolchain / "cache" : work / "zig-cache";
-    SetEnv("ZIG_GLOBAL_CACHE_DIR", zig_cache);
+    // Zig's caches: the C++ library it builds for the target once beside the unpacked compiler
+    SetEnv("ZIG_GLOBAL_CACHE_DIR", k.toolchain / "cache");
     SetEnv("ZIG_LOCAL_CACHE_DIR", work / "zig-cache");
     Say("Recompiling %s for %s. This takes a few minutes and only needs doing once.\n\n", k.title.c_str(),
         k.target == "windows" ? "Windows" : "Linux");
@@ -963,7 +1011,7 @@ bool Build(const Options& opt) {
     if (!Stage(staged, k, src, assets)) return fail();
     Progress(0.10);
     if (SayCancelled()) return false;
-    if (opt.toolchain.empty() && !EnsureToolchain(work, k)) return fail();
+    if (!EnsureToolchain(work, k)) return fail();
     Progress(0.25);
     if (SayCancelled()) return false;
 
@@ -981,7 +1029,7 @@ bool Build(const Options& opt) {
     auto finish = [&]() {
         if (!opt.keep) {
             clear();
-            for (const char* d : {"bin", "config", "xdk", "include", "lib"}) fs::remove_all(work / d, ec);
+            for (const char* d : {"bin", "config", "xdk", "include", "lib", "files"}) fs::remove_all(work / d, ec);
             for (const char* f : {"kit.toml", "windows.toml", "linux.toml", ".payload", "unpack.log"})
                 fs::remove(work / f, ec);
         }
@@ -1124,6 +1172,9 @@ bool Build(const Options& opt) {
     for (auto& f : k.files)
         if (!Place(f, game_dir / f.filename())) Say("  (the game runs without %s)\n", f.filename().string().c_str());
 
+    // what the game was made from, for --launcher to tell it is current
+    std::ofstream(game_dir / kStampName, std::ios::binary) << BuildStamp(opt.debug_features);
+
     // the generated code and objects are the title's code: only kept when asked for
     finish();
     double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
@@ -1133,6 +1184,41 @@ bool Build(const Options& opt) {
 }
 
 }  // namespace setup
+
+namespace {
+
+const char kUsage[] =
+    "usage: setup [--cli] [--gui] [--source GAME] [--work DIR] [--game-dir DIR] [--jobs N] [--keep] [--portable]\n"
+    "             [--debug-features] [--launcher] [--root DIR]\n"
+    "       setup --unpack PACKAGE OUTDIR\n";
+
+const char kOptions[] =
+    "With no options Setup opens a window with the same choices (on the console when there is no display).\n"
+    "\n"
+    "  --cli              build on the console, without the window (the default when any option is given)\n"
+    "  --gui              open the window even with other options; they fill in its choices\n"
+    "  --source GAME      your copy of the game: the DefaultPackage file of the digital release, a disc image\n"
+    "                     (.iso), the folder with default.xbe in it, or a folder holding one of these.\n"
+    "                     Needed on the console; the window looks for the Microsoft Store install on Windows\n"
+    "  --work DIR         where the kit, the compiler and, while building, the generated code go\n"
+    "                     (default: work, beside Setup)\n"
+    "  --game-dir DIR     where the game is made, with its files in assets/ below it (default: game, beside Setup)\n"
+    "  --jobs N           how many files to compile at once (default: the number of CPU threads)\n"
+    "  --keep             leave the generated code and the unpacked kit in the work folder, for troubleshooting\n"
+    "                     (default: removed when done; the compiler is always removed)\n"
+    "  --portable         keep the game's settings and saves in the game folder (default: the user's folders)\n"
+    "  --debug-features   link the game with the debug features: the XBE_* variables, the F3 to F8 keys and the\n"
+    "                     settings menu's Debug tab (default: without them)\n"
+    "  --launcher         start the game; when it is not built yet, or was built by another version of Setup or\n"
+    "                     with other --debug-features, build it first (on the console, as --cli) and then start\n"
+    "                     it. For game launchers: point one at Setup with this flag\n"
+    "  --root DIR         treat DIR as the folder Setup is in, for the work and game defaults\n"
+    "                     (default: Setup's own folder)\n"
+    "  --unpack PACKAGE OUTDIR\n"
+    "                     only unpack the digital release's package into OUTDIR, nothing else\n"
+    "  --help, -h         this text\n";
+
+}  // namespace
 
 int main(int argc, char** argv) {
     fs::path root = ExeDir();
@@ -1146,7 +1232,7 @@ int main(int argc, char** argv) {
         }
     }
     setup::Options opt = setup::Defaults(root);
-    bool cli = argc > 1, gui = false, fetch_only = false;
+    bool cli = argc > 1, gui = false;
     for (int i = 1; i < argc; i++) {
         std::string a = argv[i];
         bool more = i + 1 < argc;
@@ -1154,7 +1240,7 @@ int main(int argc, char** argv) {
         else if (a == "--keep") opt.keep = true;
         else if (a == "--portable") opt.portable = true;
         else if (a == "--debug-features") opt.debug_features = true;
-        else if (a == "--fetch-toolchain") fetch_only = true;
+        else if (a == "--launcher") opt.launcher = true;
         else if (a == "--cli") cli = true;
         else if (a == "--gui") gui = true;
         else if (a == "--unpack" && i + 2 < argc) {
@@ -1167,20 +1253,37 @@ int main(int argc, char** argv) {
         else if (a == "--source" && more) opt.source = fs::absolute(argv[++i]);
         else if (a == "--work" && more) opt.work = fs::absolute(argv[++i]);
         else if (a == "--game-dir" && more) opt.game_dir = fs::absolute(argv[++i]);
-        else if (a == "--toolchain" && more) opt.toolchain = fs::absolute(argv[++i]);
         else if (a == "--root" && more) i++;
         else if (a == "--help" || a == "-h") {
-            std::printf("Live & Recompiled Setup " XBE_VERSION "\n"
-                        "usage: setup [--cli] [--source GAME] [--work DIR] [--game-dir DIR] "
-                        "[--jobs N] [--keep] [--portable] [--debug-features] [--toolchain DIR] [--root DIR] [--fetch-toolchain]\n"
-                        "  no options: a window with the same choices\n");
+            std::printf("Live & Recompiled Setup " XBE_VERSION "\n%s\n%s", kUsage, kOptions);
             return 0;
         } else {
-            std::fprintf(stderr, "usage: setup [--cli] [--source GAME] [--work DIR] [--game-dir DIR] "
-                                 "[--jobs N] [--keep] [--portable] [--debug-features] [--toolchain DIR] [--root DIR] [--fetch-toolchain] "
-                                 "[--unpack PACKAGE OUTDIR]\n");
+            std::fprintf(stderr, "setup: unknown option, or one missing its value: %s\n%s(setup --help explains them)\n", a.c_str(), kUsage);
             return 2;
         }
+    }
+    if (opt.launcher) {
+        // on the console, whatever else was asked: the game when it is current, else built first
+        fs::path game = setup::BuiltGame(opt);
+        if (game.empty()) {
+            if (opt.source.empty()) opt.source = setup::FindStoreInstall();
+            if (!setup::Build(opt)) {
+                Pause();
+                return 1;
+            }
+            game = setup::BuiltGame(opt);
+            if (game.empty()) {
+                Say("The game was made, but Setup cannot find it to start it.\n");
+                Pause();
+                return 1;
+            }
+            Say("\n");
+        } else if (opt.portable) {
+            std::error_code ec;
+            if (!fs::exists(game.parent_path() / "portable.txt", ec)) std::ofstream(game.parent_path() / "portable.txt").put('\n');
+        }
+        Say("Starting %s\n", game.string().c_str());
+        return setup::Launch(game);
     }
     if (gui || (!cli && setup::WindowAvailable())) {
 #ifdef _WIN32
@@ -1192,20 +1295,6 @@ int main(int argc, char** argv) {
         if (code != setup::kNoWindow) return code;
     }
 
-    if (fetch_only) {
-        Kit k;
-        std::string error;
-        fs::path work = opt.work.empty() ? root / "work" : opt.work;
-        if (!LoadKit(work, k, error) || !UnpackKit(work, error)) {
-            Say("%s\n", error.c_str());
-            return 1;
-        }
-        SetEnv("ZIG_GLOBAL_CACHE_DIR", k.toolchain / "cache");
-        SetEnv("ZIG_LOCAL_CACHE_DIR", work / "zig-cache");
-        if (!EnsureToolchain(work, k)) return 1;
-        Say("The compiler is in %s\n", k.cxx.parent_path().parent_path().string().c_str());
-        return 0;
-    }
     bool ok = setup::Build(opt);
     Pause();
     return ok ? 0 : 1;
