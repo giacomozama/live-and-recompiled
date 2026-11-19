@@ -625,9 +625,13 @@ float RichText(const char* text, float wrap_w, bool draw) {
 
 // a hint under the setting before it: smaller, dimmed and wrapped. Right after a setting row it is the label's subtext,
 // in the label's room; elsewhere it runs the width under what is above
-// the D3D11 renderer draws (gpu::g_d3d11): a row only Vulkan's draws is greyed, its hint saying so
-bool D3d11() { return gpu::g_d3d11.load(std::memory_order_relaxed); }
-constexpr const char* kNoD3d11 = "hint_not_available_with_direct3d";
+// the D3D11 or OpenGL renderer draws (gpu::g_d3d11, gpu::g_opengl): a row only Vulkan's draws is greyed, its hint
+// saying so
+bool D3d11() { return gpu::g_d3d11.load(std::memory_order_relaxed) || gpu::g_opengl.load(std::memory_order_relaxed); }
+const char* NoVulkan() {
+    return gpu::g_opengl.load(std::memory_order_relaxed) ? "hint_not_available_with_opengl"
+                                                         : "hint_not_available_with_direct3d";
+}
 
 void Hint(const char* text, bool checkbox = false) {
     const ImGuiStyle& style = ImGui::GetStyle();
@@ -2188,17 +2192,28 @@ void Draw(double fps) {
                             Hint("hint_the_graphics_card_the_game");
                         }
                     }
-#ifdef _WIN32
                     {
-                        // read once at launch (gpu::CreateBackend); Linux has Vulkan alone
-                        int renderer = s.renderer == "d3d11" ? 1 : 0;
-                        if (Segmented("renderer", &renderer, {"Vulkan", "Direct3D 11"}))
-                            s.renderer = renderer ? "d3d11" : "vulkan";
-                        Hint("hint_vulkan_is_the_default_direct3d");
+                        // read once at launch (gpu::CreateBackend, the window made for it); D3D11 on Windows alone
+#ifdef _WIN32
+                        static const char* const kRenderers[] = {"vulkan", "d3d11", "opengl"};
+                        constexpr const char* kRendererHint = "hint_vulkan_is_the_default_direct3d_opengl";
+#else
+                        static const char* const kRenderers[] = {"vulkan", "opengl"};
+                        constexpr const char* kRendererHint = "hint_vulkan_is_the_default_opengl";
+#endif
+                        int renderer = 0;
+                        for (int i = 0; i < int(std::size(kRenderers)); i++)
+                            if (s.renderer == kRenderers[i]) renderer = i;
+#ifdef _WIN32
+                        if (Segmented("renderer", &renderer, {"Vulkan", "Direct3D 11", "OpenGL"}))
+#else
+                        if (Segmented("renderer", &renderer, {"Vulkan", "OpenGL"}))
+#endif
+                            s.renderer = kRenderers[renderer];
+                        Hint(kRendererHint);
                         static const std::string start_renderer = s.renderer;
                         if (s.renderer != start_renderer) WarningCard("hint_restart_the_game_for_this");
                     }
-#endif
 
                     // forced on past the monitor's refresh (app::VsyncForced): shown on and greyed, the setting kept
                     if (app::VsyncForced(app::Get())) {
@@ -2240,7 +2255,7 @@ void Draw(double fps) {
                     ImGui::BeginDisabled(D3d11());
                     if (ImGui::Button(T("calibrate_display"))) g_calib_step.store(0);
                     ImGui::EndDisabled();
-                    Hint(D3d11() ? kNoD3d11 : "hint_test_patterns_for_brightness_and", true);
+                    Hint(D3d11() ? NoVulkan() : "hint_test_patterns_for_brightness_and", true);
                 }
 
                 if (Section("quality")) {
@@ -2254,7 +2269,7 @@ void Draw(double fps) {
                         ImGui::BeginDisabled(dlss_state != 1 && !dlss);
                         if (Check("nvidia_dlss", &dlss)) s.upscaler = dlss ? "dlss" : "off";
                         ImGui::EndDisabled();
-                        Hint(dlss_state == 4   ? kNoD3d11
+                        Hint(dlss_state == 4   ? NoVulkan()
                              : dlss_state == 3 ? "hint_the_dlss_files_aren_t"
                              : dlss_state == 2 ? "hint_dlss_failed_to_start_on"
                              : dlss_state == 1 ? "hint_dlss_renders_fewer_pixels_and"
@@ -2315,7 +2330,7 @@ void Draw(double fps) {
                         if (Segmented("picture_timing", &timing, {"lighter", "exact"}))
                             s.picture_timing_exact = timing == 1;
                         ImGui::EndDisabled();
-                        Hint(D3d11() ? kNoD3d11 : "hint_above_the_refresh_rate_lighter", true);
+                        Hint(D3d11() ? NoVulkan() : "hint_above_the_refresh_rate_lighter", true);
                     }
 
                     constexpr uint32_t kAniso[] = {0, 2, 4, 8, 16};
@@ -2488,7 +2503,7 @@ void Draw(double fps) {
                         ImGui::BeginDisabled(D3d11());
                         Check("adaptive_fur_shading", &s.dlss_fur_auto);
                         ImGui::EndDisabled();
-                        Hint(D3d11() ? kNoD3d11 : "hint_shades_super_fur_coarser_when", true);
+                        Hint(D3d11() ? NoVulkan() : "hint_shades_super_fur_coarser_when", true);
                     }
                     Check("full_distant_fur", &fur::g_distant);
                     Hint("hint_keeps_fur_on_far_away", true);
@@ -2813,7 +2828,7 @@ void Draw(double fps) {
                     if (Segmented("simulate", &cvd, {"off", "protan", "deutan", "tritan", "Mono"}))
                         gpu::g_cvd_sim.store(uint32_t(cvd), std::memory_order_relaxed);
                     ImGui::EndDisabled();
-                    Hint(D3d11() ? kNoD3d11 : "hint_shows_the_screen_as_seen", true);
+                    Hint(D3d11() ? NoVulkan() : "hint_shows_the_screen_as_seen", true);
                 }
                 if (Section("warp")) DrawWarp();
                 end_tab();
