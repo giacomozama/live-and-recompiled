@@ -10,6 +10,7 @@
 #include "common/lighting.h"
 #include "common/link.h"
 #include "common/loading.h"
+#include "common/medbeam.h"
 #include "common/menus.h"
 #include "common/prompts.h"
 #include "common/reflection.h"
@@ -66,6 +67,7 @@ const app::GameInfo app::kGame = {
                 {"player_tags", nullptr, &display::g_player_tags},  // over other players: 0 names, 1 markers, 2 off (player_tags.cpp)
                 {"player_ranks", &display::g_player_ranks, nullptr},  // the rank emblem in the tag over other players (player_tags.cpp)
                 {"player_outlines", &display::g_player_outlines, nullptr},  // other players outlined in a match (player_tags.cpp)
+                {"medgun_beam", &medbeam::g_enabled, nullptr},  // the medgun's heal beam in a match (medbeam.cpp)
                 {"team_colors", nullptr, &display::g_team_colors},  // a match's team colours: 0 green/red, 1 blue/orange (player_tags.cpp)
                 {"no_friendly_fire", &syslink::g_no_friendly_fire, nullptr},  // a match's teammates don't hurt each other; online the host's (friendly_fire.cpp)
                 {"achievements", &achievements::g_enabled, nullptr},  // achievements are earned, locally (achievements.cpp)

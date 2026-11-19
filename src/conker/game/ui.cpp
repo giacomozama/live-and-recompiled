@@ -31,6 +31,7 @@
 #include "app/app.h"
 #include "audio/audio.h"
 #include "common/achievements.h"
+#include "common/medbeam.h"
 #include "common/characters.h"
 #include "common/chat.h"
 #include "common/cutscenes.h"
@@ -2686,6 +2687,8 @@ void Draw(double fps) {
                     Hint("hint_the_rank_emblem_beside_other", true);
                     Check("player_outlines", &display::g_player_outlines);
                     Hint("hint_in_a_match_other_players", true);
+                    Check("medgun_beam", &medbeam::g_enabled);
+                    Hint("hint_a_beam_joins_a_medgun", true);
                     int team = int(std::min<uint32_t>(display::g_team_colors, display::kTeamBlueOrange));
                     if (Segmented("team_colors", &team, {"green_red", "blue_orange"}))
                         display::g_team_colors = uint32_t(team);

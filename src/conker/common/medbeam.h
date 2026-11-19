@@ -6,6 +6,9 @@
 // beam from each healing player to the teammate it heals
 namespace medbeam {
 
+// settings.toml medgun_beam: the beam is drawn; off, the heal tick and hits run as the game has them. Read as they run
+extern bool g_enabled;
+
 // the medgun's heal of target by healer (both player records of [0x84A5F8]), from the heal tick's hit (0x323BA0), which
 // every machine runs for every healer (medbeam.cpp); game thread
 void Heal(uint32_t healer, uint32_t target);

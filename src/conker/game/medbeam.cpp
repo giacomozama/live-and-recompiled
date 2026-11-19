@@ -379,13 +379,15 @@ uint32_t g_vertices = 0;
 
 }  // namespace
 
+bool medbeam::g_enabled = true;
+
 // the heal tick (0x323BC0, eax the player, from the fire state 0x323E70): run for a remote healer too, its heal and
 // score event skipped, so every machine sees whom it heals
 X86_EXTERN_FUNC(__imp__sub_00323BC0);
 X86_FUNC(sub_00323BC0) {
     const uint32_t player = ctx.eax;
     const uint32_t control = player ? kernel::R32(player + kController) : 0;
-    if (!control || kernel::R32(control + kControl) != 2 || !kernel::G<uint8_t>(kNetworked) ||
+    if (!medbeam::g_enabled || !control || kernel::R32(control + kControl) != 2 || !kernel::G<uint8_t>(kNetworked) ||
         !kernel::G<uint8_t>(kMatchFlag) || !warp::Multiplayer() || g_remote_tick)
         return __imp__sub_00323BC0(ctx, base);
     if (Trace()) {
@@ -408,7 +410,7 @@ X86_FUNC(sub_00323BA0) {
         return kernel::Return(ctx, ctx.eax, 0);
     }
     __imp__sub_00323BA0(ctx, base);
-    if (kernel::G<uint8_t>(kMatchFlag) && warp::Multiplayer()) medbeam::Heal(healer, target);
+    if (medbeam::g_enabled && kernel::G<uint8_t>(kMatchFlag) && warp::Multiplayer()) medbeam::Heal(healer, target);
 }
 
 // a match event (0x242A80, cdecl: the player's index, the type, ...): a remote heal tick's (type 0x1D, the heal's
@@ -457,13 +459,14 @@ void medbeam::Heal(uint32_t healer, uint32_t target) {
 }
 
 void medbeam::HealHit(uint32_t healer, uint32_t target) {
-    if (!LivePlayer(healer) || !target || healer == target || Now() - g_ticked[Index(healer)] < 2.5) return;
+    if (!g_enabled || !LivePlayer(healer) || !target || healer == target || Now() - g_ticked[Index(healer)] < 2.5) return;
     Start(healer, target, "a hit");
 }
 
 // [[hook]] at 0x2A52FA, a view's world effects drawn (0x0D9950, category 0; [esp+4] the view): the medgun's beams
 void ConkerMedBeams(X86Context& ctx, uint8_t* base) {
     (void)base;
+    if (!medbeam::g_enabled) return;
     const double now = Now();
     bool any = false;
     for (const Beam& b : g_beams) any |= b.healer && now - b.last < b.hold;
