@@ -920,14 +920,30 @@ private:
     // the frame's draws again once for the motion vectors of all its pictures (Backend::MotionAll): each draw recorded
     // for each picture in turn, at its t (ts) with its constants as the picture before it had them (befores), its
     // setup worked out once. Shading (fur) is tracked once, at the frame's own t
-    void MotionAll(const Batch& last, uint32_t n, const uint32_t* slots, const float* ts, const float* befores) {
+    void MotionAll(const Batch& last, uint32_t n, const uint32_t* in_slots, const float* in_ts,
+                   const float* in_befores) {
         static const bool perf = diag::Perf();
         auto motion_start = perf ? PerfClock::now() : PerfClock::time_point{};
+        // in the order of their times: a picture's picture before is then the one just drawn, its registers then this
+        // one's before (chain), not blended again
+        uint32_t slots[Backend::kMostPictures + 1];
+        float ts[Backend::kMostPictures + 1], befores[Backend::kMostPictures + 1];
+        {
+            uint32_t order[Backend::kMostPictures + 1];
+            for (uint32_t p = 0; p < n; p++) order[p] = p;
+            std::sort(order, order + n, [&](uint32_t x, uint32_t y) { return in_ts[x] < in_ts[y]; });
+            for (uint32_t p = 0; p < n; p++)
+                slots[p] = in_slots[order[p]], ts[p] = in_ts[order[p]], befores[p] = in_befores[order[p]];
+        }
+        static const bool chain_on = [] {
+            const char* e = std::getenv("XBE_MOTION_CHAIN");
+            return !(e && *e == '0');
+        }();
         State& rs = replay_state_;
         rs = frame_start_;
         uint32_t k = 0;
         interp::Undo undo;
-        Before was;
+        Before was, now;
         interp::BeginMotion();
         ShadingReplay(true, 1);
         inner_->MotionPasses(true, slots, n);
@@ -941,15 +957,27 @@ private:
                     k++;
                     continue;
                 }
+                bool chained = false;  // now holds the picture before's registers
                 for (uint32_t p = 0; p < n; p++) {
-                    was.vsc.clear();
-                    was.xf.clear();
                     auto at_start = perf ? PerfClock::now() : PerfClock::time_point{};
-                    interp::At(k, befores[p], 2 * p, rs, undo);
-                    for (const auto& [r, v] : undo.vsc) was.vsc.emplace_back(r, rs.vsc.v[r]);
-                    for (const auto& [i, m] : undo.xf) was.xf.emplace_back(i, rs.transforms[i]);
-                    undo.Restore(rs);
-                    if (ts[p] < 1) interp::At(k, ts[p], 2 * p + 1, rs, undo);
+                    if (chain_on && chained && p && befores[p] == ts[p - 1]) {
+                        std::swap(was, now);
+                    } else {
+                        was.vsc.clear();
+                        was.xf.clear();
+                        interp::At(k, befores[p], 2 * p, rs, undo);
+                        for (const auto& [r, v] : undo.vsc) was.vsc.emplace_back(r, rs.vsc.v[r]);
+                        for (const auto& [i, m] : undo.xf) was.xf.emplace_back(i, rs.transforms[i]);
+                        undo.Restore(rs);
+                    }
+                    now.vsc.clear();
+                    now.xf.clear();
+                    chained = ts[p] < 1;
+                    if (chained) {
+                        interp::At(k, ts[p], 2 * p + 1, rs, undo);
+                        for (const auto& [r, v] : undo.vsc) now.vsc.emplace_back(r, rs.vsc.v[r]);
+                        for (const auto& [i, m] : undo.xf) now.xf.emplace_back(i, rs.transforms[i]);
+                    }
                     if (perf) gen_motion_at_ns_ += Ns(at_start);
                     inner_->DrawMotionAt(p, rs, was, c.a, c.b, c.c, c.d ? data : nullptr);
                     undo.Restore(rs);

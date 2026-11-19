@@ -6106,10 +6106,15 @@ void VulkanBackend::DrawMotion(const State& s, const Before& before, uint32_t pr
     SurfaceSize(s.rt, size.w, size.h);
     DrawConstants c{};
     Bindings b;
-    if (fr && FrameDrawSetup() && !sh.fixed_transform && !sh.shading && fr->kept.plain)
+    // the frame's draw's: of the render states alone, and a shading's (fur) as the frame worked them out, with the
+    // field and screen views they go with; the fixed function's transforms are each picture's own
+    if (fr && FrameDrawSetup() && !sh.fixed_transform && fr->kept.plain == !sh.shading) {
         b.cb[1] = fr->kept.b.cb[1];
-    else
+        b.view[4] = fr->kept.b.view[4];
+        b.view[5] = fr->kept.b.view[5];
+    } else {
         UploadConstants(s, sh, k, stages, size, c, b, false);
+    }
     step(5);
     if (inst) {
         // each place's bank, this picture's now, the others' as they come
