@@ -195,8 +195,12 @@ float4 rcas(O i) : SV_Target {
                      lut.SampleLevel(ps, float2(rgb.g, 0.5), 0).g,
                      lut.SampleLevel(ps, float2(rgb.b, 0.5), 0).b);
     }
+#ifdef FSR_PRESENTATION_FADE
+    rgb = saturate(pow(saturate(rgb), power) * con1.w + level);
+#else
     if (level != 0.0) rgb = Level(rgb, level);
     if (power != 1.0) rgb = pow(saturate(rgb), power);
+#endif
 
     return float4(rgb, 1.0);
 }

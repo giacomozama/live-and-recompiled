@@ -5,6 +5,7 @@
 #include "core/log.h"
 
 #include <atomic>
+#include <cstdlib>
 
 namespace gpu {
 
@@ -17,13 +18,31 @@ static std::atomic<bool> g_hdr_available{false};
 bool HdrAvailable() { return g_hdr_available.load(std::memory_order_relaxed); }
 void SetHdrAvailable(bool on) { g_hdr_available.store(on, std::memory_order_relaxed); }
 
-// A backend is picked by name; each one a platform has gets a line here. Vulkan is the only one so far, and what an
-// unknown name gets.
+// An unknown renderer name selects Vulkan. Windows can also select D3D11.
 std::unique_ptr<Backend> CreateBackend(uint32_t width, uint32_t height, bool& ok) {
-    const std::string& name = app::Get().renderer;
+    const char* override_name = std::getenv("XBE_RENDERER");
+    const std::string name = override_name && *override_name ? override_name : app::Get().renderer;
+#ifdef _WIN32
+    if (name == "d3d11") {
+        auto backend = CreateD3D11Backend();
+        ok = backend->Init(width, height);
+        if (!ok) LOGE("d3d11: cannot start the renderer");
+        return backend;
+    }
+#endif
     if (name != "vulkan") LOGW("renderer \"%s\" unknown, drawing with Vulkan", name.c_str());
     auto backend = CreateVulkanBackend();
     ok = backend->Init(width, height);
+#ifdef _WIN32
+    if (!ok) {
+        LOGW("vulkan: unavailable; trying D3D11");
+        backend.reset();
+        backend = CreateD3D11Backend();
+        ok = backend->Init(width, height);
+        if (!ok) LOGE("d3d11: cannot start the renderer");
+        return backend;
+    }
+#endif
     if (!ok) LOGE("vulkan: can't start, nothing will be drawn");
     return backend;
 }
