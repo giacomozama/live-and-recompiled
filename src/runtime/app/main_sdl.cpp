@@ -602,6 +602,12 @@ int PortArg() { return g_port; }
 const std::string& JoinArg() { return g_join; }
 
 void* Window() { return g_window; }
+void* NativeWindow() {
+#ifdef _WIN32
+    if (g_window) return SDL_GetPointerProperty(SDL_GetWindowProperties(g_window), SDL_PROP_WINDOW_WIN32_HWND_POINTER, nullptr);
+#endif
+    return nullptr;
+}
 
 std::recursive_mutex& UiLock() {
     static std::recursive_mutex m;
@@ -871,9 +877,15 @@ int Run(int argc, char** argv) {
     app::g_user = SDL_RegisterEvents(1);
     std::wstring title = app::kGame.title;
     if (app::Instance()) title += L" [" + std::to_wstring(app::Instance()) + L"]";
-    app::g_window = SDL_CreateWindow(app::Utf8(title).c_str(), 1280, 720,
-                                     SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIDDEN |
-                                         SDL_WINDOW_HIGH_PIXEL_DENSITY);
+    const SDL_WindowFlags flags = SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIDDEN | SDL_WINDOW_HIGH_PIXEL_DENSITY;
+    app::g_window = SDL_CreateWindow(app::Utf8(title).c_str(), 1280, 720, flags | SDL_WINDOW_VULKAN);
+#ifdef _WIN32
+    // no Vulkan loader on the PC (vulkan-1.dll): the window without it, for the D3D11 renderer (gpu::CreateBackend)
+    if (!app::g_window) {
+        LOGW("SDL: no Vulkan window (%s), opening one for D3D11", SDL_GetError());
+        app::g_window = SDL_CreateWindow(app::Utf8(title).c_str(), 1280, 720, flags);
+    }
+#endif
     if (!app::g_window) {
         LOGE("SDL: no window: %s", SDL_GetError());
         app::Alert(L"The game window could not open, see the log: " + std::filesystem::path(logx::Path()).wstring());

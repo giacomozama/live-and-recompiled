@@ -212,6 +212,7 @@ int Instance();  // --instance N on the command line, 0 without: a second copy o
 int PortArg();   // --port N on the command line, 0 without: this copy's system link port, over the setting
 const std::string& JoinArg();  // --join host[:port] on the command line, "" without: over the join_ip setting
 void* Window();  // the SDL_Window
+void* NativeWindow();  // the SDL window's HWND on Windows (the D3D11 renderer's swap chain), else null
 
 // The SDL window as the game's hooks see it. GameInfo::message's numbers are Win32's, and the window sends them the
 // Win32 way: kMsgKeyDown with the

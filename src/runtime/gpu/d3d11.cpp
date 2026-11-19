@@ -18,7 +18,6 @@
 #include <unordered_map>
 #include <imgui.h>
 #include <backends/imgui_impl_dx11.h>
-#include <backends/imgui_impl_win32.h>
 #include "gpu/backend.h"
 #include "gpu/draw.h"
 #include "gpu/d3d11_shaders.h"
@@ -232,6 +231,7 @@ struct Report { uint32_t address; std::vector<Query> queries; };
 struct ShaderRecord {uint64_t key, checksum;uint32_t bytes, reserved;};
 static_assert(sizeof(ShaderRecord)==24);
 constexpr uint64_t kShaderCacheMagic=0x3145484341433344ull; // D3CACHE1, source/profile keyed FXC bytecode
+constexpr size_t kPassConstantFloats = 32;  // a full-screen pass's constant buffer: 8 float4, kMotionBlurHlsl's
 
 class D3D11Backend final : public Backend {
     Com<ID3D11Device> dev_;
@@ -323,7 +323,6 @@ class D3D11Backend final : public Backend {
     bool replaying_ = false, keeping_pictures_ = false;
     std::chrono::steady_clock::time_point schedule_{};
     std::chrono::steady_clock::duration picture_interval_{};
-    PerfClock::time_point camera_at_{}, previous_camera_at_{};
     Com<ID3D11SamplerState> blit_sampler_, copy_sampler_;
     Com<ID3D11BlendState> blit_blend_;
     Com<ID3D11DepthStencilState> blit_depth_;
@@ -785,8 +784,12 @@ class D3D11Backend final : public Backend {
                         std::initializer_list<ID3D11ShaderResourceView*> views,
                         std::span<const float> constants) {
         if (!shader.hash) shader = Compile(source, entry, "ps_5_0");
-        if (!shader.ps || !Upload(pass_constants_.get(), constants.data(),
-                                  uint32_t(constants.size_bytes()))) return false;
+        // the whole buffer written: a discarded map's bytes past the constants are undefined, and the shaders read
+        // fields some passes leave out as zero (kHdrHlsl's r, kFsrHlsl's con2)
+        float padded[kPassConstantFloats]{};
+        if (constants.size() > kPassConstantFloats) return false;
+        std::copy(constants.begin(), constants.end(), padded);
+        if (!shader.ps || !Upload(pass_constants_.get(), padded, sizeof(padded))) return false;
         BeginTransfer(shader.ps.get(), viewport, destination, nullptr);
         auto* cb = pass_constants_.get();
         ctx_->PSSetConstantBuffers(1, 1, &cb);
@@ -861,8 +864,6 @@ class D3D11Backend final : public Backend {
             std::copy(std::begin(camera_), std::end(camera_), previous_camera_);
             previous_camera_frame_ = camera_frame_;
             previous_camera_seen_ = camera_seen_;
-            previous_camera_at_ = camera_at_;
-            camera_at_ = std::chrono::steady_clock::now();
         }
         for (int i = 0; i < 3; ++i) camera_[i] = s.vsc[size_t(vc.camera + i)];
         camera_frame_ = frame;
@@ -911,12 +912,11 @@ class D3D11Backend final : public Backend {
         const auto& set = app::Get();
         if (!set.motion_blur || !camera_seen_ || !previous_camera_seen_ ||
             ((camera_frame_ - previous_camera_frame_) & 0xFFFFFF) != 1) return false;
-        float path[12], gain;
-        const float elapsed = std::chrono::duration<float>(camera_at_ - previous_camera_at_).count();
-        if (!CameraMotion(camera_, previous_camera_, elapsed, path, gain)) return false;
+        float path[12];
+        if (!CameraMotion(camera_, previous_camera_, path)) return false;
         Image* depth = PostDepth(target);
         if (!depth) return false;
-        const auto view = ViewParams(target, set.motion_blur / 100.0f * gain, 0.06f);
+        const auto view = ViewParams(target, set.motion_blur / 100.0f, 0.06f);
         float params[32];
         std::copy(view.begin(), view.end(), params);
         std::copy(std::begin(path), std::end(path), params + view.size());
@@ -1007,8 +1007,10 @@ class D3D11Backend final : public Backend {
                                 {picture.srv.get()}, constants)) return false;
             source = &fsr_easu_;
         }
+        // con1.w the colour vision simulation (none here); con2.x no separate fur mark, con2.y the fade
         const float constants[] = {1.0f / width, 1.0f / height, set.fsr_sharpness / 100.0f, 0.0f,
-                                   fur_sharpening, float(set.gamma) / 220.0f, float(set.brightness) / 100.0f, g_fade.load()};
+                                   fur_sharpening, float(set.gamma) / 220.0f, float(set.brightness) / 100.0f, 0.0f,
+                                   0.0f, g_fade.load(), 0.0f, 0.0f};
         static const std::string rcas_source = std::string("#define FSR_PRESENTATION_FADE\n") + kFsrHlsl;
         return FullScreenPass(rcas_ps_, rcas_source.c_str(), "rcas", screen, viewport,
                               {source->srv.get()}, constants);
@@ -1594,7 +1596,7 @@ class D3D11Backend final : public Backend {
         screen_.reset();
         swap_.reset();
         ctx_->Flush();
-        const auto window = static_cast<HWND>(app::Window());
+        const auto window = static_cast<HWND>(app::NativeWindow());
         const auto format = hdr ? DXGI_FORMAT_R10G10B10A2_UNORM : DXGI_FORMAT_R8G8B8A8_UNORM;
         DXGI_SWAP_CHAIN_DESC1 desc{};
         desc.Format = format;
@@ -1643,8 +1645,7 @@ class D3D11Backend final : public Backend {
         SetHdrAvailable(hdr_supported_ && !hdr_failed_);
     }
     bool Resize() {
-        RECT r{}; GetClientRect(static_cast<HWND>(app::Window()),&r);
-        uint32_t w=uint32_t(std::max<LONG>(r.right,0)),h=uint32_t(std::max<LONG>(r.bottom,0));
+        uint32_t w=0,h=0; app::PixelSize(w,h);
         if(!w || !h) return false;
         UpdateOutput();
         if (!swap_) return false;
@@ -1685,7 +1686,7 @@ class D3D11Backend final : public Backend {
         }
         if(ui_) {
             std::lock_guard lock(app::UiLock());
-            ImGui_ImplWin32_NewFrame(); app::UiFontResize(); ImGui_ImplDX11_NewFrame(); ImGui::NewFrame();
+            app::UiNewFrame(); app::UiFontResize(); ImGui_ImplDX11_NewFrame(); ImGui::NewFrame();
             if(app::Welcoming()) app::DrawWelcome(); else if(app::kGame.ui) app::kGame.ui(fps_);
             ImGui::Render();
             if (hdr) {
@@ -1766,7 +1767,7 @@ public:
         // Explicit FL11_0 keeps this usable on Ivy Bridge; never silently fall back to CPU/WARP.
         DXGI_SWAP_CHAIN_DESC sc{}; sc.BufferDesc.Width=width; sc.BufferDesc.Height=height;
         sc.BufferDesc.Format=DXGI_FORMAT_R8G8B8A8_UNORM; sc.BufferUsage=DXGI_USAGE_RENDER_TARGET_OUTPUT;
-        sc.BufferCount=2; sc.OutputWindow=static_cast<HWND>(app::Window()); sc.SampleDesc.Count=1;
+        sc.BufferCount=2; sc.OutputWindow=static_cast<HWND>(app::NativeWindow()); sc.SampleDesc.Count=1;
         sc.Windowed=TRUE; sc.SwapEffect=DXGI_SWAP_EFFECT_DISCARD;
         D3D_FEATURE_LEVEL wanted=D3D_FEATURE_LEVEL_11_0,got{};
         auto preferred = SelectAdapter();
@@ -1798,7 +1799,7 @@ public:
                 color_levels && depth_levels) supported_samples_ |= samples;
         }
         if(!Buffer(vc_,192*4*sizeof(float),D3D11_BIND_CONSTANT_BUFFER) || !Buffer(dc_,sizeof(DrawConstants),D3D11_BIND_CONSTANT_BUFFER) ||
-           !Buffer(fade_,16,D3D11_BIND_CONSTANT_BUFFER) || !Buffer(pass_constants_,128,D3D11_BIND_CONSTANT_BUFFER)) return false;
+           !Buffer(fade_,16,D3D11_BIND_CONSTANT_BUFFER) || !Buffer(pass_constants_,sizeof(float)*kPassConstantFloats,D3D11_BIND_CONSTANT_BUFFER)) return false;
         blit_vs_=Compile(kBlit,"vs","vs_5_0"); blit_ps_=Compile(kBlit,"ps","ps_5_0");
         if(!blit_vs_.vs || !blit_ps_.ps) return false;
         D3D11_SAMPLER_DESC sm{}; sm.Filter=D3D11_FILTER_MIN_MAG_MIP_LINEAR; sm.AddressU=sm.AddressV=sm.AddressW=D3D11_TEXTURE_ADDRESS_CLAMP;
@@ -2035,7 +2036,7 @@ public:
         }
         step(5);
         DrawConstants c{}; const GuestExtent extent = target.guest;
-        FillSurfaceConstants(s,extent,c); if(app::Get().fog) FillFogConstants(s,sh.prog,c);
+        FillSurfaceConstants(s,extent,c); if(app::Get().fog!=app::Fog::Disabled) FillFogConstants(s,sh.prog,c);
         FillCombinerConstants(s,c); FillTextureConstants(s,is_rt,exact,scale,wide,c);
         if (sh.shading) FillShadingConstants(s,sh.shading,c);
         if (!sh.shading && blend_enabled && (pk.tex[0].flags & kTexDepthBytes)) {
@@ -2251,14 +2252,15 @@ public:
         PollReports();
     }
     uint32_t Pictures() override {
-        if (!swap_ || effect_trace_active_ || g_capture.load() || IsIconic(static_cast<HWND>(app::Window()))) return 1;
+        if (!swap_ || effect_trace_active_ || g_capture.load() || IsIconic(static_cast<HWND>(app::NativeWindow()))) return 1;
         const auto& set = app::Get();
         const uint32_t wanted = std::clamp(set.frame_generation,1u,4u);
         if (!set.vsync || wanted == 1) return wanted;
         // A 60 Hz display with VSync can present one picture per 60 Hz game frame.
         return std::min(wanted,std::max(1u,(app::MonitorRefresh()+1)/60));
     }
-    void Keep(const Surface& front) override {
+    // own is always true here: no frame is drawn light (Light) and the last picture time is the frame's own
+    void Keep(const Surface& front, bool /*own*/) override {
         if (next_picture_ < generated_count_ && last_picture_ >= 0)
             Display(&generated_[last_picture_],&generated_masks_[last_picture_]);
         generated_count_ = std::clamp(app::Get().frame_generation,2u,4u);
