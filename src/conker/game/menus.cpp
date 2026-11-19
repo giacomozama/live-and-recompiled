@@ -102,8 +102,14 @@ X86_FUNC(sub_00236030) {
 // past 120 (0x648EA0) puts the frontend in state 0x10 ([0x776574]), which plays frontend\attract.xmv (0x1F9F80), and
 // returns 1. menus::g_attract off: the timer stays at 0 and it returns 0, so the menu waits however long it is left.
 bool menus::g_attract = true;
+bool menus::g_skip_intro = false;
+namespace {
+bool g_booted = false;  // the main menu has run: the launch movies are behind
+}
+bool menus::SkipIntro() { return g_skip_intro && !g_booted; }
 X86_EXTERN_FUNC(__imp__sub_001F9EB0);
 X86_FUNC(sub_001F9EB0) {
+    g_booted = true;
     if (menus::g_attract) {
         __imp__sub_001F9EB0(ctx, base);
         return;

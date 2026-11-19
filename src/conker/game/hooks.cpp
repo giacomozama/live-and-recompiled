@@ -34,6 +34,7 @@
 #include "common/grass.h"
 #include "common/keyboard.h"
 #include "common/loading.h"
+#include "common/menus.h"
 #include "common/ui.h"
 
 namespace {
@@ -103,7 +104,8 @@ X86_FUNC(sub_000601D0) {
 // cache copy queue is empty, so a press while the first launch's copy runs was lost and the movies looked
 // unskippable. Remember that press and hand it back each frame until the intro takes it, then put the pad as it was
 // so nothing else reads it a second time. A left click (any player's mouse, the settings menu shut) skips as A does
-// (0x100): the mouse's buttons are bound to actions, not to A.
+// (0x100): the mouse's buttons are bound to actions, not to A. menus::SkipIntro (skip_intro_fmvs): the press is made
+// for the player, so the movies end as a skip does, in the menu, not as failed movies do, in the bar cutscene.
 X86_EXTERN_FUNC(__imp__sub_001F6C50);
 X86_FUNC(sub_001F6C50) {
     using kernel::R32;
@@ -116,6 +118,7 @@ X86_FUNC(sub_001F6C50) {
     const uint32_t pad = kernel::CallGuest(ctx, 0x4E020, {1});
     const uint32_t pressed = R32(pad + 8);
     held |= pressed & kSkipButtons;
+    if (menus::SkipIntro() && R32(self) == 1) held |= kA;  // skip_intro_fmvs: A pressed, which goes to the menu
     bool click = false;
     for (int p = 0; p < input::kPorts && !ui::Open(); p++) click |= input::KeyDown(p, kMouse1);
     if (click && !clicked) held |= kA;  // pressed now, not held from before

@@ -14,6 +14,13 @@ namespace menus {
 // input, as on the console. Off: it never starts. Read each frame
 extern bool g_attract;
 
+// settings.toml skip_intro_fmvs: the movies the game plays at launch, before its main menu first runs, are skipped
+// as a press of A is (hooks.cpp's 0x1F6C50). The menu's attract video and the match movies are not. Read each frame
+extern bool g_skip_intro;
+
+// true while the launch movies are to be skipped: the setting is on and the main menu has not run yet
+bool SkipIntro();
+
 // settings.toml bright_menu_hints: a multiplayer menu's page hints ("R Configure" over its list, the page under it)
 // drawn as solid as the menu's title, rather than the console's faint flickering strips. Read each frame
 extern bool g_bright_hints;

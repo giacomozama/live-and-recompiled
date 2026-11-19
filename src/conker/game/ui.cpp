@@ -2496,7 +2496,9 @@ void Draw(double fps) {
                     Hint("hint_lets_the_third_person_camera");
                 }
 
-                if (Section("menus")) {
+                if (Section("videos")) {
+                    Check("skip_intro_fmvs", &menus::g_skip_intro);
+                    Hint("hint_the_movies_before_the", true);
                     bool no_attract = !menus::g_attract;
                     if (Check("disable_attract_video", &no_attract)) menus::g_attract = !no_attract;
                     Hint("hint_the_main_menu_no_longer", true);

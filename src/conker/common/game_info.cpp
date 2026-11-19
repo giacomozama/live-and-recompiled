@@ -88,6 +88,7 @@ const app::GameInfo app::kGame = {
                 {"floor_depth", &reflection::g_floor_depth, nullptr},  // floors over reflections blur by their own depth (reflection.cpp)
                 {"vignette", &vignette::g_on, nullptr},  // the game's darkened screen edges (src/conker/game/vignette.cpp)
                 {"bright_menu_hints", &menus::g_bright_hints, nullptr},  // solid page hints (src/conker/game/menus.cpp)
+                {"skip_intro_fmvs", &menus::g_skip_intro, nullptr},  // the launch movies skipped (menus.cpp, hooks.cpp)
                 {"attract_video", &menus::g_attract, nullptr},  // the idle menu's attract video (menus.cpp)
                 {"keyboard_prompts", &prompts::g_on, nullptr}},  // button icons drawn as keys on kb+mouse (prompts.cpp)
     // the [playerN] tables: each player's keyboard bindings, mouse look, invert aim and vibration
