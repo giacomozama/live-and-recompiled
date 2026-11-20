@@ -1942,13 +1942,16 @@ void Draw(double fps) {
     }
 
     // the shader warm-up at work (gpu::shader_record::g_work): a pill at the bottom left, a turning arc and how far
-    // it has come, so a first run's slower frames have a reason on screen. Only once it has run a second: a run
-    // with everything cached is through before then, and needs no word
+    // it has come, so a first run's slower frames have a reason on screen. Compiling shows once it has run a second
+    // (a run with everything cached is through before then, and needs no word); finding the disc's shaders, only
+    // ever a first run's, at once
     const auto work = gpu::shader_record::g_work.load();
     static double work_since = -1.0;
     if (work == gpu::shader_record::Work::None) work_since = -1.0;
     else if (work_since < 0.0) work_since = ImGui::GetTime();
-    if (work != gpu::shader_record::Work::None && ImGui::GetTime() - work_since >= 1.0 && !quit) {
+    const bool shown = work == gpu::shader_record::Work::Generating ||
+                       (work != gpu::shader_record::Work::None && ImGui::GetTime() - work_since >= 1.0);
+    if (shown && !quit) {
         ImDrawList* dl = ImGui::GetForegroundDrawList();
         const ImVec2 display = ImGui::GetIO().DisplaySize;
         const float font = ImGui::GetFontSize() * 1.1f;
@@ -1963,16 +1966,29 @@ void Draw(double fps) {
         const ImVec2 text = ImGui::GetFont()->CalcTextSizeA(font, FLT_MAX, 0.0f, label);
         const float h = font * 2.0f, ring = font * 0.45f, gap = font * 0.6f, margin = font * 1.6f;
         const float w = h * 0.5f + ring * 2.0f + gap + text.x + h * 0.5f;
-        const ImVec2 lo(margin, display.y - margin - h), hi(margin + w, display.y - margin);
-        dl->AddRectFilled(lo, hi, IM_COL32(0, 0, 0, 150), h * 0.5f);
+        const ImVec2 lo(std::round(margin), std::round(display.y - margin - h));
+        const ImVec2 hi(std::round(margin + w), std::round(display.y - margin));
+        // framed and shadowed as the menu's controls (the achievement toast's way), in the menu window's background
+        const float round = h * 0.5f;
+        ImVec4 bg = ImGui::GetStyle().Colors[ImGuiCol_WindowBg];
+        bg.w = std::max(bg.w, 0.92f);
+        if (g_decorations) DrawFrame(dl, lo, hi, round, 1.0f);  // under the pill: its shadow reaches outside it
+        dl->AddRectFilled(lo, hi, ImGui::ColorConvertFloat4ToU32(bg), round);
+        if (g_decorations) {  // the lines again over the fill
+            dl->AddRect(ImVec2(lo.x - 1.0f, lo.y - 1.0f), ImVec2(hi.x + 1.0f, hi.y + 1.0f), IM_COL32(0, 0, 0, 255),
+                        round + 1.0f, 0, 1.0f);
+            dl->AddRect(lo, hi, IM_COL32(255, 255, 255, 24), round, 0, 1.0f);
+        } else {
+            dl->AddRect(lo, hi, ImGui::GetColorU32(ImGuiCol_Border), round, 0, 1.0f);
+        }
         const ImVec2 c(lo.x + h * 0.5f + ring, lo.y + h * 0.5f);
         const float thick = font * 0.14f, a0 = float(ImGui::GetTime()) * 5.0f;
         dl->PathArcTo(c, ring, 0.0f, 6.2831853f, 32);
-        dl->PathStroke(IM_COL32(255, 255, 255, 60), ImDrawFlags_None, thick);
+        dl->PathStroke(ImGui::GetColorU32(ImGuiCol_Text, 0.25f), ImDrawFlags_None, thick);
         dl->PathArcTo(c, ring, a0, a0 + 4.2f, 24);
         dl->PathStroke(ImGui::GetColorU32(ImGuiCol_CheckMark), ImDrawFlags_None, thick);
-        dl->AddText(ImGui::GetFont(), font, ImVec2(c.x + ring + gap, c.y - text.y * 0.5f), IM_COL32(255, 255, 255, 235),
-                    label);
+        dl->AddText(ImGui::GetFont(), font, ImVec2(c.x + ring + gap, c.y - text.y * 0.5f),
+                    ImGui::GetColorU32(ImGuiCol_Text), label);
     }
 
     DrawAchievementToast();
