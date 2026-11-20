@@ -27,6 +27,9 @@ namespace {
 
 namespace sr = shader_record;
 
+// D3DBLEND_SRCALPHA, D3DBLEND_INVSRCALPHA and D3DBLENDOP_ADD as the chip's blend methods take them
+constexpr uint32_t kBlendSrcAlpha = 0x302, kBlendInvSrcAlpha = 0x303, kBlendOpAdd = 0x8006;
+
 // a stage's TexInfo for a texture of the title's own (not a render target: the blocks sample none), as
 // VulkanBackend::BindTexture and BindGuestTexture fill it. A depth format in a block is a stand-in the title patches
 // with the draw's own texture before it runs (a model's stage 0 at a fixed address): an ordinary swizzled 2D texture,
@@ -119,6 +122,15 @@ public:
             PsoKey km = k;
             km.wmask = mask;
             AddDraw(km, sh, pk, zps);
+            // an opaque material faded: the title's code blends a model it fades in or out over what lies behind
+            // (source alpha, add), its blocks as they are
+            if (!km.blend && km.has_rt) {
+                km.blend = 1;
+                km.src = kBlendSrcAlpha;
+                km.dst = kBlendInvSrcAlpha;
+                km.op = kBlendOpAdd;
+                AddDraw(km, sh, pk, zps);
+            }
         }
     }
 
@@ -369,7 +381,7 @@ int Run(const std::filesystem::path& out, const Context& ctx) {
 }
 
 // what a record made here means changed (a new way of reading the blocks): bump to make them again
-constexpr uint32_t kGenRevision = 1;
+constexpr uint32_t kGenRevision = 2;  // 2: faded opaque materials
 constexpr const char* kFileName = "disc_shaders.rec";
 
 uint64_t Stamp(const Context& ctx) {
