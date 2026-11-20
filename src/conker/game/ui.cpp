@@ -2433,9 +2433,12 @@ void Draw(double fps) {
                 if (Section("lighting")) {
                     Check("per_pixel_lighting", &lighting::g_per_pixel);
                     Hint("hint_smoother_light_and_shadows_on", true);
+                    const bool smoother = gpu::g_lightmap_smoothing.load(std::memory_order_relaxed);
+                    ImGui::BeginDisabled(!smoother);
                     Check("smooth_baked_shadows", &s.smooth_lightmaps);
-                    Hint("hint_straightens_the_jagged_edges_of", true);
-                    if (s.smooth_lightmaps) {
+                    ImGui::EndDisabled();
+                    Hint(D3d11() ? NoVulkan() : "hint_straightens_the_jagged_edges_of", true);
+                    if (s.smooth_lightmaps && smoother) {
                         Slider("baked_shadow_smoothing", &s.lightmap_smoothing, 1, 10, app::Settings{}.lightmap_smoothing);
                         Hint("hint_how_far_along_an_edge", true);
                         constexpr uint32_t kSizes[] = {256, 512, 1024, 2048};

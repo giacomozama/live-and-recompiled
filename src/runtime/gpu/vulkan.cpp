@@ -588,8 +588,10 @@ struct LightmapJob {
     std::vector<uint8_t> px;
     uint32_t w = 0, h = 0, scale = 1;
     float along = 5;
-    std::vector<std::vector<uint8_t>> levels;  // w * scale by h * scale BGRA, then each box filtered down to 1
-    uint64_t bytes = 0;                        // in all the levels
+    // the smoother's picture with its levels (SmoothLightmapGpu), ready to sample; none where it failed, and the
+    // title's lightmap stays
+    ImageRef image;
+    uint32_t image_levels = 0;
     std::atomic<bool> done{false};
 };
 
@@ -710,6 +712,7 @@ EShLanguage StageOf(const char* profile) {
         case 'g': return EShLangGeometry;
         case 'h': return EShLangTessControl;
         case 'd': return EShLangTessEvaluation;
+        case 'c': return EShLangCompute;
         default: return EShLangFragment;
     }
 }
@@ -1501,8 +1504,27 @@ private:
     } lmw_;
     void QueueLightmap(Tex& tx, const TextureDesc& d, const FormatInfo& fi, const uint8_t* p, const uint32_t* colors);
     void FinishLightmap(Tex& tx);
-    uint64_t lm_frame_ = ~0ull;  // the present lm_uploaded_ counts for
-    uint64_t lm_uploaded_ = 0;   // bytes of smoothed lightmaps uploaded since
+    // the lightmap smoother: compute shaders on a queue of their own that make a lightmap's larger picture and its
+    // levels in an image of its own, one lightmap at a time under its lock (the lightmap worker's)
+    struct LightmapSmoother {
+        int family = -1;
+        uint32_t index = 0;
+        VkQueue queue = VK_NULL_HANDLE;
+        std::mutex lock;
+        VkCommandPool pool = VK_NULL_HANDLE;
+        VkCommandBuffer cmd = VK_NULL_HANDLE;
+        VkFence fence = VK_NULL_HANDLE;
+        VkDescriptorSetLayout smooth_set = VK_NULL_HANDLE, down_set = VK_NULL_HANDLE;
+        VkPipelineLayout smooth_layout = VK_NULL_HANDLE, down_layout = VK_NULL_HANDLE;
+        VkPipeline smooth = VK_NULL_HANDLE, down = VK_NULL_HANDLE;
+        BufferRef img, tensor;
+        std::atomic<bool> ready{false};
+    } lms_;
+    bool InitLightmapSmoother();
+    void DestroyLightmapSmoother();
+    // the larger picture of a lightmap (PrepareLightmap's field, w by h) in a new image, w * scale by h * scale and
+    // every level down to 1x1, ready to sample
+    ImageRef SmoothLightmapGpu(const LightmapField& f, uint32_t w, uint32_t h, uint32_t scale, uint32_t& levels);
     std::unordered_map<uint64_t, VkSampler> samplers_;
     VkSampler blit_[4] = {};  // linear at s0, point at s1 to s3, all clamped
     std::unordered_map<uint64_t, Target> targets_;
@@ -1927,10 +1949,13 @@ bool VulkanBackend::Init(uint32_t width, uint32_t height) {
     LOGI("vulkan: %ux%u guest, %ux%u window, render scale %.3f x %.3f, %ux msaa", width, height, bb_w_, bb_h_, scale_.x,
          scale_.y, msaa_);
     StartWarmUp();
+    g_lightmap_smoothing = InitLightmapSmoother();
     return true;
 }
 
 VulkanBackend::~VulkanBackend() {
+    g_lightmap_smoothing = false;
+    DestroyLightmapSmoother();
     warm_.stop = true;
     if (warm_.thread.joinable()) warm_.thread.join();
     {
@@ -2241,11 +2266,36 @@ bool VulkanBackend::PickDevice() {
 }
 
 bool VulkanBackend::CreateDevice() {
-    float priority = 1;
-    VkDeviceQueueCreateInfo qi{VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO};
+    // the lightmap smoother's queue (LightmapSmoother), at the lowest priority: a family that computes and doesn't
+    // draw (the GPU's async compute) else a second queue of the drawing one, else none and baked shadows aren't smoothed
+    const float priorities[2] = {1, 0};
+    VkDeviceQueueCreateInfo qis[2]{{VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO}, {VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO}};
+    VkDeviceQueueCreateInfo& qi = qis[0];
     qi.queueFamilyIndex = qfam_;
     qi.queueCount = 1;
-    qi.pQueuePriorities = &priority;
+    qi.pQueuePriorities = priorities;
+    uint32_t queue_infos = 1;
+    {
+        uint32_t qn = 0;
+        vkGetPhysicalDeviceQueueFamilyProperties(phys_, &qn, nullptr);
+        std::vector<VkQueueFamilyProperties> qs(qn);
+        vkGetPhysicalDeviceQueueFamilyProperties(phys_, &qn, qs.data());
+        lms_.family = -1;
+        for (uint32_t i = 0; i < qn && lms_.family < 0; i++)
+            if ((qs[i].queueFlags & VK_QUEUE_COMPUTE_BIT) && !(qs[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) && qs[i].queueCount)
+                lms_.family = int(i);
+        if (lms_.family >= 0) {
+            qis[1].queueFamilyIndex = uint32_t(lms_.family);
+            qis[1].queueCount = 1;
+            qis[1].pQueuePriorities = &priorities[1];
+            queue_infos = 2;
+            lms_.index = 0;
+        } else if (qfam_ < qn && qs[qfam_].queueCount >= 2) {
+            lms_.family = int(qfam_);
+            qi.queueCount = 2;
+            lms_.index = 1;
+        }
+    }
     VkPhysicalDeviceCustomBorderColorFeaturesEXT border_have{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CUSTOM_BORDER_COLOR_FEATURES_EXT};
     VkPhysicalDeviceFeatures2 have{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, custom_border_ ? &border_have : nullptr};
     vkGetPhysicalDeviceFeatures2(phys_, &have);
@@ -2329,8 +2379,8 @@ bool VulkanBackend::CreateDevice() {
     }
     AddDlssDeviceExtensions(exts);
     VkDeviceCreateInfo ci{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, &f};
-    ci.queueCreateInfoCount = 1;
-    ci.pQueueCreateInfos = &qi;
+    ci.queueCreateInfoCount = queue_infos;
+    ci.pQueueCreateInfos = qis;
     ci.enabledExtensionCount = uint32_t(exts.size());
     ci.ppEnabledExtensionNames = exts.data();
     if (VkResult r = vkCreateDevice(phys_, &ci, nullptr, &dev_); r != VK_SUCCESS) {
@@ -2364,6 +2414,7 @@ bool VulkanBackend::CreateDevice() {
         }
     }
     vkGetDeviceQueue(dev_, qfam_, 0, &queue_);
+    if (lms_.family >= 0) vkGetDeviceQueue(dev_, uint32_t(lms_.family), lms_.index, &lms_.queue);
     if (custom_border_) {
         VkPhysicalDeviceCustomBorderColorPropertiesEXT bp{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CUSTOM_BORDER_COLOR_PROPERTIES_EXT};
         VkPhysicalDeviceProperties2 p2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, &bp};
@@ -4175,7 +4226,7 @@ Image* VulkanBackend::BindGuestTexture(const State& s, int stage, const TextureD
     info.sign = sign;
     // a level's lightmap: its smoothed copy once the worker has made it, the title's until then
     constexpr uint32_t kLightmapMin = 16, kLightmapMax = 512;
-    if (app::Get().smooth_lightmaps && !d.cube && d.depth == 1 && !fi.depth && !sign && !d.linear &&
+    if (app::Get().smooth_lightmaps && lms_.ready.load(std::memory_order_acquire) && !d.cube && d.depth == 1 && !fi.depth && !sign && !d.linear &&
         (fi.host == Host::BGRA8 || fi.host == Host::BC1 || fi.host == Host::BC2 || fi.host == Host::BC3) &&
         std::min(d.width, d.height) >= kLightmapMin && std::max(d.width, d.height) <= kLightmapMax) {
         if (!tx.lightmap && LightmapStage(s, stage)) tx.lightmap = true;
@@ -4188,15 +4239,8 @@ Image* VulkanBackend::BindGuestTexture(const State& s, int stage, const TextureD
             if (!tx.lm && !tx.lm_job)
                 QueueLightmap(tx, d, fi, static_cast<const uint8_t*>(kernel::HostPtr(d.data)),
                               palette.va ? palette.colors : nullptr);
-            // a frame's uploads of finished ones held to kLightmapUploads bytes, the first always: a 2048 one is 21 MB
-            constexpr uint64_t kLightmapUploads = 16ull << 20;
-            if (lm_frame_ != presents_) {
-                lm_frame_ = presents_;
-                lm_uploaded_ = 0;
-            }
-            if (tx.lm_job && tx.lm_job->done.load(std::memory_order_acquire) &&
-                (lm_uploaded_ == 0 || lm_uploaded_ + tx.lm_job->bytes <= kLightmapUploads))
-                FinishLightmap(tx);
+            // a failed one (no image) stays as the job, done, so the texture isn't queued again until it changes
+            if (tx.lm_job && tx.lm_job->done.load(std::memory_order_acquire) && tx.lm_job->image) FinishLightmap(tx);
             if (tx.lm) {
                 stages.view[stage] = tx.lm->view;
                 stages.levels[stage] = tx.lm_levels;
@@ -4251,29 +4295,15 @@ void VulkanBackend::QueueLightmap(Tex& tx, const TextureDesc& d, const FormatInf
                         DecodeBlocks(j->host, j->px.data(), j->w, j->h, px);
                         j->px.swap(px);
                     }
-                    j->levels.resize(1);
-                    SmoothLightmap(j->px, j->w, j->h, j->scale, j->along, j->levels[0]);
-                    j->px = {};
-                    uint32_t uw = j->w * j->scale, uh = j->h * j->scale;
-                    j->bytes = j->levels[0].size();
-                    while (uw > 1 || uh > 1) {
-                        const std::vector<uint8_t>& up = j->levels.back();
-                        uint32_t w = std::max(uw >> 1, 1u), h = std::max(uh >> 1, 1u);
-                        std::vector<uint8_t> px(size_t(w) * 4 * h);
-                        for (uint32_t y = 0; y < h; y++)
-                            for (uint32_t x = 0; x < w; x++)
-                                for (uint32_t c = 0; c < 4; c++) {
-                                    uint32_t x0 = std::min(x * 2, uw - 1), x1 = std::min(x * 2 + 1, uw - 1);
-                                    uint32_t y0 = std::min(y * 2, uh - 1), y1 = std::min(y * 2 + 1, uh - 1);
-                                    uint32_t sum = up[(size_t(y0) * uw + x0) * 4 + c] + up[(size_t(y0) * uw + x1) * 4 + c] +
-                                                   up[(size_t(y1) * uw + x0) * 4 + c] + up[(size_t(y1) * uw + x1) * 4 + c];
-                                    px[(size_t(y) * w + x) * 4 + c] = uint8_t((sum + 2) / 4);
-                                }
-                        j->bytes += px.size();
-                        j->levels.push_back(std::move(px));
-                        uw = w;
-                        uh = h;
+                    // on the GPU, straight into the image it is sampled from
+                    if (lms_.ready.load(std::memory_order_acquire)) {
+                        LightmapField f;
+                        PrepareLightmap(j->px, j->w, j->h, j->along, f);
+                        uint32_t levels = 0;
+                        j->image = SmoothLightmapGpu(f, j->w, j->h, j->scale, levels);
+                        j->image_levels = levels;
                     }
+                    j->px = {};
                     j->done.store(true, std::memory_order_release);
                 }
             });
@@ -4281,27 +4311,328 @@ void VulkanBackend::QueueLightmap(Tex& tx, const TextureDesc& d, const FormatInf
     lmw_.wake.notify_one();
 }
 
-// the worker's lightmap and its levels up as the texture's smoothed copy
+// the worker's lightmap and its levels as the texture's smoothed copy
 void VulkanBackend::FinishLightmap(Tex& tx) {
     std::shared_ptr<LightmapJob> job = std::move(tx.lm_job);
-    ImageSpec sp;
-    sp.fmt = kBgra;
-    sp.w = job->w * job->scale;
-    sp.h = job->h * job->scale;
-    sp.d = 1;
-    sp.levels = uint32_t(job->levels.size());
-    sp.layers = 1;
-    sp.type = VK_IMAGE_VIEW_TYPE_2D;
-    ImageRef im = NewImage(sp);
-    if (!im) return;
-    std::swap(tx.res, im);  // UploadTextureLevel writes tx.res
-    Transition(*tx.res, kDst);
-    for (uint32_t l = 0; l < sp.levels; l++) UploadTextureLevel(tx, 0, l, job->levels[l], std::max(sp.w >> l, 1u) * 4);
-    Transition(*tx.res, kRead);
-    std::swap(tx.res, im);
-    tx.lm = std::move(im);
-    tx.lm_levels = sp.levels;
-    lm_uploaded_ += job->bytes;
+    tx.lm = std::move(job->image);
+    tx.lm_levels = job->image_levels;
+}
+
+// The lightmap smoother's compute shaders. The first makes the larger picture from PrepareLightmap's field
+// (lightmap.cpp), a thread per texel of it: the lightmap and its structure tensor sampled bilinearly with clamped
+// texels, the direction followed along the edge both ways; the lightmap's B, G, R, A go out as the image's R, G, B, A.
+// The second makes a level from the one above, a 2x2 box filter. All their buffers and images are u registers: CompileSpirv moves t
+// registers by kBindTex even past an explicit binding
+constexpr const char* kLightmapSmoothHlsl = R"(
+struct Params { uint w, h, scale, steps; float along, step, pad0, pad1; };
+[[vk::push_constant]] ConstantBuffer<Params> p;
+[[vk::binding(0)]] RWStructuredBuffer<float4> img;
+[[vk::binding(1)]] RWStructuredBuffer<float4> ten;
+[[vk::binding(2)]] [[spv::format_rgba8]] RWTexture2D<float4> outp;
+float4 AtImg(int x, int y) { return img[uint(clamp(y, 0, int(p.h) - 1)) * p.w + uint(clamp(x, 0, int(p.w) - 1))]; }
+float4 AtTen(int x, int y) { return ten[uint(clamp(y, 0, int(p.h) - 1)) * p.w + uint(clamp(x, 0, int(p.w) - 1))]; }
+float4 SampleImg(float x, float y) {
+    float fx = floor(x), fy = floor(y), ax = x - fx, ay = y - fy;
+    int ix = int(fx), iy = int(fy);
+    return (AtImg(ix, iy) * (1 - ax) + AtImg(ix + 1, iy) * ax) * (1 - ay) +
+           (AtImg(ix, iy + 1) * (1 - ax) + AtImg(ix + 1, iy + 1) * ax) * ay;
+}
+float4 SampleTen(float x, float y) {
+    float fx = floor(x), fy = floor(y), ax = x - fx, ay = y - fy;
+    int ix = int(fx), iy = int(fy);
+    return (AtTen(ix, iy) * (1 - ax) + AtTen(ix + 1, iy) * ax) * (1 - ay) +
+           (AtTen(ix, iy + 1) * (1 - ax) + AtTen(ix + 1, iy + 1) * ax) * ay;
+}
+void Tangent(float x, float y, out float tx, out float ty, out float coh) {
+    float4 j = SampleTen(x, y);
+    float a = j.x, b = j.y, c = j.z;
+    float d = sqrt((a - c) * (a - c) + 4 * b * b);
+    float l1 = (a + c + d) * 0.5, l2 = (a + c - d) * 0.5;
+    float gx = b, gy = l1 - a;
+    if (abs(gx) + abs(gy) < 1e-12) { gx = a >= c ? 1.0 : 0.0; gy = a >= c ? 0.0 : 1.0; }
+    float len = sqrt(gx * gx + gy * gy);
+    tx = -gy / len;
+    ty = gx / len;
+    float s = l1 + l2;
+    coh = s > 0 ? ((l1 - l2) / s) * (s / (s + 4e-5)) : 0;
+}
+[numthreads(8, 8, 1)]
+void cs(uint3 id : SV_DispatchThreadID) {
+    uint ow = p.w * p.scale, oh = p.h * p.scale;
+    if (id.x >= ow || id.y >= oh) return;
+    float x = (float(id.x) + 0.5) / float(p.scale) - 0.5, y = (float(id.y) + 0.5) / float(p.scale) - 0.5;
+    float4 base = SampleImg(x, y);
+    float tx, ty, coh;
+    Tangent(x, y, tx, ty, coh);
+    float4 acc = base;
+    float wsum = 1;
+    for (int side = -1; side <= 1; side += 2) {
+        float px = x, py = y, dx = tx * side, dy = ty * side;
+        for (int k = 1; k <= int(p.steps); k++) {
+            px += dx * p.step;
+            py += dy * p.step;
+            if (px < -0.5 || py < -0.5 || px > float(p.w) - 0.5 || py > float(p.h) - 0.5) break;
+            float dd = float(k) * p.step;
+            float wk = exp(-0.5 * dd * dd / (p.along * p.along));
+            acc += SampleImg(px, py) * wk;
+            wsum += wk;
+            float nx, ny, nc;
+            Tangent(px, py, nx, ny, nc);
+            if (nx * dx + ny * dy < 0) { nx = -nx; ny = -ny; }
+            dx = nx;
+            dy = ny;
+        }
+    }
+    float4 v = saturate(base + (acc / wsum - base) * coh);
+    outp[id.xy] = v.zyxw;
+}
+)";
+
+constexpr const char* kLightmapDownHlsl = R"(
+struct Params { uint sw, sh, dw, dh; };
+[[vk::push_constant]] ConstantBuffer<Params> p;
+[[vk::binding(0)]] [[spv::format_rgba8]] RWTexture2D<float4> src;
+[[vk::binding(1)]] [[spv::format_rgba8]] RWTexture2D<float4> dst;
+[numthreads(8, 8, 1)]
+void cs(uint3 id : SV_DispatchThreadID) {
+    if (id.x >= p.dw || id.y >= p.dh) return;
+    uint x0 = min(id.x * 2, p.sw - 1), x1 = min(id.x * 2 + 1, p.sw - 1);
+    uint y0 = min(id.y * 2, p.sh - 1), y1 = min(id.y * 2 + 1, p.sh - 1);
+    dst[id.xy] = (src[uint2(x0, y0)] + src[uint2(x1, y0)] + src[uint2(x0, y1)] + src[uint2(x1, y1)]) * 0.25;
+}
+)";
+
+bool VulkanBackend::InitLightmapSmoother() {
+    if (!lms_.queue) {
+        LOGI("vulkan: no queue for the lightmap smoother, baked shadows aren't smoothed");
+        return false;
+    }
+    VkCommandPoolCreateInfo pci{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
+    pci.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+    pci.queueFamilyIndex = uint32_t(lms_.family);
+    if (vkCreateCommandPool(dev_, &pci, nullptr, &lms_.pool) != VK_SUCCESS) return false;
+    VkCommandBufferAllocateInfo cai{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+    cai.commandPool = lms_.pool;
+    cai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    cai.commandBufferCount = 1;
+    VkFenceCreateInfo fci{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+    if (vkAllocateCommandBuffers(dev_, &cai, &lms_.cmd) != VK_SUCCESS ||
+        vkCreateFence(dev_, &fci, nullptr, &lms_.fence) != VK_SUCCESS)
+        return false;
+    // a pipeline of a shader, its bindings' types and its push constants' bytes
+    auto make = [&](const char* hlsl, std::initializer_list<VkDescriptorType> types, uint32_t push,
+                    VkDescriptorSetLayout& set, VkPipelineLayout& layout, VkPipeline& pipe) {
+        Spirv spv;
+        std::string err;
+        if (!CompileSpirv(hlsl, "cs", "cs_6_0", spv, err)) {
+            LOGE("vulkan: lightmap smoother: %s", err.c_str());
+            return false;
+        }
+        std::vector<VkDescriptorSetLayoutBinding> b;
+        for (VkDescriptorType t : types)
+            b.push_back({uint32_t(b.size()), t, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr});
+        VkDescriptorSetLayoutCreateInfo dci{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+        dci.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_PUSH_DESCRIPTOR_BIT_KHR;
+        dci.bindingCount = uint32_t(b.size());
+        dci.pBindings = b.data();
+        if (vkCreateDescriptorSetLayout(dev_, &dci, nullptr, &set) != VK_SUCCESS) return false;
+        VkPushConstantRange pc{VK_SHADER_STAGE_COMPUTE_BIT, 0, push};
+        VkPipelineLayoutCreateInfo lci{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+        lci.setLayoutCount = 1;
+        lci.pSetLayouts = &set;
+        lci.pushConstantRangeCount = 1;
+        lci.pPushConstantRanges = &pc;
+        if (vkCreatePipelineLayout(dev_, &lci, nullptr, &layout) != VK_SUCCESS) return false;
+        VkShaderModuleCreateInfo mci{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
+        mci.codeSize = spv.size() * 4;
+        mci.pCode = spv.data();
+        VkShaderModule mod = VK_NULL_HANDLE;
+        if (vkCreateShaderModule(dev_, &mci, nullptr, &mod) != VK_SUCCESS) return false;
+        VkComputePipelineCreateInfo cpi{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
+        cpi.stage = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
+        cpi.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+        cpi.stage.module = mod;
+        cpi.stage.pName = "main";
+        cpi.layout = layout;
+        const VkResult r = vkCreateComputePipelines(dev_, VK_NULL_HANDLE, 1, &cpi, nullptr, &pipe);
+        vkDestroyShaderModule(dev_, mod, nullptr);
+        return r == VK_SUCCESS;
+    };
+    constexpr VkDescriptorType kBuf = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, kImg = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+    if (!make(kLightmapSmoothHlsl, {kBuf, kBuf, kImg}, 32, lms_.smooth_set, lms_.smooth_layout, lms_.smooth) ||
+        !make(kLightmapDownHlsl, {kImg, kImg}, 16, lms_.down_set, lms_.down_layout, lms_.down))
+        return false;
+    lms_.ready = true;
+    LOGI("vulkan: lightmaps smoothed on the GPU (queue family %d)", lms_.family);
+    return true;
+}
+
+void VulkanBackend::DestroyLightmapSmoother() {
+    std::lock_guard<std::mutex> g(lms_.lock);
+    lms_.ready = false;
+    if (!dev_) return;
+    if (lms_.queue) vkQueueWaitIdle(lms_.queue);
+    lms_.img.reset();
+    lms_.tensor.reset();
+    for (VkPipeline p : {lms_.smooth, lms_.down})
+        if (p) vkDestroyPipeline(dev_, p, nullptr);
+    for (VkPipelineLayout l : {lms_.smooth_layout, lms_.down_layout})
+        if (l) vkDestroyPipelineLayout(dev_, l, nullptr);
+    for (VkDescriptorSetLayout l : {lms_.smooth_set, lms_.down_set})
+        if (l) vkDestroyDescriptorSetLayout(dev_, l, nullptr);
+    if (lms_.fence) vkDestroyFence(dev_, lms_.fence, nullptr);
+    if (lms_.pool) vkDestroyCommandPool(dev_, lms_.pool, nullptr);
+    lms_.smooth = lms_.down = VK_NULL_HANDLE;
+    lms_.smooth_layout = lms_.down_layout = VK_NULL_HANDLE;
+    lms_.smooth_set = lms_.down_set = VK_NULL_HANDLE;
+    lms_.fence = VK_NULL_HANDLE;
+    lms_.pool = VK_NULL_HANDLE;
+    lms_.cmd = VK_NULL_HANDLE;
+}
+
+ImageRef VulkanBackend::SmoothLightmapGpu(const LightmapField& f, uint32_t w, uint32_t h, uint32_t scale,
+                                          uint32_t& levels) {
+    std::lock_guard<std::mutex> g(lms_.lock);
+    if (!lms_.ready) return nullptr;
+    const uint32_t ow = w * scale, oh = h * scale;
+    levels = 1;
+    while ((std::max(ow, oh) >> levels) > 0) levels++;
+    const VkDeviceSize in_bytes = VkDeviceSize(w) * h * 16;
+    auto fit = [&](BufferRef& b, VkDeviceSize size) {
+        if (b && b->size >= size) return true;
+        b = NewBuffer(size, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, false);
+        return b != nullptr;
+    };
+    if (!fit(lms_.img, in_bytes) || !fit(lms_.tensor, in_bytes) || f.img.size() * 4 < in_bytes ||
+        f.tensor.size() * 4 < in_bytes)
+        return nullptr;
+    std::memcpy(lms_.img->map, f.img.data(), size_t(in_bytes));
+    std::memcpy(lms_.tensor->map, f.tensor.data(), size_t(in_bytes));
+
+    // the image, read by the drawing queue and written by this one
+    auto im = std::make_shared<Image>();
+    VkImageCreateInfo ci{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+    ci.imageType = VK_IMAGE_TYPE_2D;
+    ci.format = VK_FORMAT_R8G8B8A8_UNORM;
+    ci.extent = {ow, oh, 1};
+    ci.mipLevels = levels;
+    ci.arrayLayers = 1;
+    ci.samples = VK_SAMPLE_COUNT_1_BIT;
+    ci.tiling = VK_IMAGE_TILING_OPTIMAL;
+    ci.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    const uint32_t families[2] = {qfam_, uint32_t(lms_.family)};
+    if (qfam_ != uint32_t(lms_.family)) {
+        ci.sharingMode = VK_SHARING_MODE_CONCURRENT;
+        ci.queueFamilyIndexCount = 2;
+        ci.pQueueFamilyIndices = families;
+    }
+    ci.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    VmaAllocationCreateInfo ai{};
+    ai.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
+    if (vmaCreateImage(vma_, &ci, &ai, &im->image, &im->alloc, nullptr) != VK_SUCCESS) return nullptr;
+    im->format = ci.format;
+    im->w = ow;
+    im->h = oh;
+    VkImageViewCreateInfo vi{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+    vi.image = im->image;
+    vi.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    vi.format = ci.format;
+    vi.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, levels, 0, 1};
+    if (vkCreateImageView(dev_, &vi, nullptr, &im->view) != VK_SUCCESS) return nullptr;
+    std::vector<VkImageView> level_views(levels, VK_NULL_HANDLE);
+    struct Views {  // destroyed past the fence
+        VkDevice dev;
+        std::vector<VkImageView>& v;
+        ~Views() {
+            for (VkImageView x : v)
+                if (x) vkDestroyImageView(dev, x, nullptr);
+        }
+    } views_guard{dev_, level_views};
+    for (uint32_t l = 0; l < levels; l++) {
+        vi.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, l, 1, 0, 1};
+        if (vkCreateImageView(dev_, &vi, nullptr, &level_views[l]) != VK_SUCCESS) return nullptr;
+    }
+
+    VkCommandBuffer cmd = lms_.cmd;
+    vkResetCommandBuffer(cmd, 0);
+    VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+    bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    vkBeginCommandBuffer(cmd, &bi);
+    auto barrier = [&](uint32_t level, uint32_t count, VkImageLayout from, VkImageLayout to, VkAccessFlags src,
+                       VkAccessFlags dst, VkPipelineStageFlags src_stage, VkPipelineStageFlags dst_stage) {
+        VkImageMemoryBarrier b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+        b.srcAccessMask = src;
+        b.dstAccessMask = dst;
+        b.oldLayout = from;
+        b.newLayout = to;
+        b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        b.image = im->image;
+        b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, level, count, 0, 1};
+        vkCmdPipelineBarrier(cmd, src_stage, dst_stage, 0, 0, nullptr, 0, nullptr, 1, &b);
+    };
+    constexpr VkPipelineStageFlags kCs = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+    barrier(0, levels, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL, 0, VK_ACCESS_SHADER_WRITE_BIT,
+            VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, kCs);
+    // level 0: the larger picture
+    {
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, lms_.smooth);
+        VkDescriptorBufferInfo bufs[2] = {{lms_.img->buf, 0, in_bytes}, {lms_.tensor->buf, 0, in_bytes}};
+        VkDescriptorImageInfo out{VK_NULL_HANDLE, level_views[0], VK_IMAGE_LAYOUT_GENERAL};
+        VkWriteDescriptorSet wr[3]{};
+        for (uint32_t i = 0; i < 3; i++) {
+            wr[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            wr[i].dstBinding = i;
+            wr[i].descriptorCount = 1;
+            wr[i].descriptorType = i < 2 ? VK_DESCRIPTOR_TYPE_STORAGE_BUFFER : VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+            if (i < 2) wr[i].pBufferInfo = &bufs[i];
+            else wr[i].pImageInfo = &out;
+        }
+        vkCmdPushDescriptorSetKHR(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, lms_.smooth_layout, 0, 3, wr);
+        struct {
+            uint32_t w, h, scale, steps;
+            float along, step, pad0, pad1;
+        } pc{w, h, scale, uint32_t(std::max(f.steps, 0)), f.along, f.step, 0, 0};
+        vkCmdPushConstants(cmd, lms_.smooth_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof pc, &pc);
+        vkCmdDispatch(cmd, (ow + 7) / 8, (oh + 7) / 8, 1);
+    }
+    // each level from the one above
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, lms_.down);
+    for (uint32_t l = 1; l < levels; l++) {
+        barrier(l - 1, 1, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL, VK_ACCESS_SHADER_WRITE_BIT,
+                VK_ACCESS_SHADER_READ_BIT, kCs, kCs);
+        VkDescriptorImageInfo io[2] = {{VK_NULL_HANDLE, level_views[l - 1], VK_IMAGE_LAYOUT_GENERAL},
+                                       {VK_NULL_HANDLE, level_views[l], VK_IMAGE_LAYOUT_GENERAL}};
+        VkWriteDescriptorSet wr[2]{};
+        for (uint32_t i = 0; i < 2; i++) {
+            wr[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            wr[i].dstBinding = i;
+            wr[i].descriptorCount = 1;
+            wr[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+            wr[i].pImageInfo = &io[i];
+        }
+        vkCmdPushDescriptorSetKHR(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, lms_.down_layout, 0, 2, wr);
+        const uint32_t pc[4] = {std::max(ow >> (l - 1), 1u), std::max(oh >> (l - 1), 1u), std::max(ow >> l, 1u),
+                                std::max(oh >> l, 1u)};
+        vkCmdPushConstants(cmd, lms_.down_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof pc, pc);
+        vkCmdDispatch(cmd, (pc[2] + 7) / 8, (pc[3] + 7) / 8, 1);
+    }
+    // every level ready to sample
+    barrier(0, levels, VK_IMAGE_LAYOUT_GENERAL, kRead, VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT, 0, kCs,
+            VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
+    vkEndCommandBuffer(cmd);
+    VkSubmitInfo si{VK_STRUCTURE_TYPE_SUBMIT_INFO};
+    si.commandBufferCount = 1;
+    si.pCommandBuffers = &cmd;
+    vkResetFences(dev_, 1, &lms_.fence);
+    if (vkQueueSubmit(lms_.queue, 1, &si, lms_.fence) != VK_SUCCESS) return nullptr;
+    if (vkWaitForFences(dev_, 1, &lms_.fence, VK_TRUE, 30'000'000'000ull) != VK_SUCCESS) {
+        LOGE("vulkan: the lightmap smoother didn't finish, baked shadows aren't smoothed from now on");
+        lms_.ready = false;
+        g_lightmap_smoothing = false;
+        return nullptr;
+    }
+    im->layout = kRead;
+    return im;
 }
 
 Image* VulkanBackend::BindTexture(const State& s, int stage, DrawTextures& stages) {

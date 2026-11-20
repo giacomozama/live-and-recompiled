@@ -11,7 +11,6 @@
 #include <algorithm>
 #include <bit>
 #include <cmath>
-#include <condition_variable>
 #include <ctime>
 #include <deque>
 #include <limits>
@@ -34,7 +33,6 @@
 #include "gpu/fsr_hlsl.h"
 #include "gpu/hud_split.h"
 #include "gpu/interp.h"
-#include "gpu/lightmap_stage.h"
 #include "gpu/opengl_glsl.h"
 #include "gpu/post_hlsl.h"
 #include "gpu/smaa_tex.h"
@@ -136,13 +134,6 @@ struct View {
     GLenum target = GL_TEXTURE_2D;
 };
 
-struct LightmapWork {
-    uint32_t width = 0, height = 0, scale = 1;
-    float strength = 0;
-    Host format = Host::BGRA8;
-    std::vector<uint8_t> original, smoothed;
-    std::atomic<bool> ready{false};
-};
 struct Image {
     enum class Newest { Both, Single, Multisampled };
     Tex tex;
@@ -153,10 +144,6 @@ struct Image {
     uint32_t w = 0, h = 0, data = 0;
     uint32_t samples = 1;
     std::unique_ptr<Image> ms;
-    std::unique_ptr<Image> lightmap;
-    std::shared_ptr<LightmapWork> lightmap_work;
-    uint32_t lightmap_params = 0;
-    bool is_lightmap = false;
     Newest newest = Newest::Both;
     GuestExtent guest{};  // Xbox dimensions, independent of the allocated texture
     uint64_t epoch = 0, signature = 0, frame = 0, palette_hash = 0;
@@ -379,12 +366,6 @@ class OpenGLBackend final : public Backend {
     uint32_t driver_frames_ = 0;
     PerfClock::time_point driver_start_ = PerfClock::now();
     std::unordered_map<uint64_t, Image> targets_, textures_, feedback_, depth_bytes_;
-    std::deque<std::weak_ptr<LightmapWork>> lightmap_queue_;
-    std::mutex lightmap_lock_;
-    std::condition_variable lightmap_wake_;
-    std::thread lightmap_thread_;
-    bool lightmap_stop_ = false;
-    uint64_t lightmap_upload_frame_ = UINT64_MAX;
     // stages by source hash, programs by their stages' hashes
     std::unordered_map<uint64_t, Stage> stages_;
     std::unordered_map<uint64_t, Stage*> vertex_stages_, pixel_stages_;
@@ -1686,82 +1667,7 @@ class OpenGLBackend final : public Backend {
                 im.epoch = e;
         }
     }
-    void SmoothLightmaps() {
-        for (;;) {
-            std::shared_ptr<LightmapWork> job;
-            {
-                std::unique_lock lock(lightmap_lock_);
-                lightmap_wake_.wait(lock, [this] { return lightmap_stop_ || !lightmap_queue_.empty(); });
-                if (lightmap_stop_) return;
-                job = lightmap_queue_.front().lock();
-                lightmap_queue_.pop_front();
-            }
-            if (!job) continue;
-            if (job->format != Host::BGRA8) {
-                std::vector<uint8_t> pixels;
-                DecodeBlocks(job->format, job->original.data(), job->width, job->height, pixels);
-                job->original = std::move(pixels);
-            }
-            SmoothLightmap(job->original, job->width, job->height, job->scale, job->strength, job->smoothed);
-            job->original.clear();
-            job->ready.store(true, std::memory_order_release);
-        }
-    }
-    Image* Lightmap(Image& image, const State& state, int stage, const TextureDesc& d, Host format,
-                    const uint32_t* palette) {
-        const auto& set = app::Get();
-        if (!set.smooth_lightmaps || d.cube || d.depth != 1 || d.linear || std::min(d.width, d.height) < 16 ||
-            std::max(d.width, d.height) > 512 ||
-            (format != Host::BGRA8 && format != Host::BC1 && format != Host::BC2 && format != Host::BC3))
-            return &image;
-        if (!image.is_lightmap) image.is_lightmap = LightmapStage(state, stage);
-        if (!image.is_lightmap) return &image;
-        const uint32_t params = LightmapParams(set);
-        if (image.lightmap_params != params) {
-            image.lightmap.reset();
-            image.lightmap_work.reset();
-            image.lightmap_params = params;
-        }
-        if (image.lightmap) return image.lightmap.get();
-        if (!image.lightmap_work) {
-            auto job = std::make_shared<LightmapWork>();
-            job->width = d.width;
-            job->height = d.height;
-            job->scale = std::max(set.lightmap_size / std::max(d.width, d.height), 1u);
-            job->strength = float(set.lightmap_smoothing);
-            job->format = format;
-            uint32_t pitch = 0;
-            DecodeLevel(d, 0, 0, static_cast<const uint8_t*>(kernel::HostPtr(d.data)), palette, job->original, pitch);
-            if (job->original.empty()) return &image;
-            if (format == Host::BGRA8 && pitch != d.width * 4) {
-                for (uint32_t y = 0; y < d.height; ++y)
-                    std::memmove(job->original.data() + size_t(y) * d.width * 4,
-                                 job->original.data() + size_t(y) * pitch, d.width * 4);
-            }
-            image.lightmap_work = job;
-            {
-                std::lock_guard lock(lightmap_lock_);
-                lightmap_queue_.push_back(job);
-                if (!lightmap_thread_.joinable()) lightmap_thread_ = std::thread([this] { SmoothLightmaps(); });
-            }
-            lightmap_wake_.notify_one();
-            return &image;
-        }
-        auto& job = *image.lightmap_work;
-        if (lightmap_upload_frame_ == frame_ || !job.ready.load(std::memory_order_acquire) || job.smoothed.empty())
-            return &image;
-        auto smoothed = std::make_unique<Image>();
-        smoothed->w = job.width * job.scale;
-        smoothed->h = job.height * job.scale;
-        lightmap_upload_frame_ = frame_;
-        ColorTexture(*smoothed, GL_RGBA8, GL_BGRA, GL_UNSIGNED_BYTE, job.smoothed.data());
-        gl::TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 1000);
-        gl::GenerateMipmap(GL_TEXTURE_2D);
-        image.lightmap = std::move(smoothed);
-        image.lightmap_work.reset();
-        return image.lightmap.get();
-    }
-    Image* Texture(const State& s, int stage, TexInfo& info, bool& target, bool sampled, bool& smooth) {
+    Image* Texture(const State& s, int stage, TexInfo& info, bool& target, bool sampled) {
         PerfScope timing{g_perf.bind};
         TextureDesc d;
         info = {};
@@ -1815,12 +1721,7 @@ class OpenGLBackend final : public Backend {
         key = Hash(&info.sign, sizeof(info.sign), key);
         auto& im = textures_[key];
         const uint64_t epoch = DirtyEpoch(d.data);
-        auto ready = [&]() {
-            auto* output = info.sign ? &im : Lightmap(im, s, stage, d, fi.host, pal.va ? pal.colors : nullptr);
-            smooth = output != &im;
-            return output;
-        };
-        if (im.tex && im.frame == frame_ && im.epoch == epoch && im.palette_hash == pal.hash) return ready();
+        if (im.tex && im.frame == frame_ && im.epoch == epoch && im.palette_hash == pal.hash) return &im;
         im.frame = frame_;
         auto check_start = PerfClock::now();
         const uint32_t texture_bytes = TotalSize(d);
@@ -1828,12 +1729,10 @@ class OpenGLBackend final : public Backend {
         g_perf.sig += PerfMs(check_start);
         g_perf.sigs++;
         g_perf.sig_bytes += texture_bytes;
-        if (im.tex && im.signature == signature && im.epoch == epoch) return ready();
+        if (im.tex && im.signature == signature && im.epoch == epoch) return &im;
         PerfScope uploading{g_perf.texup};
         g_perf.texups++;
         g_perf.texup_bytes += texture_bytes;
-        im.lightmap.reset();
-        im.lightmap_work.reset();
         im.frame = frame_;
         im.signature = signature;
         im.epoch = DirtyEpoch(d.data);
@@ -1906,17 +1805,16 @@ class OpenGLBackend final : public Backend {
                 }
             }
         Complete(gl_target, levels);
-        return ready();
+        return &im;
     }
-    GLuint Sampler(const State& s, int stage, bool shadow, bool clamp = false, bool smooth = false) {
+    GLuint Sampler(const State& s, int stage, bool shadow, bool clamp = false) {
         const auto& t = s.tss[stage];
         struct Desc {
             uint32_t min, mag, wrap_s, wrap_t, wrap_r, aniso, compare, func;
             float bias, min_lod, max_lod, border[4];
         } d{};
         bool min = t[kTssMinFilter] >= 2, mag = t[kTssMagFilter] >= 2, mip = t[kTssMipFilter] >= 2;
-        if (smooth) min = mag = mip = true;
-        const bool mips = smooth || t[kTssMipFilter] != 0;
+        const bool mips = t[kTssMipFilter] != 0;
         d.min = mips ? (min ? (mip ? GL_LINEAR_MIPMAP_LINEAR : GL_LINEAR_MIPMAP_NEAREST)
                             : (mip ? GL_NEAREST_MIPMAP_LINEAR : GL_NEAREST_MIPMAP_NEAREST))
                      : (min ? GL_LINEAR : GL_NEAREST);
@@ -2253,14 +2151,6 @@ public:
         };
     }
     ~OpenGLBackend() override {
-        if (lightmap_thread_.joinable()) {
-            {
-                std::lock_guard lock(lightmap_lock_);
-                lightmap_stop_ = true;
-            }
-            lightmap_wake_.notify_one();
-            lightmap_thread_.join();
-        }
         if (context_) {
             Current();
             if (ui_) {
@@ -2585,8 +2475,7 @@ public:
         Image* sampled_images[4]{};
         const uint32_t sampled = SampledStages(s);
         for (int i = 0; i < 4; i++) {
-            bool smooth = false;
-            Image* tx = Texture(s, i, info[i], is_rt[i], ((sampled >> i) & 1) != 0, smooth);
+            Image* tx = Texture(s, i, info[i], is_rt[i], ((sampled >> i) & 1) != 0);
             if (tx && (tx == rt || tx == ds)) tx = Snapshot(*tx);
             sampled_images[i] = tx;
             if (tx) views[i] = tx->view();
@@ -2601,7 +2490,7 @@ public:
                     info[i].flags |= kTexWide;
                 }
             }
-            if ((sampled >> i) & 1) samplers[i] = Sampler(s, i, info[i].shadow != 0, clamp, smooth);
+            if ((sampled >> i) & 1) samplers[i] = Sampler(s, i, info[i].shadow != 0, clamp);
         }
         step(3);
         if (shading) {

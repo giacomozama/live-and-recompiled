@@ -10,8 +10,6 @@
 #include <algorithm>
 #include <bit>
 #include <cmath>
-#include <condition_variable>
-#include <deque>
 #include <limits>
 #include <span>
 #include <utility>
@@ -25,7 +23,6 @@
 #include "gpu/fsr_hlsl.h"
 #include "gpu/hud_split.h"
 #include "gpu/interp.h"
-#include "gpu/lightmap_stage.h"
 #include "gpu/post_hlsl.h"
 #include "gpu/smaa_tex.h"
 #include "app/app.h"
@@ -155,13 +152,6 @@ cbuffer Clear : register(b0) { float4 color; float z; };
 float4 main():SV_Target {return color;}
 )";
 
-struct LightmapWork {
-    uint32_t width = 0, height = 0, scale = 1;
-    float strength = 0;
-    Host format = Host::BGRA8;
-    std::vector<uint8_t> original, smoothed;
-    std::atomic<bool> ready{false};
-};
 struct Image {
     enum class Newest { Both, Single, Multisampled };
     Com<ID3D11Resource> resource;
@@ -172,10 +162,6 @@ struct Image {
     uint32_t w=0, h=0, data=0;
     uint32_t samples = 1;
     std::unique_ptr<Image> ms;
-    std::unique_ptr<Image> lightmap;
-    std::shared_ptr<LightmapWork> lightmap_work;
-    uint32_t lightmap_params = 0;
-    bool is_lightmap = false;
     Newest newest = Newest::Both;
     GuestExtent guest{};  // Xbox dimensions, independent of the allocated texture
     uint64_t epoch=0, signature=0, frame=0, palette_hash=0;
@@ -255,12 +241,6 @@ class D3D11Backend final : public Backend {
     uint32_t driver_frames_=0;
     PerfClock::time_point driver_start_=PerfClock::now();
     std::unordered_map<uint64_t, Image> targets_, textures_, feedback_, depth_bytes_;
-    std::deque<std::weak_ptr<LightmapWork>> lightmap_queue_;
-    std::mutex lightmap_lock_;
-    std::condition_variable lightmap_wake_;
-    std::thread lightmap_thread_;
-    bool lightmap_stop_ = false;
-    uint64_t lightmap_upload_frame_ = UINT64_MAX;
     std::unordered_map<uint64_t, Shader> shaders_;
     std::unordered_map<uint64_t, Shader> vertex_shaders_, pixel_shaders_;
     std::unordered_map<uint32_t, std::pair<Shader, Shader>> tessellation_;
@@ -1160,93 +1140,7 @@ class D3D11Backend final : public Backend {
                 im.epoch = e;
         }
     }
-    void SmoothLightmaps() {
-        for (;;) {
-            std::shared_ptr<LightmapWork> job;
-            {
-                std::unique_lock lock(lightmap_lock_);
-                lightmap_wake_.wait(lock,[this] { return lightmap_stop_ || !lightmap_queue_.empty(); });
-                if (lightmap_stop_) return;
-                job = lightmap_queue_.front().lock();
-                lightmap_queue_.pop_front();
-            }
-            if (!job) continue;
-            if (job->format != Host::BGRA8) {
-                std::vector<uint8_t> pixels;
-                DecodeBlocks(job->format,job->original.data(),job->width,job->height,pixels);
-                job->original = std::move(pixels);
-            }
-            SmoothLightmap(job->original,job->width,job->height,job->scale,job->strength,job->smoothed);
-            job->original.clear();
-            job->ready.store(true,std::memory_order_release);
-        }
-    }
-    Image* Lightmap(Image& image, const State& state, int stage, const TextureDesc& d, Host format,
-                    const uint32_t* palette) {
-        const auto& set = app::Get();
-        if (!set.smooth_lightmaps || d.cube || d.depth != 1 || d.linear ||
-            std::min(d.width,d.height) < 16 || std::max(d.width,d.height) > 512 ||
-            (format != Host::BGRA8 && format != Host::BC1 && format != Host::BC2 && format != Host::BC3))
-            return &image;
-        if (!image.is_lightmap) image.is_lightmap = LightmapStage(state,stage);
-        if (!image.is_lightmap) return &image;
-        const uint32_t params = LightmapParams(set);
-        if (image.lightmap_params != params) {
-            image.lightmap.reset();
-            image.lightmap_work.reset();
-            image.lightmap_params = params;
-        }
-        if (image.lightmap) return image.lightmap.get();
-        if (!image.lightmap_work) {
-            auto job = std::make_shared<LightmapWork>();
-            job->width = d.width;
-            job->height = d.height;
-            job->scale = std::max(set.lightmap_size / std::max(d.width,d.height),1u);
-            job->strength = float(set.lightmap_smoothing);
-            job->format = format;
-            uint32_t pitch = 0;
-            DecodeLevel(d,0,0,static_cast<const uint8_t*>(kernel::HostPtr(d.data)),palette,job->original,pitch);
-            if (job->original.empty()) return &image;
-            if (format == Host::BGRA8 && pitch != d.width * 4) {
-                for (uint32_t y = 0; y < d.height; ++y)
-                    std::memmove(job->original.data()+size_t(y)*d.width*4,job->original.data()+size_t(y)*pitch,d.width*4);
-            }
-            image.lightmap_work = job;
-            {
-                std::lock_guard lock(lightmap_lock_);
-                lightmap_queue_.push_back(job);
-                if (!lightmap_thread_.joinable()) lightmap_thread_ = std::thread([this] { SmoothLightmaps(); });
-            }
-            lightmap_wake_.notify_one();
-            return &image;
-        }
-        auto& job = *image.lightmap_work;
-        if (lightmap_upload_frame_ == frame_ || !job.ready.load(std::memory_order_acquire) || job.smoothed.empty())
-            return &image;
-        D3D11_TEXTURE2D_DESC desc{};
-        desc.Width = job.width * job.scale;
-        desc.Height = job.height * job.scale;
-        desc.SampleDesc.Count = desc.ArraySize = 1;
-        desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
-        desc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
-        desc.MiscFlags = D3D11_RESOURCE_MISC_GENERATE_MIPS;
-        Com<ID3D11Texture2D> resource;
-        auto smoothed = std::make_unique<Image>();
-        if (!Check(dev_->CreateTexture2D(&desc,nullptr,resource.put()),"smooth lightmap") ||
-            !Check(dev_->CreateShaderResourceView(resource.get(),nullptr,smoothed->srv.put()),"smooth lightmap view")) {
-            job.smoothed.clear();
-            return &image;
-        }
-        lightmap_upload_frame_ = frame_;
-        smoothed->w = desc.Width;
-        smoothed->h = desc.Height;
-        ctx_->UpdateSubresource(resource.get(),0,nullptr,job.smoothed.data(),desc.Width * 4,0);
-        ctx_->GenerateMips(smoothed->srv.get());
-        image.lightmap = std::move(smoothed);
-        image.lightmap_work.reset();
-        return image.lightmap.get();
-    }
-    Image* Texture(const State& s,int stage,TexInfo& info,bool& target,bool sampled,bool& smooth) {
+    Image* Texture(const State& s,int stage,TexInfo& info,bool& target,bool sampled) {
         PerfScope timing{g_perf.bind};
         TextureDesc d; info={}; target=false;
         if (!s.textures[stage] || !Describe(s.textures[stage],d)) return nullptr;
@@ -1282,22 +1176,15 @@ class D3D11Backend final : public Backend {
         const uint32_t layout[]={d.data,d.format,d.width,d.height,d.depth,d.levels,d.pitch,uint32_t(d.cube),uint32_t(d.linear)};
         uint64_t key=Hash(layout,sizeof(layout)); key=Hash(&pal.va,sizeof(pal.va),key);key=Hash(&info.sign,sizeof(info.sign),key);
         auto& im=textures_[key];uint64_t epoch=DirtyEpoch(d.data);
-        auto ready = [&]() {
-            auto* output = info.sign ? &im : Lightmap(im,s,stage,d,fi.host,pal.va?pal.colors:nullptr);
-            smooth = output != &im;
-            return output;
-        };
-        if(im.resource && im.frame==frame_ && im.epoch==epoch && im.palette_hash==pal.hash) return ready();
+        if(im.resource && im.frame==frame_ && im.epoch==epoch && im.palette_hash==pal.hash) return &im;
         im.frame=frame_;
         auto check_start=PerfClock::now();
         uint32_t texture_bytes=TotalSize(d);
         uint64_t signature=MemSig(d.data,texture_bytes)^pal.hash;
         g_perf.sig+=PerfMs(check_start);g_perf.sigs++;g_perf.sig_bytes+=texture_bytes;
-        if (im.resource && im.signature==signature && im.epoch==epoch) return ready();
+        if (im.resource && im.signature==signature && im.epoch==epoch) return &im;
         PerfScope uploading{g_perf.texup};g_perf.texups++;g_perf.texup_bytes+=texture_bytes;
         bool reuse=im.resource && im.srv;
-        im.lightmap.reset();
-        im.lightmap_work.reset();
         im.frame=frame_; im.signature=signature; im.epoch=DirtyEpoch(d.data); im.w=d.width; im.h=d.height;im.palette_hash=pal.hash;
         DXGI_FORMAT fmt=HostFormat(fi.host);
         if (fmt==DXGI_FORMAT_UNKNOWN) return nullptr;
@@ -1325,7 +1212,7 @@ class D3D11Backend final : public Backend {
         }
         if(reuse) {
             for(uint32_t n=0;n<sub.size();n++)ctx_->UpdateSubresource(im.resource.get(),n,nullptr,sub[n].pSysMem,sub[n].SysMemPitch,sub[n].SysMemSlicePitch);
-            return ready();
+            return &im;
         }
         if (d.depth>1 && !d.cube) {
             D3D11_TEXTURE3D_DESC td{}; td.Width=d.width; td.Height=d.height; td.Depth=d.depth; td.MipLevels=levels;
@@ -1343,12 +1230,11 @@ class D3D11Backend final : public Backend {
             tex->QueryInterface(__uuidof(ID3D11Resource),reinterpret_cast<void**>(im.resource.put()));
         }
         if (!Check(dev_->CreateShaderResourceView(im.resource.get(),nullptr,im.srv.put()),"texture SRV")) return nullptr;
-        return ready();
+        return &im;
     }
-    ID3D11SamplerState* Sampler(const State& s,int stage,bool shadow,bool clamp=false,bool smooth=false) {
+    ID3D11SamplerState* Sampler(const State& s,int stage,bool shadow,bool clamp=false) {
         const auto& t=s.tss[stage]; D3D11_SAMPLER_DESC d{};
         bool min=t[kTssMinFilter]>=2,mag=t[kTssMagFilter]>=2,mip=t[kTssMipFilter]>=2;
-        if (smooth) min = mag = mip = true;
         d.Filter=D3D11_FILTER((min?0x10:0)|(mag?4:0)|(mip?1:0)|(shadow?0x80:0));
         uint32_t aniso=app::Get().aniso ? app::Get().aniso : t[kTssMaxAnisotropy];
         d.MaxAnisotropy=std::clamp(aniso,1u,16u);
@@ -1791,14 +1677,6 @@ class D3D11Backend final : public Backend {
     }
 public:
     ~D3D11Backend() override {
-        if (lightmap_thread_.joinable()) {
-            {
-                std::lock_guard lock(lightmap_lock_);
-                lightmap_stop_ = true;
-            }
-            lightmap_wake_.notify_one();
-            lightmap_thread_.join();
-        }
         if(ui_) {std::lock_guard lock(app::UiLock()); ImGui_ImplDX11_Shutdown();}
         if(ctx_) {ctx_->ClearState();ctx_->Flush();}
     }
@@ -2033,8 +1911,7 @@ public:
         Image* sampled_images[4]{};
         uint32_t sampled=SampledStages(s);
         for(int i=0;i<4;i++) {
-            bool smooth = false;
-            Image* tx=Texture(s,i,info[i],is_rt[i],((sampled>>i)&1)!=0,smooth);
+            Image* tx=Texture(s,i,info[i],is_rt[i],((sampled>>i)&1)!=0);
             if(tx && (tx==rt || tx==ds)) tx=Snapshot(*tx);
             sampled_images[i]=tx;if(tx) views[i]=tx->srv.get();
             exact[i]=(info[i].flags&kTexDepthBytes)!=0;
@@ -2048,7 +1925,7 @@ public:
                     info[i].flags |= kTexWide;
                 }
             }
-            if((sampled>>i)&1)samplers[i]=Sampler(s,i,info[i].shadow!=0,clamp,smooth);
+            if((sampled>>i)&1)samplers[i]=Sampler(s,i,info[i].shadow!=0,clamp);
         }
         step(3);
         ID3D11ShaderResourceView* material[2]{};

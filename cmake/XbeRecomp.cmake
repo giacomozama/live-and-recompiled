@@ -204,12 +204,6 @@ else()
     target_link_libraries(setup PRIVATE ${CMAKE_DL_LIBS})
 endif()
 
-# miniz's deflate built into the host (the smoothed lightmaps' disk cache, gpu/lightmap.cpp) rather than linked: a
-# player kit's link line stays as it is
-set(XBE_MINIZ_SOURCES ${miniz_SOURCE_DIR}/miniz.c ${miniz_SOURCE_DIR}/miniz_tdef.c ${miniz_SOURCE_DIR}/miniz_tinfl.c)
-set_source_files_properties(${XBE_MINIZ_SOURCES} PROPERTIES
-    COMPILE_DEFINITIONS "MINIZ_STATIC_DEFINE;MINIZ_NO_ARCHIVE_APIS;MINIZ_NO_STDIO;MINIZ_NO_TIME" COMPILE_OPTIONS "-w")
-
 set(XBE_IMGUI_SOURCES
     ${imgui_SOURCE_DIR}/imgui.cpp
     ${imgui_SOURCE_DIR}/imgui_draw.cpp
@@ -361,11 +355,10 @@ function(add_xbe_image target xbe config partitions game_dir)
     # Two of it from the same sources: <target>_host without the debug features, <target>_host_debug with them
     # (XBE_DEBUG_FEATURES, core/diag.h). The game links the one the option names; a player kit carries both.
     foreach(host ${target}_host ${target}_host_debug)
-        add_library(${host} STATIC ${XBE_RUNTIME_SOURCES} ${XBE_HOST_SOURCES} ${GAME_SOURCES} ${XBE_IMGUI_SOURCES}
-            ${XBE_MINIZ_SOURCES} ${XBE_HASH})
+        add_library(${host} STATIC ${XBE_RUNTIME_SOURCES} ${XBE_HOST_SOURCES} ${GAME_SOURCES} ${XBE_IMGUI_SOURCES} ${XBE_HASH})
         add_dependencies(${host} recompile_${target})
         target_include_directories(${host} PUBLIC ${XBE_GAME_SRC} ${XBE_ROOT_DIR}/src/runtime ${GEN})
-        target_include_directories(${host} SYSTEM PRIVATE ${imgui_SOURCE_DIR} ${miniz_SOURCE_DIR} ${miniz_BINARY_DIR})
+        target_include_directories(${host} SYSTEM PRIVATE ${imgui_SOURCE_DIR})
         target_compile_options(${host} PUBLIC -fno-strict-aliasing)
         target_compile_definitions(${host} PUBLIC ${XBE_HOST_DEFINITIONS})
         target_link_libraries(${host} PUBLIC tomlplusplus::tomlplusplus $<LINK_ONLY:SDL3::SDL3-static> ${XBE_HOST_SYSTEM_LIBS})

@@ -77,7 +77,7 @@ struct Settings {
     uint32_t motion_blur = 0;
     Fog fog = Fog::Enabled;
     // the levels' baked lightmaps made larger, their aliased light and shadow edges smoothed along themselves
-    // (gpu::SmoothLightmap)
+    // (the Vulkan renderer's lightmap smoother, gpu::PrepareLightmap)
     bool smooth_lightmaps = true;
     uint32_t lightmap_smoothing = 5;   // how far along an edge each texel averages, in lightmap texels (1 to 10)
     uint32_t lightmap_size = 512;      // the largest a smoothed lightmap gets across: 256 to 2048, powers of two
