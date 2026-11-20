@@ -447,6 +447,15 @@ void Save(void*) {}
 
 #endif
 
+// HoldSoakTest's: until when (steady clock, ms) player 1's pad holds the combination, 0 not at all
+static std::atomic<int64_t> g_soak_until{0};
+static int64_t NowMs() {
+    using namespace std::chrono;
+    return duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count();
+}
+
+void HoldSoakTest() { g_soak_until.store(NowMs() + 1500); }
+
 void Pad(int port, input::Pad& pad) {
     if (port < 0 || port >= input::kPorts) return;
     // player 1's keyboard is always present: without this the game sees no controller and ignores input
@@ -555,6 +564,10 @@ void Pad(int port, input::Pad& pad) {
     gamepad::Pad(port, pad);  // A on the frontend's Options opens the settings menu, the mouse's too
     mouse::Pad(port, pad);  // the mouse, while it looks, takes the right stick
     if (port != 0) return;
+    if (const int64_t until = g_soak_until.load(); until && !input::t_presence) {
+        if (NowMs() < until) pad.analog[kButtonBlack] = pad.analog[kButtonLT] = pad.analog[kButtonRT] = 0xFF;
+        else g_soak_until.store(0);
+    }
     camscan::Tick(pad);  // XBE_CAMSCAN: the camera angle search watches the stick the game gets
     stickwatch::Tick();  // XBE_STICK_WATCH: F11 finds the code that reads the right stick
 

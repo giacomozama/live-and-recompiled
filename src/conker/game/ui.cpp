@@ -1337,6 +1337,15 @@ void DrawWarp() {
     }
 
     {
+        SubHeading("soak_test");
+        ImGui::TextWrapped("%s", T("hint_soak_test"));
+        if (ImGui::Button(T("start_soak_test"))) {
+            keyboard::HoldSoakTest();
+            Close();
+        }
+    }
+
+    {
         SubHeading("cutscenes");
         int found_level = -1;
         const std::vector<int> found = warp::Cutscenes(&found_level);

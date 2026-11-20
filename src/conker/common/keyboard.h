@@ -73,6 +73,10 @@ bool IsDefault(int player, int action);
 void Load(const void* table);
 void Save(void* table);
 
+// the debug menu's soak test: player 1's pad has LT + RT + Black held for a moment, the main menu's combination for
+// the game's own soak test (every level back to back), there for players whose controls leave Black unbound
+void HoldSoakTest();
+
 // the GameInfo::pad hook: merges the port's keyboards and mice into a polled pad
 void Pad(int port, input::Pad& pad);
 
