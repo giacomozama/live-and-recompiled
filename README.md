@@ -1,9 +1,15 @@
-# Live & Recompiled
+<h1 align="center">Live & Recompiled</h1>
 
-An unofficial native PC port of the original Xbox *Conker: Live & Reloaded*, built on a heavily modified version of
-[Xbox XBE Recomp](https://github.com/TGP482/XboxXBERecomp). Currently supports Linux and Windows.
+<p align="center">
+  <img src=".github/logo.svg" alt="Live &amp; Recompiled" width="400">
+  <br/>
+  <em>I assume pareidolia qualifies as fair use.</em>
+</p>
+<br/>
 
-This project is not affiliated with or endorsed by Rare or Microsoft. *Conker* and *Conker: Live & Reloaded* are
+An unofficial *Conker: Live & Reloaded* native recompilation and enhancement project for Linux and Windows.
+
+This project is **NOT** affiliated with or endorsed by Rare or Microsoft. *Conker* and *Conker: Live & Reloaded* are
 trademarks of their respective owners.
 
 > [!NOTE]
@@ -11,18 +17,18 @@ trademarks of their respective owners.
 > the game. The game [can currently be purchased from the XBOX Store](https://www.xbox.com/games/store/conker-live-and-reloaded/bvfb8cbs75r6). The XBOX Store version is fully compatible with this project.
 
 > [!WARNING]
-> **AI disclaimer**
->
+> **AI disclaimer**  
 > ALL first-party code here is LLM-generated and was NOT reviewed line-by-line.
 
 ## Features
 
 - **High frame rates** - 60, 120, 180 or 240 FPS instead of the original 30.
 - **Any aspect ratio** - Play the game at any aspect ratio.
-- **Better graphics** - Vulkan rendering at any resolution, SMAA or MSAA anti-aliasing, AMD FSR 1.0 upscaling and sharpening, per-pixel lighting, ambient occlusion, smooth baked shadows, dynamic water, motion blur, HDR10 output, and toggles for fog, vignette and more.
+- **Better graphics** - Vulkan rendering at any resolution (with Direct3D 11 and OpenGL renderers as options for weaker machines), SMAA or MSAA anti-aliasing, AMD FSR 1.0 upscaling and sharpening, NVIDIA DLSS on RTX cards, per-pixel lighting, ambient occlusion, smooth baked shadows, dynamic water, motion blur, HDR10 output, and toggles for fog, vignette and more.
 - **Redone fur** - Optional strand-based fur with hair lighting, tuned per character.
 - **Controls** - Full gamepad and keyboard + mouse support, with key prompts in place of button icons, mouse aim for scopes, aircraft and the Sneeker's drone, rebindable Walk and Creep keys, adjustable field of view and extra look up.
-- **Multiplayer** - Full multiplayer support, with local split-screen, LAN autodiscovery and direct IP over the internet. It adds text chat, a Friendly Fire match option, player names, outlines and rank emblems, netcode fixes, a visible medgun beam, high quality character models, and color-blind-friendly blue / orange team colors.
+- **Multiplayer** - Full multiplayer support, with local split-screen, LAN autodiscovery and direct IP over the internet. It adds text chat, a Friendly Fire match option, player names, outlines, health bars and rank emblems, netcode fixes, a visible medgun beam, high quality character models, and color-blind-friendly blue / orange team colors.
+- **Achievements** - Local achievements, kept with your saves.
 - **Mods** - Convenient, plug-and-play modding layer to easily install mods, such as the [Decensor Patch/Mod](https://github.com/nastys/conker-live-and-reloaded-decensor) by nastys.
 - **Quality of life** - Bypass loading screens and skip any cutscene without having seen it once first, by holding any button. Optional English speech bubbles in the throne monologues.
 - **Fixes to the original game** - Fixed animation and rendering glitches and improved rope physics.
@@ -99,7 +105,7 @@ See [BUILDING.md](BUILDING.md).
 
 ## Credits
 
-- [Xbox XBE Recomp](https://github.com/TGP482/XboxXBERecomp), the recompiler and runtime this is built on.
+- [Xbox XBE Recomp](https://github.com/TGP482/XboxXBERecomp), the recompiler and runtime this was originally built on.
 - [xemu](https://github.com/xemu-project/xemu) and [Cxbx-Reloaded](https://github.com/Cxbx-Reloaded/Cxbx-Reloaded) as references for the Xbox's hardware and API behavior.
 - [SMAA](http://www.iryoku.com/smaa/) by Jorge Jimenez, Jose I. Echevarria, Belen Masia, Fernando Navarro and Diego Gutierrez (MIT).
 - [toml++](https://github.com/marzer/tomlplusplus) for the configs.
