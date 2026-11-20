@@ -60,6 +60,8 @@ void AddDiscPrograms(Programs& programs);
 // Read gives its records, false when it is missing or written with another layout
 bool WriteRecords(const std::filesystem::path& path, uint64_t layout, const std::vector<Entry>& entries);
 bool ReadRecords(const std::filesystem::path& path, uint64_t layout, std::vector<Entry>& entries);
+// the same from a file's bytes in memory (app::GameInfo::base_shaders)
+bool ReadRecords(const uint8_t* data, size_t size, uint64_t layout, std::vector<Entry>& entries);
 
 // a record's name, how a pipeline names its shaders
 uint64_t Id(Kind kind, const void* p, size_t n);

@@ -329,6 +329,10 @@ struct GameInfo {
     // the first launch's welcome screen (RunWelcome), before boot: each frame inside the ImGui frame in place of ui,
     // UiLock held; true once the player is done with it. Null: no welcome screen
     bool (*welcome)();
+    // shader records shipped with the game, in shaders.rec's format with gpu::kRecordLayout: what the title's own code
+    // draws, which the disc's records (gpu/shader_gen.h) can't find, made ahead with them. Null: none
+    const uint8_t* base_shaders = nullptr;
+    size_t base_shaders_size = 0;
 };
 extern const GameInfo kGame;
 

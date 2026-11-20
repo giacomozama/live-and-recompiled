@@ -100,17 +100,21 @@ bool WriteRecords(const std::filesystem::path& path, uint64_t layout, const std:
 }
 
 bool ReadRecords(const std::filesystem::path& path, uint64_t layout, std::vector<Entry>& entries) {
+    const std::vector<uint8_t> b = ReadFile(path);
+    return ReadRecords(b.data(), b.size(), layout, entries);
+}
+
+bool ReadRecords(const uint8_t* b, size_t size, uint64_t layout, std::vector<Entry>& entries) {
     entries.clear();
-    std::vector<uint8_t> b = ReadFile(path);
     uint8_t header[kRecHeader];
     std::memcpy(header, kRecMagic, 4);
     std::memcpy(header + 4, &kVersion, 4);
     std::memcpy(header + 8, &layout, 8);
-    if (b.size() < kRecHeader || std::memcmp(b.data(), header, kRecHeader)) return false;
-    for (size_t at = kRecHeader; at + 3 <= b.size();) {
+    if (!b || size < kRecHeader || std::memcmp(b, header, kRecHeader)) return false;
+    for (size_t at = kRecHeader; at + 3 <= size;) {
         const Kind kind = Kind(b[at]);
         const uint16_t n = Read<uint16_t>(&b[at + 1]);
-        if (at + 3 + n > b.size() || kind < kVertex || kind > kMotionPipeline) break;
+        if (at + 3 + n > size || kind < kVertex || kind > kMotionPipeline) break;
         const uint8_t* p = &b[at + 3];
         entries.push_back({kind, Id(kind, p, n), std::vector<uint8_t>(p, p + n)});
         at += 3 + n;

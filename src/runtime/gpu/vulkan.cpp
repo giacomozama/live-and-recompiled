@@ -1208,6 +1208,7 @@ private:
     // the shaders and pipelines shaders.rec lists, made on threads of their own while the title runs
     void StartWarmUp();
     void WarmUp(std::vector<shader_record::Entry> entries, shader_record::Programs programs, shader_gen::Context ctx);
+    void AddBaseShaders(std::vector<shader_record::Entry>& entries, std::unordered_set<uint64_t>& ids);
     struct WarmShader {
         uint64_t hash;
         SpirvRef code;
@@ -3788,6 +3789,7 @@ void VulkanBackend::WarmUp(std::vector<shader_record::Entry> entries, shader_rec
     // the disc's records beside the recorded ones: kept from a run before, or made after those are (a first run)
     std::unordered_set<uint64_t> ids;
     for (const auto& e : entries) ids.insert(e.id);
+    AddBaseShaders(entries, ids);
     std::vector<shader_record::Entry> disc;
     const bool kept = shader_gen::Load(ctx, false, warm_.stop, disc);
     for (auto& e : disc)
@@ -3801,6 +3803,34 @@ void VulkanBackend::WarmUp(std::vector<shader_record::Entry> entries, shader_rec
     for (auto& e : disc)
         if (ids.insert(e.id).second) fresh.push_back(std::move(e));
     WarmEntries(fresh, programs, made, "disc");
+}
+
+// app::GameInfo::base_shaders, those not among ids yet. They are recorded at one sample: with multisampling each of
+// their pipelines is also made at the frame's samples, as one of them may draw to the frame
+void VulkanBackend::AddBaseShaders(std::vector<shader_record::Entry>& entries, std::unordered_set<uint64_t>& ids) {
+    std::vector<shader_record::Entry> base;
+    if (!app::kGame.base_shaders) return;
+    if (!shader_record::ReadRecords(app::kGame.base_shaders, app::kGame.base_shaders_size, kRecordLayout, base)) {
+        LOGR("shaders: the shipped records are of another layout, left out");
+        return;
+    }
+    const size_t before = entries.size();
+    for (auto& e : base) {
+        if (msaa_ > 1 && e.kind == shader_record::kPipeline && e.bytes.size() == sizeof(PipelineEntry)) {
+            PipelineEntry p;
+            std::memcpy(&p, e.bytes.data(), sizeof(p));
+            if (p.k.samples == 1) {
+                p.k.samples = msaa_;
+                const uint64_t id = shader_record::Id(e.kind, &p, sizeof(p));
+                if (ids.insert(id).second) {
+                    const auto* b = reinterpret_cast<const uint8_t*>(&p);
+                    entries.push_back({e.kind, id, std::vector<uint8_t>(b, b + sizeof(p))});
+                }
+            }
+        }
+        if (ids.insert(e.id).second) entries.push_back(std::move(e));
+    }
+    LOGR("shaders: %zu of %zu shipped records added", entries.size() - before, base.size());
 }
 
 void VulkanBackend::WarmEntries(const std::vector<shader_record::Entry>& entries,

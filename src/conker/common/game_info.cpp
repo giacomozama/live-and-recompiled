@@ -21,6 +21,16 @@
 
 namespace {
 
+// the shader records shipped with the game (app::GameInfo::base_shaders): a shaders.rec recorded through the game's
+// soak test (LT + RT + Black on the main menu, or the debug menu's Start soak test: every task of the story back to
+// back) and multiplayer matches, its header's layout set to gpu::kRecordLayout. Record again when kRecordRevision moves
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wc23-extensions"
+const uint8_t kBaseShaders[] = {
+#embed "../base_shaders.rec"
+};
+#pragma clang diagnostic pop
+
 // after the settings load: the fps cap follows frame_rate, the fur, water and grass programs get their shading,
 // then the lit programs theirs, reflective floors their depth
 void Init() {
@@ -105,4 +115,6 @@ const app::GameInfo app::kGame = {
     .rumble = gamepad::Rumble,            // each player's rumble at their vibration % (src/conker/game/hooks.cpp)
     .aspect = display::Aspect,            // the camera patch draws the display's shape (src/conker/game/display.cpp)
     .welcome = ui::Welcome,               // the first launch's language and graphics preset, before boot (ui.cpp)
+    .base_shaders = kBaseShaders,         // src/conker/base_shaders.rec: the soak test and multiplayer, recorded
+    .base_shaders_size = sizeof kBaseShaders,
 };
