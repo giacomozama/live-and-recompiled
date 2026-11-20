@@ -1922,6 +1922,21 @@ X86_FUNC(sub_002ACB20) {
     __imp__sub_002ACB20(ctx, base);
 }
 
+// 0x2AD450, called by the same progress step before the screen when the loading screen is of kind 8 ([0x84A170]),
+// draws the progress bar's new piece (from [0x84A164], what is drawn, to [0x84A168], how far the load is) as a
+// blended quad pushed raw into the back buffer, then takes [0x84A168] as drawn. Unshown with loading::g_fade, those
+// ~11,000 quads a load all went to the GPU in the first frame after it: a half second hitch in the level's opening
+// circle reveal. Skipped with the screen, the bar kept up to date.
+X86_EXTERN_FUNC(__imp__sub_002AD450);
+X86_FUNC(sub_002AD450) {
+    if (loading::g_fade && !d3d::LoadingScreenWanted()) {
+        kernel::W32(0x84A164, kernel::R32(0x84A168));
+        kernel::Return(ctx, ctx.eax, 0);
+        return;
+    }
+    __imp__sub_002AD450(ctx, base);
+}
+
 // 0x352320 (esi the profile, [0x862CD0]) works out the multiplayer cheats the player has earned: Potty Mouth from the
 // campaign, Chapter X on every difficulty or the class medals (byte +0x1439), Flame Fire's gold bullets from the
 // MOD#YellowBullets stat, 1,500 kills online (+0x143B), and Purple Streak from MOD#PurpleBullets, 3,000 (+0x143D).

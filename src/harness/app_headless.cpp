@@ -29,6 +29,13 @@ std::filesystem::path ExeDir() {
     return dir;
 }
 std::filesystem::path DataDir() { return ExeDir(); }  // the run folder, as its hard disks
+std::filesystem::path CacheDir() { return ExeDir(); }
+// the game's folder: main_test.cpp's game argument isn't kept, and only the Vulkan warm-up's shader records ask
+const std::filesystem::path& GameDir() {
+    static const std::filesystem::path none;
+    return none;
+}
+int RunSelf(const std::vector<std::string>&, const std::atomic<bool>*) { return -1; }  // no second process here
 int Instance() {
     static const int n = [] {
         const char* e = std::getenv("INSTANCE");
