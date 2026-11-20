@@ -80,6 +80,10 @@ constexpr Line kLines[] = {
      "ゲームを終了しますか？最後にセーブしてからの進行状況は失われます。"},
     {"cancel", "Cancel", "Abbrechen", "Annuler", "Cancelar", "Annulla", "キャンセル"},
     {"quit_game", "Quit game", "Spiel beenden", "Quitter le jeu", "Salir del juego", "Esci dal gioco", "ゲームを終了"},
+    {"finding_shaders", "Finding shaders", "Shader werden gesucht", "Recherche des shaders", "Buscando shaders",
+     "Ricerca shader", "シェーダーを検索中"},
+    {"compiling_shaders_d", "Compiling shaders %d%%", "Shader werden kompiliert %d%%", "Compilation des shaders %d %%",
+     "Compilando shaders %d%%", "Compilazione shader %d%%", "シェーダーをコンパイル中 %d%%"},
     {"hold_to_skip", "Hold to skip", "Zum Überspringen halten", "Maintenir pour passer", "Mantén para saltar", "Tieni premuto per saltare",
      "長押しでスキップ"},
 

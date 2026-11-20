@@ -4,6 +4,7 @@
 // Their microcode, the title's own, goes in shader_programs.bin, which stays on the machine that played.
 // spirv.bin keeps what glslang made of each source and pipelines.vkc the driver's pipeline cache, so a run after the
 // first makes neither again.
+#include <atomic>
 #include <cstdint>
 #include <cstdio>
 #include <filesystem>
@@ -38,6 +39,17 @@ struct Entry {
     std::vector<uint8_t> bytes;  // VertexEntry, PixelKey, or the backend's pipeline record
 };
 using Programs = std::unordered_map<uint64_t, std::vector<uint32_t>>;
+
+// the warm-up's progress, for the overlay that says it is at work (any thread): making the disc's records (no count:
+// another process does it), or compiling `total` shaders and pipelines, `done` of them through
+enum class Work : uint32_t { None, Generating, Compiling };
+inline std::atomic<Work> g_work{Work::None};
+inline std::atomic<uint32_t> g_work_done{0}, g_work_total{0};
+inline void SetWork(Work w, uint32_t total = 0) {
+    g_work_done.store(0);
+    g_work_total.store(total);
+    g_work.store(w);
+}
 
 // the vertex programs on the game's disc (gpu/disc_programs.h) added to programs, each by both names a program goes
 // by (ChipProgramHash, HashProgram's), where programs has none yet: disc_programs.bin beside the exe (Setup's), else

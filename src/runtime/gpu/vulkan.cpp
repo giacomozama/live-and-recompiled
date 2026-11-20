@@ -3781,6 +3781,9 @@ void VulkanBackend::StartWarmUp() {
 
 void VulkanBackend::WarmUp(std::vector<shader_record::Entry> entries, shader_record::Programs programs,
                            shader_gen::Context ctx) {
+    struct Done {
+        ~Done() { shader_record::SetWork(shader_record::Work::None); }
+    } done;
     shader_record::AddDiscPrograms(programs);  // the recorded vertex programs this machine hasn't run yet
     // the disc's records beside the recorded ones: kept from a run before, or made after those are (a first run)
     std::unordered_set<uint64_t> ids;
@@ -3791,7 +3794,9 @@ void VulkanBackend::WarmUp(std::vector<shader_record::Entry> entries, shader_rec
         if (ids.insert(e.id).second) entries.push_back(std::move(e));
     std::unordered_map<uint64_t, WarmShader> made;
     WarmEntries(entries, programs, made, kept ? "recorded and disc" : "recorded");
-    if (kept || warm_.stop || !shader_gen::Load(ctx, true, warm_.stop, disc)) return;
+    if (kept || warm_.stop) return;
+    shader_record::SetWork(shader_record::Work::Generating);
+    if (!shader_gen::Load(ctx, true, warm_.stop, disc)) return;
     std::vector<shader_record::Entry> fresh;
     for (auto& e : disc)
         if (ids.insert(e.id).second) fresh.push_back(std::move(e));
@@ -3808,6 +3813,7 @@ void VulkanBackend::WarmEntries(const std::vector<shader_record::Entry>& entries
         (e.kind == shader_record::kPipeline || e.kind == shader_record::kMotionPipeline ? pipelines : shaders)
             .push_back(&e);
     const size_t before = made.size();
+    shader_record::SetWork(shader_record::Work::Compiling, uint32_t(entries.size()));
     WarmShaders(shaders, programs, made);
     size_t psos = WarmPipelines(pipelines, made);
     if (!warm_.stop) SavePipelineCache();
@@ -3821,6 +3827,10 @@ void VulkanBackend::WarmShaders(const std::vector<const shader_record::Entry*>& 
                                 std::unordered_map<uint64_t, WarmShader>& made) {
     std::mutex made_lock;
     ParallelFor(list.size(), warm_.stop, [&](size_t i) {
+        // counted for the overlay however it ends
+        struct Tick {
+            ~Tick() { shader_record::g_work_done.fetch_add(1, std::memory_order_relaxed); }
+        } tick;
         const shader_record::Entry& e = *list[i];
         static const std::vector<uint32_t> none;
         std::string src;
@@ -3880,6 +3890,10 @@ size_t VulkanBackend::WarmPipelines(const std::vector<const shader_record::Entry
     bool have_gs = CompileCached(point_src, "main", "gs_5_0", SourceHash(point_src, "main", "gs_5_0"), gs, err);
     std::atomic<size_t> n{0};
     ParallelFor(list.size(), warm_.stop, [&](size_t i) {
+        // counted for the overlay however it ends
+        struct Tick {
+            ~Tick() { shader_record::g_work_done.fetch_add(1, std::memory_order_relaxed); }
+        } tick;
         const shader_record::Entry& e = *list[i];
         if (e.kind == shader_record::kMotionPipeline) {
             // the motion pass's: its key as made, its shaders' hashes in it its own (MotionVertexSalt and the like)

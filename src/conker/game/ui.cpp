@@ -51,6 +51,7 @@
 #include "common/vignette.h"
 #include "common/warp.h"
 #include "common/water.h"
+#include "gpu/shader_record.h"
 #include "core/diag.h"
 #include "core/input.h"
 #include "gpu/backend.h"
@@ -1938,6 +1939,40 @@ void Draw(double fps) {
         };
         stroke(total, IM_COL32(255, 255, 255, 60));
         stroke(total * std::min(hold, 1.0f), ImGui::GetColorU32(ImGuiCol_CheckMark));
+    }
+
+    // the shader warm-up at work (gpu::shader_record::g_work): a pill at the bottom left, a turning arc and how far
+    // it has come, so a first run's slower frames have a reason on screen. Only once it has run a second: a run
+    // with everything cached is through before then, and needs no word
+    const auto work = gpu::shader_record::g_work.load();
+    static double work_since = -1.0;
+    if (work == gpu::shader_record::Work::None) work_since = -1.0;
+    else if (work_since < 0.0) work_since = ImGui::GetTime();
+    if (work != gpu::shader_record::Work::None && ImGui::GetTime() - work_since >= 1.0 && !quit) {
+        ImDrawList* dl = ImGui::GetForegroundDrawList();
+        const ImVec2 display = ImGui::GetIO().DisplaySize;
+        const float font = ImGui::GetFontSize() * 1.1f;
+        char label[96];
+        if (work == gpu::shader_record::Work::Generating) {
+            std::snprintf(label, sizeof label, "%s", T("finding_shaders"));
+        } else {
+            const uint32_t total = std::max(gpu::shader_record::g_work_total.load(), 1u);
+            const uint32_t done = std::min(gpu::shader_record::g_work_done.load(), total);
+            std::snprintf(label, sizeof label, T("compiling_shaders_d"), int(uint64_t(done) * 100 / total));
+        }
+        const ImVec2 text = ImGui::GetFont()->CalcTextSizeA(font, FLT_MAX, 0.0f, label);
+        const float h = font * 2.0f, ring = font * 0.45f, gap = font * 0.6f, margin = font * 1.6f;
+        const float w = h * 0.5f + ring * 2.0f + gap + text.x + h * 0.5f;
+        const ImVec2 lo(margin, display.y - margin - h), hi(margin + w, display.y - margin);
+        dl->AddRectFilled(lo, hi, IM_COL32(0, 0, 0, 150), h * 0.5f);
+        const ImVec2 c(lo.x + h * 0.5f + ring, lo.y + h * 0.5f);
+        const float thick = font * 0.14f, a0 = float(ImGui::GetTime()) * 5.0f;
+        dl->PathArcTo(c, ring, 0.0f, 6.2831853f, 32);
+        dl->PathStroke(IM_COL32(255, 255, 255, 60), ImDrawFlags_None, thick);
+        dl->PathArcTo(c, ring, a0, a0 + 4.2f, 24);
+        dl->PathStroke(ImGui::GetColorU32(ImGuiCol_CheckMark), ImDrawFlags_None, thick);
+        dl->AddText(ImGui::GetFont(), font, ImVec2(c.x + ring + gap, c.y - text.y * 0.5f), IM_COL32(255, 255, 255, 235),
+                    label);
     }
 
     DrawAchievementToast();
