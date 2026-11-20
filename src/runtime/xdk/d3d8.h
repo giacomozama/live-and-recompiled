@@ -1,11 +1,16 @@
 #pragma once
 #include <array>
+#include <functional>
+#include <memory>
 #include <mutex>
 #include <utility>
 
 #include "gpu/state.h"
 
 struct X86Context;
+namespace gpu {
+class Backend;
+}
 
 namespace d3d {
 
@@ -90,5 +95,12 @@ bool LoadingScreenWanted();
 int64_t MsSincePresent();
 // the title's Swaps so far
 uint32_t Presents();
+
+// The commands of a static push buffer read without the title (gpu/shader_gen.h): at va, size bytes of guest memory,
+// as Walk reads the title's, their draws going to backend (the device's own put back after). fresh: the device's
+// state, the chip's program memory and the inline textures reset first; setup then sets what the title's code would
+// have before the buffer ran. Never while the title runs: the device's state is the title's
+void DryWalk(std::unique_ptr<gpu::Backend>& backend, const std::function<void(gpu::State&)>& setup, bool fresh,
+             uint32_t va, uint32_t size);
 
 }  // namespace d3d

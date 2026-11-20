@@ -551,6 +551,45 @@ bool Assemble(const State& s, uint32_t prim, uint32_t start, uint32_t count, con
     return ok;
 }
 
+bool AssembleLayout(const State& s, uint32_t prim, Assembled& out, bool patches) {
+    ResetAssembled(out);
+    if (prim < 1 || prim > 10) return false;
+    VertexShader fvf_layout;
+    const VertexShader* layout = PickLayout(s, fvf_layout);
+    out.pretransformed = Pretransformed(s);
+    if (!layout) return false;
+    int regs[16];
+    int nregs = CollectRegs(s, *layout, regs, out);
+    if (!nregs) return false;
+    Inputs inputs = {*layout, regs, nregs};
+    if (kRawVertices && RawReadable(s, inputs)) {
+        // AssembleRaw's elements: a buffer slot per stream in the order the registers first read it
+        int slot[16];
+        std::fill(std::begin(slot), std::end(slot), -1);
+        for (int k = 0; k < nregs; k++) {
+            const auto& in = layout->inputs[size_t(regs[k])];
+            if (slot[in.stream] < 0) slot[in.stream] = int(out.buffer_count++);
+            HostElement he = HostFormat(in.type);
+            out.elements[size_t(regs[k])] = {he.format, uint8_t(slot[in.stream]), uint16_t(in.offset)};
+            out.decode |= uint64_t(he.decode) << (regs[k] * 4);
+        }
+        if (NativePrimitive(prim) && !(patches && prim == 6)) {
+            out.strip = prim == 4 || prim == 6;
+            out.topology = NativeTopology(prim);
+        } else {
+            out.topology = prim == 1 ? Topology::Points : prim <= 4 ? Topology::Lines : Topology::Triangles;
+        }
+    } else {
+        // AssembleConverted's: each register a float4 in one buffer
+        for (int k = 0; k < nregs; k++)
+            out.elements[size_t(regs[k])] = {DXGI_FORMAT_R32G32B32A32_FLOAT, 0, uint16_t(k * 16)};
+        out.buffer_count = 1;
+        out.topology = prim == 1 ? Topology::Points : prim <= 4 ? Topology::Lines : Topology::Triangles;
+    }
+    if (patches && out.topology == Topology::Triangles && !out.strip) out.topology = Topology::Patches;
+    return true;
+}
+
 namespace {
 
 // input register r's element of vertices draw order vertices from start (or ip's 16 bit indices) as floats, false

@@ -67,6 +67,9 @@ void FvfInputs(uint32_t fvf, VertexShader& out);
 // patches: triangles of any kind as a list of Topology::Patches
 bool Assemble(const State& s, uint32_t prim, uint32_t start, uint32_t count, const uint8_t* indices, Assembled& out,
               bool patches = false);
+// what Assemble makes of a draw's layout alone (regs, elements, decode, topology, strip, pretransformed), no vertex
+// read: for keys made without drawing (gpu/shader_gen.h). False where Assemble would be for any count
+bool AssembleLayout(const State& s, uint32_t prim, Assembled& out, bool patches = false);
 
 // the draw's input registers (stream, type, stride, offset) and their first vertices decoded, for frame captures
 std::string DescribeInputs(const State& s, uint32_t start, const uint8_t* indices, uint32_t vertices);

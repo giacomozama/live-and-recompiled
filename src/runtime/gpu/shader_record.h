@@ -44,6 +44,11 @@ using Programs = std::unordered_map<uint64_t, std::vector<uint32_t>>;
 // in app::CacheDir, else the game's files scanned and written there. Slow when it scans: off the title's thread
 void AddDiscPrograms(Programs& programs);
 
+// A whole records file in shaders.rec's format (gpu/shader_gen.h writes one): Write replaces path with entries,
+// Read gives its records, false when it is missing or written with another layout
+bool WriteRecords(const std::filesystem::path& path, uint64_t layout, const std::vector<Entry>& entries);
+bool ReadRecords(const std::filesystem::path& path, uint64_t layout, std::vector<Entry>& entries);
+
 // a record's name, how a pipeline names its shaders
 uint64_t Id(Kind kind, const void* p, size_t n);
 

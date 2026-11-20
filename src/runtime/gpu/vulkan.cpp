@@ -66,6 +66,7 @@
 #include "gpu/draw.h"
 #include "gpu/hud_split.h"
 #include "gpu/interp.h"
+#include "gpu/shader_gen.h"
 #include "gpu/shader_record.h"
 #include "gpu/shaders.h"
 #include "gpu/lightmap_stage.h"
@@ -1206,11 +1207,14 @@ private:
     void SavePipelineCache();
     // the shaders and pipelines shaders.rec lists, made on threads of their own while the title runs
     void StartWarmUp();
-    void WarmUp(std::vector<shader_record::Entry> entries, shader_record::Programs programs);
+    void WarmUp(std::vector<shader_record::Entry> entries, shader_record::Programs programs, shader_gen::Context ctx);
     struct WarmShader {
         uint64_t hash;
         SpirvRef code;
     };
+    // entries made ahead, the shaders into made (by record id), logged as what
+    void WarmEntries(const std::vector<shader_record::Entry>& entries, const shader_record::Programs& programs,
+                     std::unordered_map<uint64_t, WarmShader>& made, const char* what);
     void WarmShaders(const std::vector<const shader_record::Entry*>& list, const shader_record::Programs& programs,
                      std::unordered_map<uint64_t, WarmShader>& made);
     size_t WarmPipelines(const std::vector<const shader_record::Entry*>& list,
@@ -3764,25 +3768,51 @@ void VulkanBackend::StartWarmUp() {
     record_.Open(app::CacheDir(), RecordLayout(), app::Instance() <= 1);
     std::vector<shader_record::Entry> entries = record_.TakeEntries();
     shader_record::Programs programs = record_.TakePrograms();
-    if (!app::Get().shader_warmup || entries.empty()) return;
-    warm_.thread = std::thread([this, e = std::move(entries), p = std::move(programs)]() mutable {
-        WarmUp(std::move(e), std::move(p));
+    if (!app::Get().shader_warmup) return;
+    // what the disc's records depend on (gpu/shader_gen.h): the frame's targets and what the device can do
+    shader_gen::Context ctx;
+    ctx.samples = msaa_;
+    ctx.tess = tess_;
+    ctx.vrs = shading_rate_;
+    warm_.thread = std::thread([this, e = std::move(entries), p = std::move(programs), ctx]() mutable {
+        WarmUp(std::move(e), std::move(p), ctx);
     });
 }
 
-void VulkanBackend::WarmUp(std::vector<shader_record::Entry> entries, shader_record::Programs programs) {
+void VulkanBackend::WarmUp(std::vector<shader_record::Entry> entries, shader_record::Programs programs,
+                           shader_gen::Context ctx) {
     shader_record::AddDiscPrograms(programs);  // the recorded vertex programs this machine hasn't run yet
+    // the disc's records beside the recorded ones: kept from a run before, or made after those are (a first run)
+    std::unordered_set<uint64_t> ids;
+    for (const auto& e : entries) ids.insert(e.id);
+    std::vector<shader_record::Entry> disc;
+    const bool kept = shader_gen::Load(ctx, false, warm_.stop, disc);
+    for (auto& e : disc)
+        if (ids.insert(e.id).second) entries.push_back(std::move(e));
+    std::unordered_map<uint64_t, WarmShader> made;
+    WarmEntries(entries, programs, made, kept ? "recorded and disc" : "recorded");
+    if (kept || warm_.stop || !shader_gen::Load(ctx, true, warm_.stop, disc)) return;
+    std::vector<shader_record::Entry> fresh;
+    for (auto& e : disc)
+        if (ids.insert(e.id).second) fresh.push_back(std::move(e));
+    WarmEntries(fresh, programs, made, "disc");
+}
+
+void VulkanBackend::WarmEntries(const std::vector<shader_record::Entry>& entries,
+                                const shader_record::Programs& programs,
+                                std::unordered_map<uint64_t, WarmShader>& made, const char* what) {
+    if (entries.empty()) return;
     auto t = std::chrono::steady_clock::now();
     std::vector<const shader_record::Entry*> shaders, pipelines;
     for (const auto& e : entries)
         (e.kind == shader_record::kPipeline || e.kind == shader_record::kMotionPipeline ? pipelines : shaders)
             .push_back(&e);
-    std::unordered_map<uint64_t, WarmShader> made;  // by record id
+    const size_t before = made.size();
     WarmShaders(shaders, programs, made);
     size_t psos = WarmPipelines(pipelines, made);
     if (!warm_.stop) SavePipelineCache();
-    LOGR("shaders: made %zu of %zu recorded shaders and %zu of %zu pipelines ahead in %.0f ms%s", made.size(),
-         shaders.size(), psos, pipelines.size(), SinceMs(t), warm_.stop ? ", stopped" : "");
+    LOGR("shaders: made %zu of %zu %s shaders and %zu of %zu pipelines ahead in %.0f ms%s", made.size() - before,
+         shaders.size(), what, psos, pipelines.size(), SinceMs(t), warm_.stop ? ", stopped" : "");
 }
 
 // vertex shaders of programs this machine has not run yet are left out: shader_programs.bin has no words for them

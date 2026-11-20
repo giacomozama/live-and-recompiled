@@ -1,4 +1,5 @@
 #pragma once
+#include <atomic>
 #include <cstdint>
 #include <filesystem>
 #include <mutex>
@@ -184,6 +185,9 @@ bool Widescreen();
 float FrameAspect();
 
 std::filesystem::path ExeDir();
+// this executable run again with args (UTF-8), waited for: its exit code, -1 when it couldn't start or stop was set
+// (the run killed then). Any thread
+int RunSelf(const std::vector<std::string>& args, const std::atomic<bool>* stop = nullptr);
 // where the game writes (paths.cpp), each folder made: the platform's for the user (%APPDATA% and %LOCALAPPDATA%, the
 // XDG folders elsewhere), or ExeDir with a portable.txt beside the exe
 std::filesystem::path ConfigDir();  // the settings file

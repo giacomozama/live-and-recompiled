@@ -85,7 +85,7 @@ void SetSavedDataAddress(uint32_t surface) { g_saved_data = surface; }
 const xbe::Image* g_image = nullptr;
 static xbe::Image g_xbe;
 
-bool Boot(std::vector<uint8_t> xbe, const std::string& xbe_name, const std::string& game_dir, const std::string& data_dir) {
+bool LoadTitleImage(std::vector<uint8_t> xbe, const std::string& xbe_name) {
     if (!mem::Init()) return false;
     g_base = mem::Base();
 
@@ -115,6 +115,12 @@ bool Boot(std::vector<uint8_t> xbe, const std::string& xbe_name, const std::stri
         W32(sec_hdr + uint32_t(i) * 56 + 0x18, 1);
     }
     if (app::kGame.loaded) app::kGame.loaded();
+    return true;
+}
+
+bool Boot(std::vector<uint8_t> xbe, const std::string& xbe_name, const std::string& game_dir, const std::string& data_dir) {
+    if (!LoadTitleImage(std::move(xbe), xbe_name)) return false;
+    const xbe::Image& img = g_xbe;
 
     InitKernelData();
     dispatch::Init();

@@ -29,6 +29,7 @@
 #include <climits>
 #include <mutex>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <string>
@@ -43,6 +44,7 @@
 #include "core/input.h"
 #include "core/log.h"
 #include "gpu/backend.h"
+#include "gpu/shader_gen.h"
 #include "image_symbols.h"
 #include "kernel/kernel.h"
 #include "xdk/dsound.h"
@@ -585,19 +587,55 @@ void ReadDisplayHdr() {
 void ReadDisplayHdr() {}
 #endif
 
-std::filesystem::path ExeDir() {
-    static const std::filesystem::path dir = [] {
+namespace {
+// this executable's path, empty when the system won't say
+const std::filesystem::path& ExePath() {
+    static const std::filesystem::path path = [] {
 #ifdef _WIN32
         wchar_t p[MAX_PATH];
-        GetModuleFileNameW(nullptr, p, MAX_PATH);
-        return std::filesystem::path(p).parent_path();
+        DWORD n = GetModuleFileNameW(nullptr, p, MAX_PATH);
+        return n ? std::filesystem::path(p) : std::filesystem::path();
 #else
         char p[PATH_MAX] = {};
         ssize_t n = readlink("/proc/self/exe", p, sizeof(p) - 1);
-        return n > 0 ? std::filesystem::path(std::string(p, size_t(n))).parent_path() : std::filesystem::current_path();
+        return n > 0 ? std::filesystem::path(std::string(p, size_t(n))) : std::filesystem::path();
 #endif
     }();
+    return path;
+}
+}  // namespace
+
+std::filesystem::path ExeDir() {
+    static const std::filesystem::path dir =
+        ExePath().empty() ? std::filesystem::current_path() : ExePath().parent_path();
     return dir;
+}
+
+int RunSelf(const std::vector<std::string>& args, const std::atomic<bool>* stop) {
+    if (ExePath().empty()) return -1;
+    const std::u8string exe = ExePath().u8string();
+    std::vector<std::string> all{std::string(exe.begin(), exe.end())};
+    all.insert(all.end(), args.begin(), args.end());
+    std::vector<const char*> argv;
+    for (const std::string& a : all) argv.push_back(a.c_str());
+    argv.push_back(nullptr);
+    SDL_Process* p = SDL_CreateProcess(argv.data(), false);
+    if (!p) {
+        LOGW("run: %s", SDL_GetError());
+        return -1;
+    }
+    int code = -1;
+    while (!SDL_WaitProcess(p, false, &code)) {
+        if (stop && stop->load()) {
+            SDL_KillProcess(p, true);
+            SDL_WaitProcess(p, true, &code);
+            code = -1;
+            break;
+        }
+        SDL_Delay(50);
+    }
+    SDL_DestroyProcess(p);
+    return code;
 }
 
 int Instance() { return g_instance; }
@@ -838,8 +876,15 @@ void AttachParentConsole() {
 
 int Run(int argc, char** argv) {
     bool relaunched = false;
+    std::string gen_out;  // --make-shader-records PATH (gpu/shader_gen.h), the renderer's state with --gen-*
+    gpu::shader_gen::Context gen;
     for (int i = 1; i < argc; i++) {
-        if (const char* v = ArgValue(argc, argv, i, "--instance")) app::g_instance = std::clamp(std::atoi(v), 0, 8);
+        if (const char* v = ArgValue(argc, argv, i, "--make-shader-records")) gen_out = v;
+        else if (const char* v = ArgValue(argc, argv, i, "--gen-rtfmt")) gen.rtfmt = uint32_t(std::atoi(v));
+        else if (const char* v = ArgValue(argc, argv, i, "--gen-samples")) gen.samples = uint32_t(std::max(1, std::atoi(v)));
+        else if (!std::strcmp(argv[i], "--gen-tess")) gen.tess = true;
+        else if (!std::strcmp(argv[i], "--gen-vrs")) gen.vrs = true;
+        else if (const char* v = ArgValue(argc, argv, i, "--instance")) app::g_instance = std::clamp(std::atoi(v), 0, 8);
         else if (const char* v = ArgValue(argc, argv, i, "--port")) app::g_port = std::clamp(std::atoi(v), 0, 65535);
         else if (const char* v = ArgValue(argc, argv, i, "--join")) app::g_join = v;
         else if (!std::strcmp(argv[i], "--relaunched")) relaunched = true;
@@ -855,10 +900,20 @@ int Run(int argc, char** argv) {
     // one log a session: a relaunch into another image carries on its predecessor's
     std::string log = app::kGame.log;
     if (app::Instance() > 1) log += "-" + std::to_string(app::Instance());
+    if (!gen_out.empty()) log += "-shadergen";
     logx::Init((app::StateDir() / "logs").string(), log, relaunched);
-    app::MoveOldData();
+    if (gen_out.empty()) app::MoveOldData();
     app::Load();
     if (app::kGame.init) app::kGame.init();
+    // the records the disc's static push buffers make, written to gen_out, and no more: no window, no title
+    if (!gen_out.empty()) {
+        app::GameFiles game;
+        const int code = app::FindGame(game) && kernel::LoadTitleImage(std::move(game.xbe), IMAGE_XBE)
+                             ? gpu::shader_gen::Run(std::u8string(gen_out.begin(), gen_out.end()), gen)
+                             : 1;
+        logx::Flush();
+        std::_Exit(code);
+    }
     SDL_SetHint(SDL_HINT_APP_NAME, app::Utf8(app::kGame.title).c_str());
     if (!SDL_Init(SDL_INIT_VIDEO)) {
         LOGE("SDL: no video: %s", SDL_GetError());

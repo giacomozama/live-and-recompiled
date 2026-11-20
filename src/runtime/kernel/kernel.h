@@ -217,6 +217,9 @@ std::string ResolvePath(const std::string& xbox_path, uint32_t root_handle);  //
 bool ReadGameFile(const std::string& xbox_path, std::vector<uint8_t>& out);  // from a host folder or the disc image
 
 // boot
+// the image in guest memory as Boot puts it there (its preloaded sections, GameInfo::loaded run), the title not
+// started: for work on the image's data without the title (gpu/shader_gen.h)
+bool LoadTitleImage(std::vector<uint8_t> xbe, const std::string& xbe_name);
 bool Boot(std::vector<uint8_t> xbe, const std::string& xbe_name, const std::string& game_dir, const std::string& data_dir);
 [[noreturn]] void Shutdown(int code);
 // the executable recompiled from an Xbox image path (D:\\default.xbe), null when there is none

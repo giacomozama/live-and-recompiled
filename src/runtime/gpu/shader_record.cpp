@@ -84,6 +84,40 @@ FILE* Reopen(const std::filesystem::path& p, const std::vector<uint8_t>& old, si
 
 }  // namespace
 
+bool WriteRecords(const std::filesystem::path& path, uint64_t layout, const std::vector<Entry>& entries) {
+    std::vector<uint8_t> b(kRecHeader);
+    std::memcpy(b.data(), kRecMagic, 4);
+    std::memcpy(b.data() + 4, &kVersion, 4);
+    std::memcpy(b.data() + 8, &layout, 8);
+    for (const Entry& e : entries) {
+        if (e.bytes.size() > UINT16_MAX) continue;
+        const uint16_t n = uint16_t(e.bytes.size());
+        b.push_back(e.kind);
+        b.insert(b.end(), reinterpret_cast<const uint8_t*>(&n), reinterpret_cast<const uint8_t*>(&n) + 2);
+        b.insert(b.end(), e.bytes.begin(), e.bytes.end());
+    }
+    return WriteFile(path, b.data(), b.size());
+}
+
+bool ReadRecords(const std::filesystem::path& path, uint64_t layout, std::vector<Entry>& entries) {
+    entries.clear();
+    std::vector<uint8_t> b = ReadFile(path);
+    uint8_t header[kRecHeader];
+    std::memcpy(header, kRecMagic, 4);
+    std::memcpy(header + 4, &kVersion, 4);
+    std::memcpy(header + 8, &layout, 8);
+    if (b.size() < kRecHeader || std::memcmp(b.data(), header, kRecHeader)) return false;
+    for (size_t at = kRecHeader; at + 3 <= b.size();) {
+        const Kind kind = Kind(b[at]);
+        const uint16_t n = Read<uint16_t>(&b[at + 1]);
+        if (at + 3 + n > b.size() || kind < kVertex || kind > kMotionPipeline) break;
+        const uint8_t* p = &b[at + 3];
+        entries.push_back({kind, Id(kind, p, n), std::vector<uint8_t>(p, p + n)});
+        at += 3 + n;
+    }
+    return true;
+}
+
 void AddDiscPrograms(Programs& programs) {
     namespace dp = disc_programs;
     std::vector<dp::Program> list;

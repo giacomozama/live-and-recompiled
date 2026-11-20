@@ -2459,6 +2459,8 @@ bool Changes(uint32_t m, uint32_t method, uint32_t v) {
 
 // reads the commands pushed since the last call: vertex data between a begin and an end is drawn, visibility tests
 // are run, the rest is skipped
+bool g_dry_walk = false;  // DryWalk's
+
 void Walk(uint32_t end) {
     // the two silent exits below drop every command that follows, so make them observable
     static const bool trace = diag::Env("XBE_TRACE_WALK") != nullptr;
@@ -2488,7 +2490,9 @@ void Walk(uint32_t end) {
     g_walked = kernel::Current() ? R32(kernel::CurrentContext().esp) : 0;
     // jump targets land on real blocks (vertex-program words, prebuilt stream bindings), so following them is the
     // xemu behaviour; XBE_NO_WALK_JUMPS restores the old "stop at the first jump" for comparison
-    static const bool follow = diag::Env("XBE_NO_WALK_JUMPS") == nullptr;
+    static const bool follow_jumps = diag::Env("XBE_NO_WALK_JUMPS") == nullptr;
+    // a dry walk's block stands alone: its jumps were the title's patches, to places that aren't loaded
+    const bool follow = follow_jumps && !g_dry_walk;
     auto aim = [&](uint32_t t) {
         // a target inside the buffer we were handed stays bounded by it, anything else is read as physical RAM.
         // The scratch buffer is a ring: a jump to the put pointer is the end of the stream (the chip stops there),
@@ -2615,6 +2619,9 @@ void Walk(uint32_t end) {
         }
         for (uint32_t i = 0; i < n; i++, p += 4) {
             uint32_t m = head & 0x40000000 ? method : method + i * 4, v = R32(p);
+            // past the last method (an incrementing packet run off the end): the title never pushes one, a dry walk
+            // over data that only looks like commands does, and simple[] ends there
+            if (m >= 0x2000) continue;
             float f, *a = g_im_attr;
             bool last = true;  // the slot's last component
             std::memcpy(&f, &v, 4);
@@ -2898,6 +2905,32 @@ void Walk(uint32_t end) {
     g_walk = end;
 }
 }  // namespace
+
+void DryWalk(std::unique_ptr<gpu::Backend>& backend, const std::function<void(gpu::State&)>& setup, bool fresh,
+             uint32_t va, uint32_t size) {
+    std::lock_guard<std::recursive_mutex> lock(g_lock);
+    std::swap(g_backend, backend);
+    if (fresh) {
+        g_state = gpu::State{};
+        std::memset(g_prog, 0, sizeof(g_prog));
+        g_prog_load = g_prog_start = 0;
+        g_chip_program = false;
+        g_chip_dirty = true;
+        g_vs_const_reg = 0;
+        for (int i = 0; i < 4; i++) g_inline_tex_off[i] = g_inline_tex_fmt[i] = 0;
+    }
+    if (setup) setup(g_state);
+    // the block read as the scratch buffer is: its commands from va to the end, no jump out of it followed
+    const uint32_t push = std::exchange(g_scratch_push, va), push_size = std::exchange(g_scratch_size, size);
+    g_walk = va;
+    g_dry_walk = true;
+    Walk(va + size);
+    g_dry_walk = false;
+    g_scratch_push = push;
+    g_scratch_size = push_size;
+    g_walk = 0;
+    std::swap(g_backend, backend);
+}
 
 }  // namespace d3d
 
