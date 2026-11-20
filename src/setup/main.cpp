@@ -60,6 +60,7 @@
 extern char** environ;
 #endif
 
+#include "gpu/disc_programs.h"
 #include "kernel/crypto.h"
 #include "kernel/disc.h"
 #include "setup.h"
@@ -814,6 +815,21 @@ bool Stage(const setup::Options& opt, const Kit& k, Source& src, fs::path& asset
     }
 }
 
+// the vertex programs on the player's copy, beside the game (gpu/disc_programs.h): the game makes the shaders its
+// records name before it needs them. Without the file the game finds them itself, once
+void FindDiscPrograms(const Source& src, const fs::path& assets, const fs::path& game_dir) {
+    namespace dp = gpu::disc_programs;
+    Say("Finding the game's vertex programs ...\n");
+    kernel::Disc disc;
+    std::vector<dp::File> files;
+    std::string error;
+    if (src.kind != Kind::Iso) files = dp::FolderFiles(assets);
+    else if (disc.Open(assets / src.path.filename(), error)) files = dp::DiscFiles(disc);
+    std::vector<dp::Program> programs = dp::Scan(files);
+    if (!programs.empty() && dp::Write(game_dir / dp::kFileName, programs)) Say("  %zu found\n", programs.size());
+    else Say("  none found; the game looks for them itself on its first run\n");
+}
+
 // double-clicked: the console would close before the player reads it
 void Pause() {
 #ifdef _WIN32
@@ -1010,6 +1026,9 @@ bool Build(const Options& opt) {
     fs::path assets;
     if (!Stage(staged, k, src, assets)) return fail();
     Progress(0.10);
+    if (SayCancelled()) return false;
+    FindDiscPrograms(src, assets, game_dir);
+    Progress(0.12);
     if (SayCancelled()) return false;
     if (!EnsureToolchain(work, k)) return fail();
     Progress(0.25);

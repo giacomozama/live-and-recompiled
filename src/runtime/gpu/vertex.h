@@ -56,6 +56,8 @@ struct Assembled {
 
 // VertexShader::hash of its program as EnsureProgramHash makes it, for the title's thread to set on a shader it makes
 void HashProgram(VertexShader& vs);
+// the hash of a program the chip runs from its own memory (xdk/d3d8.cpp ChipProgram), a VertexShader::hash too
+uint64_t ChipProgramHash(const uint32_t* words, size_t count);
 
 // the FVF bits translated to the register layout the XDK's declarations use
 void FvfInputs(uint32_t fvf, VertexShader& out);

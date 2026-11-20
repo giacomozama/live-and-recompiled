@@ -1,9 +1,14 @@
 // shaders.rec and shader_programs.bin in app::CacheDir, see shader_record.h
 #include "gpu/shader_record.h"
 
+#include <chrono>
 #include <cstring>
 
+#include "app/app.h"
 #include "core/log.h"
+#include "gpu/disc_programs.h"
+#include "gpu/vertex.h"
+#include "kernel/disc.h"
 
 namespace gpu::shader_record {
 
@@ -78,6 +83,31 @@ FILE* Reopen(const std::filesystem::path& p, const std::vector<uint8_t>& old, si
 }
 
 }  // namespace
+
+void AddDiscPrograms(Programs& programs) {
+    namespace dp = disc_programs;
+    std::vector<dp::Program> list;
+    const std::filesystem::path setup = app::ExeDir() / dp::kFileName, cached = app::CacheDir() / dp::kFileName;
+    if (!dp::Read(setup, list) && !dp::Read(cached, list)) {
+        auto t = std::chrono::steady_clock::now();
+        if (const kernel::Disc* disc = kernel::MountedDisc()) list = dp::Scan(dp::DiscFiles(*disc));
+        else if (!app::GameDir().empty()) list = dp::Scan(dp::FolderFiles(app::GameDir()));
+        // a second instance on this PC reads only, as with the records
+        const bool wrote = !list.empty() && app::Instance() <= 1 && dp::Write(cached, list);
+        LOGR("shaders: found %zu vertex programs in the game's files in %.0f ms%s", list.size(),
+             std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t).count(),
+             wrote ? ", kept in the cache folder" : "");
+    }
+    size_t added = 0;
+    for (dp::Program& p : list) {
+        VertexShader vs;
+        vs.program = p;
+        HashProgram(vs);
+        added += programs.emplace(ChipProgramHash(p.data(), p.size()), p).second;
+        added += programs.emplace(vs.hash, std::move(p)).second;
+    }
+    LOGI("shaders: %zu vertex programs from the game's disc, %zu new names", list.size(), added);
+}
 
 uint64_t Id(Kind kind, const void* p, size_t n) { return Hash(p, n, 0x5EC0'0000ull | kind); }
 

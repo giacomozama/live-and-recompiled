@@ -39,6 +39,11 @@ struct Entry {
 };
 using Programs = std::unordered_map<uint64_t, std::vector<uint32_t>>;
 
+// the vertex programs on the game's disc (gpu/disc_programs.h) added to programs, each by both names a program goes
+// by (ChipProgramHash, HashProgram's), where programs has none yet: disc_programs.bin beside the exe (Setup's), else
+// in app::CacheDir, else the game's files scanned and written there. Slow when it scans: off the title's thread
+void AddDiscPrograms(Programs& programs);
+
 // a record's name, how a pipeline names its shaders
 uint64_t Id(Kind kind, const void* p, size_t n);
 

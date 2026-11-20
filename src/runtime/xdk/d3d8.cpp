@@ -1792,13 +1792,11 @@ const std::vector<uint32_t>& ChipProgram(uint64_t& hash) {
     if (g_chip_dirty) {
         g_chip_dirty = false;
         prog.clear();
-        h = 1469598103934665603ull;
         for (uint32_t i = g_prog_start; i < kProgramSlots; i++) {
             prog.insert(prog.end(), g_prog[i], g_prog[i] + 4);
-            for (uint32_t w : g_prog[i]) h = (h ^ w) * 1099511628211ull;
             if (g_prog[i][3] & 1) break;  // FLD_FINAL
         }
-        h |= 1;
+        h = gpu::ChipProgramHash(prog.data(), prog.size());
         // XBE_DUMP_PROGRAM: each distinct chip program once, start slot and words
         static const bool dump = diag::Env("XBE_DUMP_PROGRAM") != nullptr;
         static std::unordered_set<uint64_t> seen;
@@ -2900,6 +2898,7 @@ void Walk(uint32_t end) {
     g_walk = end;
 }
 }  // namespace
+
 }  // namespace d3d
 
 HLE_STDCALL(D3DDevice_DrawVerticesUP, 4) {

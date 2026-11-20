@@ -141,6 +141,12 @@ void HashProgram(VertexShader& vs) {
     if (!vs.program.empty()) vs.hash = Hash(vs.program.data(), vs.program.size() * 4) | 1;
 }
 
+uint64_t ChipProgramHash(const uint32_t* words, size_t count) {
+    uint64_t h = 1469598103934665603ull;
+    for (size_t i = 0; i < count; i++) h = (h ^ words[i]) * 1099511628211ull;
+    return h | 1;
+}
+
 namespace {
 
 // vertex shader cache key salts

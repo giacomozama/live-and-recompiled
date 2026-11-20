@@ -122,6 +122,7 @@ add_custom_target(version_header
 add_executable(setup ${XBE_ROOT_DIR}/src/setup/main.cpp
     ${XBE_ROOT_DIR}/src/setup/store.cpp
     ${XBE_ROOT_DIR}/src/runtime/kernel/disc.cpp
+    ${XBE_ROOT_DIR}/src/runtime/gpu/disc_programs.cpp
     ${XBE_ROOT_DIR}/src/runtime/kernel/crypto.cpp)
 # built under its final name: setup-windows.exe, setup-linux
 if(WIN32)

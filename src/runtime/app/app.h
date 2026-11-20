@@ -208,6 +208,8 @@ struct GameFiles {
     std::vector<uint8_t> xbe;
 };
 bool FindGame(GameFiles& game);
+// FindGame's folder (its extracted files, or the one with the disc image kernel::MountedDisc reads), empty before
+const std::filesystem::path& GameDir();
 int Instance();  // --instance N on the command line, 0 without: a second copy on this PC for system link tests
 int PortArg();   // --port N on the command line, 0 without: this copy's system link port, over the setting
 const std::string& JoinArg();  // --join host[:port] on the command line, "" without: over the join_ip setting

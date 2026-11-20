@@ -52,7 +52,11 @@ bool ReadHostFile(const fs::path& path, std::vector<uint8_t>& out) {
     return true;
 }
 
+fs::path g_game_dir;
+
 }  // namespace
+
+const fs::path& GameDir() { return g_game_dir; }
 
 bool FindGame(GameFiles& game) {
     fs::path assets = FindAssets();
@@ -77,6 +81,7 @@ bool FindGame(GameFiles& game) {
         LOGR("Game: %s in %s, sha1 %s%s", IMAGE_XBE, name.string().c_str(), sha.c_str(), match ? "" : ", another release");
         if (match) {
             game = {assets, std::move(xbe)};
+            g_game_dir = assets;
             kernel::MountDisc(std::move(disc));
             return true;
         }
@@ -113,6 +118,7 @@ bool FindGame(GameFiles& game) {
                         L"crash.\n\nStart it anyway?";
     if (!Alert(text, true)) return false;
     game = std::move(other);
+    g_game_dir = game.dir;
     kernel::MountDisc(std::move(other_disc));
     return true;
 }

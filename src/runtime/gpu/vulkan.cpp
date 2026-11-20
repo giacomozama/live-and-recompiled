@@ -3747,6 +3747,7 @@ void VulkanBackend::StartWarmUp() {
 }
 
 void VulkanBackend::WarmUp(std::vector<shader_record::Entry> entries, shader_record::Programs programs) {
+    shader_record::AddDiscPrograms(programs);  // the recorded vertex programs this machine hasn't run yet
     auto t = std::chrono::steady_clock::now();
     std::vector<const shader_record::Entry*> shaders, pipelines;
     for (const auto& e : entries)
