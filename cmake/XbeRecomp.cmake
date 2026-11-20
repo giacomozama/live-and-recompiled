@@ -117,6 +117,27 @@ add_custom_target(version_header
     BYPRODUCTS ${VERSION_H}
     VERBATIM)
 
+# The executables' icon on Windows (src/runtime/app/icon, tools/icon.py): icon.rc compiled by `zig rc` into a .res that
+# Game.exe's link line (and a player kit's, add_xbe_player_kit) and setup-windows.exe's take as an input. Linux
+# executables carry none: the windows set it from app/icon.h
+if(WIN32)
+    set(XBE_ICON_DIR ${XBE_ROOT_DIR}/src/runtime/app/icon)
+    set(XBE_ICON_RES ${CMAKE_BINARY_DIR}/icon.res)
+    add_custom_command(OUTPUT ${XBE_ICON_RES}
+        COMMAND ${ZIG_HOST_DIR}/zig${HOST_EXE} rc /fo ${XBE_ICON_RES} -- ${XBE_ICON_DIR}/icon.rc
+        DEPENDS ${XBE_ICON_DIR}/icon.rc ${XBE_ICON_DIR}/icon.ico
+        WORKING_DIRECTORY ${XBE_ICON_DIR}
+        COMMENT "Compiling the icon"
+        VERBATIM)
+    add_custom_target(xbe_icon DEPENDS ${XBE_ICON_RES})
+    # xbe_link_icon(<target>): the icon linked into that executable
+    function(xbe_link_icon target)
+        add_dependencies(${target} xbe_icon)
+        target_link_options(${target} PRIVATE ${XBE_ICON_RES})
+        set_property(TARGET ${target} APPEND PROPERTY LINK_DEPENDS ${XBE_ICON_RES})
+    endfunction()
+endif()
+
 # Setup, the player-side build: finds the game, recompiles it and links it with a prebuilt host (add_xbe_player_kit),
 # from a window or the command line
 add_executable(setup ${XBE_ROOT_DIR}/src/setup/main.cpp
@@ -137,6 +158,7 @@ target_link_libraries(setup PRIVATE tomlplusplus::tomlplusplus miniz)
 if(WIN32)
     target_sources(setup PRIVATE ${XBE_ROOT_DIR}/src/setup/gui.cpp)
     target_link_libraries(setup PRIVATE fltk)
+    xbe_link_icon(setup)
 else()
     # setup_gui_module(<x11|wayland> <FLTK options>...): FLTK built for that backend alone (PIC, static), and gui.cpp
     # linked with it into setup-gui-<backend>.so, which exports setup_gui_run alone (gui.map) and must resolve against
@@ -388,6 +410,7 @@ function(add_xbe_image target xbe config partitions game_dir)
     target_link_options(${target} PRIVATE -fuse-ld=lld -g)
     if(WIN32)
         target_link_options(${target} PRIVATE -municode -Wl,--subsystem,windows)  # the host's entry is wWinMain; Zig ignores -mwindows, which WIN32 adds
+        xbe_link_icon(${target})
         if(XBE_PDB)
             target_compile_options(${target}_host PRIVATE -g -gcodeview)
             target_compile_options(${target}_host_debug PRIVATE -g -gcodeview)
@@ -453,6 +476,7 @@ function(add_xbe_player_kit target title)
         set(sdl_libs m kernel32 user32 gdi32 winmm imm32 ole32 oleaut32 version uuid advapi32 setupapi shell32 dinput8)
         separate_arguments(ldflags NATIVE_COMMAND "${XBE_KIT_CXX_FLAGS}")
         list(APPEND ldflags -Wl,--subsystem,windows -municode -fuse-ld=lld)  # Zig ignores -mwindows
+        list(APPEND libs ${lib}/icon.res)  # the exe's icon
         set(cxx zig)
         set(driver c++)
     else()
@@ -499,7 +523,8 @@ function(add_xbe_player_kit target title)
 
     set(extra)
     if(os STREQUAL "windows")
-        set(extra COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:setup> ${pkg}/)
+        set(extra COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:setup> ${pkg}/
+            COMMAND ${CMAKE_COMMAND} -E copy ${XBE_ICON_RES} ${kit}/${lib}/)
     endif()
     set(glslang_libs)
     foreach(l ${XBE_GLSLANG_LIBS})
@@ -527,7 +552,7 @@ function(add_xbe_player_kit target title)
         ${extra}
         COMMAND ${CMAKE_COMMAND} -E copy ${XBE_ROOT_DIR}/THIRD_PARTY.txt ${pkg}/
         DEPENDS ${target}_host ${target}_host_debug setup xbe_recomp SDL3::SDL3-static ${XBE_GLSLANG_LIBS} ${sha1_file}
-            $<TARGET_NAME_IF_EXISTS:xbe_dlss>
+            $<TARGET_NAME_IF_EXISTS:xbe_dlss> $<TARGET_NAME_IF_EXISTS:xbe_icon>
         COMMENT "Staging the ${os} player kit for ${target} in ${pkg}"
         VERBATIM)
 endfunction()

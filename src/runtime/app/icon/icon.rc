@@ -1,0 +1,4 @@
+// the executables' icon (tools/icon.py makes icon.ico from tools/icon.svg): Game.exe through the player kit's link line
+// (add_xbe_image, add_xbe_player_kit), setup-windows.exe through its own. ID 1, the one the splash's window class loads
+// (app/splash.cpp); SDL's window class takes the first icon there is
+1 ICON "icon.ico"

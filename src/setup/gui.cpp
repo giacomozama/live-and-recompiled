@@ -9,6 +9,7 @@
 #include <FL/Fl_Input.H>
 #include <FL/Fl_Native_File_Chooser.H>
 #include <FL/Fl_Progress.H>
+#include <FL/Fl_RGB_Image.H>
 #include <FL/Fl_Scrollbar.H>
 #include <FL/Fl_Text_Buffer.H>
 #include <FL/Fl_Text_Display.H>
@@ -27,6 +28,7 @@
 #include <unistd.h>
 #endif
 
+#include "app/icon.h"
 #include "setup.h"
 #include "version.h"
 
@@ -432,6 +434,21 @@ int RunWindow(const Options& defaults) {
     u.win = new Fl_Double_Window(W, H, kTitle);
     u.win->color(kBackground);
     u.win->callback(OnClose);
+    // the exe's own icon on Windows (app/icon/icon.rc), at the system's two sizes; the embedded picture elsewhere
+#ifdef _WIN32
+    HINSTANCE inst = GetModuleHandleW(nullptr);
+    auto load = [&](int metric_x, int metric_y) {
+        return (HICON)LoadImageW(inst, MAKEINTRESOURCEW(1), IMAGE_ICON, GetSystemMetrics(metric_x),
+            GetSystemMetrics(metric_y), LR_DEFAULTCOLOR);
+    };
+    HICON big = load(SM_CXICON, SM_CYICON), small = load(SM_CXSMICON, SM_CYSMICON);
+    if (big || small) u.win->icons(big, small);  // copied
+    if (big) DestroyIcon(big);
+    if (small) DestroyIcon(small);
+#else
+    Fl_RGB_Image icon(app::kIcon, app::kIconSize, app::kIconSize, 4);
+    u.win->icon(&icon);  // copied
+#endif
     int y = M;
     auto* title = new Fl_Box(M - 3, y, W - 2 * M, 34, nullptr);
     title->label(kTitle);

@@ -40,6 +40,7 @@
 #include <backends/imgui_impl_sdl3.h>
 
 #include "app/app.h"
+#include "app/icon.h"
 #include "core/diag.h"
 #include "core/input.h"
 #include "core/log.h"
@@ -962,6 +963,14 @@ int Run(int argc, char** argv) {
         app::Alert(L"The game window could not open, see the log: " + std::filesystem::path(logx::Path()).wstring());
         return 1;
     }
+#ifndef _WIN32
+    // Windows' window class has the exe's icon (app/icon/icon.rc); elsewhere the window gets it here
+    if (SDL_Surface* icon = SDL_CreateSurfaceFrom(app::kIconSize, app::kIconSize, SDL_PIXELFORMAT_RGBA32,
+            const_cast<uint8_t*>(app::kIcon), app::kIconSize * 4)) {
+        SDL_SetWindowIcon(app::g_window, icon);
+        SDL_DestroySurface(icon);
+    }
+#endif
     app::TagGameContent();
     app::StoreDesktop();
     app::ApplyNow();
