@@ -28,6 +28,7 @@ void Init() {
     fur::Init();
     water::Init();
     grass::Init();
+    grass::Update();  // the fogged grass entry as the settings have it from the start (gpu::shader_gen::Stamp reads it)
     lighting::Init();
     reflection::Init();
 }

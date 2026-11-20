@@ -33,7 +33,8 @@ struct Context {
 // with Stamp's layout; the process exit code, 0 when written
 int Run(const std::filesystem::path& out, const Context& ctx);
 
-// what the records were made for: RecordLayout, ctx and the settings MakePixelKey reads (the fog)
+// what the records were made for: RecordLayout, ctx, the settings MakePixelKey reads (the fog) and which shading
+// entries are on (the game's own settings)
 uint64_t Stamp(const Context& ctx);
 
 // The records for ctx, kept in app::CacheDir as disc_shaders.rec: true with them when the file there is for this

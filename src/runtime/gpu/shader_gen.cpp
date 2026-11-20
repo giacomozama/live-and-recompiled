@@ -386,7 +386,13 @@ constexpr const char* kFileName = "disc_shaders.rec";
 
 uint64_t Stamp(const Context& ctx) {
     const uint32_t v[] = {kGenRevision, ctx.rtfmt, ctx.samples, ctx.tess, ctx.vrs, uint32_t(app::Get().fog)};
-    return Hash(v, sizeof(v), RecordLayout());
+    uint64_t h = Hash(v, sizeof(v), RecordLayout());
+    // which shading entries are on (DrawShading picks the first that is, so the keys follow) and whether
+    // g_surface_depth takes draws: the game's own settings (super fur, per-pixel lighting, dynamic water, ...)
+    std::vector<uint8_t> on;
+    for (const ProgramShading& e : g_program_shading) on.push_back(!e.on || *e.on);
+    on.push_back(g_surface_depth.takes && (!g_surface_depth.on || *g_surface_depth.on));
+    return Hash(on.data(), on.size(), h);
 }
 
 bool Load(const Context& ctx, bool make, const std::atomic<bool>& stop, std::vector<sr::Entry>& out) {
