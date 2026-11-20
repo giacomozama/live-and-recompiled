@@ -288,7 +288,9 @@ struct MotionPipelineEntry {
     uint32_t viewports;
 };
 // the record layouts shaders.rec was written with; bump kRecordRevision when what a record makes changes meaning
-constexpr uint64_t kRecordRevision = 1;
+// 2: a draw keys no stage its pixel shader doesn't read (DrawTextures::kept, MakePixelKey); pipelines are kept by
+// PipelineKey
+constexpr uint64_t kRecordRevision = 2;
 constexpr uint64_t kRecordLayout = kRecordRevision << 48 | uint64_t(sizeof(PixelKey)) << 32 |
                                    uint64_t(sizeof(PipelineEntry)) << 16 | sizeof(shader_record::VertexEntry);
 // kRecordLayout mixed with the game's g_program_shading entries: records name an entry by its place in the list, so
@@ -333,7 +335,11 @@ uint64_t SourceHash(const std::string& src, const char* entry, const char* profi
 constexpr uint32_t kFillWireframe = 0x1B01;  // D3DFILL_WIREFRAME
 constexpr uint32_t kCullCw = 0x900;          // D3DCULL_CW
 
-// the pipeline as shaders.rec keeps it
+// the key a pipeline is made and kept by: k without what each draw sets on the Vulkan renderer's pipelines as
+// dynamic state (culling and winding, the depth test, write and compare, the stencil test, ops and masks), which the
+// title's code and its patches to the static push buffers change from one object to the next
+PsoKey PipelineKey(const PsoKey& k);
+// the pipeline as shaders.rec keeps it, its key PipelineKey's
 PipelineEntry MakePipelineEntry(const PsoKey& k, const ShaderChoice& sh);
 
 // a pool thread making shaders ahead, below the title's threads
@@ -394,6 +400,9 @@ uint32_t DrawShading(const State& s, const ShaderChoice& sh);
 // the stages the pixel shader reads: a combiner's by their texture modes (as MakePixelKey takes them), the fixed
 // function's up to the first disabled one
 uint32_t SampledStages(const State& s);
+// the stages g_program_shading's entry (1 based) may read whatever the combiner does: those its HLSL names (texN,
+// smpN, texsize[N]); 0 for none. With SampledStages, the stages a draw keys and binds (DrawTextures::kept)
+uint32_t ShadingStages(uint32_t shading);
 
 constexpr uint64_t kPixelKeySalt = 0x9E3779B97F4A7C15ull;
 

@@ -631,6 +631,10 @@ struct DrawTextures {
     uint32_t levels[4] = {1, 1, 1, 1};
     bool rt[4] = {};            // stage samples a render target
     uint32_t sampled = 0xF;     // bit per stage the pixel shader reads: the others are bound nothing
+    // stages kept though the combiner doesn't read them: those the draw's shading names (ShadingStages); the other
+    // stages it doesn't read keep no TexInfo and no texture, so the texture the title left bound there from an
+    // earlier draw makes no pixel shader of its own (and no upload). All four outside Draw's paths
+    uint32_t kept = 0xF;
     float k[4] = {1, 1, 1, 1};  // texels per render scale texel
     float wide[4] = {};         // host texels per console texel of a target read into a smaller one, 0 otherwise
     bool exact[4] = {};         // stage samples a target where it lies, without the half texel back
@@ -1166,6 +1170,9 @@ private:
     void SetViewportScissor(const State& s, GuestExtent size);
     void ViewportScissorFor(const State& s, GuestExtent size, VkViewport& vp, VkRect2D& r) const;
     void SetBlendFactorStencilRef(const State& s);
+    // a draw pipeline's dynamic state (CreateDrawPipeline) from the draw's whole key: its culling and winding, depth
+    // test, write and compare, stencil test, ops and masks, set where they differ from what is set
+    void SetDynamic(const PsoKey& k);
     void DrawGeometry(const Assembled& a);
     // a run of fast draws (FastDraw) in one state, drawn as one: whether a draw's geometry can join it, its joining,
     // and the run drawn (anything else that records ends it first)
@@ -1409,6 +1416,11 @@ private:
         float bf[4] = {};
         uint32_t sref = 0;
         int topo = -1;
+        struct Dynamic {
+            uint32_t cull = 0, front = 0, zen = 0, zwrite = 0, zfunc = 0, sten = 0;
+            uint32_t fail = 0, pass = 0, zfail = 0, sfunc = 0, smask = 0, swmask = 0;
+        } dyn;
+        bool dyn_set = false;  // dyn is what the command buffer has, since the last pipeline without it
     };
     DrawCmd drawn_;
     // the lookups the draws before made, which a run of draws in one state repeats thousands of times a frame; the
@@ -1454,6 +1466,7 @@ private:
         bool strip = false, pretransformed = false;
         std::array<VertexElement, 16> elements{};
         bool plain = false;  // no shading program: its registers feed the vertex shader alone (KeptConstants)
+        PsoKey k{};          // its whole key: the dynamic state it drew with (SetDynamic)
     };
     KeptDraw kept_;
     bool same_state_ = false;  // Changed: nothing the kept draw drew with has changed since
@@ -1696,6 +1709,7 @@ private:
         // pass of its own, zpso): drawn again whole, kept_ left unkept
         bool whole = false;
         VkPipeline zpso = VK_NULL_HANDLE;
+        PsoKey zk{};  // zpso's whole key (SetDynamic)
     };
     std::vector<KeptOne> kept_draws_;
     void FillKept(KeptDraw& k, const Assembled& a, const DrawShaders& sh, const DrawTextures& stages, VkPipeline pso,
@@ -2325,13 +2339,21 @@ bool VulkanBackend::CreateDevice() {
         vkCmdEndRendering = vkCmdEndRenderingKHR;
         vkCmdSetPrimitiveTopology = vkCmdSetPrimitiveTopologyEXT;
         vkCmdBindVertexBuffers2 = vkCmdBindVertexBuffers2EXT;
+        vkCmdSetCullMode = vkCmdSetCullModeEXT;
+        vkCmdSetFrontFace = vkCmdSetFrontFaceEXT;
+        vkCmdSetDepthTestEnable = vkCmdSetDepthTestEnableEXT;
+        vkCmdSetDepthWriteEnable = vkCmdSetDepthWriteEnableEXT;
+        vkCmdSetDepthCompareOp = vkCmdSetDepthCompareOpEXT;
+        vkCmdSetStencilTestEnable = vkCmdSetStencilTestEnableEXT;
+        vkCmdSetStencilOp = vkCmdSetStencilOpEXT;
         if (dev_api_ < VK_API_VERSION_1_2) {
             vkWaitSemaphores = vkWaitSemaphoresKHR;
             vkSignalSemaphore = vkSignalSemaphoreKHR;
             vkGetSemaphoreCounterValue = vkGetSemaphoreCounterValueKHR;
             vkResetQueryPool = vkResetQueryPoolEXT;
         }
-        if (!vkCmdBeginRendering || !vkCmdSetPrimitiveTopology || !vkWaitSemaphores || !vkResetQueryPool) {
+        if (!vkCmdBeginRendering || !vkCmdSetPrimitiveTopology || !vkCmdSetCullMode || !vkCmdSetStencilOp ||
+            !vkWaitSemaphores || !vkResetQueryPool) {
             LOGE("vulkan: the device's extension functions are missing");
             return false;
         }
@@ -3545,8 +3567,9 @@ VkPipeline VulkanBackend::CreateDrawPipeline(const PsoKey& k, const Spirv& vs, c
     bool points = k.topo == uint32_t(Topology::Points);
     VkPipelineRasterizationStateCreateInfo rs{VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
     rs.polygonMode = k.fill == kFillWireframe && non_solid_ && !points ? VK_POLYGON_MODE_LINE : VK_POLYGON_MODE_FILL;
-    rs.cullMode = k.cull && !points ? VK_CULL_MODE_BACK_BIT : VK_CULL_MODE_NONE;
-    rs.frontFace = k.ccw && !points ? VK_FRONT_FACE_COUNTER_CLOCKWISE : VK_FRONT_FACE_CLOCKWISE;
+    // culling, winding, depth and stencil are dynamic (SetDynamic): the pipeline is the same for every object
+    rs.cullMode = VK_CULL_MODE_NONE;
+    rs.frontFace = VK_FRONT_FACE_CLOCKWISE;
     rs.depthBiasEnable = k.zbias || k.zslope ? VK_TRUE : VK_FALSE;
     rs.depthBiasConstantFactor = float(k.zbias);
     rs.depthBiasSlopeFactor = k.zslope;
@@ -3554,12 +3577,6 @@ VkPipeline VulkanBackend::CreateDrawPipeline(const PsoKey& k, const Spirv& vs, c
     VkPipelineMultisampleStateCreateInfo ms{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
     ms.rasterizationSamples = VkSampleCountFlagBits(std::max(k.samples, 1u));
     VkPipelineDepthStencilStateCreateInfo ds{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
-    ds.depthTestEnable = k.zen;
-    ds.depthWriteEnable = k.zwrite;
-    ds.depthCompareOp = Cmp(k.zfunc);
-    ds.stencilTestEnable = k.sten;
-    ds.front = {StencilOp(k.sfail), StencilOp(k.spass), StencilOp(k.szfail), Cmp(k.sfunc), k.smask, k.swmask, 0};
-    ds.back = ds.front;
     VkPipelineColorBlendAttachmentState ba{};
     ba.blendEnable = k.blend;
     ba.srcColorBlendFactor = Blend(k.src, false);
@@ -3583,9 +3600,14 @@ VkPipeline VulkanBackend::CreateDrawPipeline(const PsoKey& k, const Spirv& vs, c
     cb.attachmentCount = k.has_rt ? 1 : 0;
     cb.pAttachments = &ba;
     // the strides only with buffers to bind: a draw without vertex inputs binds none to set them
-    VkDynamicState dyn[] = {VK_DYNAMIC_STATE_VIEWPORT,          VK_DYNAMIC_STATE_SCISSOR,
-                            VK_DYNAMIC_STATE_BLEND_CONSTANTS,   VK_DYNAMIC_STATE_STENCIL_REFERENCE,
-                            VK_DYNAMIC_STATE_PRIMITIVE_TOPOLOGY, VK_DYNAMIC_STATE_VERTEX_INPUT_BINDING_STRIDE};
+    VkDynamicState dyn[] = {VK_DYNAMIC_STATE_VIEWPORT,           VK_DYNAMIC_STATE_SCISSOR,
+                            VK_DYNAMIC_STATE_BLEND_CONSTANTS,    VK_DYNAMIC_STATE_STENCIL_REFERENCE,
+                            VK_DYNAMIC_STATE_PRIMITIVE_TOPOLOGY, VK_DYNAMIC_STATE_CULL_MODE,
+                            VK_DYNAMIC_STATE_FRONT_FACE,         VK_DYNAMIC_STATE_DEPTH_TEST_ENABLE,
+                            VK_DYNAMIC_STATE_DEPTH_WRITE_ENABLE, VK_DYNAMIC_STATE_DEPTH_COMPARE_OP,
+                            VK_DYNAMIC_STATE_STENCIL_TEST_ENABLE, VK_DYNAMIC_STATE_STENCIL_OP,
+                            VK_DYNAMIC_STATE_STENCIL_COMPARE_MASK, VK_DYNAMIC_STATE_STENCIL_WRITE_MASK,
+                            VK_DYNAMIC_STATE_VERTEX_INPUT_BINDING_STRIDE};
     VkPipelineDynamicStateCreateInfo dy{VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
     dy.dynamicStateCount = uint32_t(std::size(dyn)) - (nb ? 0 : 1);
     dy.pDynamicStates = dyn;
@@ -3634,7 +3656,8 @@ app::Scale VulkanBackend::PointScale() const {
     return {float(t->w) / float(t->gw), float(t->h) / float(t->gh)};
 }
 
-VkPipeline VulkanBackend::EnsurePipeline(const PsoKey& k, const DrawShaders& sh) {
+VkPipeline VulkanBackend::EnsurePipeline(const PsoKey& full, const DrawShaders& sh) {
+    const PsoKey k = PipelineKey(full);
     if (last_pso_ok_ && std::memcmp(&k, &last_pso_key_, sizeof(k)) == 0) return last_pso_;
     last_pso_ = FindPipeline(k, sh);
     last_pso_key_ = k;
@@ -3642,6 +3665,7 @@ VkPipeline VulkanBackend::EnsurePipeline(const PsoKey& k, const DrawShaders& sh)
     return last_pso_;
 }
 
+// k: PipelineKey's
 VkPipeline VulkanBackend::FindPipeline(const PsoKey& k, const DrawShaders& sh) {
     uint64_t h = Hash(&k, sizeof(k));
     auto it = psos_.find(h);
@@ -4216,6 +4240,7 @@ Image* VulkanBackend::BindTexture(const State& s, int stage, DrawTextures& stage
     stages.wide[stage] = 0;
     stages.exact[stage] = false;
     stages.smooth[stage] = false;
+    if (!(((stages.sampled | stages.kept) >> stage) & 1)) return nullptr;
     TextureDesc d;
     if (!s.textures[size_t(stage)] || !Describe(s.textures[size_t(stage)], d)) return nullptr;
     const FormatInfo& fi = Format(d.format);
@@ -4651,6 +4676,37 @@ void VulkanBackend::SetViewportScissor(const State& s, GuestExtent size) {
     drawn_.view = true;
 }
 
+void VulkanBackend::SetDynamic(const PsoKey& k) {
+    const bool points = k.topo == uint32_t(Topology::Points);  // drawn whole by the geometry shader, never culled
+    DrawCmd::Dynamic d;
+    d.cull = k.cull && !points ? VK_CULL_MODE_BACK_BIT : VK_CULL_MODE_NONE;
+    d.front = k.ccw && !points ? VK_FRONT_FACE_COUNTER_CLOCKWISE : VK_FRONT_FACE_CLOCKWISE;
+    d.zen = k.zen;
+    d.zwrite = k.zwrite;
+    d.zfunc = Cmp(k.zfunc);
+    d.sten = k.sten;
+    d.fail = StencilOp(k.sfail);
+    d.pass = StencilOp(k.spass);
+    d.zfail = StencilOp(k.szfail);
+    d.sfunc = Cmp(k.sfunc);
+    d.smask = k.smask;
+    d.swmask = k.swmask;
+    if (drawn_.dyn_set && std::memcmp(&d, &drawn_.dyn, sizeof(d)) == 0) return;
+    FlushRun();  // the run so far was batched under what is set now
+    vkCmdSetCullMode(cmd_, VkCullModeFlags(d.cull));
+    vkCmdSetFrontFace(cmd_, VkFrontFace(d.front));
+    vkCmdSetDepthTestEnable(cmd_, d.zen);
+    vkCmdSetDepthWriteEnable(cmd_, d.zwrite);
+    vkCmdSetDepthCompareOp(cmd_, VkCompareOp(d.zfunc));
+    vkCmdSetStencilTestEnable(cmd_, d.sten);
+    vkCmdSetStencilOp(cmd_, VK_STENCIL_FACE_FRONT_AND_BACK, VkStencilOp(d.fail), VkStencilOp(d.pass),
+                      VkStencilOp(d.zfail), VkCompareOp(d.sfunc));
+    vkCmdSetStencilCompareMask(cmd_, VK_STENCIL_FACE_FRONT_AND_BACK, d.smask);
+    vkCmdSetStencilWriteMask(cmd_, VK_STENCIL_FACE_FRONT_AND_BACK, d.swmask);
+    drawn_.dyn = d;
+    drawn_.dyn_set = true;
+}
+
 void VulkanBackend::SetBlendFactorStencilRef(const State& s) {
     float bf[4];
     Color(SimpleState(s, kMBlendColor), bf);
@@ -4854,6 +4910,7 @@ bool VulkanBackend::ReuseRun(const State& s) {
         vkCmdBindPipeline(cmd_, VK_PIPELINE_BIND_POINT_GRAPHICS, kept_.pso);
         drawn_.pso = kept_.pso;
     }
+    SetDynamic(kept_.k);
     Bindings b = kept_.b;
     std::copy(r.view, r.view + kBindViews, b.view);
     std::copy(r.smp, r.smp + kBindViews, b.smp);
@@ -4925,6 +4982,7 @@ bool VulkanBackend::ReuseDraw(const State& s) {
         return false;
     }
     DrawTextures stages{};  // zeroed, compared whole
+    stages.kept = ShadingStages(r.sh.shading);
     const bool screen = r.sh.shading && g_program_shading[r.sh.shading - 1].screen;
     if (!BindStageTexturesAndTargets(s, stages, screen)) {
         g_perf.redraw_refused++;
@@ -4956,6 +5014,7 @@ bool VulkanBackend::ReuseDraw(const State& s) {
         vkCmdBindPipeline(cmd_, VK_PIPELINE_BIND_POINT_GRAPHICS, r.kept.pso);
         drawn_.pso = r.kept.pso;
     }
+    SetDynamic(r.k);
     for (int i = 0; i < 4; i++) {
         b.view[i] = views->view[i];
         b.smp[i] = views->smp[i];
@@ -4980,6 +5039,7 @@ bool VulkanBackend::ReuseDraw(const State& s) {
         if (r.zpso) {
             vkCmdBindPipeline(cmd_, VK_PIPELINE_BIND_POINT_GRAPHICS, r.zpso);
             drawn_.pso = r.zpso;
+            SetDynamic(r.zk);
             IssueKeptGeometry(r.g);
         }
         kept_.ok = false;
@@ -5593,6 +5653,7 @@ void VulkanBackend::DrawMotion(const State& s, const Before& before, uint32_t pr
     } else {
         draw_rt_ = draw_ds_ = nullptr;
         stages.sampled = SampledStages(s);
+        stages.kept = ShadingStages(sh.shading);
         for (int i = 0; i < 4; i++) stages.res[i] = BindTexture(s, i, stages);
     }
     step(2);
@@ -5636,10 +5697,11 @@ void VulkanBackend::DrawMotion(const State& s, const Before& before, uint32_t pr
     }
     k.zwrite = 0;
     k.sten = k.sfunc = k.smask = k.swmask = k.sfail = k.szfail = k.spass = 0;
-    auto [pso, fresh] = motion_psos_.try_emplace(Hash(&k, sizeof(k)), VK_NULL_HANDLE);
+    const PsoKey pk_made = PipelineKey(k);  // k itself sets the dynamic state at the draw
+    auto [pso, fresh] = motion_psos_.try_emplace(Hash(&pk_made, sizeof(pk_made)), VK_NULL_HANDLE);
     if (fresh) {
         const uint32_t viewports = inst ? motion_all_places_ : 1;
-        const uint64_t h = Hash(&k, sizeof(k));
+        const uint64_t h = Hash(&pk_made, sizeof(pk_made));
         {
             std::lock_guard<std::mutex> lock(warm_.lock);
             auto w = warm_.psos.find(h);
@@ -5657,7 +5719,7 @@ void VulkanBackend::DrawMotion(const State& s, const Before& before, uint32_t pr
             const MotionVertexEntry mv = motion_vs(inst);
             me.vs_id = shader_record::Id(shader_record::kMotionVertex, &mv, sizeof(mv));
             me.ps_id = shader_record::Id(shader_record::kMotionPixel, &mp, sizeof(mp));
-            std::memcpy(&me.k, &k, sizeof(k));
+            std::memcpy(&me.k, &pk_made, sizeof(pk_made));
             me.viewports = viewports;
             record_.Add(shader_record::kMotionPipeline, &me, sizeof(me));
         }
@@ -5703,6 +5765,7 @@ void VulkanBackend::DrawMotion(const State& s, const Before& before, uint32_t pr
         vkCmdBindPipeline(cmd_, VK_PIPELINE_BIND_POINT_GRAPHICS, pso->second);
         drawn_.pso = pso->second;
     }
+    SetDynamic(k);
     SetTextureViewsAndSamplers(s, a, stages, b, fr && FrameDrawSetup() ? &fr->kept.filled : nullptr);
     SetBlendFactorStencilRef(s);
     if (inst) {
@@ -5957,6 +6020,7 @@ void VulkanBackend::DrawMotionAt(uint32_t p, const State& s, const Before& befor
         vkCmdBindPipeline(cmd_, VK_PIPELINE_BIND_POINT_GRAPHICS, e.pso);
         drawn_.pso = e.pso;
     }
+    SetDynamic(e.k);
     if (!drawn_.bound || !SameBytes(b, drawn_.b)) {
         FlushRun();
         PushRaw(b);
@@ -6026,6 +6090,7 @@ void VulkanBackend::DrawMotionKept(const State& s, const Before& before, MotionK
         vkCmdBindPipeline(cmd_, VK_PIPELINE_BIND_POINT_GRAPHICS, e.pso);
         drawn_.pso = e.pso;
     }
+    SetDynamic(e.k);
     for (int i = 0; i < 4; i++) {
         b.view[i] = e.views.view[i];
         b.smp[i] = e.views.smp[i];
@@ -6745,6 +6810,7 @@ void VulkanBackend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t
 
     // stage textures, then the pixel shader made for them
     DrawTextures stages{};  // zeroed: KeptDraw compares it whole
+    stages.kept = ShadingStages(sh.shading);
     if (!BindStageTexturesAndTargets(s, stages, sh.shading && g_program_shading[sh.shading - 1].screen))
         return CountedSkip(s, "textures");
     // kTexFurGlow: only the glow gather's frame, stage 0 beside a depth buffer's bytes on stage 1
@@ -6910,6 +6976,7 @@ void VulkanBackend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t
         vkCmdBindPipeline(cmd_, VK_PIPELINE_BIND_POINT_GRAPHICS, pso);
         drawn_.pso = pso;
     }
+    SetDynamic(k);
     SetTextureViewsAndSamplers(s, a, stages, b);
     SetViewportScissor(s, size);
     SetBlendFactorStencilRef(s);
@@ -6947,6 +7014,7 @@ void VulkanBackend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t
     if (zpso) {
         vkCmdBindPipeline(cmd_, VK_PIPELINE_BIND_POINT_GRAPHICS, zpso);
         drawn_.pso = zpso;
+        SetDynamic(zk_kept);
         IssueGeometry(a);
     }
     // what a kept draw is drawn again with: a light frame's fur at its pictures' rate (shown_other)
@@ -6971,6 +7039,7 @@ void VulkanBackend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t
     };
     if ((!sh.shading || g_program_shading[sh.shading - 1].plain) && !zpso && &s != &sprite_ && !hud) {
         KeepDraw(a, sh, stages, pso, b, size);
+        kept_.k = k;
         kept_.surface = k.blend && k.zen && !k.zwrite;
         kept_.solid = !flat;
         kept_.jitter = jitter_;
@@ -6994,6 +7063,8 @@ void VulkanBackend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t
         VkPipeline kept_pso;
         shown(one.k, kept_pso, one.zpso);
         FillKept(one.kept, a, sh, stages, kept_pso, b, size);
+        one.kept.k = one.k;
+        one.zk = zk_kept;
         one.kept.jitter = jitter_;
         one.sh = sh;
         one.g = own_geom;
@@ -7111,6 +7182,7 @@ bool VulkanBackend::FastDraw(const State& s, uint32_t prim, uint32_t start, uint
         vkCmdBindPipeline(cmd_, VK_PIPELINE_BIND_POINT_GRAPHICS, kept_.pso);
         drawn_.pso = kept_.pso;
     }
+    SetDynamic(kept_.k);
     Bindings b = kept_.b;
     SetTextureViewsAndSamplers(s, a, stages, b, &kept_.filled);
     jitter_ = kept_.jitter;

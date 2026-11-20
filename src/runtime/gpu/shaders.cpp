@@ -781,7 +781,7 @@ PixelKey MakePixelKey(const State& s, const TexInfo tex[4]) {
             if (app::Get().fog == app::Fog::TintOnly && k.final_abcd != fogged) k.fog_tint = ((fogged >> 16) & 0xF) == 3 ? 2 : 1;
         }
         // the stage modes follow the bound textures, as D3D's lazy shader stage setup does
-        uint32_t modes = s.rs[kRsPsTextureModes];
+        uint32_t modes = s.rs[kRsPsTextureModes], fetched = 0;
         for (int i = 0; i < 4; i++) {
             uint32_t m = (modes >> (i * 5)) & 0x1F;
             const TexInfo& t = tex[i];
@@ -789,7 +789,9 @@ PixelKey MakePixelKey(const State& s, const TexInfo tex[4]) {
             else if (m >= 1 && m <= 3) m = t.kind == kTexCube ? 3 : (t.kind == kTex3D || t.shadow) ? 2 : 1;
             else if (m == 0xD || m == 0xE) m = t.kind == kTexCube ? 0xE : 0xD;
             k.tex_modes |= m << (i * 5);
+            if (m && m != 4 && m != 5 && m != 0xA && m != 0x11) fetched |= 1u << i;
         }
+        k.alphakill &= fetched;  // PixelHlsl's discard is a fetching stage's: another's bit would only split the key
         k.dot_mapping = m(kMPsDotMapping);
         k.input_texture = m(kMPsInputTexture);
         k.compare_mode = m(kMPsCompareMode);
@@ -799,14 +801,22 @@ PixelKey MakePixelKey(const State& s, const TexInfo tex[4]) {
     k.fog_tint = app::Get().fog == app::Fog::TintOnly;
     // the console's stages divide by q; a vertex program's q is its own
     bool program = (s.vs_handle & 1) && s.vs && !s.vs->program.empty();
+    // PixelHlsl stops at the first disabled stage: its op alone is kept, its arguments, alpha kill and projection
+    // (what the title left there) would only split the key
+    uint32_t used = 0;
     for (int i = 0; i < 4; i++) {
         const auto& t = s.tss[size_t(i)];
+        if (t[kTssColorOp] <= 1) {
+            k.ff[i][0] = t[kTssColorOp];
+            break;
+        }
         uint32_t v[9] = {t[kTssColorOp], t[kTssColorArg1], t[kTssColorArg2], t[kTssColorArg0], t[kTssAlphaOp],
                          t[kTssAlphaArg1],  t[kTssAlphaArg2], t[kTssAlphaArg0], t[kTssResultArg]};
         std::memcpy(k.ff[i], v, sizeof(v));
         if (program || (t[kTssTextureTransformFlags] & 0x100)) k.proj |= 1u << i;  // D3DTTFF_PROJECTED
-        if (t[kTssColorOp] <= 1) break;
+        used |= 1u << i;
     }
+    k.alphakill &= used;
     return k;
 }
 

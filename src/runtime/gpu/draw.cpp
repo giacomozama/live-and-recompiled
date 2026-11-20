@@ -21,6 +21,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <cctype>
+#include <mutex>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -83,12 +85,22 @@ uint64_t SourceHash(const std::string& src, const char* entry, const char* profi
     return Hash(src.data(), src.size(), entry_seed);
 }
 
+PsoKey PipelineKey(const PsoKey& k) {
+    PsoKey p;
+    std::memcpy(&p, &k, sizeof(p));  // padding included: the bytes are hashed
+    p.cull = p.ccw = 0;
+    p.zen = p.zwrite = p.zfunc = 0;
+    p.sten = p.sfunc = p.smask = p.swmask = p.sfail = p.szfail = p.spass = 0;
+    return p;
+}
+
 PipelineEntry MakePipelineEntry(const PsoKey& k, const ShaderChoice& sh) {
     PipelineEntry e;
     std::memset(&e, 0, sizeof(e));  // padding included: the bytes are hashed and stored
     e.vs_id = sh.vid;
     e.ps_id = sh.pid;
-    std::memcpy(&e.k, &k, sizeof(k));
+    const PsoKey p = PipelineKey(k);
+    std::memcpy(&e.k, &p, sizeof(p));
     e.k.vs = e.k.ps = 0;
     return e;
 }
@@ -605,6 +617,36 @@ uint32_t SampledStages(const State& s) {
         return mask;
     }
     for (int i = 0; i < 4 && s.tss[size_t(i)][kTssColorOp] > 1; i++) mask |= 1u << i;  // D3DTOP_DISABLE
+    return mask;
+}
+
+uint32_t ShadingStages(uint32_t shading) {
+    if (!shading || shading > g_program_shading.size()) return 0;
+    static std::vector<int> made;  // by entry, -1 not worked out yet; the list is filled before the title boots
+    static std::mutex lock;
+    std::lock_guard<std::mutex> g(lock);
+    if (made.size() != g_program_shading.size()) made.assign(g_program_shading.size(), -1);
+    int& m = made[shading - 1];
+    if (m >= 0) return uint32_t(m);
+    const ProgramShading& e = g_program_shading[shading - 1];
+    uint32_t mask = 0;
+    auto scan = [&mask](const char* text) {
+        if (!text) return;
+        const std::string t = text;
+        for (int i = 0; i < 4; i++) {
+            for (const std::string& name : {"tex" + std::to_string(i), "smp" + std::to_string(i)})
+                for (size_t p = t.find(name); p != std::string::npos; p = t.find(name, p + 1)) {
+                    const bool before = p > 0 && (std::isalnum(uint8_t(t[p - 1])) || t[p - 1] == '_');
+                    const size_t q = p + name.size();
+                    const bool after = q < t.size() && (std::isalnum(uint8_t(t[q])) || t[q] == '_');
+                    if (!before && !after) mask |= 1u << i;
+                }
+            if (t.find("texsize[" + std::to_string(i) + "]") != std::string::npos) mask |= 1u << i;
+        }
+    };
+    for (const char* text : {e.vs, e.ps, e.tess, e.functions, e.pre, e.coords, e.also[0], e.also[1], e.also[2]})
+        scan(text);
+    m = int(mask);
     return mask;
 }
 
