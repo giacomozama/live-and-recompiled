@@ -1817,7 +1817,7 @@ void menus::Pad(int port, input::Pad& pad) {
 // [table] its header (+4 the count), [table+4] its entries (6 bytes: the id, then the text's offset in characters)
 // and [table+8] the text; [table+0xC] set keeps them elsewhere. The first picture's label is LIVE ("Xbox Live") over
 // LIVE2 ("& Co"): the first time the frontend's table is seen, by a key ending _POSITION_X, their entries are pointed
-// at "Multiplayer" and a space (an empty string reads as missing).
+// at "Multi" and a space (an empty string reads as missing).
 namespace {
 // a UTF-16 string in guest memory, up to 64 characters, non-ASCII as '?'
 std::string Narrow(uint32_t va) {
@@ -1845,7 +1845,7 @@ void Relabel(uint32_t table) {
     if (table == done || R32(table + 0xC)) return;
     done = table;
     static const char* multiplayer_text =
-        InLanguage("Multiplayer", "Mehrspieler", "Multijoueur", "Multijugador", "Multigiocatore");
+        InLanguage("Multi", "Multi", "Multi", "Multi", "Multi");
     static const uint32_t multiplayer = multiplayer_text ? GuestText(multiplayer_text) : 0, blank = GuestText(" ");
     const uint32_t count = R32(R32(table) + 4), entries = R32(table + 4), text = R32(table + 8);
     for (uint32_t i = 0; i < count; i++) {
