@@ -138,6 +138,15 @@ void InitKernelData() {
     W32(queue + 4, queue);
     G<uint8_t>(DataAddress(89)) = 1;
     W32(DataAddress(157), 10000);  // 1 ms in 100 ns units
+    // XBE_CLOCK_START=seconds: the console's clocks (ClockNs and all from it: tick count, interrupt time, performance
+    // counter, time stamp counter) start that far on, to reach a wrap hours into a session in minutes
+    if (const char* e = diag::Env("XBE_CLOCK_START")) {
+        double s = std::strtod(e, nullptr);
+        if (s > 0) {
+            g_clock_offset.store(-int64_t(s * 1e9));
+            LOGR("kernel: console clocks start at %.0f s (XBE_CLOCK_START)", s);
+        }
+    }
     // the start of the clock
     std::thread([] {
         for (;;) {

@@ -13,6 +13,9 @@
 #include <unordered_set>
 #include <utility>
 #include <vector>
+#if defined(__GLIBC__)
+#include <malloc.h>
+#endif
 
 #include "app/app.h"
 #include "core/diag.h"
@@ -1199,9 +1202,17 @@ HLE_STDCALL(D3DDevice_Swap, 1) {
         auto now = clock::now();
         double ms = std::chrono::duration<double, std::milli>(now - last).count();
         last = now;
-        if (ms > 250 && g_presents > 2) LOGR("d3d: frame %u took %.0f ms", g_presents.load(), ms);
+        if (ms > 250 && g_presents > 2) {
+            LOGR("d3d: frame %u took %.0f ms", g_presents.load(), ms);
+#if defined(__GLIBC__)
+            // a load frees much (the render thread's batches past their pool's room, the level's host copies) that
+            // glibc keeps in its arenas: given back to the system here, where a few ms go unseen, else the process
+            // grew by what each load left there (~1 MB a load with loading screens, 2026-11-21)
+            malloc_trim(0);
+#endif
+        }
         if (loadtrace::On()) loadtrace::Frame(g_presents, ms);
-        if (loadtrace::MemOn() && loadtrace::MemFrame(g_presents, ms)) gpu::g_mem_report = true;
+        if (loadtrace::MemOn() && loadtrace::MemFrame(g_presents, ms) && g_backend) g_backend->MemoryReport();
     }
     if (diag::Perf()) {
         // the labelled draws (SetDrawTag's label: Conker's effect types) a frame, the most first

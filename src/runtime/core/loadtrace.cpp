@@ -5,6 +5,7 @@
 #include <psapi.h>
 #else
 #include <dirent.h>
+#include <malloc.h>
 #include <time.h>
 #endif
 
@@ -97,6 +98,9 @@ namespace {
 struct Process {
     double resident = 0, anon = 0;
     long threads = 0, files = 0;
+    // glibc's heap: what is allocated (arenas and the large blocks mapped alone), and freed but kept in the arenas;
+    // -1 elsewhere
+    double heap_used = -1, heap_mapped = -1, heap_kept = -1;
 };
 
 Process ReadProcess() {
@@ -126,6 +130,16 @@ Process ReadProcess() {
             if (e->d_name[0] != '.') p.files++;
         closedir(d);
     }
+#if defined(__GLIBC__)
+    // mallinfo's fields are int, good below 2 GB; mallinfo2 is newer than the glibc the build targets
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+    struct mallinfo mi = mallinfo();
+#pragma clang diagnostic pop
+    p.heap_used = double(unsigned(mi.uordblks)) / 1048576.0;
+    p.heap_mapped = double(unsigned(mi.hblkhd)) / 1048576.0;
+    p.heap_kept = double(unsigned(mi.fordblks)) / 1048576.0;
+#endif
 #endif
     return p;
 }
@@ -161,6 +175,9 @@ bool MemFrame(uint32_t frame, double ms) {
     LOGR("mem: load %u %s (frame %u): process resident %.0f MB, anonymous %.0f MB (Windows: committed private), "
          "threads %ld, files %ld (Windows: handles)",
          loads, when, frame, p.resident, p.anon, p.threads, p.files);
+    if (p.heap_used >= 0)
+        LOGR("mem:  heap allocated %.1f MB in arenas, %.1f MB mapped alone; freed but kept %.1f MB", p.heap_used,
+             p.heap_mapped, p.heap_kept);
     LOGR("mem:  console contiguous %.1f MB, system %.1f MB, virtual committed %.1f MB, free %.1f MB; kernel handles "
          "%zu, objects by address %zu, names %zu (%zu gone)",
          s.contiguous_used * kPageMb, s.system_used * kPageMb, s.virtual_committed * kPageMb,

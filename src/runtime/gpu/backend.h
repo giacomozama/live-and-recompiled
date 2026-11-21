@@ -121,6 +121,8 @@ public:
     virtual void GetReport(uint32_t /*report*/) {}
     // a line for the frame capture, in order with the draws (state the draws alone don't show, e.g. who set it)
     virtual void Note(const char* /*text*/) {}
+    // XBE_TRACE_MEM: log what the backend holds; the renderer's own lines come at its next present (g_mem_report)
+    virtual void MemoryReport();
     // before a Draw: whether anything changed since the Draw before it besides vertex sources (streams, indices, the
     // raw vertex array and constant upload methods) and vertex program constants. Never called: every draw is new
     virtual void Changed(bool /*any*/) {}

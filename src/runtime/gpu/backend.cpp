@@ -63,4 +63,6 @@ std::unique_ptr<Backend> CreateBackend(uint32_t width, uint32_t height) {
     return CreateBackend(width, height, ok);
 }
 
+void Backend::MemoryReport() { g_mem_report = true; }
+
 }  // namespace gpu

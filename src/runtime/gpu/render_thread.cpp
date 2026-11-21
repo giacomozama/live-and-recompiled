@@ -47,6 +47,11 @@ namespace {
 
 // commands handed over at once, so the render thread keeps close behind and a wait is short
 constexpr uint32_t kBatchCommands = 64;
+// the room the pooled batches keep for their bytes, all told: past it a batch goes back to the pool without its
+// room. A frame's batches take ~40 KB each; a loading screen's draws (state changed throughout) several times that,
+// and as the pool went round each batch kept that room for good: ~85 MB in thirty loads, ~0.6 MB more a load
+// (2026-11-21). Play keeps ~15 MB
+constexpr size_t kPoolBytes = 32u << 20;
 
 // resource headers the render thread reads: common, data, lock, format, size
 constexpr uint32_t kHeaderBytes = 20, kHeaderSlot = 32;
@@ -320,6 +325,23 @@ public:
     }
 
     void ClearReport() override { cur_->cmds.push_back(Cmd{Op::ClearReport}); }
+    // the batches made so far, those waiting in the pool and the memory their vectors keep (the pool's are idle)
+    void MemoryReport() override {
+        size_t made, pooled, queued, bytes = 0;
+        {
+            std::lock_guard lock(m_);
+            made = batches_made_;
+            pooled = free_.size();
+            queued = queue_.size();
+            for (const Batch* b : free_)
+                bytes += b->cmds.capacity() * sizeof(Cmd) + b->bytes.capacity() +
+                         (b->vs.capacity() + b->ps.capacity()) * sizeof(std::shared_ptr<void>);
+        }
+        LOGR("mem: render thread batches %zu made (%zu B a command, %u commands a batch), %zu in the pool keeping "
+             "%.1f MB, %zu queued, the rest held by a frame",
+             made, sizeof(Cmd), kBatchCommands, pooled, double(bytes) / 1048576.0, queued);
+        inner_->MemoryReport();
+    }
     void GetReport(uint32_t report) override {
         Cmd c{Op::GetReport};
         c.a = report;
@@ -348,9 +370,11 @@ private:
             std::lock_guard lock(m_);
             if (free_.empty()) {
                 b = new Batch;
+                batches_made_++;
             } else {
                 b = free_.back();
                 free_.pop_back();
+                pooled_bytes_ -= b->bytes.capacity();
             }
         }
         b->id = ++next_id_;
@@ -693,9 +717,17 @@ private:
                 f->vs.clear();
                 f->ps.clear();
             }
+            std::vector<std::vector<uint8_t>> dropped;  // rooms past kPoolBytes, let go outside the lock
             {
                 std::lock_guard lock(m_);
-                free_.insert(free_.end(), freed.begin(), freed.end());
+                for (Batch* f : freed) {
+                    if (pooled_bytes_ + f->bytes.capacity() > kPoolBytes) {
+                        dropped.push_back(std::move(f->bytes));  // moved from: empty, no room
+                        f->bytes = std::vector<uint8_t>();
+                    }
+                    pooled_bytes_ += f->bytes.capacity();
+                    free_.push_back(f);
+                }
                 done_.store(id);
             }
             done_cv_.notify_all();
@@ -1243,6 +1275,8 @@ private:
     std::condition_variable cv_, done_cv_;
     std::deque<Batch*> queue_;
     std::vector<Batch*> free_;
+    size_t batches_made_ = 0;  // under m_, for XBE_TRACE_MEM
+    size_t pooled_bytes_ = 0;  // under m_: the room free_'s batches keep for their bytes (kPoolBytes)
     std::atomic<uint64_t> done_{0};
     bool stop_ = false, exited_ = false;
 };
