@@ -34,6 +34,7 @@
 #include "common/medbeam.h"
 #include "common/characters.h"
 #include "common/chat.h"
+#include "common/subtitles.h"
 #include "common/cutscenes.h"
 #include "common/game_fonts.h"
 #include "common/display.h"
@@ -1897,6 +1898,7 @@ void Draw(double fps) {
     static int last_look = -1;
     MenuStyle();
     chat::Draw(T("team"), T("all"));  // under the menu
+    subtitles::Draw();  // the speech bubbles as subtitles, under the menu too
     PadFrame(g_open.load(), g_quit.load());
     const bool open = g_open.load();
     const bool quit = g_quit.load();
@@ -2683,6 +2685,8 @@ void Draw(double fps) {
                     Hint("hint_hold_any_button_but_pause", true);
                     Check("speech_bubbles_in", &cutscenes::g_english_bubbles);
                     Hint("hint_conker_s_monologues_on_the", true);
+                    Check("speech_subtitles", &subtitles::g_on);
+                    Hint("hint_what_characters_say_and_think", true);
                     Check("fade_instead_of", &loading::g_fade);
                     Hint("hint_loads_fade_to_black_and", true);
                     Check("rope_physics", &rope::g_physics);

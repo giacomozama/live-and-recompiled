@@ -2,6 +2,7 @@
 #include "common/achievements.h"
 #include "common/characters.h"
 #include "common/cutscenes.h"
+#include "common/subtitles.h"
 #include "common/game_fonts.h"
 #include "common/display.h"
 #include "common/fur.h"
@@ -87,6 +88,7 @@ const app::GameInfo app::kGame = {
                 {"achievements", &achievements::g_enabled, nullptr},  // achievements are earned, locally (achievements.cpp)
                 {"skippable_cutscenes", &cutscenes::g_skippable, nullptr},  // LT skips any cutscene (hooks.cpp)
                 {"english_bubbles", &cutscenes::g_english_bubbles, nullptr},  // the throne monologues' bubbles in English (hooks.cpp)
+                {"speech_subtitles", &subtitles::g_on, nullptr},  // speech bubbles shown as subtitles instead (subtitles.cpp)
                 {"fade_loads", &loading::g_fade, nullptr},  // a fade to black instead of loading screens (hooks.cpp)
                 {"rope_physics", &rope::g_physics, nullptr},  // ropes swing as a weighted chain (rope.cpp)
                 {"grass_wind", &grass::g_wind, nullptr},  // distant grass sways too (hooks.cpp)
