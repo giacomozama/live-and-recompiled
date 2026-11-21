@@ -1201,6 +1201,7 @@ HLE_STDCALL(D3DDevice_Swap, 1) {
         last = now;
         if (ms > 250 && g_presents > 2) LOGR("d3d: frame %u took %.0f ms", g_presents.load(), ms);
         if (loadtrace::On()) loadtrace::Frame(g_presents, ms);
+        if (loadtrace::MemOn() && loadtrace::MemFrame(g_presents, ms)) gpu::g_mem_report = true;
     }
     if (diag::Perf()) {
         // the labelled draws (SetDrawTag's label: Conker's effect types) a frame, the most first

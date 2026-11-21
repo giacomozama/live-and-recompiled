@@ -1253,6 +1253,7 @@ private:
     void QueuePresent(uint32_t bi);
     void ShowHeld();
     void ReleaseOldTextures();
+    void ReportMemory();  // XBE_TRACE_MEM: g_mem_report's lines
     void ResetFrame();
     // pictures shown: a frame's own, and those frame generation adds
     void CountFps(uint32_t pictures);
@@ -8416,6 +8417,65 @@ void VulkanBackend::ReleaseOldTextures() {
     }
 }
 
+// the caches by size and what their images hold, then the device memory VMA has out, by heap
+void VulkanBackend::ReportMemory() {
+    auto mb = [](VkDeviceSize b) { return double(b) / 1048576.0; };
+    auto size = [this](const ImageRef& im) -> VkDeviceSize {
+        if (!im || !im->alloc) return 0;
+        VmaAllocationInfo info;
+        vmaGetAllocationInfo(vma_, im->alloc, &info);
+        return info.size;
+    };
+    VkDeviceSize tex_b = 0, lm_b = 0;
+    size_t lms = 0, idle = 0;
+    for (const auto& [k, t] : textures_) {
+        tex_b += size(t.res);
+        if (t.lm) lms++, lm_b += size(t.lm);
+        idle += t.frame + 600 < presents_;
+    }
+    VkDeviceSize tgt_b = 0;
+    for (const auto& [k, t] : targets_) tgt_b += size(t.res) + size(t.fb) + size(t.zb) + size(t.ms);
+    size_t lates;
+    VkDeviceSize late_b = 0;
+    {
+        std::lock_guard<std::mutex> lock(late_lock_);
+        lates = late_.size();
+        for (const auto& [k, l] : late_) {
+            late_b += size(l.down);
+            for (const BufferRef& b : l.rb)
+                if (b) late_b += b->size;
+        }
+    }
+    size_t garbage = 0;
+    for (const Frame& f : frames_) garbage += f.garbage.size();
+    LOGR("mem: vulkan textures %zu %.1f MB (%zu unused 10 s), lightmaps %zu %.1f MB; targets %zu %.1f MB, used by "
+         "address %zu; late readbacks %zu %.1f MB; garbage %zu",
+         textures_.size(), mb(tex_b), idle, lms, mb(lm_b), targets_.size(), mb(tgt_b), target_used_.size(), lates,
+         mb(late_b), garbage);
+    LOGR("mem: vulkan pipelines %zu, motion %zu, blit %zu; shader blobs %zu, sources %zu, motion shaders %zu; samplers "
+         "%zu; program fields %zu; held %zu",
+         psos_.size(), motion_psos_.size(), blit_psos_.size(), blobs_.size(), shader_src_.size(),
+         motion_shaders_.size(), samplers_.size(), fields_.size(), held_.size());
+    VmaTotalStatistics st;
+    vmaCalculateStatistics(vma_, &st);
+    VmaBudget budget[VK_MAX_MEMORY_HEAPS];
+    vmaGetHeapBudgets(vma_, budget);
+    const VkPhysicalDeviceMemoryProperties* props;
+    vmaGetMemoryProperties(vma_, &props);
+    std::string heaps;
+    for (uint32_t i = 0; i < props->memoryHeapCount; i++) {
+        if (!budget[i].usage && !budget[i].statistics.blockBytes) continue;
+        char t[160];
+        std::snprintf(t, sizeof t, "; heap %u%s: blocks %.0f MB, process usage %.0f MB of budget %.0f MB", i,
+                      props->memoryHeaps[i].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT ? " (device)" : "",
+                      mb(budget[i].statistics.blockBytes), mb(budget[i].usage), mb(budget[i].budget));
+        heaps += t;
+    }
+    LOGR("mem: vulkan VMA %u allocations %.1f MB in %u blocks %.1f MB%s", st.total.statistics.allocationCount,
+         mb(st.total.statistics.allocationBytes), st.total.statistics.blockCount, mb(st.total.statistics.blockBytes),
+         heaps.c_str());
+}
+
 void VulkanBackend::ResetFrame() {
     Frame& f = CurrentFrame();
     if (f.fence && Completed() < f.fence) {
@@ -8631,6 +8691,7 @@ void VulkanBackend::Present(const Surface& front) {
         cap_seq_ = 0;
         StartCapture();
     }
+    if (g_mem_report.exchange(false)) ReportMemory();
     auto perf_t = PerfClock::now();
     ShowHeld();
     g_perf.p_held += PerfLap(perf_t);

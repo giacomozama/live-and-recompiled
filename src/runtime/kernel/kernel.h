@@ -113,6 +113,12 @@ struct Object {
     uint32_t owner = 0;         // mutant owner thread
     uint32_t recursion = 0;
     std::string name;
+    // the title's hold on it: handles open, and references taken (ObReferenceObjectByHandle, ObfReferenceObject) less
+    // those given back (ObfDereferenceObject). A body the kernel allocated (Bind's owned) is freed and unbound when
+    // both are gone, and the object with it: before, a file the title had once asked the pointer of stayed open
+    // for good, five more each level load (2026-11-21)
+    std::atomic<int32_t> handles{0}, refs{0};
+    bool owned_body = false;
     explicit Object(ObjType t) : type(t) {}
     virtual ~Object() = default;
 };
@@ -123,9 +129,21 @@ ObjectRef FromHandle(uint32_t handle);
 bool CloseHandle(uint32_t handle);
 uint32_t DuplicateHandle(uint32_t handle);
 ObjectRef FromPointer(uint32_t guest);  // dispatcher object in guest memory, created on first use
-void Bind(ObjectRef obj, uint32_t guest);
+// the object at guest as bound, null when there is none; nothing is created
+ObjectRef BoundAt(uint32_t guest);
+// owned: guest is a body the kernel allocated (mem::AllocSystem) for the object, freed once the title holds it no more
+void Bind(ObjectRef obj, uint32_t guest, bool owned = false);
+// a reference taken or given back (refs); giving back the last one with no handle open releases an owned body
+void Reference(const ObjectRef& obj);
+void Dereference(const ObjectRef& obj);
 ObjectRef FindNamed(const std::string& name);
 void AddNamed(const std::string& name, ObjectRef obj);
+// the object tables' sizes, for XBE_TRACE_MEM: handles open, guest objects seen (by address), names (and those whose
+// object is gone)
+struct ObjectCounts {
+    size_t handles, by_pointer, names, names_dead;
+};
+ObjectCounts CountObjects();
 
 // dispatcher
 std::mutex& DispatchLock();

@@ -511,7 +511,7 @@ KERNEL_EXPORT(189, NtCreateEvent, 4) {
     G<uint8_t>(body) = uint8_t(a[2]);  // NotificationEvent or SynchronizationEvent
     G<uint8_t>(body + 2) = 4;
     W32(body + 4, uint32_t(o->signal));
-    Bind(o, body);
+    Bind(o, body, true);
     if (!name.empty()) AddNamed(name, o);
     W32(a[0], NewHandle(o));
     return kSuccess;
@@ -550,7 +550,7 @@ KERNEL_EXPORT(192, NtCreateMutant, 3) {
         o->signal = 1;
     }
     W32(body + 4, uint32_t(o->signal));
-    Bind(o, body);
+    Bind(o, body, true);
     if (!name.empty()) AddNamed(name, o);
     W32(a[0], NewHandle(o));
     return kSuccess;
@@ -581,7 +581,7 @@ KERNEL_EXPORT(193, NtCreateSemaphore, 4) {
     G<uint8_t>(body + 2) = 5;
     W32(body + 4, uint32_t(count));
     W32(body + 0x10, uint32_t(limit));
-    Bind(o, body);
+    Bind(o, body, true);
     if (!name.empty()) AddNamed(name, o);
     W32(a[0], NewHandle(o));
     return kSuccess;
@@ -710,9 +710,10 @@ KERNEL_EXPORT(246, ObReferenceObjectByHandle, 3) {
     uint32_t h = a[0];
     ObjectRef o = h == 0xFFFFFFFE ? CurrentRef() : FromHandle(h);
     if (!o) return kInvalidHandle;
+    Reference(o);  // ObfDereferenceObject gives it back
     if (!o->guest) {
         uint32_t body = mem::AllocSystem(32);
-        Bind(o, body);
+        Bind(o, body, true);
     }
     W32(a[2], o->guest);
     return kSuccess;
@@ -724,7 +725,12 @@ KERNEL_EXPORT(247, ObReferenceObjectByName, 5) {
     return kObjectNameNotFound;
 }
 
-KERNEL_FASTCALL(250, ObfDereferenceObject) { return 0; }
+// ecx the object's body; an object the kernel doesn't know by it (a guest structure never waited on) has nothing to give
+// back
+KERNEL_FASTCALL(250, ObfDereferenceObject) {
+    if (ObjectRef o = BoundAt(ctx.ecx)) Dereference(o);
+    return 0;
+}
 
 // timers, DPCs, interrupts
 
@@ -768,7 +774,7 @@ KERNEL_EXPORT(194, NtCreateTimer, 3) {
     o->notification = a[2] == 0;
     uint32_t body = mem::AllocSystem(0x28);
     InitHeader(body, uint8_t(8 + (a[2] & 1)), 10, 0);  // TimerNotificationObject or TimerSynchronizationObject
-    Bind(o, body);
+    Bind(o, body, true);
     if (!name.empty()) AddNamed(name, o);
     W32(a[0], NewHandle(o));
     return kSuccess;
@@ -1274,7 +1280,10 @@ KERNEL_EXPORT(76, IoQueryVolumeInformation, 5) {
     return kSuccess;
 }
 KERNEL_EXPORT(248, ObReferenceObjectByPointer, 2) { return kSuccess; }
-KERNEL_FASTCALL(251, ObfReferenceObject) { return 0; }
+KERNEL_FASTCALL(251, ObfReferenceObject) {
+    if (ObjectRef o = BoundAt(ctx.ecx)) Reference(o);
+    return 0;
+}
 
 // the settings are fixed, a write changes nothing
 KERNEL_EXPORT(29, ExSaveNonVolatileSetting, 4) {

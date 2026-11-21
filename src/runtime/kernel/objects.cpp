@@ -35,11 +35,32 @@ std::mutex& DispatchLock() { return g_dispatch; }
 void SignalChanged() { g_cv.notify_all(); }
 
 uint32_t NewHandle(ObjectRef obj) {
+    obj->handles++;
     std::lock_guard<std::mutex> lock(g_handles_lock);
     uint32_t h = g_next_handle;
     g_next_handle += 4;
     g_handles[h] = std::move(obj);
     return h;
+}
+
+// no handle and no reference left: an owned body leaves g_by_ptr and goes back to the system heap, and with it the
+// table's hold on the object. Under the dispatcher lock, which SetSignal writes the body under
+static void ReleaseIfUnheld(const ObjectRef& obj) {
+    if (!obj->owned_body || obj->handles > 0 || obj->refs > 0) return;
+    uint32_t body;
+    {
+        std::lock_guard<std::mutex> dispatch(g_dispatch);
+        std::lock_guard<std::mutex> lock(g_ptr_lock);
+        if (!obj->owned_body || obj->handles > 0 || obj->refs > 0) return;
+        body = obj->guest;
+        obj->guest = 0;
+        obj->owned_body = false;
+        // the body rebuilt as another object (FromPointer, the title reinitialised it) is still in use
+        auto it = g_by_ptr.find(body);
+        if (it == g_by_ptr.end() || it->second.obj != obj) return;
+        g_by_ptr.erase(it);
+    }
+    mem::FreeSystem(body);
 }
 
 ObjectRef FromHandle(uint32_t handle) {
@@ -50,8 +71,28 @@ ObjectRef FromHandle(uint32_t handle) {
 }
 
 bool CloseHandle(uint32_t handle) {
-    std::lock_guard<std::mutex> lock(g_handles_lock);
-    return g_handles.erase(handle) != 0;
+    ObjectRef obj;
+    {
+        std::lock_guard<std::mutex> lock(g_handles_lock);
+        auto it = g_handles.find(handle);
+        if (it == g_handles.end()) return false;
+        obj = std::move(it->second);
+        g_handles.erase(it);
+    }
+    if (--obj->handles <= 0) ReleaseIfUnheld(obj);
+    return true;
+}
+
+void Reference(const ObjectRef& obj) { obj->refs++; }
+
+void Dereference(const ObjectRef& obj) {
+    if (--obj->refs <= 0) ReleaseIfUnheld(obj);
+}
+
+ObjectRef BoundAt(uint32_t guest) {
+    std::lock_guard<std::mutex> lock(g_ptr_lock);
+    auto it = g_by_ptr.find(guest);
+    return it == g_by_ptr.end() ? nullptr : it->second.obj;
 }
 
 uint32_t DuplicateHandle(uint32_t handle) {
@@ -65,8 +106,9 @@ static void Stamp(uint32_t guest, uint32_t serial) {
     W32(guest + 12, kStamp);
 }
 
-void Bind(ObjectRef obj, uint32_t guest) {
+void Bind(ObjectRef obj, uint32_t guest, bool owned) {
     obj->guest = guest;
+    obj->owned_body = owned;
     std::lock_guard<std::mutex> lock(g_ptr_lock);
     uint32_t serial = g_serial++;
     g_by_ptr[guest] = {obj, serial};
@@ -133,6 +175,22 @@ void AddNamed(const std::string& name, ObjectRef obj) {
     std::lock_guard<std::mutex> lock(g_names_lock);
     obj->name = name;
     g_names[name] = obj;
+}
+
+ObjectCounts CountObjects() {
+    ObjectCounts c{};
+    {
+        std::lock_guard<std::mutex> lock(g_handles_lock);
+        c.handles = g_handles.size();
+    }
+    {
+        std::lock_guard<std::mutex> lock(g_ptr_lock);
+        c.by_pointer = g_by_ptr.size();
+    }
+    std::lock_guard<std::mutex> lock(g_names_lock);
+    c.names = g_names.size();
+    for (const auto& [n, w] : g_names) c.names_dead += w.expired();
+    return c;
 }
 
 void SetSignal(Object& o, int32_t v) {

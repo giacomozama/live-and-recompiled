@@ -108,4 +108,12 @@ private:
 // thread; a frame over 250 ms is logged with what the counters gathered, then they start over
 void Frame(uint32_t frame, double ms);
 
+// XBE_TRACE_MEM set: what is in use, logged at the end of each load (a frame over 250 ms), 10 s after it (the level
+// settled by then) unless another load came first, and every 2 minutes between: the process (resident, anonymous, threads, files), the console's memory (kernel
+// allocations), the kernel's object tables, and the renderer's caches and device memory (gpu::g_mem_report, at its
+// next present, gpu::g_mem_report). Lines start "mem:"; a leak shows as a count that climbs load after load to the same level.
+// MemFrame runs at each present and returns true when it logged: the caller then asks the renderer for its lines
+bool MemOn();
+bool MemFrame(uint32_t frame, double ms);
+
 }  // namespace loadtrace

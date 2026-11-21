@@ -184,6 +184,9 @@ inline std::atomic<bool> g_opengl{false};
 // menu greys the setting out where it doesn't (D3D11, OpenGL, or a device with no queue to spare)
 inline std::atomic<bool> g_lightmap_smoothing{false};
 
+// XBE_TRACE_MEM (core/loadtrace.h): the renderer logs its caches and device memory at its next present
+inline std::atomic<bool> g_mem_report{false};
+
 // F3: save the next frame, every draw and target, under diag::CaptureDir
 inline std::atomic<bool> g_capture{false};
 // F4: save the pictures XBE_INTERP_RECORD keeps (gpu/interp.h) under diag::CaptureDir
