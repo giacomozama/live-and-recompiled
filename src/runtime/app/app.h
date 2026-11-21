@@ -151,6 +151,9 @@ void LogSystem();  // the machine, at a run's start
 void InstallCrashHandler();          // crash.cpp: unhandled exceptions, aborts and terminate write a report to the log
 void ApplyDisplay();  // any thread
 void OpenFolder(const std::filesystem::path& dir);  // in the system's file manager
+// the system's dialog to open a file, of `kind` ("Fonts") with these extensions ("ttf;otf"): done gets its path in
+// UTF-8, or null when cancelled, on whichever thread the dialog answers on (perhaps before PickFile returns)
+void PickFile(const char* kind, const char* patterns, void (*done)(void* user, const char* path), void* user);
 // the HDR levels the display reports, in nits, 0 not known: the SDR white the compositor maps and the display's peak
 // (on Wayland the surface's preferred image description, ReadDisplayHdr); any thread
 void SetDisplayHdr(uint32_t paper_white, uint32_t peak);

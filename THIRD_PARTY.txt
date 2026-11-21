@@ -1207,6 +1207,12 @@ SPIRV-Cross vulkan-sdk-1.3.296.0 (https://github.com/KhronosGroup/SPIRV-Cross), 
 Copyright 2015-2021 Arm Limited. Licensed under the Apache License, Version 2.0; its text is with glslang's above.
 
 
+FreeType 2.13.3 (https://freetype.org), for custom fonts
+
+Portions of this software are copyright © 2024 The FreeType Project (https://freetype.org). All rights reserved.
+Used under the FreeType License (FTL), https://gitlab.freedesktop.org/freetype/freetype/-/blob/master/docs/FTL.TXT
+
+
 miniz 3.1.2 (https://github.com/richgel999/miniz), in Setup
 
 Copyright 2013-2014 RAD Game Tools and Valve Software

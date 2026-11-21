@@ -682,6 +682,25 @@ void OpenFolder(const std::filesystem::path& dir) {
     if (!SDL_OpenURL(url.c_str())) LOGE("open folder: %s", SDL_GetError());
 #endif
 }
+void PickFile(const char* kind, const char* patterns, void (*done)(void* user, const char* path), void* user) {
+    struct Ask {
+        void (*done)(void*, const char*);
+        void* user;
+        SDL_DialogFileFilter filter;
+        std::string kind, patterns;
+    };
+    Ask* ask = new Ask{done, user, {}, kind, patterns};
+    ask->filter = {ask->kind.c_str(), ask->patterns.c_str()};
+    SDL_ShowOpenFileDialog(
+        [](void* u, const char* const* files, int) {
+            Ask* a = static_cast<Ask*>(u);
+            if (!files) LOGE("file dialog: %s", SDL_GetError());
+            a->done(a->user, files && files[0] ? files[0] : nullptr);
+            delete a;
+        },
+        ask, g_window, &ask->filter, 1, nullptr, false);
+}
+
 void OpenGameWindow(bool apply) { PushUser(kUserOpen, apply); }
 
 #ifndef _WIN32

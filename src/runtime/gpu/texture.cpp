@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <bit>
+#include <cmath>
 #include <cstring>
 #include <mutex>
 #include <unordered_map>
@@ -456,6 +457,76 @@ uint64_t DirtyEpoch(uint32_t data) {
     std::lock_guard<std::mutex> lock(g_dirty_lock);
     auto it = g_dirty.find(data);
     return it == g_dirty.end() ? 0 : it->second;
+}
+
+std::atomic<bool> g_font_atlases{false};
+
+namespace {
+std::mutex g_font_lock;
+std::unordered_map<uint32_t, std::shared_ptr<const FontAtlas>> g_fonts;
+std::atomic<bool> g_any_font{false};
+}  // namespace
+
+void SetFontAtlas(uint32_t data_va, std::shared_ptr<const FontAtlas> atlas) {
+    std::lock_guard<std::mutex> lock(g_font_lock);
+    if (atlas) g_fonts[data_va] = std::move(atlas);
+    else g_fonts.erase(data_va);
+    g_any_font.store(!g_fonts.empty(), std::memory_order_release);
+}
+
+std::shared_ptr<const FontAtlas> FontAtlasFor(uint32_t data_va) {
+    if (!AnyFontAtlas()) return nullptr;
+    std::lock_guard<std::mutex> lock(g_font_lock);
+    auto it = g_fonts.find(data_va);
+    return it == g_fonts.end() ? nullptr : it->second;
+}
+
+bool AnyFontAtlas() { return g_any_font.load(std::memory_order_acquire); }
+
+void ComposeFontAtlas(const FontAtlas& a, const std::vector<uint8_t>& px, std::vector<uint8_t>& out) {
+    const uint32_t ow = a.w * a.scale, oh = a.h * a.scale;
+    // each channel without ink and with full ink: its least and most over the title's atlas, or its one value
+    uint8_t lo[4] = {255, 255, 255, 255}, hi[4] = {0, 0, 0, 0};
+    const size_t n = std::min(px.size() / 4, size_t(a.w) * a.h);
+    for (size_t i = 0; i < n; i++)
+        for (int c = 0; c < 4; c++) lo[c] = std::min(lo[c], px[i * 4 + c]), hi[c] = std::max(hi[c], px[i * 4 + c]);
+    if (!n) lo[0] = lo[1] = lo[2] = lo[3] = 0, hi[0] = hi[1] = hi[2] = hi[3] = 255;
+    for (int c = 0; c < 4; c++)
+        if (hi[c] - lo[c] < 32) lo[c] = hi[c] = uint8_t((lo[c] + hi[c] + 1) / 2);
+    out.resize(size_t(ow) * oh * 4);
+    const size_t cov = std::min(a.coverage.size(), size_t(ow) * oh);
+    for (size_t i = 0; i < size_t(ow) * oh; i++) {
+        const uint32_t k = i < cov ? a.coverage[i] : 0;
+        for (int c = 0; c < 4; c++) out[i * 4 + c] = uint8_t(lo[c] + ((hi[c] - lo[c]) * k + 127) / 255);
+    }
+    // the glyphs the font lacks, the title's own texels filtered into their boxes
+    auto texel = [&](int x, int y, int c) -> float {
+        x = std::clamp(x, 0, int(a.w) - 1), y = std::clamp(y, 0, int(a.h) - 1);
+        const size_t i = (size_t(y) * a.w + size_t(x)) * 4 + size_t(c);
+        return i < px.size() ? float(px[i]) : 0.0f;
+    };
+    for (const FontAtlas::Copy& cp : a.copies) {
+        const uint32_t x1 = std::min(cp.dx1, ow), y1 = std::min(cp.dy1, oh);
+        if (cp.dx0 >= x1 || cp.dy0 >= y1) continue;
+        const float kx = (cp.sx1 - cp.sx0) / float(cp.dx1 - cp.dx0), ky = (cp.sy1 - cp.sy0) / float(cp.dy1 - cp.dy0);
+        for (uint32_t y = cp.dy0; y < y1; y++)
+            for (uint32_t x = cp.dx0; x < x1; x++) {
+                const float sx = cp.sx0 + (float(x - cp.dx0) + 0.5f) * kx - 0.5f;
+                const float sy = cp.sy0 + (float(y - cp.dy0) + 0.5f) * ky - 0.5f;
+                const int ix = int(std::floor(sx)), iy = int(std::floor(sy));
+                const float fx = sx - float(ix), fy = sy - float(iy);
+                for (int c = 0; c < 4; c++) {
+                    const float top = texel(ix, iy, c) * (1 - fx) + texel(ix + 1, iy, c) * fx;
+                    const float bottom = texel(ix, iy + 1, c) * (1 - fx) + texel(ix + 1, iy + 1, c) * fx;
+                    out[(size_t(y) * ow + x) * 4 + size_t(c)] = uint8_t(std::lround(top * (1 - fy) + bottom * fy));
+                }
+            }
+    }
+}
+
+uint32_t FontAtlasLevels(const FontAtlas& a) {
+    const uint32_t m = std::min(a.w, a.h) * a.scale;
+    return uint32_t(std::min(int(std::bit_width(m)), int(std::bit_width(a.scale)) + 2));
 }
 
 bool CopySurfaceMemory(const Surface& src, const Surface& dst, uint32_t count, uint32_t rects, uint32_t points) {

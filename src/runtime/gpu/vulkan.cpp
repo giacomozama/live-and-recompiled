@@ -580,6 +580,11 @@ struct Tex {
     ImageRef lm;
     uint32_t lm_levels = 1;
     uint32_t lm_params = 0;  // LightmapParams lm or lm_job was made with
+    // a glyph atlas drawn again from the player's font (FontAtlas): its picture, bound in the title's place
+    ImageRef font;
+    uint32_t font_levels = 1;
+    uint64_t font_id = 0;   // FontAtlas::id it was made from
+    uint64_t font_sig = 0;  // sig of the title's texels it was made over
 };
 
 // one lightmap for the worker: level 0 as BGRA texels, or the DXT blocks it decodes first
@@ -1505,6 +1510,7 @@ private:
     } lmw_;
     void QueueLightmap(Tex& tx, const TextureDesc& d, const FormatInfo& fi, const uint8_t* p, const uint32_t* colors);
     void FinishLightmap(Tex& tx);
+    void MakeFontAtlas(Tex& tx, const TextureDesc& d, const FontAtlas& a, const uint8_t* p, const uint32_t* colors);
     // the lightmap smoother: compute shaders on a queue of their own that make a lightmap's larger picture and its
     // levels in an image of its own, one lightmap at a time under its lock (the lightmap worker's)
     struct LightmapSmoother {
@@ -1951,6 +1957,7 @@ bool VulkanBackend::Init(uint32_t width, uint32_t height) {
          scale_.y, msaa_);
     StartWarmUp();
     g_lightmap_smoothing = InitLightmapSmoother();
+    g_font_atlases = true;
     return true;
 }
 
@@ -4078,6 +4085,7 @@ bool VulkanBackend::CreateTexture(Tex& tx, const TextureDesc& d, const FormatInf
     g_perf.newtex++;
     if (tx.res) Retire(tx.res);
     if (tx.lm) Retire(tx.lm);
+    if (tx.font) Retire(tx.font);
     tx = Tex{};
     tx.d = d;
     // a DXT texture smaller than a block keeps its size: padded to 4x4, texcoords 0..1 would stretch over the
@@ -4225,6 +4233,26 @@ Image* VulkanBackend::BindGuestTexture(const State& s, int stage, const TextureD
     }
     if (fi.depth) info.shadow = ShadowDepthKind(d.format);
     info.sign = sign;
+    // a glyph atlas drawn again from the player's font: its picture in the title's place, filtered across our levels
+    if (AnyFontAtlas() || tx.font) {
+        std::shared_ptr<const FontAtlas> atlas;
+        if (!d.cube && d.depth == 1 && !fi.compressed && !fi.depth && fi.host == Host::BGRA8 && !sign)
+            atlas = FontAtlasFor(d.data);
+        if (atlas && (atlas->w != d.width || atlas->h != d.height)) atlas.reset();
+        if (!atlas && tx.font) {
+            Retire(tx.font);
+            tx.font.reset();
+        }
+        if (atlas && (!tx.font || tx.font_id != atlas->id || tx.font_sig != tx.sig))
+            MakeFontAtlas(tx, d, *atlas, static_cast<const uint8_t*>(kernel::HostPtr(d.data)),
+                          palette.va ? palette.colors : nullptr);
+        if (atlas && tx.font) {
+            stages.view[stage] = tx.font->view;
+            stages.levels[stage] = tx.font_levels;
+            stages.smooth[stage] = true;
+            return tx.font.get();
+        }
+    }
     // a level's lightmap: its smoothed copy once the worker has made it, the title's until then
     constexpr uint32_t kLightmapMin = 16, kLightmapMax = 512;
     if (app::Get().smooth_lightmaps && lms_.ready.load(std::memory_order_acquire) && !d.cube && d.depth == 1 && !fi.depth && !sign && !d.linear &&
@@ -4317,6 +4345,57 @@ void VulkanBackend::FinishLightmap(Tex& tx) {
     std::shared_ptr<LightmapJob> job = std::move(tx.lm_job);
     tx.lm = std::move(job->image);
     tx.lm_levels = job->image_levels;
+}
+
+// the player's font's picture of a glyph atlas (ComposeFontAtlas over the title's level 0), each level after a box
+// over the one before; none where the image can't be made, and the title's atlas stays
+void VulkanBackend::MakeFontAtlas(Tex& tx, const TextureDesc& d, const FontAtlas& a, const uint8_t* p,
+                                  const uint32_t* colors) {
+    PerfScope perf_up{g_perf.texup};
+    if (tx.font) Retire(tx.font);
+    tx.font.reset();
+    tx.font_id = a.id;
+    tx.font_sig = tx.sig;
+    std::vector<uint8_t> px, up;
+    uint32_t pitch;
+    DecodeLevel(d, 0, 0, p, colors, px, pitch);
+    if (pitch != d.width * 4)
+        for (uint32_t y = 0; y < d.height && size_t(y + 1) * pitch <= px.size(); y++)
+            std::memmove(&px[size_t(y) * d.width * 4], &px[size_t(y) * pitch], d.width * 4);
+    px.resize(size_t(d.width) * 4 * d.height);
+    ComposeFontAtlas(a, px, up);
+    ImageSpec sp;
+    sp.w = a.w * a.scale;
+    sp.h = a.h * a.scale;
+    sp.levels = FontAtlasLevels(a);
+    tx.font = NewImage(sp);
+    if (!tx.font) return;
+    tx.font_levels = sp.levels;
+    Transition(*tx.font, kDst);
+    uint32_t uw = sp.w, uh = sp.h;
+    // UploadTextureLevel writes the texture's res: point it at the picture for the while
+    std::swap(tx.res, tx.font);
+    UploadTextureLevel(tx, 0, 0, up, uw * 4);
+    for (uint32_t l = 1; l < sp.levels; l++) {
+        const uint32_t w = std::max(uw >> 1, 1u), h = std::max(uh >> 1, 1u);
+        px.resize(size_t(w) * 4 * h);
+        for (uint32_t y = 0; y < h; y++)
+            for (uint32_t x = 0; x < w; x++) {
+                const uint32_t x0 = std::min(x * 2, uw - 1), x1 = std::min(x * 2 + 1, uw - 1);
+                const uint32_t y0 = std::min(y * 2, uh - 1), y1 = std::min(y * 2 + 1, uh - 1);
+                for (uint32_t c = 0; c < 4; c++) {
+                    const uint32_t sum = up[(size_t(y0) * uw + x0) * 4 + c] + up[(size_t(y0) * uw + x1) * 4 + c] +
+                                         up[(size_t(y1) * uw + x0) * 4 + c] + up[(size_t(y1) * uw + x1) * 4 + c];
+                    px[(size_t(y) * w + x) * 4 + c] = uint8_t((sum + 2) / 4);
+                }
+            }
+        UploadTextureLevel(tx, 0, l, px, w * 4);
+        up.swap(px);
+        uw = w;
+        uh = h;
+    }
+    std::swap(tx.res, tx.font);
+    Transition(*tx.font, kRead);
 }
 
 // The lightmap smoother's compute shaders. The first makes the larger picture from PrepareLightmap's field
@@ -8410,6 +8489,7 @@ void VulkanBackend::ReleaseOldTextures() {
         if (it->second.frame + kIdleFrames < presents_) {
             Retire(it->second.res);
             if (it->second.lm) Retire(it->second.lm);
+            if (it->second.font) Retire(it->second.font);
             it = textures_.erase(it);
         } else {
             ++it;

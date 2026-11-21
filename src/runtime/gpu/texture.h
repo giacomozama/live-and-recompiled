@@ -1,5 +1,7 @@
 #pragma once
+#include <atomic>
 #include <cstdint>
+#include <memory>
 #include <vector>
 
 #include "gpu/state.h"
@@ -69,6 +71,35 @@ struct LightmapField {
 void PrepareLightmap(const std::vector<uint8_t>& px, uint32_t w, uint32_t h, float along, LightmapField& f);
 // DXT1, DXT3 or DXT5 blocks (rows of blocks, as DecodeLevel gives them) to w by h BGRA texels
 void DecodeBlocks(Host host, const uint8_t* blocks, uint32_t w, uint32_t h, std::vector<uint8_t>& out);
+
+// A glyph atlas drawn again from a font of the player's (the game's custom fonts): the title's atlas at data_va
+// keeps its size as the game sees it (w by h texels, which its glyphs' texture coordinates are in) and is sampled
+// from a picture scale times as wide and tall, with levels down to below its own size. coverage is that picture's
+// ink, 0 to 255, rows w * scale; each copy is a glyph the font has no shape for, taken from the title's own atlas
+// (src, in its texels) into dst (in the picture's texels) as it was. The renderer turns coverage into the atlas's
+// own texels through what its channels hold (ComposeFontAtlas). id differs for each atlas made.
+struct FontAtlas {
+    struct Copy {
+        float sx0, sy0, sx1, sy1;
+        uint32_t dx0, dy0, dx1, dy1;
+    };
+    uint32_t w = 0, h = 0, scale = 1;
+    uint64_t id = 0;
+    std::vector<uint8_t> coverage;
+    std::vector<Copy> copies;
+};
+// the game's side: an atlas for the texture at data_va, or none (null) to sample the title's own again; any thread
+void SetFontAtlas(uint32_t data_va, std::shared_ptr<const FontAtlas> atlas);
+std::shared_ptr<const FontAtlas> FontAtlasFor(uint32_t data_va);  // null without one
+bool AnyFontAtlas();  // cheap, a bind's first test
+// set by a renderer that draws them (Vulkan): the game patches its fonts only then
+extern std::atomic<bool> g_font_atlases;
+// the picture at a.w * a.scale by a.h * a.scale BGRA texels: the title's atlas level 0 (px, a.w by a.h BGRA, rows
+// a.w * 4) gives each channel's value without ink and with full ink (a channel that varies over it goes from its least
+// to its most with the coverage, one that doesn't keeps its value), and the copies its texels, filtered linear
+void ComposeFontAtlas(const FontAtlas& a, const std::vector<uint8_t>& px, std::vector<uint8_t>& out);
+// the levels for such a picture: each a box over the one before, from out (level 0) down to below the title's size
+uint32_t FontAtlasLevels(const FontAtlas& a);
 
 // vertex declarations and pixel shader constant routing, both follow the XDK's definitions
 void ParseDeclaration(VertexShader& vs);

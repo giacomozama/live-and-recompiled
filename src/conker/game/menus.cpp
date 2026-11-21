@@ -28,6 +28,7 @@
 #include "xdk/hle.h"
 
 #include "common/display.h"
+#include "common/game_fonts.h"
 #include "common/gamepad.h"
 #include "common/keyboard.h"
 #include "common/menus.h"
@@ -1152,6 +1153,7 @@ X86_FUNC(sub_003D3D00) {
                 if (!w.empty() && w == g_slot_text[s]) g_slot_word = s;
         }
     }
+    game_fonts::StringStart();
     __imp__sub_003D3D00(ctx, base);
     g_word = 0;
     g_slot_word = -1;
@@ -1199,6 +1201,7 @@ bool GlyphBox(float& x0, float& y0, float& x1, float& y1) {
 // [[hook]] before 0x3D3981, a glyph's quad sent: into Yes's or No's box, or the HUD prompt's label's
 void ConkerTextQuad(X86Context& ctx, uint8_t* base) {
     (void)ctx, (void)base;
+    game_fonts::GlyphQuad();
     display::PlayerMarkerQuad();
     if (!g_word && !g_label_drawing && g_slot_word < 0) return;
     constexpr uint32_t kQuad = 0x807230;

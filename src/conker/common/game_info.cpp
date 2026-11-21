@@ -2,6 +2,7 @@
 #include "common/achievements.h"
 #include "common/characters.h"
 #include "common/cutscenes.h"
+#include "common/game_fonts.h"
 #include "common/display.h"
 #include "common/fur.h"
 #include "common/gamepad.h"
@@ -47,11 +48,13 @@ void Init() {
 void LoadTables(const void* table) {
     keyboard::Load(table);
     fur::Load(table);
+    game_fonts::Load(table);
 }
 
 void SaveTables(void* table) {
     keyboard::Save(table);
     fur::Save(table);
+    game_fonts::Save(table);
 }
 
 }  // namespace

@@ -72,7 +72,18 @@ set(SPIRV_CROSS_STATIC ON CACHE BOOL "" FORCE)
 set(SPIRV_CROSS_ENABLE_GLSL ON CACHE BOOL "" FORCE)
 FetchContent_Declare(spirv_cross GIT_REPOSITORY https://github.com/KhronosGroup/SPIRV-Cross.git
     GIT_TAG vulkan-sdk-1.3.296.0 GIT_SHALLOW TRUE)
-FetchContent_MakeAvailable(zydis tomlplusplus imgui roboto SDL3 miniz vulkan_headers volk vma glslang spirv_cross fltk)
+# FreeType, for a game's hooks that draw glyphs (Conker's custom fonts, src/conker/game/game_fonts.cpp): fonts,
+# collections and variable fonts' axes. None of its optional libraries; its version resource is left out (it wants
+# windres on Windows)
+foreach(option FT_DISABLE_ZLIB FT_DISABLE_BZIP2 FT_DISABLE_PNG FT_DISABLE_HARFBUZZ FT_DISABLE_BROTLI SKIP_INSTALL_ALL)
+    set(${option} ON CACHE BOOL "" FORCE)
+endforeach()
+FetchContent_Declare(freetype GIT_REPOSITORY https://github.com/freetype/freetype.git GIT_TAG VER-2-13-3 GIT_SHALLOW TRUE)
+FetchContent_MakeAvailable(zydis tomlplusplus imgui roboto SDL3 miniz vulkan_headers volk vma glslang spirv_cross fltk
+    freetype)
+get_target_property(ft_sources freetype SOURCES)
+list(FILTER ft_sources EXCLUDE REGEX "\\.rc$")
+set_target_properties(freetype PROPERTIES SOURCES "${ft_sources}")
 execute_process(COMMAND ${CMAKE_COMMAND} -P ${CMAKE_CURRENT_LIST_DIR}/patch_imgui.cmake ${imgui_SOURCE_DIR})
 # the DLSS module, a library of its own beside the game (Zig builds)
 if(XBE_ZIG_TARGET)
@@ -291,8 +302,9 @@ set_source_files_properties(${XBE_ROOT_DIR}/src/runtime/gpu/opengl.cpp PROPERTIE
 set_source_files_properties(${XBE_ROOT_DIR}/src/runtime/gpu/opengl_glsl.cpp PROPERTIES
     INCLUDE_DIRECTORIES "${glslang_SOURCE_DIR};${glslang_BINARY_DIR}/include;${spirv_cross_SOURCE_DIR}"
     COMPILE_DEFINITIONS "ENABLE_HLSL")
-# glslang's libraries in the order they link, SPIRV-Cross's after them (GLSL before its core)
-set(XBE_GLSLANG_LIBS glslang glslang-default-resource-limits spirv-cross-glsl spirv-cross-core)
+# glslang's libraries in the order they link, SPIRV-Cross's after them (GLSL before its core), and FreeType: the
+# static libraries the host links and a player kit carries
+set(XBE_GLSLANG_LIBS glslang glslang-default-resource-limits spirv-cross-glsl spirv-cross-core freetype)
 
 # a whole archive as --whole-archive ... --no-whole-archive, the way a player kit's link line has it. CMake's own
 # WHOLE_ARCHIVE wraps it in --push-state and --pop-state when lld takes them, which zig c++ rejects
@@ -380,7 +392,9 @@ function(add_xbe_image target xbe config partitions game_dir)
         add_library(${host} STATIC ${XBE_RUNTIME_SOURCES} ${XBE_HOST_SOURCES} ${GAME_SOURCES} ${XBE_IMGUI_SOURCES} ${XBE_HASH})
         add_dependencies(${host} recompile_${target})
         target_include_directories(${host} PUBLIC ${XBE_GAME_SRC} ${XBE_ROOT_DIR}/src/runtime ${GEN})
-        target_include_directories(${host} SYSTEM PRIVATE ${imgui_SOURCE_DIR})
+        # ImGui's headers, and FreeType's (its generated options first) for a game's hooks that draw glyphs
+        target_include_directories(${host} SYSTEM PRIVATE ${imgui_SOURCE_DIR} ${freetype_BINARY_DIR}/include
+            ${freetype_SOURCE_DIR}/include)
         target_compile_options(${host} PUBLIC -fno-strict-aliasing)
         target_compile_definitions(${host} PUBLIC ${XBE_HOST_DEFINITIONS})
         target_link_libraries(${host} PUBLIC tomlplusplus::tomlplusplus $<LINK_ONLY:SDL3::SDL3-static> ${XBE_HOST_SYSTEM_LIBS})
