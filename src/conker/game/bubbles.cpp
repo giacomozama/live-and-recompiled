@@ -14,14 +14,15 @@
 // in the state it left, the runtime's bubble is drawn: an ellipse with a pixel's soft edge, its tail one with it, all
 // in the display's proportions (the frame's x narrowed by how far the window widens it). It fits the words' box (the
 // glyphs' boxes as the frames before drew them, ConkerTextQuad, over the page) no taller than the body, about the
-// body's middle, its size eased, and the words are moved to its middle. Thought bubbles (descriptor
-// flag 2) stay the game's.
+// body's middle, its size eased, and the words are moved to its middle. A thought's bubble (descriptor flag 2, its
+// circles 0x356750's from 0xE1C9D, 0xE1E4F and 0xE215C) is a cloud, a trail of circles in place of the tail.
 #include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include "app/app.h"
@@ -51,6 +52,8 @@ bool Trace() {
 }
 
 constexpr uint32_t kThought = 2;
+// a thought's circles: 0x356750 from 0xE1C9D and 0xE1E4F, and from 0xE215C as a speech bubble's tail
+constexpr uint32_t kThoughtCall1 = 0xE1CA2, kThoughtCall2 = 0xE1E54;
 constexpr uint32_t kTailCall = 0xE2161, kTailTurnedCall1 = 0xE2027, kTailTurnedCall2 = 0xE212F, kBodyCall = 0xE21FD;
 constexpr uint32_t kBoxLeft = 0x801740, kBoxTop = 0x80173C, kBoxWidth = 0x801734, kBoxHeight = 0x801730;
 constexpr uint32_t kColoured = 0x80174C, kRed = 0x801758, kGreen = 0x801759, kBlue = 0x80175A;
@@ -63,7 +66,8 @@ constexpr uint32_t kDrawVerticesUP = 0x53A600, kTriangleList = 5;
 constexpr uint32_t kColorOp = 0x547360, kColorArg1 = 0x547368, kColorArg2 = 0x54736C;
 constexpr uint32_t kAlphaOp = 0x547370, kAlphaArg1 = 0x547378, kAlphaArg2 = 0x54737C;
 constexpr uint32_t kDirty = 0x5499F0, kDirtyStages = 0x800;
-constexpr uint32_t kSelectArg1 = 2, kModulate = 4, kDiffuse = 0, kTexture = 2;
+constexpr uint32_t kSpeechTexture = 0x69E490, kSetTexture = 0x539960;  // D3DDevice_SetTexture (eax the stage)
+constexpr uint32_t kModulate = 4, kDiffuse = 0, kTexture = 2;
 
 struct Vertex {
     float x, y, z;
@@ -104,6 +108,7 @@ uint32_t g_frame = 0;
 // the bubble 0xE1880 is drawing (0 none), its tail as found, and whether its words are drawing
 uint32_t g_obj = 0;
 bool g_tail = false, g_tail_turned = false;
+bool g_thought = false;  // the bubble is a thought's (descriptor flag 2): a cloud and a trail of circles, no tail
 float g_tail_x0, g_tail_y0, g_tail_w, g_tail_h;
 bool g_words = false;
 Box g_words_now;
@@ -112,7 +117,7 @@ Box g_words_now;
 bool g_unseen = false;
 
 uint32_t g_vertices = 0;
-constexpr uint32_t kCapacity = 4096;  // vertices
+constexpr uint32_t kCapacity = 16384;  // vertices (a thought's cloud, shadow and trail some 4200)
 
 float Wider() {
     const float w = app::FrameAspect() * 0.75f;
@@ -181,6 +186,154 @@ std::vector<Point> Outline(float hx, float hy, bool tail, float tx, float ty, fl
     }
     for (int i = 0; i < kSteps; i++) p.push_back(at(kTurn * float(i) / kSteps));
     return p;
+}
+
+// a thought's cloud's lobes' radius on average, and how far it stands out of its ellipse, about (Cloud): the frame's
+// pixels
+float CloudLobe(float hy) { return std::clamp(hy * 0.84f, 12.0f, 80.0f); }
+float CloudOut(float hy) { return CloudLobe(hy) * 0.35f; }
+
+// A thought's cloud: round lobes about the ellipse, its edge their circles' outer arcs. The circles' middles go
+// round an ellipse inside it, evenly along it (by its length: by its angle they bunched at its narrow ends and left
+// gaps along its long sides), each of CloudLobe's radius on average (and some 7% back and forth over time, by
+// clock), of sizes and spaced a little unevenly (from seed, the same while the page shows), close enough that each
+// meets the next. Each lobe's arc
+// runs outside from where it meets the one before to where it meets the next, with its circle's normals (each lobe's
+// soft edge its own: the edge's normals, sharp at the dips, overlapped there in streaks); smooth gets them averaged
+// over a lobe each side, for the shadow
+std::vector<Point> Cloud(float hx, float hy, uint32_t seed, float clock, std::vector<Point>& smooth) {
+    constexpr float kTurn = 6.2831853f;
+    constexpr int kArcSteps = 16;
+    constexpr float kWobble = 0.07f, kWobbleRate = 3.1f;  // each lobe's radius back and forth by this share, rad/s
+    auto random = [&](uint32_t i) {  // 0..1
+        uint32_t x = seed * 0x9E3779B1u ^ (i + 1) * 0x85EBCA77u;
+        x ^= x >> 15, x *= 0x2C1B3C6Du, x ^= x >> 12, x *= 0x297A2D39u, x ^= x >> 15;
+        return float(x >> 8) / float(1 << 24);
+    };
+    const float lobe = CloudLobe(hy);  // its middles inside the ellipse by as much less CloudOut, its edge out by that
+    const float in = lobe - CloudOut(hy);
+    const float ax = std::max(hx - in, hx * 0.3f), ay = std::max(hy - in, hy * 0.3f);
+    // the inner ellipse's length at each of kTable angles, to space the middles by it
+    constexpr int kTable = 512;
+    std::vector<float> run(kTable + 1, 0.0f);
+    for (int i = 0; i < kTable; i++) {
+        const float m = kTurn * (float(i) + 0.5f) / kTable;
+        run[i + 1] = run[i] + std::hypot(ax * std::sin(m), ay * std::cos(m)) * kTurn / kTable;
+    }
+    const float perimeter = run[kTable];
+    const int lobes = std::max(5, int(std::ceil(perimeter / (lobe * 1.3f))));
+    struct Circle {
+        float x, y, r;
+    };
+    std::vector<Circle> circles;
+    const float start = random(1000) * perimeter;
+    for (int i = 0; i < lobes; i++) {
+        float at = start + (float(i) + (random(uint32_t(2 * i)) - 0.5f) * 0.2f) * perimeter / float(lobes);
+        at = std::fmod(at, perimeter);
+        const int k = int(std::upper_bound(run.begin(), run.end(), at) - run.begin()) - 1;
+        const float t = kTurn * (float(std::clamp(k, 0, kTable - 1)) + 0.5f) / kTable;
+        const float wobble = 1 + kWobble * std::sin(clock * kWobbleRate + kTurn * random(uint32_t(3 * i + 7)));
+        const float r = lobe * (0.8f + 0.35f * random(uint32_t(2 * i + 1))) * wobble;
+        circles.push_back({ax * std::cos(t), ay * std::sin(t), r});
+    }
+    // where each circle meets the next: of their two crossings, the one farther out
+    const size_t n = circles.size();
+    std::vector<float> mx(n), my(n);
+    std::vector<bool> meets(n);
+    for (size_t i = 0; i < n; i++) {
+        const Circle& a = circles[i];
+        const Circle& b = circles[(i + 1) % n];
+        const float dx = b.x - a.x, dy = b.y - a.y, d = std::hypot(dx, dy);
+        meets[i] = d > 1e-3f && d < a.r + b.r && d > std::fabs(a.r - b.r);
+        if (!meets[i]) {
+            mx[i] = (a.x + b.x) * 0.5f, my[i] = (a.y + b.y) * 0.5f;
+            continue;
+        }
+        const float l = (a.r * a.r - b.r * b.r + d * d) / (2 * d), hgt = std::sqrt(std::max(a.r * a.r - l * l, 0.0f));
+        const float px = a.x + dx * l / d, py = a.y + dy * l / d;
+        const float x1 = px - dy * hgt / d, y1 = py + dx * hgt / d, x2 = px + dy * hgt / d, y2 = py - dx * hgt / d;
+        if (x1 * x1 + y1 * y1 >= x2 * x2 + y2 * y2) mx[i] = x1, my[i] = y1;
+        else mx[i] = x2, my[i] = y2;
+    }
+    std::vector<Point> p;
+    auto add = [&](float x, float y, float nx, float ny) { p.push_back({x, y, nx, ny}); };
+    for (size_t i = 0; i < n; i++) {
+        const Circle& c = circles[i];
+        const size_t before = (i + n - 1) % n;
+        // its arc from where it meets the one before to where it meets the next, the way round (increasing angle)
+        float a0 = std::atan2(my[before] - c.y, mx[before] - c.x), a1 = std::atan2(my[i] - c.y, mx[i] - c.x);
+        while (a1 <= a0) a1 += kTurn;
+        if (a1 - a0 > kTurn * 0.75f || !meets[before] || !meets[i]) {  // swallowed, or apart: its point out alone
+            const float t = std::atan2(c.y, c.x);
+            add(c.x + std::cos(t) * c.r, c.y + std::sin(t) * c.r, std::cos(t), std::sin(t));
+            continue;
+        }
+        for (int k = 0; k < kArcSteps; k++) {
+            const float a = a0 + (a1 - a0) * float(k) / kArcSteps;
+            add(c.x + std::cos(a) * c.r, c.y + std::sin(a) * c.r, std::cos(a), std::sin(a));
+        }
+    }
+    // the shadow's normals: the lobes' over about one lobe each side, which don't cross (the ellipse's did, by a wide
+    // cloud's ends)
+    smooth = p;
+    const size_t m = p.size();
+    for (size_t i = 0; i < m; i++) {
+        float sx = 0, sy = 0;
+        for (int k = -kArcSteps; k <= kArcSteps; k++) {
+            const Point& q = p[(i + m + size_t(k + int(m))) % m];
+            sx += q.nx, sy += q.ny;
+        }
+        const float l = std::hypot(sx, sy);
+        if (l > 1e-6f) smooth[i].nx = sx / l, smooth[i].ny = sy / l;
+    }
+    return p;
+}
+
+// seconds, for the clouds' lobes moving back and forth: in floats, over a period long enough
+float Clock(std::chrono::steady_clock::time_point at) {
+    return float(std::fmod(std::chrono::duration<double>(at.time_since_epoch()).count(), 6283.1853));
+}
+
+// a simple polygon (clockwise on the frame, y down) cut into triangles, each clockwise, by their corners; none if it
+// can't be (it crosses itself)
+std::vector<uint32_t> EarClip(const std::vector<float>& x, const std::vector<float>& y) {
+    const size_t n = x.size();
+    std::vector<uint32_t> out;
+    if (n < 3) return out;
+    std::vector<uint32_t> ring(n);
+    for (size_t i = 0; i < n; i++) ring[i] = uint32_t(i);
+    // clockwise on the frame with y down is a positive sum of x0 y1 - x1 y0
+    auto cross = [&](uint32_t o, uint32_t a, uint32_t b) {
+        return (x[a] - x[o]) * (y[b] - y[o]) - (y[a] - y[o]) * (x[b] - x[o]);
+    };
+    double area = 0;
+    for (size_t i = 0; i < n; i++) area += double(x[i]) * y[(i + 1) % n] - double(x[(i + 1) % n]) * y[i];
+    const float turn = area > 0 ? 1.0f : -1.0f;
+    size_t k = 0, missed = 0;  // corners tried in a row that weren't ears
+    while (ring.size() > 3) {
+        const size_t m = ring.size();
+        if (missed >= m) return {};  // went round with no ear
+        const uint32_t a = ring[(k + m - 1) % m], b = ring[k % m], c = ring[(k + 1) % m];
+        bool ear = cross(a, b, c) * turn > 0;
+        for (size_t j = 0; ear && j < m; j++) {
+            const uint32_t q = ring[j];
+            if (q == a || q == b || q == c) continue;
+            if (cross(a, b, q) * turn >= 0 && cross(b, c, q) * turn >= 0 && cross(c, a, q) * turn >= 0) ear = false;
+        }
+        if (!ear) {
+            k = (k + 1) % m, missed++;
+            continue;
+        }
+        missed = 0;
+        if (turn > 0) out.insert(out.end(), {a, b, c});
+        else out.insert(out.end(), {a, c, b});
+        ring.erase(ring.begin() + std::ptrdiff_t(k % m));
+        k = k % ring.size();
+    }
+    if (ring.size() != 3) return {};
+    if (turn > 0) out.insert(out.end(), {ring[0], ring[1], ring[2]});
+    else out.insert(out.end(), {ring[0], ring[2], ring[1]});
+    return out;
 }
 
 // normals again from the outline's edges (the tail's sides), each the mean of its two edges', short at a sharp turn
@@ -265,7 +418,7 @@ void DrawBubble(X86Context& ctx, uint32_t rec) {
         if (l > 1e-3f) dx /= l, dy /= l;
         else dx = 0, dy = 1;
         tip_x = g_tail_x0 + dx * g_tail_h * 0.5f / wider, tip_y = g_tail_y0 + dy * g_tail_h * 0.5f;
-    } else if (g_tail) {
+    } else if (g_tail || g_thought) {
         tip_x = F(g_obj + kAnchor), tip_y = F(g_obj + kAnchor + 4);
     }
     // its place and tip as the game's are, which jump where the game's do (a camera cut in a cutscene); its size eased
@@ -279,7 +432,7 @@ void DrawBubble(X86Context& ctx, uint32_t rec) {
     ease(bub.width, width), ease(bub.tall, height);
     bub.x = bub.raw_x, bub.y = bub.raw_y;
     bub.tip_x = tip_x, bub.tip_y = tip_y;
-    bub.tip = g_tail;
+    bub.tip = g_tail || g_thought;
     const float cx = bub.x, cy = bub.y;
     const float hx = std::max(bub.width * shown * 0.5f, 1.0f), hy = std::max(bub.tall * shown * 0.5f, 1.0f);
     // the soft edge: a pixel as drawn (the frame's pixels times the render scale down), half in and half out
@@ -295,8 +448,9 @@ void DrawBubble(X86Context& ctx, uint32_t rec) {
     float tx = (bub.tip_x - cx) * wider, ty = bub.tip_y - cy;
     float t0 = kBottom;
     const float length = kTailLong * ejected;
-    const bool tail = g_tail && length >= soft * 2;
-    if (tail) {
+    const bool tail = g_tail && !g_thought && length >= soft * 2;
+    float ex = 0, ey = hy, aim = kBottom;  // where the tail or trail leaves the ellipse, and its way
+    if (tail || (g_thought && ejected > 0)) {
         // the bottom arc's ends, a sixth of the perimeter (Ramanujan's) each side of the lowest point
         const float h = (hx - hy) * (hx - hy) / ((hx + hy) * (hx + hy));
         const float perimeter = kTurn / 2 * (hx + hy) * (1 + 3 * h / (10 + std::sqrt(4 - 3 * h)));
@@ -304,15 +458,21 @@ void DrawBubble(X86Context& ctx, uint32_t rec) {
         const float right = Along(hx, hy, kBottom, -1, perimeter * kTailArc / 2);  // toward +x
         const float nearest = kBottom + std::remainder(Nearest(hx, hy, tx, ty) - kBottom, kTurn);
         t0 = std::clamp(nearest, right, left);
-        const float ex = hx * std::cos(t0), ey = hy * std::sin(t0);
+        ex = hx * std::cos(t0), ey = hy * std::sin(t0);
         const float normal = std::atan2(std::sin(t0) / hy, std::cos(t0) / hx);
         const float toward = std::hypot(tx - ex, ty - ey) > 1e-3f ? std::atan2(ty - ey, tx - ex) : normal;
-        const float aim = normal + std::clamp(std::remainder(toward - normal, kTurn), -kSlant, kSlant);
+        aim = normal + std::clamp(std::remainder(toward - normal, kTurn), -kSlant, kSlant);
         tx = ex + std::cos(aim) * length, ty = ey + std::sin(aim) * length;
     }
     float gap_from = 0, gap_to = 0;
-    std::vector<Point> p = Outline(hx, hy, tail, tx, ty, t0, kTailBase, &gap_from, &gap_to);
-    Normals(p);
+    std::vector<Point> smooth_normals;  // a cloud's along the ellipse's normals: its shadow's
+    std::vector<Point> p;
+    if (g_thought) {
+        p = Cloud(hx, hy, g_obj ^ bub.page, Clock(now), smooth_normals);
+    } else {
+        p = Outline(hx, hy, tail, tx, ty, t0, kTailBase, &gap_from, &gap_to);
+        Normals(p);
+    }
 
     // colours: the speaker's (white without) and the sprite's alpha
     const bool coloured = B(kColoured) != 0;
@@ -352,11 +512,12 @@ void DrawBubble(X86Context& ctx, uint32_t rec) {
     // the shadow first, under the bubble's soft edge: the ellipse's alone (a short tail's spread into a fan)
     // It fades out under the tail, which is see-through too: over the shadow it came out darker than the bubble. Gone
     // within its base's arc, back over as far again each side
-    const std::vector<Point> e = Outline(hx, hy, false, 0, 0, 0, 0);
+    // (a thought's, the cloud cast along the ellipse's normals: by its own, sharp in its dips, it threw spikes out)
+    const std::vector<Point> e = g_thought ? smooth_normals : Outline(hx, hy, false, 0, 0, 0, 0);
     const float under = tail ? (gap_to - gap_from) * 0.5f : 0.0f;
     auto clear_of_tail = [&](size_t i) {
         if (!tail) return 1.0f;
-        const float t = kTurn * float(i % e.size()) / float(e.size());
+        const float t = kTurn * float(i % e.size()) / float(e.size());  // the ellipse's points by angle
         const float d = std::fabs(std::remainder(t - t0, kTurn));
         const float f = std::clamp((d - under) / std::max(under, 1e-3f), 0.0f, 1.0f);
         return f * f * (3 - 2 * f);
@@ -407,7 +568,27 @@ void DrawBubble(X86Context& ctx, uint32_t rec) {
     std::vector<std::pair<float, float>> ellipse;
     for (size_t i = 0; i < arc; i++) ellipse.push_back({fx[i], fy[i]});
     for (const Point& g : gap) ellipse.push_back({g.x, g.y});
-    fan(0, 0, fill(0, 0), ellipse, true, false);
+    // a thought's cloud isn't one the middle sees all of (along a wide one's long sides each lobe's near side faces
+    // away from it): its fan folded over itself; it is cut into triangles instead
+    std::vector<uint32_t> cut;
+    if (g_thought) {
+        cut = EarClip(fx, fy);
+        if (cut.empty()) {  // the soft edge's inner line crossed itself at a dip: the edge's own
+            std::vector<float> ox, oy;
+            for (const Point& q : p) ox.push_back(q.x), oy.push_back(q.y);
+            cut = EarClip(ox, oy);
+            fx = ox, fy = oy;
+        }
+    }
+    if (!cut.empty()) {
+        for (size_t i = 0; i + 2 < cut.size(); i += 3)  // clockwise on the frame, as the culling keeps
+            for (size_t k = 0; k < 3; k++) {
+                const uint32_t q = cut[i + k];
+                v.push_back(at(fx[q], fy[q], fill(fx[q], fy[q])));
+            }
+    } else {
+        fan(0, 0, fill(0, 0), ellipse, true, false);
+    }
     if (tail) {
         std::vector<std::pair<float, float>> under{{fx[arc - 1], fy[arc - 1]}};
         for (const Point& g : gap) under.push_back({g.x, g.y});
@@ -424,29 +605,74 @@ void DrawBubble(X86Context& ctx, uint32_t rec) {
         const uint32_t ca = fa & 0x00FFFFFFu, cb = fb2 & 0x00FFFFFFu;  // the same, clear
         band(fx[i], fy[i], fx[(i + 1) % n], fy[(i + 1) % n], fa, fb2, ax1, ay1, bx1, by1, ca, cb);
     }
-    if (v.size() > kCapacity) return;
+    // a thought's trail: kTrail circles of the frame's pixels from where it leaves the cloud toward the anchor, a
+    // gap between, each coming out after the one before it, a soft shadow below each
+    if (g_thought && ejected > 0) {
+        constexpr float kTrail[] = {11.0f, 7.0f}, kGap = 6.0f;
+        // from past the cloud's edge: its largest lobe at its fullest, from its middle inside the ellipse
+        float along = kGap + std::max(CloudLobe(hy) * 1.15f * 1.07f - (CloudLobe(hy) - CloudOut(hy)), 0.0f);
+        for (size_t k = 0; k < std::size(kTrail); k++) {
+            const float grown = std::clamp(ejected * float(std::size(kTrail)) - float(k), 0.0f, 1.0f);
+            const float wobble = 1 + 0.08f * std::sin(Clock(now) * 3.1f + 2.1f * float(k + 1));
+            const float r = kTrail[k] * grown * grown * (3 - 2 * grown) * wobble;
+            const float ox = ex + std::cos(aim) * (along + kTrail[k]), oy = ey + std::sin(aim) * (along + kTrail[k]);
+            along += 2 * kTrail[k] + kGap;
+            if (r < soft) continue;
+            constexpr int kRound = 32;
+            const uint32_t c = fill(0, 0), cc = c & 0x00FFFFFFu;
+            for (int i = 0; i < kRound; i++) {
+                const float a0 = kTurn * float(i) / kRound, a1 = kTurn * float(i + 1) / kRound;
+                const float c0 = std::cos(a0), s0 = std::sin(a0), c1 = std::cos(a1), s1 = std::sin(a1);
+                const float rs = r + blur * 0.35f;  // the shadow's, down by its drop
+                band(ox + c0 * r, oy + s0 * r, ox + c1 * r, oy + s1 * r, shade0, shade0, ox + c0 * rs,
+                     oy + s0 * rs + drop, ox + c1 * rs, oy + s1 * rs + drop, shade2, shade2);
+                const float ri = r - soft * 0.5f, ro = r + soft * 0.5f;
+                v.push_back(at(ox, oy, c)), v.push_back(at(ox + c0 * ri, oy + s0 * ri, c));
+                v.push_back(at(ox + c1 * ri, oy + s1 * ri, c));
+                band(ox + c0 * ri, oy + s0 * ri, ox + c1 * ri, oy + s1 * ri, c, c, ox + c0 * ro, oy + s0 * ro,
+                     ox + c1 * ro, oy + s1 * ro, cc, cc);
+            }
+        }
+    }
+    if (v.size() > kCapacity) {
+        static bool told = false;
+        if (!std::exchange(told, true)) LOGR("bubbles: %zu vertices, room for %u: not drawn", v.size(), kCapacity);
+        return;
+    }
     if (!g_vertices) g_vertices = mem::AllocSystem(kCapacity * sizeof(Vertex));
     if (!g_vertices) return;
     std::memcpy(mem::Base() + g_vertices, v.data(), v.size() * sizeof(Vertex));
-    // colour and alpha from the vertices, times the texture's middle (the sprite's fill)
+    // colour and alpha from the vertices, times the texture's middle: the speech bubble's body's (a thought's body's
+    // texture is see-through there), the texture 0x356430 binds for [0x69E490] (each kind's record: +4 its kind,
+    // +0x1C the texture, or where it is for kind 4)
+    if (g_thought) {
+        const uint32_t record = R32(kSpeechTexture);
+        if (record) {
+            uint32_t texture = R32(record + 0x1C);
+            if (R32(record + 4) == 4) texture = texture ? R32(texture) : 0;
+            const uint32_t eax = ctx.eax;
+            ctx.eax = 0;  // stage 0
+            if (texture) kernel::CallGuest(ctx, kSetTexture, {texture});
+            ctx.eax = eax;
+        }
+    }
     kernel::W32(kColorOp, kModulate), kernel::W32(kColorArg1, kDiffuse), kernel::W32(kColorArg2, kTexture);
     kernel::W32(kAlphaOp, kModulate), kernel::W32(kAlphaArg1, kDiffuse), kernel::W32(kAlphaArg2, kTexture);
     kernel::W32(kDirty, R32(kDirty) | kDirtyStages);
     const X86Context saved = ctx;
     kernel::CallGuest(ctx, kDrawVerticesUP, {kTriangleList, uint32_t(v.size()), g_vertices, uint32_t(sizeof(Vertex))});
     ctx = saved;
-    (void)kSelectArg1;
     if (Trace()) {
         static uint32_t traced = 0;
         if (g_frame - traced >= 30) {
             traced = g_frame;
             LOGR("bubbles: %08X body %.1f %.1f %.1f x %.1f, words %.1f..%.1f %.1f..%.1f, "
                  "ellipse at %.1f %.1f %.1f x %.1f, tip %.1f %.1f, tail %d%s %.1f %.1f %.1f x %.1f, "
-                 "colour %d %02X%02X%02X alpha %02X, wider %.3f, state %02X",
+                 "colour %d %02X%02X%02X alpha %02X, wider %.3f, state %02X, thought %d",
                  g_obj, bx, by, bw, bh, bub.words.x0, bub.words.x1, bub.words.y0, bub.words.y1, cx, cy, bub.width,
                  bub.tall, bub.tip_x, bub.tip_y, int(g_tail), g_tail_turned ? " turned" : "", g_tail_x0, g_tail_y0,
                  g_tail_w, g_tail_h, int(coloured), B(kRed), B(kGreen), B(kBlue), B(rec + kSpriteAlpha),
-                 double(wider), B(g_obj + kState));
+                 double(wider), B(g_obj + kState), int(g_thought));
         }
     }
 }
@@ -490,8 +716,9 @@ void subtitles::BubbleDrawing(uint32_t obj) {
         g_obj = 0;
         g_tail = false;
         const uint32_t desc = R32(obj + 0x30);
-        if (!desc || (R32(desc) & kThought)) return;
+        if (!desc) return;
         g_obj = obj;
+        g_thought = (R32(desc) & kThought) != 0;
         Bubble& b = g_bubbles[obj];
         const uint32_t page = R32(obj + kPage);
         if (b.page != page) {
@@ -503,6 +730,7 @@ void subtitles::BubbleDrawing(uint32_t obj) {
     }
     g_obj = 0;
     g_tail = false;
+    g_thought = false;
     // the bubbles not drawn for a while go
     if (g_bubbles.size() > 16)
         for (auto it = g_bubbles.begin(); it != g_bubbles.end();)
@@ -521,9 +749,11 @@ void subtitles::BubbleGlyph() {
 X86_EXTERN_FUNC(__imp__sub_00356750);
 X86_FUNC(sub_00356750) {
     const uint32_t from = R32(ctx.esp);
-    if (!g_obj || (from != kTailCall && from != kBodyCall)) return __imp__sub_00356750(ctx, base);
+    const bool circle = g_thought && (from == kThoughtCall1 || from == kThoughtCall2 || from == kTailCall);
+    if (!g_obj || (!circle && from != kTailCall && from != kBodyCall)) return __imp__sub_00356750(ctx, base);
     const uint32_t rec = ctx.eax;
     SeeThrough<__imp__sub_00356750>(ctx, base);
+    if (circle) return;
     if (from == kTailCall) {
         g_tail = true, g_tail_turned = false;
         g_tail_x0 = F(kBoxLeft), g_tail_y0 = F(kBoxTop), g_tail_w = F(kBoxWidth), g_tail_h = F(kBoxHeight);
