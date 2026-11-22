@@ -352,10 +352,15 @@ void Capture(uint32_t obj) {
 }  // namespace
 
 // [[hook]] 0xE1880 draws a bubble (cdecl, [esp+4] the object). With the setting on it draws nothing: what the bubble
-// shows goes to the overlay
+// shows goes to the overlay; off, the bubble is drawn again (bubbles.cpp)
 X86_EXTERN_FUNC(__imp__sub_000E1880);
 X86_FUNC(sub_000E1880) {
-    if (!subtitles::g_on) return __imp__sub_000E1880(ctx, base);
+    if (!subtitles::g_on) {
+        subtitles::BubbleDrawing(R32(ctx.esp + 4));
+        __imp__sub_000E1880(ctx, base);
+        subtitles::BubbleDrawing(0);
+        return;
+    }
     Capture(R32(ctx.esp + 4));
     kernel::Return(ctx, ctx.eax, 0);
 }

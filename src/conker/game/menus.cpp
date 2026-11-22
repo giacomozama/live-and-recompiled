@@ -32,6 +32,7 @@
 #include "common/gamepad.h"
 #include "common/keyboard.h"
 #include "common/menus.h"
+#include "common/subtitles.h"
 #include "common/mouse.h"
 #include "common/prompts.h"
 #include "common/ui.h"
@@ -1203,6 +1204,7 @@ void ConkerTextQuad(X86Context& ctx, uint8_t* base) {
     (void)ctx, (void)base;
     game_fonts::GlyphQuad();
     display::PlayerMarkerQuad();
+    subtitles::BubbleGlyph();
     if (!g_word && !g_label_drawing && g_slot_word < 0) return;
     constexpr uint32_t kQuad = 0x807230;
     float x0, y0, x1, y1;
