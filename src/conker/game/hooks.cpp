@@ -26,6 +26,7 @@
 #include "core/loadtrace.h"
 #include "xdk/d3d8.h"
 #include "xdk/dsound.h"
+#include "app/app.h"
 
 #include "common/characters.h"
 #include "common/cutscenes.h"
@@ -363,10 +364,51 @@ X86_FUNC(sub_00052B50) {
     }
 }
 
+// The throne intro's last shot (ThroneRoom, level 24) looks at the castle doors as they close: level objects 1 and 2,
+// hinged at (-256, -600, 950) and (216, -600, 950), their yaw [+8] swung by the cutscene from +-90 (open) to +-180
+// (clock 7152..7400 of 7700). The shot was framed for 4:3: closed, the doors span some 1.125 of a 4:3 frame's width,
+// so a wider frame shows the empty wall past their edges. Above that each door's matrix moves along the camera's
+// view axis toward it, until the doors fill the frame's width (with a little to spare), by how far it has closed so
+// the open doors stay where they were. Moving along the view axis rather than toward the camera keeps the two doors
+// in one plane, meeting in the middle.
+namespace {
+void IntroDoors(uint32_t o, uint32_t m, uint8_t* base) {
+    using kernel::R32;
+    if (R32(0x7FA1F8) != 24 || !CutscenePlaying()) return;
+    const uint32_t objs = R32(0x8471B8);
+    if (!objs || (o != objs + 0x150 && o != objs + 2 * 0x150)) return;
+    const int16_t x = int16_t(kernel::R16(o + 0x14)), y = int16_t(kernel::R16(o + 0x16)),
+                  z = int16_t(kernel::R16(o + 0x18));
+    if (y != -600 || z != 950 || (x != -256 && x != 216)) return;
+    constexpr float kDoorsWide = 1.125f, kSpare = 1.08f;  // the closed doors' width over a 4:3 frame's; a margin
+    const float s = app::FrameAspect() / (4.0f / 3.0f) / kDoorsWide * kSpare;
+    if (!(s > 1.0f)) return;
+    float yaw;
+    std::memcpy(&yaw, base + o + 8, 4);
+    const float closed = std::clamp((std::fabs(yaw) - 90.0f) / 90.0f, 0.0f, 1.0f);
+    if (!(closed > 0.0f)) return;
+    const uint32_t camera = R32(0x84B868);  // its view at +0x10: 4x4, row vectors, view z in column 2
+    if (!camera) return;
+    float v[16], t[3];
+    std::memcpy(v, base + camera + 0x10, sizeof v);
+    std::memcpy(t, base + m + 0x30, sizeof t);
+    const float axis[3] = {v[2], v[6], v[10]};
+    const float len = std::sqrt(axis[0] * axis[0] + axis[1] * axis[1] + axis[2] * axis[2]);
+    if (!(len > 1e-6f) || !std::isfinite(len)) return;
+    // the hinge's depth in view space, unscaled; taking (1 - 1/s) of it off brings the door to 1/s the distance
+    const float depth = (t[0] * axis[0] + t[1] * axis[1] + t[2] * axis[2] + v[14]) / len;
+    const float move = depth * (1.0f - 1.0f / s) * closed;
+    if (!std::isfinite(move)) return;
+    for (uint32_t k = 0; k < 3; k++) t[k] -= axis[k] / len * move;
+    std::memcpy(base + m + 0x30, t, sizeof t);
+}
+}  // namespace
+
 X86_EXTERN_FUNC(__imp__sub_0006AD30);
 X86_FUNC(sub_0006AD30) {
     const uint32_t o = ctx.edx, m = kernel::R32(ctx.esp + 4);
     __imp__sub_0006AD30(ctx, base);
+    IntroDoors(o, m, base);
     if (g_cut_fractions.empty()) return;
     if (!CutscenePlaying()) {
         g_cut_fractions.clear();
