@@ -57,6 +57,7 @@
 #include <thread>
 
 #include "app/app.h"
+#include "audio/audio.h"
 #include "core/log.h"
 #include "kernel/memory.h"
 #include "cpu/x86_ops.h"
@@ -400,16 +401,50 @@ X86_FUNC(sub_002A7B60) {
     __imp__sub_002A7B60(ctx, base);
 }
 
+// Fast forward (debug features, display.h): while it is on the game's clock runs g_fast_forward_speed times as fast as
+// the wall's: the frame timer is handed that many times the frame's microseconds and ticks, so dt and every count,
+// fade and cutscene clock from them step alike, as if the frame had taken that long, and the sound plays as fast
+// (audio::g_speed). Frames come as often as before; what steps once a frame keeps its pace. Not in a shared system
+// link session
+std::atomic<bool> display::g_fast_forward{false};
+std::atomic<uint32_t> display::g_fast_forward_speed{[] {
+    const char* e = diag::Env("XBE_FAST_FORWARD");
+    return e ? std::clamp(uint32_t(std::strtoul(e, nullptr, 10)), display::kFastForwardMin, display::kFastForwardMax)
+             : 4u;
+}()};
+
+namespace {
+uint32_t FastForward() {
+    if constexpr (!diag::kDebugFeatures) return 1;
+    const bool on = display::g_fast_forward.load(std::memory_order_relaxed) || app::KeyDown(0x79);  // F10
+    const uint32_t k = on && !display::FrameRateLocked()
+                           ? std::clamp(display::g_fast_forward_speed.load(std::memory_order_relaxed),
+                                        display::kFastForwardMin, display::kFastForwardMax)
+                           : 1;
+    static uint32_t was = 1;
+    if (k != was) LOGI("display: fast forward %s", k > 1 ? "on" : "off");
+    was = k;
+    audio::g_speed.store(k, std::memory_order_relaxed);  // the sound keeps up
+    return k;
+}
+}  // namespace
+
 // [[hook]] before 0x2A7CBC in the frame timer: ecx holds the frame's ticks, [esp+0x10] the microseconds it took
 void ConkerFrameTicks(X86Context& ctx, uint8_t* base) {
     (void)base;
     static double carry = 0;
+    uint64_t us = uint64_t(kernel::R32(ctx.esp + 0x10)) | uint64_t(kernel::R32(ctx.esp + 0x14)) << 32;
+    if (const uint32_t k = FastForward(); k > 1) {
+        us *= k;
+        kernel::W32(ctx.esp + 0x10, uint32_t(us));
+        kernel::W32(ctx.esp + 0x14, uint32_t(us >> 32));
+        if (Rate() <= 30) ctx.ecx = std::min(ctx.ecx * k, 60u);
+    }
     if (Rate() <= 30) {
         carry = 0;
         display::g_ticks += ctx.ecx;
         return;
     }
-    uint64_t us = uint64_t(kernel::R32(ctx.esp + 0x10)) | uint64_t(kernel::R32(ctx.esp + 0x14)) << 32;
     double t = carry + double(int64_t(us)) * 60e-6;
     // a frame is a tick at least: the console never sees a frame of none, and a short frame after a long one rounded
     // to none (carry -0.5 + 0.9) made the step 0x2D37F4 stores zero, which 0x2DA316 divides by

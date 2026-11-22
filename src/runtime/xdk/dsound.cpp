@@ -1101,15 +1101,36 @@ void Start() {
     if (g_started) return;
     g_started = true;
     audio::StartOutput([](float* out, uint32_t frames) {
-        Render(out, frames);
+        // fast forward (audio::g_speed): k frames mixed for each played, averaged
+        const uint32_t k = std::clamp(audio::g_speed.load(std::memory_order_relaxed), 1u, 30u);
+        if (k == 1) {
+            Render(out, frames);
+        } else {
+            static std::vector<float> fast;
+            const uint32_t ch = audio::Channels();
+            fast.resize(size_t(frames) * k * ch);
+            Render(fast.data(), frames * k);
+            for (uint32_t i = 0; i < frames; i++)
+                for (uint32_t c = 0; c < ch; c++) {
+                    float sum = 0;
+                    for (uint32_t j = 0; j < k; j++) sum += fast[(size_t(i) * k + j) * ch + c];
+                    out[size_t(i) * ch + c] = sum / float(k);
+                }
+        }
         audio::MixCues(out, frames);  // after Render, which returns early while a host menu is up
     });
     // the APU's free running 48 kHz sample counter (0xFE80200C): XACT times fades, stops and transitions with it, so
-    // with the scratch register left at 0 its clock never moved and timed events never ended
+    // with the scratch register left at 0 its clock never moved and timed events never ended. It runs audio::g_speed
+    // times as fast as the wall's clock, as the mix does
     std::thread([] {
         auto* counter = static_cast<volatile uint32_t*>(HostPtr(0xFE80200C));
+        int64_t last = ClockNs();
+        double samples = double(last) * audio::kRate / 1e9;
         for (;;) {
-            *counter = uint32_t(uint64_t(ClockNs() / 1000) * audio::kRate / 1000000);
+            const int64_t now = ClockNs();
+            samples += double(now - last) * audio::kRate / 1e9 * audio::g_speed.load(std::memory_order_relaxed);
+            last = now;
+            *counter = uint32_t(uint64_t(samples));
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
     }).detach();

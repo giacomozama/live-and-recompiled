@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 
 // Frame rate and aspect patches (src/conker/game/display.cpp), after the community widescreen and 60 FPS XBE patches.
@@ -28,6 +29,12 @@ uint32_t GameRate();
 // out): for counting in console frames, two ticks each, what the game counts in frames
 uint32_t Ticks();
 void Init();
+
+// fast forward (debug features): the game's clock and its sound run g_fast_forward_speed times as fast (2 to 30;
+// XBE_FAST_FORWARD, else 4) while F10 is held or g_fast_forward is set (the Debug tab). Not kept in the settings
+extern std::atomic<bool> g_fast_forward;
+extern std::atomic<uint32_t> g_fast_forward_speed;
+constexpr uint32_t kFastForwardMin = 2, kFastForwardMax = 30;
 
 // GameInfo::aspect: the camera patch draws any shape, so the frame is the display's; XBE_ASPECT=W:H overrides it,
 // and the headless harness keeps the console's 4:3 unless asked

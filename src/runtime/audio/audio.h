@@ -1,4 +1,5 @@
 #pragma once
+#include <atomic>
 #include <cstdint>
 #include <functional>
 #include <string>
@@ -37,6 +38,11 @@ void Play(Cue cue);
 // adds the playing ones to the front pair of interleaved Channels() frames; the output's callback calls it after the
 // game's mix
 void MixCues(float* out, uint32_t frames);
+
+// how many times as fast as the wall's clock the game's sound plays: the debug features' fast forward (F10, the game's
+// display.cpp) sets it while held, so voices keep up with the game's sped up clock. The output mixes that many frames
+// for each it plays and averages them, and the APU's sample counter runs as fast. Any thread
+inline std::atomic<uint32_t> g_speed{1};
 
 // the platform output pulls interleaved float frames of Channels() channels from render
 void StartOutput(std::function<void(float* out, uint32_t frames)> render);

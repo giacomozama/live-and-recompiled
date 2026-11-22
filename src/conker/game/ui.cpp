@@ -2956,6 +2956,14 @@ void Draw(double fps) {
                     Hint("hint_drag_the_menu_s_edges",
                          true);
                 }
+                if (Section("fast_forward")) {
+                    bool on = display::g_fast_forward.load(std::memory_order_relaxed);
+                    if (Check("fast_forward_on", &on)) display::g_fast_forward.store(on, std::memory_order_relaxed);
+                    uint32_t speed = display::g_fast_forward_speed.load(std::memory_order_relaxed);
+                    Slider("fast_forward_speed", &speed, display::kFastForwardMin, display::kFastForwardMax, 4);
+                    display::g_fast_forward_speed.store(speed, std::memory_order_relaxed);
+                    Hint("hint_fast_forward");
+                }
                 if (Section("color_vision")) {
                     int cvd = int(std::min<uint32_t>(gpu::g_cvd_sim.load(std::memory_order_relaxed), 4));
                     ImGui::BeginDisabled(D3d11());
