@@ -462,7 +462,6 @@ void ConkerFrameTicks(X86Context& ctx, uint8_t* base) {
 
 // [[hook]] before 0x64468 in the camera projection: xmm1 holds the camera's aspect
 void ConkerCameraAspect(X86Context& ctx, uint8_t* base) {
-    (void)base;
     static float shown = 0;
     float frame = app::FrameAspect();
     uint32_t v = kernel::R32(ctx.ecx + ctx.eax + 0x264);
@@ -474,7 +473,35 @@ void ConkerCameraAspect(X86Context& ctx, uint8_t* base) {
              ctx.xmm[1].f[0] * frame * 0.75f);
         shown = frame;
     }
+    // XBE_ASPECT_TRACE=1: each camera's aspect as it comes in, once per camera and value
+    static const bool trace = diag::Env("XBE_ASPECT_TRACE") != nullptr;
+    if (trace) {
+        static std::unordered_map<uint32_t, float> seen;
+        const uint32_t cam = ctx.ecx + ctx.eax;
+        if (auto it = seen.find(cam); it == seen.end() || it->second != ctx.xmm[1].f[0]) {
+            seen[cam] = ctx.xmm[1].f[0];
+            LOGR("display: camera %08X aspect %.4f fov %.2f, level %u, cutscene %u, caller %08X", cam, ctx.xmm[1].f[0],
+                 vfov, kernel::R32(0x7FA1F8), unsigned(base[0x76F0E0]), kernel::R32(ctx.esp));
+        }
+    }
     ctx.xmm[1].f[0] *= frame * 0.75f;
+}
+
+// 0x3D2A40, the text drawing's setup: text drawn into the scene ([0x8086C6], as the throne intro's credits) gets its
+// glyphs' horizontal scale [0x8076B4] from the current camera's aspect, C / ([[0x84B868]+0x108] * K) (0x3D2C43). That
+// aspect is the one ConkerCameraAspect widened, which the projection already narrows the scene by, so the glyphs came
+// out narrowed twice: at 32:9 some 35% of their width (the glyphs' x 0.37 of 4:3's, the projection's 0.375). The
+// scale is put back to the console's, the widening taken out of it
+X86_EXTERN_FUNC(__imp__sub_003D2A40);
+X86_FUNC(sub_003D2A40) {
+    const uint32_t cam = kernel::R32(0x84B868);
+    const bool scene = base[0x8086C6] && !kernel::R32(0x8072F0) && cam && !(base[cam + 8] & 3);  // its branch
+    __imp__sub_003D2A40(ctx, base);
+    if (!scene) return;
+    float k;
+    std::memcpy(&k, base + 0x8076B4, 4);
+    k *= app::FrameAspect() * 0.75f;
+    if (std::isfinite(k)) std::memcpy(base + 0x8076B4, &k, 4);
 }
 
 // [[hook]] before 0x64471 in the camera projection, its tail jump to 0x645C0: xmm0 holds the vertical field of view
