@@ -96,9 +96,10 @@ struct Bubble {
     float width = 0, tall = 0;   // its size, eased (the display's pixels)
     float tip_x = 0, tip_y = 0;  // the tail's tip on the frame
     bool tip = false;
-    bool opened = false;  // its scale has reached 1 since it last grew
-    std::chrono::steady_clock::time_point opened_at{};
-    float last_scale = 0;  // the game's scale the frame before
+    float scale = 0;        // the scale drawn (DrawBubble)
+    float game_last = 0;    // the game's the frame before
+    int turn = 0;           // 1 opening, -1 closing, 0 neither
+    std::chrono::steady_clock::time_point turn_at{}, seen_at{};
     std::chrono::steady_clock::time_point at{};  // when it last drew
     uint32_t seen = 0;                           // the frame it last drew in
 };
@@ -377,27 +378,36 @@ void DrawBubble(X86Context& ctx, uint32_t rec) {
     bub.raw_x = bx + bw * 0.5f, bub.raw_y = by + bh * 0.5f;
     // the game's scale of the bubble [obj+0x50]: from 0 as each line's opens (0xE0CD0) to 1, and back as it closes.
     // The body's box is scaled by it; the ellipse is sized at full scale, eased, then scaled
-    const float scale = std::clamp(F(g_obj + kScale), 0.0f, 1.0f);
-    if (!(scale > 0.01f)) return;
-    const float full = bh / scale;  // the body's height at full scale
-    // The game opens and closes a bubble in some three ticks (its scale a third a tick: 0xE0CD0), too fast for the
-    // tail to come out and go back in by the scale, so: the ellipse opens with the game's scale and then the tail comes
-    // out, over kTailTime; as the game's scale falls, the ellipse holds its size while the tail goes back in, over the
-    // first half of the fall, and shrinks over the second
-    constexpr float kTailTime = 0.12f;
-    const auto now = std::chrono::steady_clock::now();
-    if (scale > bub.last_scale + 1e-4f) bub.opened = false;  // growing (a line's bubble opens again from 0)
-    if (scale >= 0.999f && !bub.opened) bub.opened = true, bub.opened_at = now;
-    bub.last_scale = scale;
-    auto smooth = [](float t) {
-        t = std::clamp(t, 0.0f, 1.0f);
-        return t * t * (3 - 2 * t);
-    };
-    float shown = scale, ejected = 0;
-    if (bub.opened) {
-        ejected = smooth(std::chrono::duration<float>(now - bub.opened_at).count() / kTailTime);
-        if (scale < 0.999f) ejected = std::min(ejected, smooth((scale - 0.5f) * 2)), shown = std::min(scale * 2, 1.0f);
+    const float game_scale = std::clamp(F(g_obj + kScale), 0.0f, 1.0f);
+    if (!(game_scale > 0.01f)) return;
+    const float full = bh / game_scale;  // the body's height at full scale
+    // The scale drawn: the game's moves a third a tick ([obj+0x54], 0xE0CD0), in steps, so it runs a curve of its own
+    // (smooth at both ends) over kTurnTime, about the time the game's takes, from when that starts to grow or fall
+    constexpr float kTurnTime = 0.1f, kTurnClose = 0.09f;  // closing a little sooner: the game stops drawing it at 0
+    {
+        const auto at = std::chrono::steady_clock::now();
+        const bool start = bub.turn_at == std::chrono::steady_clock::time_point{} ||
+                           std::chrono::duration<float>(at - bub.seen_at).count() > 0.5f;
+        if (start) {
+            bub.turn = game_scale >= 0.999f ? 0 : 1, bub.turn_at = at;  // 0 open, 1 opening, -1 closing
+        } else if (game_scale > bub.game_last + 1e-4f && bub.turn != 1) {
+            bub.turn = 1, bub.turn_at = at;
+        } else if (game_scale < bub.game_last - 1e-4f && bub.turn != -1) {
+            bub.turn = -1, bub.turn_at = at;
+        }
+        bub.game_last = game_scale, bub.seen_at = at;
+        const float t = std::chrono::duration<float>(at - bub.turn_at).count();
+        auto curve = [](float u) {
+            u = std::clamp(u, 0.0f, 1.0f);
+            return u * u * (3 - 2 * u);
+        };
+        bub.scale = bub.turn == 1 ? curve(t / kTurnTime) : bub.turn == -1 ? 1 - curve(t / kTurnClose) : 1.0f;
     }
+    if (!(bub.scale > 0.01f)) return;
+    const float scale = bub.scale;
+    // the bubble fades in and out with the scale drawn, always at its full size, its tail or trail out throughout
+    const auto now = std::chrono::steady_clock::now();
+    const float shown = scale;
     // the ellipse about the words' box and a margin, its half axes kSnug times the box's half sides (the least ellipse
     // around a box has them root 2 times: a little less, as a page's last line is short), no taller than the body;
     // before the words have drawn, their size as measured unseen (MeasureWords), else the body narrowed
@@ -431,26 +441,32 @@ void DrawBubble(X86Context& ctx, uint32_t rec) {
     auto ease = [&](float& was, float to) { was += (to - was) * k; };
     ease(bub.width, width), ease(bub.tall, height);
     bub.x = bub.raw_x, bub.y = bub.raw_y;
+    // The game sets its body off from the anchor ([obj+0x70] from [obj+0x68], 0xE1880) by as much times its scale, so
+    // as it opens and closes the body comes out of the anchor and goes back into it, toward the tail. The ellipse
+    // fades in and out at its middle at full scale instead
+    if (game_scale < 0.999f) {
+        const float ax = F(g_obj + kAnchor), ay = F(g_obj + kAnchor + 4);
+        bub.x = ax + (bub.raw_x - ax) / game_scale, bub.y = ay + (bub.raw_y - ay) / game_scale;
+    }
     bub.tip_x = tip_x, bub.tip_y = tip_y;
     bub.tip = g_tail || g_thought;
     const float cx = bub.x, cy = bub.y;
-    const float hx = std::max(bub.width * shown * 0.5f, 1.0f), hy = std::max(bub.tall * shown * 0.5f, 1.0f);
+    const float hx = std::max(bub.width * 0.5f, 1.0f), hy = std::max(bub.tall * 0.5f, 1.0f);
     // the soft edge: a pixel as drawn (the frame's pixels times the render scale down), half in and half out
     const app::Scale render = app::RenderScale(640, 480);
     const float soft = render.y > 0.1f && std::isfinite(render.y) ? 1.0f / render.y : 1.0f;
     // The tail, in the frame's pixels (the display's proportions) whatever the ellipse's size: kTailLong from the
     // middle of its base to its tip, its base kTailBase along the ellipse each side of that middle. Its base's middle
     // is on the ellipse's bottom, a kTailArc share of its perimeter about its lowest point: there, the point nearest
-    // the bubble's anchor. From it the tail aims at the anchor, no more than kSlant off square to the ellipse. Its
-    // length grows from nothing as it comes out (ejected)
+    // the bubble's anchor. From it the tail aims at the anchor, no more than kSlant off square to the ellipse
     constexpr float kTailBase = 9.0f, kTailLong = 18.0f, kTailArc = 1.0f / 3, kSlant = 0.35f;
     constexpr float kTurn = 6.2831853f, kBottom = kTurn / 4;  // the ellipse's angle at its lowest point (y down)
     float tx = (bub.tip_x - cx) * wider, ty = bub.tip_y - cy;
     float t0 = kBottom;
-    const float length = kTailLong * ejected;
-    const bool tail = g_tail && !g_thought && length >= soft * 2;
+    const float length = kTailLong;
+    const bool tail = g_tail && !g_thought;
     float ex = 0, ey = hy, aim = kBottom;  // where the tail or trail leaves the ellipse, and its way
-    if (tail || (g_thought && ejected > 0)) {
+    if (tail || g_thought) {
         // the bottom arc's ends, a sixth of the perimeter (Ramanujan's) each side of the lowest point
         const float h = (hx - hy) * (hx - hy) / ((hx + hy) * (hx + hy));
         const float perimeter = kTurn / 2 * (hx + hy) * (1 + 3 * h / (10 + std::sqrt(4 - 3 * h)));
@@ -478,7 +494,7 @@ void DrawBubble(X86Context& ctx, uint32_t rec) {
     const bool coloured = B(kColoured) != 0;
     const float fr = coloured ? B(kRed) / 255.0f : 1, fg = coloured ? B(kGreen) / 255.0f : 1,
                 fb = coloured ? B(kBlue) / 255.0f : 1;
-    const float alpha = B(rec + kSpriteAlpha) / 255.0f;
+    const float alpha = B(rec + kSpriteAlpha) / 255.0f * shown;  // faded in and out
     // the fill shaded toward the tail: darker on its side of the ellipse, the most at its tip, a little lighter across
     float sx = 0, sy = 0;  // toward the tail, of the half axes
     if (p.back().tip) {
@@ -606,15 +622,14 @@ void DrawBubble(X86Context& ctx, uint32_t rec) {
         band(fx[i], fy[i], fx[(i + 1) % n], fy[(i + 1) % n], fa, fb2, ax1, ay1, bx1, by1, ca, cb);
     }
     // a thought's trail: kTrail circles of the frame's pixels from where it leaves the cloud toward the anchor, a
-    // gap between, each coming out after the one before it, a soft shadow below each
-    if (g_thought && ejected > 0) {
+    // gap between, a soft shadow below each
+    if (g_thought) {
         constexpr float kTrail[] = {11.0f, 7.0f}, kGap = 6.0f;
         // from past the cloud's edge: its largest lobe at its fullest, from its middle inside the ellipse
         float along = kGap + std::max(CloudLobe(hy) * 1.15f * 1.07f - (CloudLobe(hy) - CloudOut(hy)), 0.0f);
         for (size_t k = 0; k < std::size(kTrail); k++) {
-            const float grown = std::clamp(ejected * float(std::size(kTrail)) - float(k), 0.0f, 1.0f);
             const float wobble = 1 + 0.08f * std::sin(Clock(now) * 3.1f + 2.1f * float(k + 1));
-            const float r = kTrail[k] * grown * grown * (3 - 2 * grown) * wobble;
+            const float r = kTrail[k] * wobble;
             const float ox = ex + std::cos(aim) * (along + kTrail[k]), oy = ey + std::sin(aim) * (along + kTrail[k]);
             along += 2 * kTrail[k] + kGap;
             if (r < soft) continue;
