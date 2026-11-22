@@ -406,7 +406,11 @@ X86_FUNC(sub_002A7B60) {
 // fade and cutscene clock from them step alike, as if the frame had taken that long, and the sound plays as fast
 // (audio::g_speed). Frames come as often as before; what steps once a frame keeps its pace. Not in a shared system
 // link session
-std::atomic<bool> display::g_fast_forward{false};
+bool display::g_fast_forward_enabled = false;
+bool display::FastForwardEnabled() {
+    static const bool env = diag::Env("XBE_FAST_FORWARD") != nullptr;
+    return diag::kDebugFeatures && (g_fast_forward_enabled || env);
+}
 std::atomic<uint32_t> display::g_fast_forward_speed{[] {
     const char* e = diag::Env("XBE_FAST_FORWARD");
     return e ? std::clamp(uint32_t(std::strtoul(e, nullptr, 10)), display::kFastForwardMin, display::kFastForwardMax)
@@ -416,7 +420,7 @@ std::atomic<uint32_t> display::g_fast_forward_speed{[] {
 namespace {
 uint32_t FastForward() {
     if constexpr (!diag::kDebugFeatures) return 1;
-    const bool on = display::g_fast_forward.load(std::memory_order_relaxed) || app::KeyDown(0x79);  // F10
+    const bool on = display::FastForwardEnabled() && app::KeyDown(0x79);  // F10
     const uint32_t k = on && !display::FrameRateLocked()
                            ? std::clamp(display::g_fast_forward_speed.load(std::memory_order_relaxed),
                                         display::kFastForwardMin, display::kFastForwardMax)

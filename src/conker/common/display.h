@@ -31,8 +31,10 @@ uint32_t Ticks();
 void Init();
 
 // fast forward (debug features): the game's clock and its sound run g_fast_forward_speed times as fast (2 to 30;
-// XBE_FAST_FORWARD, else 4) while F10 is held or g_fast_forward is set (the Debug tab). Not kept in the settings
-extern std::atomic<bool> g_fast_forward;
+// XBE_FAST_FORWARD, else 4) while F10 is held, once g_fast_forward_enabled (the Debug tab; settings.toml fast_forward,
+// off by default; XBE_FAST_FORWARD turns it on too). Off, F10 is an ordinary key. The speed isn't kept in the settings
+extern bool g_fast_forward_enabled;
+bool FastForwardEnabled();
 extern std::atomic<uint32_t> g_fast_forward_speed;
 constexpr uint32_t kFastForwardMin = 2, kFastForwardMax = 30;
 

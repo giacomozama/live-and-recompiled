@@ -72,6 +72,7 @@ const app::GameInfo app::kGame = {
     .images = {{"default.xbe", "Game"}},  // each recompiled xbe and its exe, for title launches
     .options = {{"fps_overlay", &ui::g_fps_overlay, nullptr},  // ImGui settings menu options (src/conker/game/ui.cpp)
                 {"menu_resizable", &ui::g_menu_resizable, nullptr},  // Debug: the settings menu moved and sized by the mouse (ui.cpp)
+                {"fast_forward", &display::g_fast_forward_enabled, nullptr},  // Debug: F10 and the Debug tab fast forward the game, off by default (display.cpp)
                 {"menu_decorations", &ui::g_decorations, nullptr},  // outlines round the settings menu's sections and widgets (ui.cpp)
                 {"ui_accent", nullptr, &ui::g_accent},  // the settings menu's accent color, 0 blue to 6 purple, 4 orange by default (ui_font.cpp)
                 {"frame_rate", nullptr, &display::g_frame_rate},  // 30, 60, 120, 180 or 240; 0, the old Highest, moves to a rate (src/conker/game/display.cpp)

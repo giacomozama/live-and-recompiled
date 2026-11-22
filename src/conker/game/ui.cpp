@@ -2957,11 +2957,12 @@ void Draw(double fps) {
                          true);
                 }
                 if (Section("fast_forward")) {
-                    bool on = display::g_fast_forward.load(std::memory_order_relaxed);
-                    if (Check("fast_forward_on", &on)) display::g_fast_forward.store(on, std::memory_order_relaxed);
+                    Check("fast_forward_enabled", &display::g_fast_forward_enabled);
+                    ImGui::BeginDisabled(!display::FastForwardEnabled());
                     uint32_t speed = display::g_fast_forward_speed.load(std::memory_order_relaxed);
                     Slider("fast_forward_speed", &speed, display::kFastForwardMin, display::kFastForwardMax, 4);
                     display::g_fast_forward_speed.store(speed, std::memory_order_relaxed);
+                    ImGui::EndDisabled();
                     Hint("hint_fast_forward");
                 }
                 if (Section("color_vision")) {
@@ -3027,15 +3028,17 @@ void Draw(double fps) {
             // pad's cursor never lands on it
             const ImVec2 after = ImGui::GetCursorPos();
             const ImGuiStyle& st = ImGui::GetStyle();
-            const float width = ImGui::CalcTextSize(T("close")).x + st.FramePadding.x * 2.0f;
+            const float pad_x = st.FramePadding.x * 1.4f;  // the tabs' roomier padding (tab, above)
+            const float width = ImGui::CalcTextSize(T("close")).x + pad_x * 2.0f;
             ImGui::SetCursorPos(ImVec2(after.x + ImGui::GetContentRegionAvail().x - width, row_y));
+            ImGui::PushStyleVarX(ImGuiStyleVar_FramePadding, pad_x);
             ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
             ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(1.0f, 1.0f, 1.0f, 0.07f));
             ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(1.0f, 1.0f, 1.0f, 0.12f));
             ImGui::PushItemFlag(ImGuiItemFlags_NoNav, true);
             ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, ImGui::GetFrameHeight() * 0.5f);  // a pill like the tabs
             if (ImGui::Button(T("close"))) Close();
-            ImGui::PopStyleVar();
+            ImGui::PopStyleVar(2);
             ImGui::PopItemFlag();
             ImGui::PopStyleColor(3);
             ImGui::SetCursorPos(after);

@@ -32,6 +32,7 @@
 #include <string>
 #include <vector>
 
+#include "audio/audio.h"
 #include "cpu/x86_ops.h"
 #include "kernel/kernel.h"
 
@@ -136,6 +137,12 @@ std::vector<Bubble> g_bubbles;
 double Now() {
     using namespace std::chrono;
     return duration<double>(steady_clock::now().time_since_epoch()).count();
+}
+
+// the game's seconds in a frame's wall seconds (at most 0.1): fast forward (display.cpp, audio::g_speed) runs them
+// that many times as fast, as it does the voices the subtitles follow
+double GameSeconds(double wall) {
+    return std::min(wall, 0.1) * double(std::max(audio::g_speed.load(std::memory_order_relaxed), 1u));
 }
 
 uint32_t Fnv(const std::u16string& s) {
@@ -305,7 +312,7 @@ void Capture(uint32_t obj) {
     Bubble& b = *it;
     const bool running = !R8(kPaused);
     if (b.page != page) b.page = page, b.elapsed = 0.0;
-    else if (running) b.elapsed += std::min(now - b.last, 0.1);
+    else if (running) b.elapsed += GameSeconds(now - b.last);
     b.last = now;
     b.flags = flags;
     if (b.pieces.empty() || b.raw != raw) {  // the page's text, fixed and in pieces, again only when it changes
@@ -553,7 +560,7 @@ void subtitles::Draw() {
             return;
         }
         const double now = Now();
-        if (g_voice && !kernel::Held() && !R8(kPaused)) g_voice_time += std::min(now - g_voice_seen, 0.1);
+        if (g_voice && !kernel::Held() && !R8(kPaused)) g_voice_time += GameSeconds(now - g_voice_seen);
         g_voice_seen = now;
         if (!kernel::Held())
             std::erase_if(g_bubbles, [&](const Bubble& b) { return now - b.last > kGone; });

@@ -172,10 +172,11 @@ bool SkipButtonHeld() {
             for (uint8_t a : pad.analog)
                 if (a > 64) return true;
         }
-        // any key or mouse button (virtual-key codes 1 to 254) but Escape and F1, which open the menu, F10, the
-        // debug features' fast forward (display.cpp), and the ones bound to pause or quit
+        // any key or mouse button (virtual-key codes 1 to 254) but Escape and F1, which open the menu, F10 while
+        // it is the debug features' fast forward (display.cpp), and the ones bound to pause or quit
+        const bool ff = display::FastForwardEnabled();
         for (int vk = 1; vk < 0xFF; vk++) {
-            if (vk == 0x1B || vk == 0x70 || (diag::kDebugFeatures && vk == 0x79)) continue;
+            if (vk == 0x1B || vk == 0x70 || (ff && vk == 0x79)) continue;
             if (!input::KeyDown(p, vk)) continue;
             bool special = false;
             for (int a : {keyboard::kPause, keyboard::kQuit})
