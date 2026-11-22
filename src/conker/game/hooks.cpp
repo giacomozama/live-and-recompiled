@@ -1514,6 +1514,55 @@ void ConkerSwimSurface(X86Context& ctx, uint8_t* base) {
     ctx.xmm[1].f[0] = above - left;
 }
 
+// 0x2ED170 (esi the character) settles a character on the ground under it. On the ground, with the vertical speed
+// [+0xD4] low, it takes the speed along the ground [+0x110] times 0.9 (0x2ED786) once a frame, while the push that walks
+// it (0x2EB830, from the character's own update) adds an amount times the time scale [0x7FDB8C], which halves at 60
+// FPS. A walker's speed goes to push / (1 - 0.9) against the drag, so at 60 it settled at half the console's: the
+// Windmill beetles that leave their stumps for Conker ("Shoot The Beetles?") took 0.9 v + 2.25 a frame, topping out at
+// 22.5 instead of 45 (the beetle's record logged at 30 and 60), too slow to get off the stump's lip, and walked into the
+// stump until they gave up. Above 30 the drag is 0.9 a console frame of two ticks, 0.9^(ticks / 2) a frame.
+// [[hook]] before 0x2ED78E: xmm0 the speed times 0.9, about to be stored back to [esi+0x110]
+void ConkerGroundDrag(X86Context& ctx, uint8_t* base) {
+    if (display::GameRate() <= 30) return;
+    const uint32_t ticks = std::clamp(kernel::R32(0x7FA20C), 1u, 60u);
+    if (ticks == 2) return;
+    float speed;
+    std::memcpy(&speed, base + ctx.esi + 0x110, 4);
+    ctx.xmm[0].f[0] = speed * std::pow(0.9f, float(ticks) * 0.5f);
+}
+
+// 0x2A3110 (ebx the character), called from the move (0x2E8AC0) once a frame, sweeps the character from where the
+// frame began (+0x84) to where its step left it (+0x78) and puts it where the collision ends (0x2A331F). Below a
+// collision shape's top it is lifted out, and when that face leans, part of the lift goes sideways. The Windmill
+// stumps' shape is a block whose top is the stump's top (y -2644): a beetle walking down a stump's side to get at
+// Conker is 60 to 110 units inside it each frame, lifted to the top, and set back on the slope by the ground snap
+// (0x2ED170). Where the top leans inward a little (z about 65 on the first beetle's stump), the lift also shoved it
+// some 7 units back toward the stump's middle each frame (write breakpoints on its position). The console's frame
+// stepped it forward some 7.5, enough to get past; at 60 the step is half and the shove the same, so the beetle walked
+// in place inside the stump until it gave up. Above 30 a lift that is mostly upward (a floor's, not a wall's) moves the
+// character sideways by ticks / 2 of its sideways part, as much a second as on the console; walls are as they were.
+// [[hook]] before 0x2A331F: ecx, edx, eax the position the collision ends at (x, y, z), [ebx+0x78] still the old one
+void ConkerCollisionLift(X86Context& ctx, uint8_t* base) {
+    if (display::GameRate() <= 30) return;
+    const uint32_t ticks = std::clamp(kernel::R32(0x7FA20C), 1u, 60u);
+    if (ticks >= 2) return;
+    auto f = [](uint32_t v) {
+        float r;
+        std::memcpy(&r, &v, 4);
+        return r;
+    };
+    float old[3];
+    std::memcpy(old, base + ctx.ebx + 0x78, 12);
+    const float x = f(ctx.ecx), y = f(ctx.edx), z = f(ctx.eax);
+    const float dx = x - old[0], dy = y - old[1], dz = z - old[2];
+    const float side = std::sqrt(dx * dx + dz * dz);
+    if (dy < 1.0f || dy < 3.0f * side) return;
+    const float keep = float(ticks) * 0.5f;
+    const float nx = old[0] + dx * keep, nz = old[2] + dz * keep;
+    std::memcpy(&ctx.ecx, &nx, 4);
+    std::memcpy(&ctx.eax, &nz, 4);
+}
+
 // 0x312F80 (eax the player, each frame from 0x2D87B9) works out how fast a weapon mode's walk really went: the distance
 // from the frame's start (+0x84) to where it ended (+0x78), times 2, over the speed the stick asked for (+0x648, 34 a
 // full axis), kept to 0..1, times that speed, into [[player+0x568]+0x390]. The 2 fits a frame of two ticks. At 60 FPS a

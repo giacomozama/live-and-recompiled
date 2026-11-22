@@ -480,6 +480,14 @@ at = 0x2EBB36  # an airborne character's vertical substeps: the console's count 
 call = "ConkerAirSubsteps"
 
 [[hook]]
+at = 0x2ED78E  # a grounded character's speed drag: 0.9 a console frame of two ticks, not 0.9 a frame (the beetles' half pace at 60)
+call = "ConkerGroundDrag"
+
+[[hook]]
+at = 0x2A331F  # a collision's lift out of a floor: its sideways part a console frame's, not a frame's (the beetles shoved back up their stumps at 60)
+call = "ConkerCollisionLift"
+
+[[hook]]
 at = 0x708B2  # a chocolate pickup's bob: its height is a whole number, the fraction goes to the float offset the matrix adds
 call = "ConkerChocoBob"
 
