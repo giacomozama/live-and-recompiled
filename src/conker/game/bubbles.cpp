@@ -55,6 +55,7 @@ constexpr uint32_t kTailCall = 0xE2161, kTailTurnedCall1 = 0xE2027, kTailTurnedC
 constexpr uint32_t kBoxLeft = 0x801740, kBoxTop = 0x80173C, kBoxWidth = 0x801734, kBoxHeight = 0x801730;
 constexpr uint32_t kColoured = 0x80174C, kRed = 0x801758, kGreen = 0x801759, kBlue = 0x80175A;
 constexpr uint32_t kSpriteAlpha = 0xA;
+constexpr uint32_t kState = 0x35, kShowing = 0x20, kWords = 0xE2940;
 constexpr uint32_t kScale = 0x50, kAnchor = 0x68, kTextX = 0x78, kTextY = 0x7C, kPage = 0x48, kToward = 0xB4;
 constexpr uint32_t kSpriteZ = 0x648D1C;  // the sprites' z
 constexpr uint32_t kDrawVerticesUP = 0x53A600, kTriangleList = 5;
@@ -85,11 +86,15 @@ struct Box {
 struct Bubble {
     uint32_t page = 0;
     Box words;                   // over the page so far, from the body's middle, unmoved
+    Box unseen;                  // as MeasureWords last measured them, for their size alone
     float raw_x = 0, raw_y = 0;  // the body's middle as the game placed it this frame
     float x = 0, y = 0;          // the ellipse's middle
     float width = 0, tall = 0;   // its size, eased (the display's pixels)
     float tip_x = 0, tip_y = 0;  // the tail's tip on the frame
     bool tip = false;
+    bool opened = false;  // its scale has reached 1 since it last grew
+    std::chrono::steady_clock::time_point opened_at{};
+    float last_scale = 0;  // the game's scale the frame before
     std::chrono::steady_clock::time_point at{};  // when it last drew
     uint32_t seen = 0;                           // the frame it last drew in
 };
@@ -102,6 +107,9 @@ bool g_tail = false, g_tail_turned = false;
 float g_tail_x0, g_tail_y0, g_tail_w, g_tail_h;
 bool g_words = false;
 Box g_words_now;
+// the words are drawing unseen (MeasureWords): drawn as the game places them while it opens, which is not where it
+// shows them (a box of both came out twice as wide), so only their size is kept
+bool g_unseen = false;
 
 uint32_t g_vertices = 0;
 constexpr uint32_t kCapacity = 4096;  // vertices
@@ -219,14 +227,33 @@ void DrawBubble(X86Context& ctx, uint32_t rec) {
     const float scale = std::clamp(F(g_obj + kScale), 0.0f, 1.0f);
     if (!(scale > 0.01f)) return;
     const float full = bh / scale;  // the body's height at full scale
+    // The game opens and closes a bubble in some three ticks (its scale a third a tick: 0xE0CD0), too fast for the
+    // tail to come out and go back in by the scale, so: the ellipse opens with the game's scale and then the tail comes
+    // out, over kTailTime; as the game's scale falls, the ellipse holds its size while the tail goes back in, over the
+    // first half of the fall, and shrinks over the second
+    constexpr float kTailTime = 0.12f;
+    const auto now = std::chrono::steady_clock::now();
+    if (scale > bub.last_scale + 1e-4f) bub.opened = false;  // growing (a line's bubble opens again from 0)
+    if (scale >= 0.999f && !bub.opened) bub.opened = true, bub.opened_at = now;
+    bub.last_scale = scale;
+    auto smooth = [](float t) {
+        t = std::clamp(t, 0.0f, 1.0f);
+        return t * t * (3 - 2 * t);
+    };
+    float shown = scale, ejected = 0;
+    if (bub.opened) {
+        ejected = smooth(std::chrono::duration<float>(now - bub.opened_at).count() / kTailTime);
+        if (scale < 0.999f) ejected = std::min(ejected, smooth((scale - 0.5f) * 2)), shown = std::min(scale * 2, 1.0f);
+    }
     // the ellipse about the words' box and a margin, its half axes kSnug times the box's half sides (the least ellipse
     // around a box has them root 2 times: a little less, as a page's last line is short), no taller than the body;
-    // before the words have drawn, the body narrowed
+    // before the words have drawn, their size as measured unseen (MeasureWords), else the body narrowed
     constexpr float kMargin = 8.0f, kSnug = 1.35f;
     float width = bw / scale, height = full;  // the display's pixels (the frame's x times wider)
-    if (!bub.words.Empty()) {
-        width = 2 * kSnug * ((bub.words.x1 - bub.words.x0) * wider * 0.5f + kMargin);
-        height = std::min(2 * kSnug * ((bub.words.y1 - bub.words.y0) * 0.5f + kMargin), full);
+    const Box& words = !bub.words.Empty() ? bub.words : bub.unseen;
+    if (!words.Empty()) {
+        width = 2 * kSnug * ((words.x1 - words.x0) * wider * 0.5f + kMargin);
+        height = std::min(2 * kSnug * ((words.y1 - words.y0) * 0.5f + kMargin), full);
     }
     width = std::max(width, height);
     // the tail's tip: toward its speaker from the turned tail's middle, as far as half its sprite's height, or the
@@ -244,9 +271,8 @@ void DrawBubble(X86Context& ctx, uint32_t rec) {
     // its place and tip as the game's are, which jump where the game's do (a camera cut in a cutscene); its size eased
     // by the time gone, most of the way in a tenth of a second (a page's words of another width), but a bubble just
     // opening (as each line's does) or not drawn for a while starts at its size
-    const auto now = std::chrono::steady_clock::now();
     const float dt = std::chrono::duration<float>(now - bub.at).count();
-    const bool fresh = bub.at == std::chrono::steady_clock::time_point{} || dt > 0.5f || scale < 0.15f;
+    const bool fresh = bub.at == std::chrono::steady_clock::time_point{} || dt > 0.5f || shown < 0.15f;
     const float k = fresh ? 1.0f : 1.0f - std::exp(-std::max(dt, 0.0f) / 0.05f);
     bub.at = now;
     auto ease = [&](float& was, float to) { was += (to - was) * k; };
@@ -255,42 +281,34 @@ void DrawBubble(X86Context& ctx, uint32_t rec) {
     bub.tip_x = tip_x, bub.tip_y = tip_y;
     bub.tip = g_tail;
     const float cx = bub.x, cy = bub.y;
-    const float hx = std::max(bub.width * scale * 0.5f, 1.0f), hy = std::max(bub.tall * scale * 0.5f, 1.0f);
+    const float hx = std::max(bub.width * shown * 0.5f, 1.0f), hy = std::max(bub.tall * shown * 0.5f, 1.0f);
     // the soft edge: a pixel as drawn (the frame's pixels times the render scale down), half in and half out
     const app::Scale render = app::RenderScale(640, 480);
     const float soft = render.y > 0.1f && std::isfinite(render.y) ? 1.0f / render.y : 1.0f;
-    // the tail leaves the ellipse square, from its point nearest the tip, its base kTailBase long each side of that
-    // along the ellipse and no more than kTailLong long (it stops short of a far anchor), both in the frame's pixels
-    // (the display's proportions) whatever the ellipse's size. It comes out as the ellipse finishes opening and goes
-    // back in before it closes: over the game's scale's last kTailOut its tip is drawn in toward the ellipse's edge
-    constexpr float kTailBase = 9.0f, kTailLong = 36.0f, kTailOut = 0.3f;
-    const float out = std::clamp((scale - (1 - kTailOut)) / kTailOut, 0.0f, 1.0f);
-    const float ejected = out * out * (3 - 2 * out);
+    // The tail, in the frame's pixels (the display's proportions) whatever the ellipse's size: kTailLong from the
+    // middle of its base to its tip, its base kTailBase along the ellipse each side of that middle. Its base's middle
+    // is on the ellipse's bottom, a kTailArc share of its perimeter about its lowest point: there, the point nearest
+    // the bubble's anchor. From it the tail aims at the anchor, no more than kSlant off square to the ellipse. Its
+    // length grows from nothing as it comes out (ejected)
+    constexpr float kTailBase = 9.0f, kTailLong = 18.0f, kTailArc = 1.0f / 3, kSlant = 0.35f;
+    constexpr float kTurn = 6.2831853f, kBottom = kTurn / 4;  // the ellipse's angle at its lowest point (y down)
     float tx = (bub.tip_x - cx) * wider, ty = bub.tip_y - cy;
-    float t0 = 0;
-    bool tail = g_tail && (tx / hx) * (tx / hx) + (ty / hy) * (ty / hy) > 1;  // outside the ellipse
+    float t0 = kBottom;
+    const float length = kTailLong * ejected;
+    const bool tail = g_tail && length >= soft * 2;
     if (tail) {
-        // the farther the tip than kTailLong, the more the base slides from the nearest point toward where the line
-        // from the middle to the tip leaves the ellipse, the tail aimed at the tip from there: cut short, it still
-        // points the way
-        const float nearest = Nearest(hx, hy, tx, ty), toward = std::atan2(ty / hy, tx / hx);
-        const float far = std::hypot(tx - hx * std::cos(nearest), ty - hy * std::sin(nearest));
-        const float slide = far > kTailLong ? 1 - kTailLong / far : 0;
-        const float turn = std::remainder(toward - nearest, 6.2831853f);  // the shorter way round
-        t0 = nearest + turn * slide;
+        // the bottom arc's ends, a sixth of the perimeter (Ramanujan's) each side of the lowest point
+        const float h = (hx - hy) * (hx - hy) / ((hx + hy) * (hx + hy));
+        const float perimeter = kTurn / 2 * (hx + hy) * (1 + 3 * h / (10 + std::sqrt(4 - 3 * h)));
+        const float left = Along(hx, hy, kBottom, 1, perimeter * kTailArc / 2);   // toward -x (angle up from 90)
+        const float right = Along(hx, hy, kBottom, -1, perimeter * kTailArc / 2);  // toward +x
+        const float nearest = kBottom + std::remainder(Nearest(hx, hy, tx, ty) - kBottom, kTurn);
+        t0 = std::clamp(nearest, right, left);
         const float ex = hx * std::cos(t0), ey = hy * std::sin(t0);
-        float dx = tx - ex, dy = ty - ey;
-        const float l = std::hypot(dx, dy);
-        const float length = std::min(l, kTailLong) * ejected;
-        tail = length >= soft * 2 && l > 1e-3f;
-        if (tail) {
-            // aimed at the tip, but no more than kSlant off square to the ellipse there
-            constexpr float kSlant = 0.35f;  // radians, some 20 degrees
-            const float normal = std::atan2(std::sin(t0) / hy, std::cos(t0) / hx);
-            const float off = std::remainder(std::atan2(dy, dx) - normal, 6.2831853f);
-            const float aim = normal + std::clamp(off, -kSlant, kSlant);
-            tx = ex + std::cos(aim) * length, ty = ey + std::sin(aim) * length;
-        }
+        const float normal = std::atan2(std::sin(t0) / hy, std::cos(t0) / hx);
+        const float toward = std::hypot(tx - ex, ty - ey) > 1e-3f ? std::atan2(ty - ey, tx - ex) : normal;
+        const float aim = normal + std::clamp(std::remainder(toward - normal, kTurn), -kSlant, kSlant);
+        tx = ex + std::cos(aim) * length, ty = ey + std::sin(aim) * length;
     }
     float gap_from = 0, gap_to = 0;
     std::vector<Point> p = Outline(hx, hy, tail, tx, ty, t0, kTailBase, &gap_from, &gap_to);
@@ -314,7 +332,7 @@ void DrawBubble(X86Context& ctx, uint32_t rec) {
         const float dark = 1 - kShade * std::max(g, 0.0f), up = kLight * std::max(-g, 0.0f);
         return Colour((fr + (1 - fr) * up) * dark, (fg + (1 - fg) * up) * dark, (fb + (1 - fb) * up) * dark, alpha);
     };
-    // a soft shadow below, outside the shape only (the shape is see-through): from its edge out by kBlur of its half
+    // a soft shadow below, outside the ellipse only (it is see-through): from its edge out by kBlur of its half
     // height, moved down by kDrop of it, kShadow dark, falling off fast
     constexpr float kBlur = 0.35f, kDrop = 0.12f, kShadow = 0.4f;
     const float blur = hy * kBlur, drop = hy * kDrop;
@@ -331,16 +349,31 @@ void DrawBubble(X86Context& ctx, uint32_t rec) {
     };
     const size_t n = p.size();
     auto off = [](const Point& q, float d, float& x, float& y) { x = q.x + q.nx * d, y = q.y + q.ny * d; };
-    for (size_t i = 0; i < n; i++) {  // the shadow first, under the bubble's soft edge
-        const Point& a = p[i];
-        const Point& b = p[(i + 1) % n];
+    // the shadow first, under the bubble's soft edge: the ellipse's alone (a short tail's spread into a fan)
+    // It fades out under the tail, which is see-through too: over the shadow it came out darker than the bubble. Gone
+    // within its base's arc, back over as far again each side
+    const std::vector<Point> e = Outline(hx, hy, false, 0, 0, 0, 0);
+    const float under = tail ? (gap_to - gap_from) * 0.5f : 0.0f;
+    auto clear_of_tail = [&](size_t i) {
+        if (!tail) return 1.0f;
+        const float t = kTurn * float(i % e.size()) / float(e.size());
+        const float d = std::fabs(std::remainder(t - t0, kTurn));
+        const float f = std::clamp((d - under) / std::max(under, 1e-3f), 0.0f, 1.0f);
+        return f * f * (3 - 2 * f);
+    };
+    auto faded = [](uint32_t c, float f) { return (c & 0x00FFFFFFu) | uint32_t(float(c >> 24) * f + 0.5f) << 24; };
+    for (size_t i = 0; i < e.size(); i++) {
+        const Point& a = e[i];
+        const Point& b = e[(i + 1) % e.size()];
+        const float fa = clear_of_tail(i), fb = clear_of_tail(i + 1);
         float ax0, ay0, bx0, by0, axm, aym, bxm, bym, ax1, ay1, bx1, by1;
         off(a, 0, ax0, ay0), off(b, 0, bx0, by0);
         off(a, blur * 0.35f, axm, aym), off(b, blur * 0.35f, bxm, bym);
         off(a, blur, ax1, ay1), off(b, blur, bx1, by1);
         aym += drop * 0.5f, bym += drop * 0.5f, ay1 += drop, by1 += drop;
-        band(ax0, ay0, bx0, by0, shade0, shade0, axm, aym, bxm, bym, shade1, shade1);
-        band(axm, aym, bxm, bym, shade1, shade1, ax1, ay1, bx1, by1, shade2, shade2);
+        band(ax0, ay0, bx0, by0, faded(shade0, fa), faded(shade0, fb), axm, aym, bxm, bym, faded(shade1, fa),
+             faded(shade1, fb));
+        band(axm, aym, bxm, bym, faded(shade1, fa), faded(shade1, fb), ax1, ay1, bx1, by1, shade2, shade2);
     }
     // the fill: the whole ellipse fanned from its middle, and the tail fanned from its tip over the ellipse's arc
     // under its base, so no triangle reaches from the middle to the tip (its shading streaked across the bubble). Their
@@ -409,13 +442,34 @@ void DrawBubble(X86Context& ctx, uint32_t rec) {
             traced = g_frame;
             LOGR("bubbles: %08X body %.1f %.1f %.1f x %.1f, words %.1f..%.1f %.1f..%.1f, "
                  "ellipse at %.1f %.1f %.1f x %.1f, tip %.1f %.1f, tail %d%s %.1f %.1f %.1f x %.1f, "
-                 "colour %d %02X%02X%02X alpha %02X, wider %.3f",
+                 "colour %d %02X%02X%02X alpha %02X, wider %.3f, state %02X",
                  g_obj, bx, by, bw, bh, bub.words.x0, bub.words.x1, bub.words.y0, bub.words.y1, cx, cy, bub.width,
                  bub.tall, bub.tip_x, bub.tip_y, int(g_tail), g_tail_turned ? " turned" : "", g_tail_x0, g_tail_y0,
                  g_tail_w, g_tail_h, int(coloured), B(kRed), B(kGreen), B(kBlue), B(rec + kSpriteAlpha),
-                 double(wider));
+                 double(wider), B(g_obj + kState));
         }
     }
+}
+
+// The bubble opens before it shows its words (0xE2940 draws them only in some of its states, [obj+0x35]), and sized
+// by the body until they had drawn it opened narrow and then widened. Until they have, they are drawn see-through
+// (alpha 0) before the body each frame, in a state that shows them, for their box (ConkerTextQuad): a page of more
+// than four lines skips its faint lines, so its box grows as it would have. Before 0xE1880 runs: the words' drawing
+// takes the texture off (0x1F31B0), and in the body's draw it left the body and the ellipse drawn without the
+// bubble's texture, opaque white
+void MeasureWords(X86Context& ctx, uint8_t* base) {
+    if (!g_obj) return;
+    const Bubble& b = g_bubbles[g_obj];
+    if (!b.words.Empty() || !R32(g_obj + kPage)) return;
+    const uint8_t state = base[g_obj + kState];
+    base[g_obj + kState] = kShowing;
+    const uint32_t eax = ctx.eax;
+    ctx.eax = g_obj;
+    g_unseen = true;
+    kernel::CallGuest(ctx, kWords, {0, 0, 0, 0});
+    g_unseen = false;
+    ctx.eax = eax;
+    base[g_obj + kState] = state;
 }
 
 // a tail or body sprite drawn see-through: its box kept, the draw's state left for the bubble's
@@ -442,7 +496,7 @@ void subtitles::BubbleDrawing(uint32_t obj) {
         const uint32_t page = R32(obj + kPage);
         if (b.page != page) {
             b.page = page;
-            b.words = {};
+            b.words = {}, b.unseen = {};
         }
         b.seen = ++g_frame;
         return;
@@ -496,8 +550,8 @@ X86_FUNC(sub_000E2940) {
     if (!g_obj || obj != g_obj) return __imp__sub_000E2940(ctx, base);
     Bubble& b = g_bubbles[obj];
     // the words' middle as the game would draw them, from the body's, to the ellipse's
-    const float mx = b.words.Empty() ? 0.0f : b.x - (b.raw_x + (b.words.x0 + b.words.x1) * 0.5f);
-    const float my = b.y - b.raw_y;
+    const float mx = b.words.Empty() || g_unseen ? 0.0f : b.x - (b.raw_x + (b.words.x0 + b.words.x1) * 0.5f);
+    const float my = g_unseen ? 0.0f : b.y - b.raw_y;
     const float x = F(obj + kTextX), y = F(obj + kTextY);
     PutF(obj + kTextX, x + mx), PutF(obj + kTextY, y + my);
     g_words = true;
@@ -505,7 +559,14 @@ X86_FUNC(sub_000E2940) {
     __imp__sub_000E2940(ctx, base);
     g_words = false;
     PutF(obj + kTextX, x), PutF(obj + kTextY, y);
-    if (!g_words_now.Empty())
-        b.words.Add(g_words_now.x0 - mx - b.raw_x, g_words_now.y0 - my - b.raw_y, g_words_now.x1 - mx - b.raw_x,
-                    g_words_now.y1 - my - b.raw_y);
+    if (g_words_now.Empty()) return;
+    if (g_unseen) {
+        b.unseen = g_words_now;
+        return;
+    }
+    b.words.Add(g_words_now.x0 - mx - b.raw_x, g_words_now.y0 - my - b.raw_y, g_words_now.x1 - mx - b.raw_x,
+                g_words_now.y1 - my - b.raw_y);
 }
+
+// [[hook]] 0xE1880 (subtitles.cpp) calls this after BubbleDrawing(obj), before the bubble is drawn
+void subtitles::BubbleMeasure(X86Context& ctx) { MeasureWords(ctx, mem::Base()); }

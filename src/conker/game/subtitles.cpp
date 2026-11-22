@@ -357,6 +357,7 @@ X86_EXTERN_FUNC(__imp__sub_000E1880);
 X86_FUNC(sub_000E1880) {
     if (!subtitles::g_on) {
         subtitles::BubbleDrawing(R32(ctx.esp + 4));
+        subtitles::BubbleMeasure(ctx);
         __imp__sub_000E1880(ctx, base);
         subtitles::BubbleDrawing(0);
         return;
