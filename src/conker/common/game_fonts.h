@@ -19,7 +19,10 @@ void SetPath(Kind k, const std::string& path);
 // same name) and that copy set, so the setting outlives the file being moved; Clear back to the game's own. A copy
 // no setting names any more is deleted
 void Choose(Kind k, const std::string& picked);
-void Clear(Kind k);
+void Clear(Kind k);  // also kept in settings.toml *_font_cleared, so Init leaves it
+// after the settings load: on Windows the text font, when none is set and the player didn't clear it, is the
+// system's Trebuchet MS Bold (Fonts\trebucbd.ttf)
+void Init();
 std::string Name(Kind k);   // the font's name, as the file gives it ("" for the game's)
 std::string Error(Kind k);  // why the file can't be used ("" when it can or none is set)
 // the file's styles (a collection's faces, a variable font's named instances) by name, and the one in use; picking

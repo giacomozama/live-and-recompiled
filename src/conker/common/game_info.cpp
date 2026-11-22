@@ -43,6 +43,7 @@ void Init() {
     grass::Update();  // the fogged grass entry as the settings have it from the start (gpu::shader_gen::Stamp reads it)
     lighting::Init();
     reflection::Init();
+    game_fonts::Init();
 }
 
 // the settings file's tables: each player's ([playerN]) and the models' fur looks ([fur_models])

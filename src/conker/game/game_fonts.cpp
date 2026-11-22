@@ -29,6 +29,7 @@
 #include <atomic>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -131,6 +132,7 @@ struct Setting {
 
 std::mutex g_lock;
 Setting g_set[game_fonts::kKinds];
+bool g_cleared[game_fonts::kKinds];  // set back to the game's own from the menu (settings.toml *_font_cleared)
 std::atomic<uint64_t> g_gen[game_fonts::kKinds];  // changes with each setting
 std::atomic<uint64_t> g_atlas_id{0};
 
@@ -539,12 +541,31 @@ void game_fonts::Choose(Kind k, const std::string& picked) {
     const std::string old = Path(k);
     SetPath(k, use);
     if (old != use) Forget(old);
+    std::lock_guard hold(g_lock);
+    g_cleared[k] = false;
 }
 
 void game_fonts::Clear(Kind k) {
     const std::string old = Path(k);
     SetPath(k, "");
     Forget(old);
+    std::lock_guard hold(g_lock);
+    g_cleared[k] = true;
+}
+
+void game_fonts::Init() {
+#ifdef _WIN32
+    // Windows: the text font Trebuchet MS Bold from the system's fonts unless one is set or the player set it back
+    // to the game's own
+    {
+        std::lock_guard hold(g_lock);
+        if (g_set[kText].face || g_cleared[kText]) return;
+    }
+    const wchar_t* windir = _wgetenv(L"WINDIR");
+    const fs::path file = fs::path(windir && *windir ? windir : L"C:\\Windows") / L"Fonts" / L"trebucbd.ttf";
+    std::error_code ec;
+    if (fs::is_regular_file(file, ec)) SetPath(kText, ToUtf8(file));
+#endif
 }
 
 std::string game_fonts::Name(Kind k) {
@@ -625,6 +646,10 @@ void game_fonts::Load(const void* table) {
     for (int i = 0; i < kKinds; i++) {
         const Kind k = Kind(i);
         const std::string key = kKeys[i];
+        {
+            std::lock_guard hold(g_lock);
+            g_cleared[i] = t[key + "_cleared"].value_or(false);
+        }
         const auto path = t[key].value<std::string>();
         if (!path || path->empty()) continue;
         SetPath(k, *path);
@@ -649,6 +674,7 @@ void game_fonts::Save(void* table) {
         t.insert_or_assign(key, s.face ? s.face->path : std::string());
         t.insert_or_assign(key + "_style", int64_t(s.face && s.face->ok ? s.face->styles[s.style].index : 0));
         t.insert_or_assign(key + "_weight", int64_t(s.weight));
+        t.insert_or_assign(key + "_cleared", g_cleared[i]);
     }
 }
 #else
