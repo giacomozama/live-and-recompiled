@@ -405,6 +405,8 @@ void AppendUtf8(std::string& s, uint32_t c) {
 bool IsIcon(uint16_t c) { return c >= 0xFFB2 && c <= 0xFFB5; }
 // the censor's marks as letters: drawn about a capital's height, each a letter's room apart
 constexpr float kIconSize = 0.7f, kIconAdvance = 0.74f;
+// and shaking, each its own way: offset by up to this much of the text's size, turned by up to this many radians
+constexpr float kShake = 0.035f, kShakeTurn = 0.12f;
 bool IsButton(uint16_t c) {
     return c == 0xFFA8 || c == 0xFFA9 || c == 0xFFBC || c == 0xFFBD || c == 0xFFBE || (c >= 0xFFAA && c <= 0xFFB0);
 }
@@ -423,8 +425,13 @@ std::vector<Word> Words(const std::u16string& piece, ImU32 base) {
         }
         return w.back();
     };
+    // a censor's colour and throb end with its marks: 142 runs have no {NORMAL} after them ("kick the
+    // {BLUE}{STAR}{SKULL}{LIGHTNING} out of him"), and the rest of the line took the colour. A colour with no marks
+    // after it ("those {BLUE} buttons") goes on to {NORMAL} as before
+    bool censor = false;
     for (size_t i = 0; i < piece.size(); i++) {
         const uint16_t c = piece[i];
+        if (censor && !IsIcon(c) && !(c >= 0xFFA1 && c <= 0xFFA7)) colour = base, throb = false, censor = false;
         if (c == 0xFFA1) {
             colour = base, throb = false;
         } else if (c >= 0xFFA2 && c <= 0xFFA5) {
@@ -434,6 +441,7 @@ std::vector<Word> Words(const std::u16string& piece, ImU32 base) {
         } else if (IsIcon(c) || IsButton(c)) {
             atom(Kind::Icon).code = c;
             if (IsButton(c)) words.back().back().kind = Kind::Button;
+            censor = IsIcon(c);
         } else if (c == ' ' || c == '\n') {  // not 0xA0: French's before ! ? : ; keeps the mark on the word's line
             if (!words.back().empty()) words.emplace_back();
         } else if (c < 0xFFA0 && c != 0x3E8) {
@@ -614,10 +622,18 @@ void subtitles::Draw() {
                     dl->AddText(font, size, ImVec2(x, y), col, a->text.c_str());
                 } else {
                     const float scale = a->throb ? 1.0f + 0.12f * std::sin(float(now) * 9.0f + float(n)) : 1.0f;
-                    if (a->kind == Kind::Icon) {  // a letter's size, about a capital's middle
-                        const float s = size * kIconSize * scale;
-                        DrawIcon(dl, a->code, ImVec2(x + (a->w - s) * 0.5f, y + size * 0.53f - s * 0.5f), s, col,
-                                 alpha);
+                    if (a->kind == Kind::Icon) {  // a letter's size, about a capital's middle, shaking
+                        const float s = size * kIconSize * scale, t = float(now), k = float(n);
+                        const ImVec2 c(x + a->w * 0.5f + size * kShake * std::sin(t * 37.0f + k * 1.7f),
+                                       y + size * 0.53f + size * kShake * std::sin(t * 29.0f + k * 2.3f + 1.0f));
+                        DrawIcon(dl, a->code, ImVec2(c.x - s * 0.5f, c.y - s * 0.5f), s, col, alpha);
+                        const float turn = kShakeTurn * std::sin(t * 23.0f + k * 1.3f);
+                        const float cs = std::cos(turn), sn = std::sin(turn);
+                        for (int v = first_vtx; v < dl->VtxBuffer.Size; v++) {
+                            ImVec2& q = dl->VtxBuffer[v].pos;
+                            const float qx = q.x - c.x, qy = q.y - c.y;
+                            q = ImVec2(c.x + qx * cs - qy * sn, c.y + qx * sn + qy * cs);
+                        }
                     } else {
                         const float s = size * 0.95f * scale;
                         const float box = a->w - size * 0.06f;
