@@ -114,14 +114,43 @@ float Wider() {
 // a point and its outward normal along the outline, in the display's proportions about the body's middle
 struct Point {
     float x, y, nx, ny;
+    bool tip = false;  // the tail's tip
 };
 
+// the ellipse's angle (x = hx cos t, y = hy sin t) of its point nearest (x, y)
+float Nearest(float hx, float hy, float x, float y) {
+    auto d = [&](float t) { return std::hypot(hx * std::cos(t) - x, hy * std::sin(t) - y); };
+    constexpr int kSamples = 256;
+    constexpr float kTurn = 6.2831853f;
+    float best = 0, at = 1e30f;
+    for (int i = 0; i < kSamples; i++) {
+        const float t = kTurn * float(i) / kSamples, e = d(t);
+        if (e < at) at = e, best = t;
+    }
+    for (float step = kTurn / kSamples; step > 1e-5f; step *= 0.5f) {  // halved about the best
+        if (d(best - step) < at) at = d(best - step), best -= step;
+        else if (d(best + step) < at) at = d(best + step), best += step;
+    }
+    return best;
+}
+
+// the ellipse's angle the arc from angle t, going dir (1 or -1), is length long at
+float Along(float hx, float hy, float t, int dir, float length) {
+    constexpr float kStep = 0.002f, kMost = 1.5f;
+    float run = 0, a = 0;
+    while (run < length && a < kMost) {
+        const float m = t + float(dir) * (a + kStep * 0.5f);
+        run += std::hypot(hx * std::sin(m), hy * std::cos(m)) * kStep;
+        a += kStep;
+    }
+    return t + float(dir) * a;
+}
+
 // the ellipse's outline, clockwise on the frame (y down), hx by hy its half axes; with a tail (its tip at tx, ty from
-// the middle, standing clear of the ellipse), its base's arc gives way to the tip. The base is about where the line
-// from the middle to the tip leaves the ellipse, so the tip lies between its ends as seen from the middle, which the
-// fill's fan is drawn from, and its ends are found on the ellipse itself, not at the outline's nearest points, so the
-// tail turns smoothly as the tip moves
-std::vector<Point> Outline(float hx, float hy, bool tail, float tx, float ty, float base, float clear) {
+// the middle, its base about the ellipse's angle t0, base long along it each side), the arc of its base gives way to
+// the tip. gap_from and gap_to: the base's arc's angles, from its end to its start
+std::vector<Point> Outline(float hx, float hy, bool tail, float tx, float ty, float t0, float base,
+                           float* gap_from = nullptr, float* gap_to = nullptr) {
     constexpr int kSteps = 128;
     constexpr float kTurn = 6.2831853f;
     auto at = [&](float t) {
@@ -131,18 +160,16 @@ std::vector<Point> Outline(float hx, float hy, bool tail, float tx, float ty, fl
     };
     std::vector<Point> p;
     if (tail) {
-        const float t0 = std::atan2(ty / hy, tx / hx);  // the ellipse's angle where the line to the tip leaves it
+        const float from = Along(hx, hy, t0, -1, base), to = Along(hx, hy, t0, 1, base);
+        if (gap_from) *gap_from = from, *gap_to = to;
+        const float span = kTurn - (to - from);
+        for (int i = 0; i <= kSteps; i++) p.push_back(at(to + span * float(i) / kSteps));
         const Point edge = at(t0);
-        if (std::hypot(tx, ty) - std::hypot(edge.x, edge.y) >= clear * 2) {
-            const float speed = std::hypot(hx * std::sin(t0), hy * std::cos(t0));  // arc length per angle there
-            const float half = std::min(base / std::max(speed, 1e-3f), 0.6f);
-            for (int i = 0; i <= kSteps; i++) p.push_back(at(t0 + half + (kTurn - 2 * half) * float(i) / kSteps));
-            float nx = tx - edge.x, ny = ty - edge.y;
-            const float l = std::hypot(nx, ny);
-            if (l > 1e-3f) nx /= l, ny /= l;
-            p.push_back({tx, ty, nx, ny});
-            return p;
-        }
+        float nx = tx - edge.x, ny = ty - edge.y;
+        const float l = std::hypot(nx, ny);
+        if (l > 1e-3f) nx /= l, ny /= l;
+        p.push_back({tx, ty, nx, ny, true});
+        return p;
     }
     for (int i = 0; i < kSteps; i++) p.push_back(at(kTurn * float(i) / kSteps));
     return p;
@@ -232,22 +259,41 @@ void DrawBubble(X86Context& ctx, uint32_t rec) {
     // the soft edge: a pixel as drawn (the frame's pixels times the render scale down), half in and half out
     const app::Scale render = app::RenderScale(640, 480);
     const float soft = render.y > 0.1f && std::isfinite(render.y) ? 1.0f / render.y : 1.0f;
-    // the tail comes out of the ellipse as it finishes opening and goes back in before it closes: over the game's
-    // scale's last kTailOut, its tip drawn in from where it is toward the ellipse's edge along the line from the
-    // middle, its base narrowed with it
-    constexpr float kTailOut = 0.3f;
+    // the tail leaves the ellipse square, from its point nearest the tip, its base kTailBase long each side of that
+    // along the ellipse and no more than kTailLong long (it stops short of a far anchor), both in the frame's pixels
+    // (the display's proportions) whatever the ellipse's size. It comes out as the ellipse finishes opening and goes
+    // back in before it closes: over the game's scale's last kTailOut its tip is drawn in toward the ellipse's edge
+    constexpr float kTailBase = 9.0f, kTailLong = 36.0f, kTailOut = 0.3f;
     const float out = std::clamp((scale - (1 - kTailOut)) / kTailOut, 0.0f, 1.0f);
     const float ejected = out * out * (3 - 2 * out);
     float tx = (bub.tip_x - cx) * wider, ty = bub.tip_y - cy;
-    const float reach = std::hypot(tx, ty);
-    if (reach > 1e-3f) {
-        const float c = tx / reach, s = ty / reach;
-        const float edge = 1 / std::hypot(c / hx, s / hy);  // the ellipse's radius toward the tip
-        const float r = edge + std::max(reach - edge, 0.0f) * ejected;
-        tx = c * r, ty = s * r;
+    float t0 = 0;
+    bool tail = g_tail && (tx / hx) * (tx / hx) + (ty / hy) * (ty / hy) > 1;  // outside the ellipse
+    if (tail) {
+        // the farther the tip than kTailLong, the more the base slides from the nearest point toward where the line
+        // from the middle to the tip leaves the ellipse, the tail aimed at the tip from there: cut short, it still
+        // points the way
+        const float nearest = Nearest(hx, hy, tx, ty), toward = std::atan2(ty / hy, tx / hx);
+        const float far = std::hypot(tx - hx * std::cos(nearest), ty - hy * std::sin(nearest));
+        const float slide = far > kTailLong ? 1 - kTailLong / far : 0;
+        const float turn = std::remainder(toward - nearest, 6.2831853f);  // the shorter way round
+        t0 = nearest + turn * slide;
+        const float ex = hx * std::cos(t0), ey = hy * std::sin(t0);
+        float dx = tx - ex, dy = ty - ey;
+        const float l = std::hypot(dx, dy);
+        const float length = std::min(l, kTailLong) * ejected;
+        tail = length >= soft * 2 && l > 1e-3f;
+        if (tail) {
+            // aimed at the tip, but no more than kSlant off square to the ellipse there
+            constexpr float kSlant = 0.35f;  // radians, some 20 degrees
+            const float normal = std::atan2(std::sin(t0) / hy, std::cos(t0) / hx);
+            const float off = std::remainder(std::atan2(dy, dx) - normal, 6.2831853f);
+            const float aim = normal + std::clamp(off, -kSlant, kSlant);
+            tx = ex + std::cos(aim) * length, ty = ey + std::sin(aim) * length;
+        }
     }
-    std::vector<Point> p =
-        Outline(hx, hy, g_tail, tx, ty, std::min(hy, hx) * 0.2f * std::sqrt(ejected), soft);
+    float gap_from = 0, gap_to = 0;
+    std::vector<Point> p = Outline(hx, hy, tail, tx, ty, t0, kTailBase, &gap_from, &gap_to);
     Normals(p);
 
     // colours: the speaker's (white without) and the sprite's alpha
@@ -255,23 +301,95 @@ void DrawBubble(X86Context& ctx, uint32_t rec) {
     const float fr = coloured ? B(kRed) / 255.0f : 1, fg = coloured ? B(kGreen) / 255.0f : 1,
                 fb = coloured ? B(kBlue) / 255.0f : 1;
     const float alpha = B(rec + kSpriteAlpha) / 255.0f;
-    const uint32_t fill = Colour(fr, fg, fb, alpha);
-    const uint32_t clear = Colour(fr, fg, fb, 0);
+    // the fill shaded toward the tail: darker on its side of the ellipse, the most at its tip, a little lighter across
+    float sx = 0, sy = 0;  // toward the tail, of the half axes
+    if (p.back().tip) {
+        const Point& tip = p.back();
+        const float l = std::hypot(tip.x / hx, tip.y / hy);
+        if (l > 1e-3f) sx = tip.x / hx / l, sy = tip.y / hy / l;
+    }
+    constexpr float kShade = 0.22f, kLight = 0.06f;
+    auto fill = [&](float x, float y) {
+        const float g = std::clamp((x / hx) * sx + (y / hy) * sy, -1.0f, 1.0f);  // 1 at the ellipse's edge by the tail
+        const float dark = 1 - kShade * std::max(g, 0.0f), up = kLight * std::max(-g, 0.0f);
+        return Colour((fr + (1 - fr) * up) * dark, (fg + (1 - fg) * up) * dark, (fb + (1 - fb) * up) * dark, alpha);
+    };
+    // a soft shadow below, outside the shape only (the shape is see-through): from its edge out by kBlur of its half
+    // height, moved down by kDrop of it, kShadow dark, falling off fast
+    constexpr float kBlur = 0.35f, kDrop = 0.12f, kShadow = 0.4f;
+    const float blur = hy * kBlur, drop = hy * kDrop;
+    const uint32_t shade0 = Colour(0, 0, 0, alpha * kShadow), shade1 = Colour(0, 0, 0, alpha * kShadow * 0.3f),
+                   shade2 = Colour(0, 0, 0, 0);
     const float z = F(kSpriteZ);
     // a point of the display's back on the frame
     auto at = [&](float x, float y, uint32_t c) { return Vertex{cx + x / wider, cy + y, z, c, 0.5f, 0.5f, 0}; };
     std::vector<Vertex> v;
+    auto band = [&](float ax0, float ay0, float bx0, float by0, uint32_t ca0, uint32_t cb0, float ax1, float ay1,
+                    float bx1, float by1, uint32_t ca1, uint32_t cb1) {
+        v.push_back(at(ax0, ay0, ca0)), v.push_back(at(ax1, ay1, ca1)), v.push_back(at(bx0, by0, cb0));
+        v.push_back(at(bx0, by0, cb0)), v.push_back(at(ax1, ay1, ca1)), v.push_back(at(bx1, by1, cb1));
+    };
     const size_t n = p.size();
+    auto off = [](const Point& q, float d, float& x, float& y) { x = q.x + q.nx * d, y = q.y + q.ny * d; };
+    for (size_t i = 0; i < n; i++) {  // the shadow first, under the bubble's soft edge
+        const Point& a = p[i];
+        const Point& b = p[(i + 1) % n];
+        float ax0, ay0, bx0, by0, axm, aym, bxm, bym, ax1, ay1, bx1, by1;
+        off(a, 0, ax0, ay0), off(b, 0, bx0, by0);
+        off(a, blur * 0.35f, axm, aym), off(b, blur * 0.35f, bxm, bym);
+        off(a, blur, ax1, ay1), off(b, blur, bx1, by1);
+        aym += drop * 0.5f, bym += drop * 0.5f, ay1 += drop, by1 += drop;
+        band(ax0, ay0, bx0, by0, shade0, shade0, axm, aym, bxm, bym, shade1, shade1);
+        band(axm, aym, bxm, bym, shade1, shade1, ax1, ay1, bx1, by1, shade2, shade2);
+    }
+    // the fill: the whole ellipse fanned from its middle, and the tail fanned from its tip over the ellipse's arc
+    // under its base, so no triangle reaches from the middle to the tip (its shading streaked across the bubble). Their
+    // edges a half pixel in, where the soft edge starts, but where the two meet
+    const size_t arc = tail ? n - 1 : n;  // the ellipse's points in the outline
+    std::vector<float> fx, fy;           // the fill's edge on the outline
+    for (size_t i = 0; i < n; i++) {
+        float x, y;
+        off(p[i], -soft * 0.5f, x, y);
+        fx.push_back(x), fy.push_back(y);
+    }
+    std::vector<Point> gap;  // the base's arc, from the outline's last ellipse point to its first
+    if (tail) {
+        constexpr int kGap = 12;
+        for (int i = 1; i < kGap; i++) {
+            const float t = gap_from + (gap_to - gap_from) * float(i) / kGap;
+            gap.push_back({hx * std::cos(t), hy * std::sin(t), 0, 0});
+        }
+    }
+    // the sprite's draw leaves culling on (0x901): each triangle clockwise on the frame. Seen from the tail's tip,
+    // outside the ellipse, its arc runs the other way: those go in backwards (flip)
+    auto fan = [&](float ox, float oy, uint32_t oc, const std::vector<std::pair<float, float>>& ring, bool closed,
+                   bool flip) {
+        for (size_t i = 0; i + 1 < ring.size() + (closed ? 1 : 0); i++) {
+            const auto& [ax, ay] = ring[i];
+            const auto& [bx, by] = ring[(i + 1) % ring.size()];
+            const Vertex o = at(ox, oy, oc), va = at(ax, ay, fill(ax, ay)), vb = at(bx, by, fill(bx, by));
+            v.push_back(o), v.push_back(flip ? vb : va), v.push_back(flip ? va : vb);
+        }
+    };
+    std::vector<std::pair<float, float>> ellipse;
+    for (size_t i = 0; i < arc; i++) ellipse.push_back({fx[i], fy[i]});
+    for (const Point& g : gap) ellipse.push_back({g.x, g.y});
+    fan(0, 0, fill(0, 0), ellipse, true, false);
+    if (tail) {
+        std::vector<std::pair<float, float>> under{{fx[arc - 1], fy[arc - 1]}};
+        for (const Point& g : gap) under.push_back({g.x, g.y});
+        under.push_back({fx[0], fy[0]});
+        fan(fx[n - 1], fy[n - 1], fill(fx[n - 1], fy[n - 1]), under, false, true);
+    }
+    // the soft edge all round the outline, the tail's sides too
     for (size_t i = 0; i < n; i++) {
         const Point& a = p[i];
         const Point& b = p[(i + 1) % n];
-        auto off = [](const Point& q, float d, float& x, float& y) { x = q.x + q.nx * d, y = q.y + q.ny * d; };
-        float ax0, ay0, bx0, by0, ax1, ay1, bx1, by1;
-        off(a, -soft * 0.5f, ax0, ay0), off(b, -soft * 0.5f, bx0, by0);  // the fill's edge
-        off(a, soft * 0.5f, ax1, ay1), off(b, soft * 0.5f, bx1, by1);    // the soft edge's outside
-        v.push_back(at(0, 0, fill)), v.push_back(at(ax0, ay0, fill)), v.push_back(at(bx0, by0, fill));
-        v.push_back(at(ax0, ay0, fill)), v.push_back(at(ax1, ay1, clear)), v.push_back(at(bx0, by0, fill));
-        v.push_back(at(bx0, by0, fill)), v.push_back(at(ax1, ay1, clear)), v.push_back(at(bx1, by1, clear));
+        float ax1, ay1, bx1, by1;
+        off(a, soft * 0.5f, ax1, ay1), off(b, soft * 0.5f, bx1, by1);
+        const uint32_t fa = fill(a.x, a.y), fb2 = fill(b.x, b.y);
+        const uint32_t ca = fa & 0x00FFFFFFu, cb = fb2 & 0x00FFFFFFu;  // the same, clear
+        band(fx[i], fy[i], fx[(i + 1) % n], fy[(i + 1) % n], fa, fb2, ax1, ay1, bx1, by1, ca, cb);
     }
     if (v.size() > kCapacity) return;
     if (!g_vertices) g_vertices = mem::AllocSystem(kCapacity * sizeof(Vertex));
