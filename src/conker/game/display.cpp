@@ -54,6 +54,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <mutex>
 #include <thread>
 
 #include "app/app.h"
@@ -460,6 +461,23 @@ void ConkerFrameTicks(X86Context& ctx, uint8_t* base) {
     display::g_ticks += ctx.ecx;
 }
 
+// the widening (the frame's aspect * 3/4) projections were built with, by the aspect they came out with (0x645C0 keeps
+// it in the view object's +0x108, horizontal over vertical degrees, which the text setup reads): a cutscene doesn't
+// build its camera again, so after the aspect setting changes in one the two differ until it ends
+namespace {
+struct Widening {
+    float aspect, by;
+};
+std::mutex g_widened_lock;
+std::vector<Widening> g_widened;
+float Widened(float aspect) {
+    std::lock_guard lock(g_widened_lock);
+    for (const Widening& w : g_widened)
+        if (std::fabs(w.aspect - aspect) <= 1e-4f * std::fabs(aspect)) return w.by;
+    return app::FrameAspect() * 0.75f;  // not seen: as the frame is
+}
+}  // namespace
+
 // [[hook]] before 0x64468 in the camera projection: xmm1 holds the camera's aspect
 void ConkerCameraAspect(X86Context& ctx, uint8_t* base) {
     static float shown = 0;
@@ -485,22 +503,61 @@ void ConkerCameraAspect(X86Context& ctx, uint8_t* base) {
         }
     }
     ctx.xmm[1].f[0] *= frame * 0.75f;
+    // the widening as built, by the aspect it makes (what 0x645C0 keeps: the horizontal over the vertical degrees)
+    if (std::isfinite(vfov) && vfov > 0.0f) {
+        const float aspect = ctx.xmm[1].f[0] / vfov;
+        std::lock_guard lock(g_widened_lock);
+        std::erase_if(g_widened, [&](const Widening& w) { return std::fabs(w.aspect - aspect) <= 1e-4f * aspect; });
+        g_widened.push_back({aspect, frame * 0.75f});
+        if (g_widened.size() > 32) g_widened.erase(g_widened.begin());
+    }
 }
 
-// 0x3D2A40, the text drawing's setup: text drawn into the scene ([0x8086C6], as the throne intro's credits) gets its
-// glyphs' horizontal scale [0x8076B4] from the current camera's aspect, C / ([[0x84B868]+0x108] * K) (0x3D2C43). That
-// aspect is the one ConkerCameraAspect widened, which the projection already narrows the scene by, so the glyphs came
-// out narrowed twice: at 32:9 some 35% of their width (the glyphs' x 0.37 of 4:3's, the projection's 0.375). The
-// scale is put back to the console's, the widening taken out of it
+// 0x3D2A40, the text drawing's setup. Set up for the scene's perspective (its branch at 0x3D2B5B: [0x8086C6], a
+// current camera), the glyphs' horizontal scale [0x8076B4] comes from the camera's aspect, C / ([[0x84B868]+0x108] * K)
+// (0x3D2C43): the one ConkerCameraAspect widened. Most text set up so is drawn flat on the frame after (the end
+// credits, from 0x1F3247 and 0x1F2E4A, the HUD's words), where that keeps its shape as the window stretches the frame.
+// The throne intro's titles, the text list's (0x1F2BC0, its setup returning to 0x1F2C50) while a cutscene plays, are
+// drawn into the scene, which the projection already narrows, so they came out narrowed twice (at 32:9 some 35% of
+// their width: the glyphs' x 0.37 of 4:3's, the projection's 0.375): there the widening the camera was built with is
+// taken out. A cutscene doesn't build its camera again, so after the aspect setting changes in one the rest is moved
+// from the widening its camera was built with to the frame's. XBE_ASPECT_TRACE=1 logs each caller once a level and
+// cutscene state (the titles and credits were told so). Not while the credits' drawer has run in the last half second,
+// in case they draw text list lines in their cutscene too
+namespace {
+float ViewAspect(uint32_t view) {
+    float a;
+    std::memcpy(&a, kernel::g_base + view + 0x108, 4);
+    return a;
+}
+}  // namespace
+
 X86_EXTERN_FUNC(__imp__sub_003D2A40);
 X86_FUNC(sub_003D2A40) {
-    const uint32_t cam = kernel::R32(0x84B868);
-    const bool scene = base[0x8086C6] && !kernel::R32(0x8072F0) && cam && !(base[cam + 8] & 3);  // its branch
+    constexpr uint32_t kTextList = 0x1F2C50, kCredits = 0x1F3247;  // the end credits' drawer runs only while they roll
+    static std::chrono::steady_clock::time_point credits{};
+    const uint32_t from = kernel::R32(ctx.esp);
+    const uint32_t view = kernel::R32(0x84B868);
+    const bool branch = base[0x8086C6] && !kernel::R32(0x8072F0) && view && !(base[view + 8] & 3);  // the aspect's
     __imp__sub_003D2A40(ctx, base);
-    if (!scene) return;
+    static const bool trace = diag::Env("XBE_ASPECT_TRACE") != nullptr;
+    if (trace) {
+        static std::unordered_map<uint64_t, bool> seen;  // once a caller, branch, level and cutscene state
+        const uint64_t key = uint64_t(from) << 17 | uint64_t(branch) << 16 | (kernel::R32(0x7FA1F8) & 0xFF) << 8 |
+                             base[0x76F0E0];
+        if (seen.emplace(key, true).second)
+            LOGR("display: text setup from %06X, aspect branch %d, widened %.3f, level %u, cutscene %u", from,
+                 int(branch), double(branch ? Widened(ViewAspect(view)) : 0.0f), kernel::R32(0x7FA1F8),
+                 unsigned(base[0x76F0E0]));
+    }
+    if (!branch) return;
+    const auto now = std::chrono::steady_clock::now();
+    if (from == kCredits) credits = now;
+    const bool titles = from == kTextList && base[0x76F0E0] == 1 && now - credits > std::chrono::milliseconds(500);
+    const float built = Widened(ViewAspect(view));
     float k;
     std::memcpy(&k, base + 0x8076B4, 4);
-    k *= app::FrameAspect() * 0.75f;
+    k *= titles ? built : built / (app::FrameAspect() * 0.75f);
     if (std::isfinite(k)) std::memcpy(base + 0x8076B4, &k, 4);
 }
 
