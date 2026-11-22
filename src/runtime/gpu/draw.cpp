@@ -255,6 +255,7 @@ bool SurfaceDepth(const State& s, uint32_t start, uint32_t count, const uint8_t*
     auto out = reinterpret_cast<float (*)[4]>(in.data());
     if (!ReadInputSpread(s, 0, start, indices, count, d.vertices, out)) return false;
     d.v[0] = out;
+    d.tex_modes = s.ps ? s.rs[kRsPsTextureModes] : 0;
     return h.takes(d);
 }
 

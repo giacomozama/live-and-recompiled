@@ -188,8 +188,9 @@ inline std::vector<ProgramWatch> g_program_watch;  // filled before the title bo
 
 // A game's surfaces that blend over what lies under them without writing depth, while *on holds: a floor with the
 // reflection under it, whose depth is the reflection's to a depth of field that reads the depth buffer. takes gets
-// each draw that blends and tests depth but doesn't write it, with v0 at vertices spread over it (WatchedDraw's v[0],
-// the other fields unset); one it takes writes its depth after its color, where its output's alpha reaches alpha.
+// each draw that blends and tests depth but doesn't write it, with v0 at vertices spread over it (WatchedDraw's v[0])
+// and its tex_modes, the other fields unset; one it takes writes its depth after its color, where its output's alpha
+// reaches alpha.
 struct SurfaceDepthHook {
     const bool* on = nullptr;
     bool (*takes)(const WatchedDraw&) = nullptr;
