@@ -19,8 +19,9 @@
 // Codes (0x1F3110 with the names at 0x6B9D98 and the codes at 0x6B9E28): 0xFFA1 NORMAL, 0xFFA2-A5 RED GREEN BLUE
 // YELLOW, 0xFFA6 THROB, 0xFFA7 JIGGLE, buttons 0xFFA8 A, 0xFFA9 B, 0xFFBC X, 0xFFBD Y, 0xFFBE JOYSTICK, 0xFFAE Z,
 // 0xFFAF L, 0xFFB0 R, arrows 0xFFAA-AD (left right up down), the censor's 0xFFB2 SKULL, 0xFFB3 SWIRL, 0xFFB4 STAR,
-// 0xFFB5 LIGHTNING. The other codes are the text's own characters (Unicode). A line's first 0xBE/0xBF picks a
-// thought/electronic bubble and the page starts after it.
+// 0xFFB5 LIGHTNING. The other codes are the text's own characters (Unicode). The cutscene's speech command takes a
+// line's first 0xBE/0xBF for a thought's/electronic bubble's mark and starts the text after it (no line has one; in
+// Spanish 0xBF is ¿, see Capture).
 #include "common/subtitles.h"
 
 #include <algorithm>
@@ -68,13 +69,62 @@ constexpr Timed kTimed[] = {
 #include "subtitle_times.inc"
 };
 
-// the voice line playing: 0x1B210 runs as it is ready and starts. Its time goes on with the frames the bubbles are
-// drawn on and the game's clock running (game thread)
+// the speech lines' fixes (tools/text_fixes.py): the bubbles draw in capitals, so a lowercase "i", a name or a
+// sentence's first letter never showed, and a few slips with them. Patterns in a page, not lines, so that a mod's
+// text (the decensor's words are not as long as the censor's icons) keeps every fix whose surroundings it kept: the
+// text a fix changes with whole words of its page about it, tied to the page's start (anchor 1) or end (2). By the
+// game's language ([0x7FA1DC], menus.cpp's GameLanguage: 1 English, 2 Japanese, 3 German, 4 French, 5 Spanish, 6
+// Italian)
+constexpr uint32_t kLanguage = 0x7FA1DC;
+constexpr uint32_t kFrench = 4, kSpanish = 5;
+struct TextFix {
+    uint8_t language, anchor;
+    std::u16string_view left, old, right, repl;
+};
+constexpr TextFix kFixes[] = {
+#include "text_fixes.inc"
+};
+
+// every pattern of the language found in the page as read, the changes made in order of place, one overlapping an
+// earlier one dropped (tools/text_fixes.py's apply)
+std::u16string FixPage(const std::u16string& page, uint32_t language) {
+    struct Edit {
+        size_t at, length;
+        std::u16string_view repl;
+    };
+    std::vector<Edit> edits;
+    std::u16string needle;
+    for (const TextFix& f : kFixes) {
+        if (f.language != language) continue;
+        needle.assign(f.left).append(f.old).append(f.right);
+        for (size_t pos = page.find(needle); pos != page.npos; pos = page.find(needle, pos + 1)) {
+            if ((f.anchor & 1) && pos != 0) break;
+            if ((f.anchor & 2) && pos + needle.size() != page.size()) continue;
+            edits.push_back({pos + f.left.size(), f.old.size(), f.repl});
+        }
+    }
+    if (edits.empty()) return page;
+    std::stable_sort(edits.begin(), edits.end(), [](const Edit& a, const Edit& b) { return a.at < b.at; });
+    std::u16string out;
+    size_t cur = 0;
+    for (const Edit& e : edits) {
+        if (e.at < cur) continue;
+        out.append(page, cur, e.at - cur).append(e.repl);
+        cur = e.at + e.length;
+    }
+    return out.append(page, cur);
+}
+
+// the voice line playing: 0x1B210 runs as it is ready and starts. Its time goes on with every frame the overlay
+// draws while the game's clock runs, bubble or none: a cutscene's lines can share one clip (TrainingLevel's cut 11,
+// seven lines in cut_hungover_33), the gaps between their bubbles part of its time
 bool g_voice = false;
 double g_voice_time = 0.0, g_voice_seen = 0.0;
 
 struct Bubble {
     uint32_t obj = 0, page = 0, flags = 0;
+    std::u16string raw;                // the page as read
+    std::vector<std::u16string> pieces;  // fixed, split and tidied
     std::u16string piece;
     double first = 0.0, last = 0.0;
     double elapsed = 0.0;  // the seconds drawn on this page, the game's clock running
@@ -102,6 +152,76 @@ const Timed* FindTimed(const std::u16string& s) {
     for (const Timed& t : kTimed)
         if (t.hash == h && t.length == s.size()) return &t;
     return nullptr;
+}
+
+// (not 0xFE: the marker)
+bool Lower(char16_t c) { return (c >= u'a' && c <= u'z') || (c >= 0xDF && c <= 0xFF && c != 0xF7 && c != 0xFE); }
+bool Upper(char16_t c) { return (c >= u'A' && c <= u'Z') || (c >= 0xC0 && c <= 0xDE && c != 0xD7); }
+bool Digit(char16_t c) { return c >= u'0' && c <= u'9'; }
+bool Stop(char16_t c) { return c == u'.' || c == u'!' || c == u'?' || c == 0x2026; }
+
+// the text as the subtitles put it (tools/subtitle_times.py's tidy does the same, the timings keyed by the tidied
+// line): a run of stops is the ellipsis character; two spaces are one ("Yes.  But"), three or more a line break (a
+// bubble's padding); no space before a comma or a full stop ("Hello ,", "wieder ."; not French's before ! ? : ;); a
+// space after a stop between a small letter and a capital ("a bit.To fool", "Huh!He's"; an ellipsis only before
+// ¿ ¡, Italian's "Aspetta…degli" is how it is written; "k.o." stays); "ok" is "OK"; in French a no-break space
+// before ! ? : ; (not a time's colon); no spaces or line breaks at the ends
+std::u16string Tidy(const std::u16string& text, uint32_t language) {
+    std::u16string s;
+    s.reserve(text.size());
+    for (char16_t c : text) {
+        if (c == u'.' && !s.empty() && (s.back() == u'.' || s.back() == 0x2026)) s.back() = 0x2026;
+        else s.push_back(c);
+    }
+    std::u16string out;
+    out.reserve(s.size() + 8);
+    for (size_t i = 0; i < s.size(); i++) {
+        const char16_t c = s[i];
+        if (c == u' ') {
+            size_t j = i;
+            while (j < s.size() && s[j] == u' ') j++;
+            if (j - i >= 3) {  // padding that put what follows on a line of its own ("hai capito?     A Sì B No")
+                out.push_back(u'\n');
+                i = j - 1;
+                continue;
+            }
+            i = j - 1;
+            const char16_t next = j < s.size() ? s[j] : 0;
+            if (next == u',' || next == u'.') continue;
+        }
+        out.push_back(c);
+        if (Stop(c) && i + 1 < s.size() && !Stop(s[i + 1])) {
+            size_t a = i;  // the stop run's start
+            while (a > 0 && Stop(s[a - 1])) a--;
+            const bool ellipsis = s.find(char16_t(0x2026), a) <= i;
+            const char16_t next = s[i + 1];
+            const bool after_letter = a > 0 && (Lower(s[a - 1]) || Upper(s[a - 1]));
+            if (after_letter && ((Lower(s[a - 1]) && !ellipsis && Upper(next)) || next == 0xBF || next == 0xA1))
+                out.push_back(u' ');
+        }
+    }
+    auto word = [](char16_t c) { return Lower(c) || Upper(c) || Digit(c); };
+    for (size_t i = 0; i + 1 < out.size(); i++)
+        if ((out[i] == u'o' || out[i] == u'O') && (out[i + 1] == u'k' || out[i + 1] == u'K') &&
+            (i == 0 || !word(out[i - 1])) && (i + 2 == out.size() || !word(out[i + 2])))
+            out[i] = u'O', out[i + 1] = u'K';
+    if (language == kFrench) {
+        auto mark = [](char16_t c) { return c == u'!' || c == u'?' || c == u':' || c == u';'; };
+        std::u16string fr;
+        fr.reserve(out.size() + 8);
+        for (size_t i = 0; i < out.size(); i++) {
+            const char16_t c = out[i];
+            if (mark(c) && !fr.empty() &&
+                !(c == u':' && Digit(fr.back()) && i + 1 < out.size() && Digit(out[i + 1]))) {
+                if (fr.back() == u' ') fr.back() = 0xA0;
+                else if (!mark(fr.back()) && fr.back() != 0xA0 && fr.back() != u'\n') fr.push_back(0xA0);
+            }
+            fr.push_back(c);
+        }
+        out.swap(fr);
+    }
+    const size_t from = out.find_first_not_of(u" \n"), to = out.find_last_not_of(u" \n");
+    return from == out.npos ? std::u16string() : out.substr(from, to + 1 - from);
 }
 
 // where a long piece's sentences start: after . ! ? (and ... 。！？) and spaces, or a line break; a short one stays
@@ -157,14 +277,20 @@ void Capture(uint32_t obj) {
     const uint32_t desc = R32(obj + 0x30), page = R32(obj + 0x48);
     if (!desc || !page) return;
 
-    std::vector<std::u16string> pieces(1);
+    std::u16string raw;
     for (uint32_t a = page, n = 0; n < kMaxChars; a += 2, n++) {
         const uint16_t c = R16(a);
         if (!c || c == kParagraph) break;
-        if (c == kMarker) pieces.emplace_back();
-        else pieces.back().push_back(char16_t(c));
+        raw.push_back(char16_t(c));
     }
-    const uint32_t flags = R32(desc);
+    // the cutscene's speech command (0x569A0) takes a line's first 0xBE/0xBF for a thought's or an electronic bubble's
+    // mark and starts the text past it (in its copy, desc+0x205C). No line marks itself so, and in Spanish 0xBF is ¿:
+    // the four lines that start with a question lost it, in electronic bubbles. It is put back, the bubble plain
+    uint32_t flags = R32(desc);
+    if (R32(kLanguage) == kSpanish && page == R32(desc + 4) && page == desc + 0x205E && R16(desc + 0x205C) == 0xBF) {
+        raw.insert(raw.begin(), char16_t(0xBF));
+        flags &= ~kElectronic;
+    }
     const bool scripted = R32(desc + 0x2038) || R32(desc + 0x203C) || R32(desc + 0x2040);
     const double now = Now();
 
@@ -181,9 +307,20 @@ void Capture(uint32_t obj) {
     if (b.page != page) b.page = page, b.elapsed = 0.0;
     else if (running) b.elapsed += std::min(now - b.last, 0.1);
     b.last = now;
-    if (g_voice && running) g_voice_time += std::min(now - g_voice_seen, 0.1);
-    g_voice_seen = now;
     b.flags = flags;
+    if (b.pieces.empty() || b.raw != raw) {  // the page's text, fixed and in pieces, again only when it changes
+        b.raw = raw;
+        const uint32_t language = R32(kLanguage);
+        std::u16string text = raw;
+        text = FixPage(text, language);
+        b.pieces.assign(1, {});
+        for (char16_t c : text) {
+            if (c == kMarker) b.pieces.emplace_back();
+            else b.pieces.back().push_back(c);
+        }
+        for (auto& p : b.pieces) p = Tidy(p, language);
+    }
+    const std::vector<std::u16string>& pieces = b.pieces;
 
     size_t index = 0;
     if (scripted) {
@@ -266,6 +403,8 @@ void AppendUtf8(std::string& s, uint32_t c) {
 }
 
 bool IsIcon(uint16_t c) { return c >= 0xFFB2 && c <= 0xFFB5; }
+// the censor's marks as letters: drawn about a capital's height, each a letter's room apart
+constexpr float kIconSize = 0.7f, kIconAdvance = 0.74f;
 bool IsButton(uint16_t c) {
     return c == 0xFFA8 || c == 0xFFA9 || c == 0xFFBC || c == 0xFFBD || c == 0xFFBE || (c >= 0xFFAA && c <= 0xFFB0);
 }
@@ -286,7 +425,6 @@ std::vector<Word> Words(const std::u16string& piece, ImU32 base) {
     };
     for (size_t i = 0; i < piece.size(); i++) {
         const uint16_t c = piece[i];
-        if (i == 0 && (c == 0xBE || c == 0xBF)) continue;  // a thought's or an electronic bubble's mark
         if (c == 0xFFA1) {
             colour = base, throb = false;
         } else if (c >= 0xFFA2 && c <= 0xFFA5) {
@@ -296,7 +434,7 @@ std::vector<Word> Words(const std::u16string& piece, ImU32 base) {
         } else if (IsIcon(c) || IsButton(c)) {
             atom(Kind::Icon).code = c;
             if (IsButton(c)) words.back().back().kind = Kind::Button;
-        } else if (c == ' ' || c == '\n' || c == 0xA0) {
+        } else if (c == ' ' || c == '\n') {  // not 0xA0: French's before ! ? : ; keeps the mark on the word's line
             if (!words.back().empty()) words.emplace_back();
         } else if (c < 0xFFA0 && c != 0x3E8) {
             AppendUtf8(atom(Kind::Text).text, c);
@@ -407,6 +545,8 @@ void subtitles::Draw() {
             return;
         }
         const double now = Now();
+        if (g_voice && !kernel::Held() && !R8(kPaused)) g_voice_time += std::min(now - g_voice_seen, 0.1);
+        g_voice_seen = now;
         if (!kernel::Held())
             std::erase_if(g_bubbles, [&](const Bubble& b) { return now - b.last > kGone; });
         shown = g_bubbles;
@@ -437,7 +577,8 @@ void subtitles::Draw() {
             float ww = 0.0f;
             for (Atom& a : w) {
                 if (a.kind == Kind::Text) a.w = font->CalcTextSizeA(size, FLT_MAX, 0.0f, a.text.c_str()).x;
-                else a.w = size * (a.kind == Kind::Button && IsTrigger(a.code) ? 1.45f : 1.0f) + size * 0.06f;
+                else if (a.kind == Kind::Icon) a.w = size * kIconAdvance;
+                else a.w = size * (IsTrigger(a.code) ? 1.45f : 1.0f) + size * 0.06f;
                 ww += a.w;
             }
             Line& l = lines.back();
@@ -473,11 +614,16 @@ void subtitles::Draw() {
                     dl->AddText(font, size, ImVec2(x, y), col, a->text.c_str());
                 } else {
                     const float scale = a->throb ? 1.0f + 0.12f * std::sin(float(now) * 9.0f + float(n)) : 1.0f;
-                    const float s = size * 0.95f * scale;
-                    const float box = a->w - size * 0.06f;
-                    const ImVec2 at(x + size * 0.03f + (box - s * (box / size)) * 0.5f, y + (size - s) * 0.5f);
-                    if (a->kind == Kind::Icon) DrawIcon(dl, a->code, at, s, col, alpha);
-                    else DrawButton(dl, font, a->code, at, s, s * (box / size), alpha);
+                    if (a->kind == Kind::Icon) {  // a letter's size, about a capital's middle
+                        const float s = size * kIconSize * scale;
+                        DrawIcon(dl, a->code, ImVec2(x + (a->w - s) * 0.5f, y + size * 0.53f - s * 0.5f), s, col,
+                                 alpha);
+                    } else {
+                        const float s = size * 0.95f * scale;
+                        const float box = a->w - size * 0.06f;
+                        const ImVec2 at(x + size * 0.03f + (box - s * (box / size)) * 0.5f, y + (size - s) * 0.5f);
+                        DrawButton(dl, font, a->code, at, s, s * (box / size), alpha);
+                    }
                 }
                 // a thought in italics: its words (and the censor's marks) leaned about the line's middle; a button
                 // stays upright

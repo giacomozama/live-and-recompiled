@@ -12,8 +12,9 @@ found in the clips by its words (the best share of them matched in order); each 
 matched word's time, in seconds from the clip's start. The other languages split at their own sentences: as many as
 the English, they take its times; else each starts where its share of the characters falls on the English's.
 
-The table is keyed by the line as the game holds it (tokens turned into codes as 0x1F3110 does, FNV-1a over the
-16 bit codes): each entry the codes where its sentences start and their times in milliseconds, and the voice's end.
+The table is keyed by the line as the game holds it (tokens turned into codes as 0x1F3110 does, capitals fixed
+(tools/text_fixes.py) and typos tidied as subtitles.cpp does, FNV-1a over the 16 bit codes): each entry the codes
+where its sentences start and their times in milliseconds, and the voice's end.
 """
 import difflib
 import glob
@@ -85,6 +86,76 @@ def codes(s):
     return out
 
 
+def tidy(cs, lang=None):
+    """the text as subtitles.cpp's Tidy puts it (the table keyed by the tidied line): a run of stops is the ellipsis
+    character; two spaces are one, three or more a line break (a bubble's padding); no space before a comma or a full
+    stop (not French's before ! ? : ;); a space after a stop between a small letter and a capital ("a bit.To fool";
+    an ellipsis only before ¿ ¡, "Aspetta…degli" stays); "ok" is "OK"; in French a no-break space before ! ? : ;
+    (not a time's colon); no spaces or line breaks at the ends"""
+    lower = lambda c: ord("a") <= c <= ord("z") or (0xDF <= c <= 0xFF and c not in (0xF7, 0xFE))  # 0xFE the marker
+    upper = lambda c: ord("A") <= c <= ord("Z") or (0xC0 <= c <= 0xDE and c != 0xD7)
+    digit = lambda c: ord("0") <= c <= ord("9")
+    word = lambda c: lower(c) or upper(c) or digit(c)
+    stop = lambda c: c in (ord("."), ord("!"), ord("?"), 0x2026)
+    dots = []
+    for c in cs:
+        if c == ord(".") and dots and dots[-1] in (ord("."), 0x2026):
+            dots[-1] = 0x2026
+        else:
+            dots.append(c)
+    cs = dots
+    out = []
+    for i, c in enumerate(cs):
+        nxt = cs[i + 1] if i + 1 < len(cs) else 0
+        if c == 0x20:
+            if i > 0 and cs[i - 1] == 0x20:
+                continue
+            j = i
+            while j < len(cs) and cs[j] == 0x20:
+                j += 1
+            if j - i >= 3:  # padding that put what follows on a line of its own
+                out.append(0x0A)
+                continue
+            nxt = cs[j] if j < len(cs) else 0
+            if nxt in (ord(","), ord(".")):
+                continue
+        out.append(c)
+        if stop(c) and i + 1 < len(cs) and not stop(nxt):
+            a = i
+            while a > 0 and stop(cs[a - 1]):
+                a -= 1
+            ellipsis = 0x2026 in cs[a:i + 1]
+            if a > 0 and (lower(cs[a - 1]) or upper(cs[a - 1])) and \
+                    ((lower(cs[a - 1]) and not ellipsis and upper(nxt)) or nxt in (0xBF, 0xA1)):
+                out.append(0x20)
+    for i in range(len(out) - 1):
+        if out[i] in (ord("o"), ord("O")) and out[i + 1] in (ord("k"), ord("K")) and \
+                (i == 0 or not word(out[i - 1])) and (i + 2 == len(out) or not word(out[i + 2])):
+            out[i], out[i + 1] = ord("O"), ord("K")
+    if lang == "French":
+        marks = (ord("!"), ord("?"), ord(":"), ord(";"))
+        fr = []
+        for i, c in enumerate(out):
+            if c in marks and fr and not (c == ord(":") and digit(fr[-1]) and i + 1 < len(out) and digit(out[i + 1])):
+                if fr[-1] == 0x20:
+                    fr[-1] = 0xA0
+                elif fr[-1] not in marks and fr[-1] not in (0xA0, 0x0A):
+                    fr.append(0xA0)
+            fr.append(c)
+        out = fr
+    while out and out[-1] in (0x20, 0x0A):
+        out.pop()
+    while out and out[0] in (0x20, 0x0A):
+        out.pop(0)
+    return out
+
+
+def fixed(lang, key, s):
+    """the line as subtitles.cpp's Capture holds it: its fixes made (tools/text_fixes.py), tidied"""
+    import text_fixes
+    return tidy(text_fixes.fix(lang, key, codes(s), s=s), lang)
+
+
 def fnv(cs):
     h = 0x811C9DC5
     for c in cs:
@@ -154,7 +225,7 @@ def main():
                 continue
             if "{PMARKER}" in s or "{PARAGRAPH}" in s or len(plain(s)) <= kLong or " " not in s:
                 continue
-            ecs = codes(s)
+            ecs = fixed("English", key, s)
             estarts = sentences(ecs)
             # the clip: the most of the line's words matched in order
             lw = [(norm(m.group(0)), m.start()) for m in re.finditer(r"\S+", "".join(map(chr, ecs)))]
@@ -217,7 +288,7 @@ def main():
             for lang, pack in packs.items():
                 if key not in pack:
                     continue
-                cs = codes(pack[key])
+                cs = fixed(lang, key, pack[key])
                 if not cs:
                     continue
                 starts = sentences(cs)
