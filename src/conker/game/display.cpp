@@ -523,7 +523,8 @@ void ConkerCameraAspect(X86Context& ctx, uint8_t* base) {
 // taken out. A cutscene doesn't build its camera again, so after the aspect setting changes in one the rest is moved
 // from the widening its camera was built with to the frame's. XBE_ASPECT_TRACE=1 logs each caller once a level and
 // cutscene state (the titles and credits were told so). Not while the credits' drawer has run in the last half second,
-// in case they draw text list lines in their cutscene too
+// in case they draw text list lines in their cutscene too. The Frontend's menu words, the text list's out of a cutscene,
+// stand in its scene as the titles do
 namespace {
 float ViewAspect(uint32_t view) {
     float a;
@@ -553,7 +554,9 @@ X86_FUNC(sub_003D2A40) {
     if (!branch) return;
     const auto now = std::chrono::steady_clock::now();
     if (from == kCredits) credits = now;
-    const bool titles = from == kTextList && base[0x76F0E0] == 1 && now - credits > std::chrono::milliseconds(500);
+    constexpr int kFrontend = 29;  // the main menu's words (Multi, ...) stand in its scene, out of a cutscene
+    const bool titles = from == kTextList && now - credits > std::chrono::milliseconds(500) &&
+                        (base[0x76F0E0] == 1 || warp::CurrentLevel() == kFrontend);
     const float built = Widened(ViewAspect(view));
     float k;
     std::memcpy(&k, base + 0x8076B4, 4);
