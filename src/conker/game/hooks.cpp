@@ -368,9 +368,8 @@ X86_FUNC(sub_00052B50) {
 // hinged at (-256, -600, 950) and (216, -600, 950), their yaw [+8] swung by the cutscene from +-90 (open) to +-180
 // (clock 7152..7400 of 7700). The shot was framed for 4:3: closed, the doors span some 1.125 of a 4:3 frame's width,
 // so a wider frame shows the empty wall past their edges. Above that each door's matrix moves along the camera's
-// view axis toward it, until the doors fill the frame's width (with a little to spare), by how far it has closed so
-// the open doors stay where they were. Moving along the view axis rather than toward the camera keeps the two doors
-// in one plane, meeting in the middle.
+// view axis toward it, until the doors fill the frame's width (with a little to spare).
+// Moving along the view axis rather than toward the camera keeps the two doors in one plane, meeting in the middle.
 namespace {
 void IntroDoors(uint32_t o, uint32_t m, uint8_t* base) {
     using kernel::R32;
@@ -385,8 +384,6 @@ void IntroDoors(uint32_t o, uint32_t m, uint8_t* base) {
     if (!(s > 1.0f)) return;
     float yaw;
     std::memcpy(&yaw, base + o + 8, 4);
-    const float closed = std::clamp((std::fabs(yaw) - 90.0f) / 90.0f, 0.0f, 1.0f);
-    if (!(closed > 0.0f)) return;
     const uint32_t camera = R32(0x84B868);  // its view at +0x10: 4x4, row vectors, view z in column 2
     if (!camera) return;
     float v[16], t[3];
@@ -397,8 +394,24 @@ void IntroDoors(uint32_t o, uint32_t m, uint8_t* base) {
     if (!(len > 1e-6f) || !std::isfinite(len)) return;
     // the hinge's depth in view space, unscaled; taking (1 - 1/s) of it off brings the door to 1/s the distance
     const float depth = (t[0] * axis[0] + t[1] * axis[1] + t[2] * axis[2] + v[14]) / len;
-    const float move = depth * (1.0f - 1.0f / s) * closed;
+    // the whole shot, the doors open before they swing and the camera pulling back from about 300 to 373 units
+    // (XBE_DOOR_TRACE): the camera looking at them square on (along -z), close, between them. Open, the doors moved
+    // in stand at the frame's sides as walls; moved only as they swung, a 21:9 or 32:9 frame saw past the doorway's
+    // frame until they had. A shot from down the hall is left as it is
+    float eye[3];
+    for (uint32_t r = 0; r < 3; r++) eye[r] = -(v[12] * v[r * 4] + v[13] * v[r * 4 + 1] + v[14] * v[r * 4 + 2]);
+    if (!(axis[2] / len < -0.95f) || !(std::fabs(depth) < 450.0f) || !(std::fabs(eye[0] + 20.0f) < 150.0f)) return;
+    const float move = depth * (1.0f - 1.0f / s);
     if (!std::isfinite(move)) return;
+    // XBE_DOOR_TRACE=1: each move, with the camera's place (minus its offset through the view's rows) and its axis
+    static const bool trace = diag::Env("XBE_DOOR_TRACE") != nullptr;
+    if (trace) {
+        LOGR("doors: clock %d obj %u yaw %.2f s %.3f depth %.1f move %.1f at %.1f %.1f %.1f eye %.1f %.1f %.1f "
+             "axis %.3f %.3f %.3f (len %.3f) cam %08X",
+             int32_t(R32(0x76F0F8)), (o - objs) / 0x150, double(yaw), double(s), double(depth),
+             double(move), double(t[0]), double(t[1]), double(t[2]), double(eye[0]), double(eye[1]), double(eye[2]),
+             double(axis[0] / len), double(axis[1] / len), double(axis[2] / len), double(len), camera);
+    }
     for (uint32_t k = 0; k < 3; k++) t[k] -= axis[k] / len * move;
     std::memcpy(base + m + 0x30, t, sizeof t);
 }
