@@ -166,8 +166,10 @@ class Package:
         names = r32(toc)
         p = toc + 4 + (4 * num_files if names else 0) + names
         self.assets = {}
+        entries = []  # the table's parts in order: relocations name them by position, from 1
         for i in range(num_with_gpu):
             idx, off, size, part, _hdr = struct.unpack_from("<IIIBB", d, p + 14 * i)
+            entries.append((idx, off, size, part))
             a = self.assets.setdefault(idx, Asset(idx))
             if part == 1:
                 a.data_off, a.data_size = off, size
@@ -176,14 +178,16 @@ class Package:
         p += 14 * num_with_gpu + 12 * t1 + 4 * t2
         relocs = [struct.unpack_from("<III", d, p + 12 * i) for i in range(num_relocs)]
         q = p + 12 * num_relocs
-        # pointers inside .data parts: offsets into the section, the target asset's (data part) offset added
+        # pointers inside .data parts: source and target are table entries (from 1), not asset indices; the pointer
+        # holds an offset into the target part and gets that part's offset in its section added
         for srcidx, dstidx, cnt in relocs:
-            s, t = self.assets.get(srcidx), self.assets.get(dstidx)
+            s = entries[srcidx - 1] if 0 < srcidx <= len(entries) else None
+            t = entries[dstidx - 1] if 0 < dstidx <= len(entries) else None
             for j in range(cnt):
                 o = r32(q + 4 * j)
-                if s and t and s.data_off is not None and t.data_off is not None and o < s.data_size:
-                    at = s.data_off + o
-                    struct.pack_into("<I", d, at, (r32(at) + t.data_off) & 0xFFFFFFFF)
+                if s and t and s[3] == 1 and o < s[2]:
+                    at = s[1] + o
+                    struct.pack_into("<I", d, at, (r32(at) + t[1]) & 0xFFFFFFFF)
             q += 4 * cnt
         for a in self.assets.values():
             if a.data_off is not None:
