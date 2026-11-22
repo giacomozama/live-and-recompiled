@@ -1262,6 +1262,14 @@ private:
     void ResetFrame();
     // pictures shown: a frame's own, and those frame generation adds
     void CountFps(uint32_t pictures);
+    void CountShown(uint32_t queued) {
+        const uint32_t n = PresentCounted() ? pw_.shown.exchange(0) : queued;
+        pics_seen_ += n;
+        CountFps(n);
+    }
+    // the pictures queued to the window (Show, ShowHeld, Redisplay) and those seen (CountShown: on time, or with vsync
+    // the display's), for adaptive fur shading: frame generation's pictures missing the screen are frames missed too
+    uint64_t pics_drawn_ = 0, pics_seen_ = 0;
     void ApplySettings();
     void RemakeTargets(app::Scale scale, uint32_t samples);
     ImageRef Shrink(Image& src, VkImageView view, uint32_t w, uint32_t h, const ShrinkOptions& o = {});
@@ -1901,11 +1909,14 @@ private:
     double gpu_ms_ = 0, gpu_ms_smooth_ = 0;
     double frame_ms_ = 0, frame_ms_smooth_ = 0;
     std::chrono::steady_clock::time_point frame_done_t_{};
-    uint32_t fur_over_ = 0, fur_under_ = 0, fur_hold_ = 0, fur_hold_least_ = 180, fur_since_finer_ = ~0u;
+    uint32_t fur_over_ = 0, fur_under_ = 0, fur_hold_ = 0, fur_hold_least_ = 60, fur_since_finer_ = ~0u;
     uint32_t fur_settle_ = 0;  // frames before it may step again (kFurSettle)
     // a try finer from a rate that failed: the smoothed GPU time at that rate when it tried (by the rate tried from),
     // no try from it again until the GPU's time there is clearly under it (a lighter scene) or kFurHoldMost frames on
     double fur_tried_gpu_ = 0, fur_failed_gpu_[3] = {};
+    // pictures queued and seen a frame (pics_drawn_, pics_seen_), smoothed, and the counts at the last frame
+    double fur_drawn_ = 0, fur_seen_ = 0, fur_shown_rate_ = 0, fur_want_rate_ = 0;
+    uint64_t fur_drawn_at_ = 0, fur_seen_at_ = 0;
     uint32_t fur_failed_age_[3] = {};
     void GpuStamp(bool start);
     void GpuFrameDone();
@@ -1937,6 +1948,31 @@ private:
     double gen_period_ = 1.0 / 60;
     std::chrono::steady_clock::time_point fps_t_ = std::chrono::steady_clock::now();
     uint64_t fps_n_ = 0;
+    // The FPS counter counts the pictures the display showed (VK_KHR_present_wait): a picture queued on time can
+    // still miss the screen, the compositor taking a later one in its place when the pictures come bunched, and one
+    // queued late (ShowHeld, the next frame come) is on screen until the next picture is done. Each present carries an
+    // id; a thread waits on them in turn, and a picture shown is one whose wait ends gap or more after the one
+    // before's (one passed over ends with the picture that took its place): with vsync half a refresh, without a
+    // quarter of the time a frame's pictures are meant to be apart (SetWatchGap)
+    struct PresentWatch {
+        std::thread thread;
+        std::mutex lock;
+        std::condition_variable wake;
+        VkSwapchainKHR swap = VK_NULL_HANDLE;  // null: nothing to wait on
+        uint64_t queued = 0, waited = 0;       // the swap chain's last present id, and the last one done
+        bool busy = false, stop = false;
+        std::atomic<int64_t> gap_ns{0};
+        std::chrono::steady_clock::time_point last{};
+        std::atomic<uint32_t> shown{0};
+        // XBE_PRESENT_TRACE=1: when each id was queued (by id % 64) and a line per wait done
+        bool trace = false;
+        std::chrono::steady_clock::time_point queued_at[64]{};
+    } pw_;
+    bool present_wait_ = false;  // the device has present ids and waits
+    bool PresentCounted() const { return present_wait_ && pw_.swap; }
+    void SetWatchGap(double spacing_s);
+    void WatchSwap(VkSwapchainKHR sc);
+    void WatchPresents();
 };
 
 bool VulkanBackend::Init(uint32_t width, uint32_t height) {
@@ -1973,6 +2009,13 @@ VulkanBackend::~VulkanBackend() {
     }
     lmw_.wake.notify_all();
     if (lmw_.thread.joinable()) lmw_.thread.join();
+    {
+        std::unique_lock<std::mutex> g(pw_.lock);
+        pw_.stop = true;
+        pw_.swap = VK_NULL_HANDLE;
+    }
+    pw_.wake.notify_all();
+    if (pw_.thread.joinable()) pw_.thread.join();
     if (dev_) vkDeviceWaitIdle(dev_);
     if (dlss_ && dlss_init_ > 0) dlss_->shutdown();
     if (ui_) ImGui_ImplVulkan_Shutdown();
@@ -2385,6 +2428,34 @@ bool VulkanBackend::CreateDevice() {
                 exts.push_back(e);
         }
     }
+    // present ids and waits, for the FPS counter with vsync (PresentWatch)
+    VkPhysicalDevicePresentIdFeaturesKHR pid{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_ID_FEATURES_KHR};
+    VkPhysicalDevicePresentWaitFeaturesKHR pwait{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_WAIT_FEATURES_KHR, &pid};
+    {
+        uint32_t en = 0;
+        vkEnumerateDeviceExtensionProperties(phys_, nullptr, &en, nullptr);
+        std::vector<VkExtensionProperties> list(en);
+        vkEnumerateDeviceExtensionProperties(phys_, nullptr, &en, list.data());
+        if (HasExtension(list, VK_KHR_PRESENT_ID_EXTENSION_NAME) &&
+            HasExtension(list, VK_KHR_PRESENT_WAIT_EXTENSION_NAME)) {
+            VkPhysicalDevicePresentIdFeaturesKHR id_have{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_ID_FEATURES_KHR};
+            VkPhysicalDevicePresentWaitFeaturesKHR wait_have{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_WAIT_FEATURES_KHR,
+                                                             &id_have};
+            VkPhysicalDeviceFeatures2 h2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, &wait_have};
+            vkGetPhysicalDeviceFeatures2(phys_, &h2);
+            present_wait_ = id_have.presentId && wait_have.presentWait;
+        }
+    }
+    if (present_wait_) {
+        pid.presentId = VK_TRUE;
+        pwait.presentWait = VK_TRUE;
+        pid.pNext = f.pNext;
+        f.pNext = &pwait;
+        exts.push_back(VK_KHR_PRESENT_ID_EXTENSION_NAME);
+        exts.push_back(VK_KHR_PRESENT_WAIT_EXTENSION_NAME);
+    }
+    LOGR("vulkan: present waits %s (the FPS counter counts %s)", present_wait_ ? "on" : "unsupported",
+         present_wait_ ? "the pictures the display showed" : "the pictures queued on time");
     AddDlssDeviceExtensions(exts);
     VkDeviceCreateInfo ci{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, &f};
     ci.queueCreateInfoCount = queue_infos;
@@ -2536,8 +2607,10 @@ bool VulkanBackend::CreateSwapChain() {
     bb_.clear();
     for (VkSemaphore s : present_sem_) vkDestroySemaphore(dev_, s, nullptr);
     present_sem_.clear();
+    WatchSwap(VK_NULL_HANDLE);  // the watch off the old one before it goes
     if (swap_) vkDestroySwapchainKHR(dev_, swap_, nullptr);
     swap_ = sc;
+    if (present_wait_) WatchSwap(sc);
     swap_fmt_ = fmt.format;
     bb_w_ = ci.imageExtent.width;
     bb_h_ = ci.imageExtent.height;
@@ -8453,15 +8526,23 @@ void VulkanBackend::TimeHeld() {
 void VulkanBackend::Show() {
     TimeHeld();
     auto now = std::chrono::steady_clock::now();
+    uint32_t shown = 0;
     while (!held_.empty() && !held_.front().after && held_.front().at <= now) {
         QueuePresent(held_.front().bi);
         held_.pop_front();
+        shown++;
     }
+    pics_drawn_ += shown;
+    CountShown(shown);
 }
 
-// every held picture, now: a new frame is here, or the swap chain is about to go
+// every held picture, now: a new frame is here, or the swap chain is about to go. Pictures still held when the next
+// frame comes are late, queued together: each passed over at once by the next but the last, which is up until the
+// next frame's first is done (without present waits the FPS counter counts that one)
 void VulkanBackend::ShowHeld() {
     for (const Held& h : held_) QueuePresent(h.bi);
+    pics_drawn_ += held_.size();
+    if (!held_.empty()) CountShown(1);
     held_.clear();
 }
 
@@ -8472,7 +8553,26 @@ void VulkanBackend::QueuePresent(uint32_t bi) {
     pi.swapchainCount = 1;
     pi.pSwapchains = &swap_;
     pi.pImageIndices = &bi;
+    VkPresentIdKHR id{VK_STRUCTURE_TYPE_PRESENT_ID_KHR};
+    uint64_t next = 0;
+    if (pw_.swap) {  // set and cleared on this thread alone
+        {
+            std::lock_guard<std::mutex> g(pw_.lock);
+            next = pw_.queued + 1;
+        }
+        id.swapchainCount = 1;
+        id.pPresentIds = &next;
+        pi.pNext = &id;
+    }
     VkResult r = vkQueuePresentKHR(queue_, &pi);
+    if (next) {
+        {
+            std::lock_guard<std::mutex> g(pw_.lock);
+            pw_.queued = next;
+            if (pw_.trace) pw_.queued_at[next % 64] = std::chrono::steady_clock::now();
+        }
+        pw_.wake.notify_one();
+    }
     if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR) {
         swap_stale_ = true;
         swap_why_ = r == VK_SUBOPTIMAL_KHR ? "suboptimal at present" : "out of date at present";
@@ -8641,23 +8741,28 @@ void VulkanBackend::GpuFrameDone() {
 }
 
 namespace {
-constexpr uint32_t kFurOverFrames = 15;    // frames over, less frames under since, before a step coarser (debounced:
-                                           // a few slow frames, DLSS's frame times jittering, don't step)
-constexpr uint32_t kFurUnderFrames = 180;  // frames under in a row before a try finer
-constexpr uint32_t kFurSettle = 120;       // frames after a step coarser before another step, either way (after a
-                                           // try finer none: a try that fails steps back as soon as it can)
-constexpr uint32_t kFurTrial = 120;        // a step back coarser within this many frames of a try finer: the try failed
+// the waits were longer (15 / 180 / 120 / 120) while the measure counted pictures that never reached the screen
+constexpr uint32_t kFurOverFrames = 5;    // frames over, less frames under since, before a step coarser (a hitch alone
+                                          // doesn't step)
+constexpr uint32_t kFurUnderFrames = 60;  // frames under in a row before a try finer
+constexpr uint32_t kFurSettle = 30;       // frames after a step coarser before another step, either way (after a
+                                          // try finer none: a try that fails steps back as soon as it can)
+constexpr uint32_t kFurTrial = 60;        // a step back coarser within this many frames of a try finer: the try failed
+constexpr uint32_t kFurHoldLeast = 60;    // the first wait before trying finer again after a try failed, doubling
 constexpr uint32_t kFurHoldMost = 1200;   // the longest wait before trying finer again
-constexpr double kFurMissed = 1.05, kFurMet = 1.03;  // the time between frames past the target's: missed, within: met
+constexpr double kFurShownMissed = 0.95, kFurShownMet = 0.98;  // pictures shown a second, of the target's: missed, met
 constexpr double kFurGpuBound = 0.8;      // the GPU's time a frame past this share of the time between frames
 constexpr double kFurOver = 0.92, kFurUnder = 0.75;  // uncapped: the GPU's share of the time between frames
 constexpr double kFurLighter = 0.85;  // the GPU's time under this share of a failed try's: a lighter scene, try again
+constexpr double kFurSeenMissed = 0.95, kFurSeenMet = 0.99;  // uncapped: the share of queued pictures seen
 }  // namespace
 
 // Adaptive fur shading (app::Settings::dlss_fur_auto). With a target (vsync, the display's rate a frame's pictures
-// take, or the fps cap, whichever is lower) it goes by whether the game holds it: missed a few frames running with the
-// GPU busy most of them (a CPU missing it gains nothing from coarser fur), a step coarser; held a second running, a try
-// finer, which a step back soon after makes wait twice as long the next time. Not the GPU's milliseconds against the
+// take, or the fps cap, whichever is lower) it goes by whether the screen gets the pictures it should a second (the
+// target's frames times a frame's pictures, or the refresh in step with it), as CountShown counts them (with vsync the
+// display's own count): a late game frame and frame generation's pictures missing the screen alike. Short of them a
+// few frames running with the GPU busy most of them (a CPU missing it gains nothing from coarser fur), a step coarser;
+// held a second running, a try finer, which a step back soon after makes wait twice as long the next time. Not the GPU's milliseconds against the
 // target: a GPU with time to spare clocks down, and its frame stretches toward the target (a 3060 Ti at 165 Hz stayed
 // at quarter with full fur holding the rate easily). Uncapped without vsync there is no target, and the GPU runs flat
 // out, so its time is the measure: busy nearly all the time between frames, coarser for more frames; well under it a
@@ -8676,14 +8781,25 @@ void VulkanBackend::AutoFurRate() {
                              : InStep() > 0 ? set.fps_cap
                                             : std::max(app::MonitorRefresh() / std::max(swap_gen_, 1u), 1u);
     const uint32_t fps = set.fps_cap && display ? std::min(set.fps_cap, display) : set.fps_cap ? set.fps_cap : display;
-    const double target = fps ? 1000.0 / double(fps) : 0;
+    // pictures queued and seen a frame, smoothed alike with the time between frames
+    fur_drawn_ += (double(pics_drawn_ - fur_drawn_at_) - fur_drawn_) * 0.2;
+    fur_seen_ += (double(pics_seen_ - fur_seen_at_) - fur_seen_) * 0.2;
+    fur_drawn_at_ = pics_drawn_;
+    fur_seen_at_ = pics_seen_;
+    // the pictures the screen should get a second, and gets
+    const double want = !fps ? 0 : swap_vsync_ && InStep() > 0 ? app::MonitorHz() : double(fps) * std::max(Pictures(), 1u);
+    fur_shown_rate_ = fur_seen_ * 1000.0 / frame_ms_smooth_;
+    fur_want_rate_ = want;
     bool over, under;
-    if (target > 0) {
-        over = frame_ms_ > target * kFurMissed && gpu_ms_ > frame_ms_ * kFurGpuBound;
-        under = frame_ms_smooth_ <= target * kFurMet;
+    if (want > 0) {
+        over = fur_shown_rate_ < want * kFurShownMissed && gpu_ms_ > frame_ms_ * kFurGpuBound;
+        under = fur_shown_rate_ >= want * kFurShownMet;
     } else {
-        over = gpu_ms_ > frame_ms_ * kFurOver;
-        under = gpu_ms_smooth_ < frame_ms_smooth_ * kFurUnder;
+        // no target: late pictures (ShowHeld's) short of those queued are frames missed too
+        const bool missing = fur_drawn_ > 0 && fur_seen_ < fur_drawn_ * kFurSeenMissed;
+        const bool all_seen = fur_seen_ >= fur_drawn_ * kFurSeenMet;
+        over = (gpu_ms_ > frame_ms_ * kFurOver || missing) && gpu_ms_ > frame_ms_ * kFurGpuBound;
+        under = gpu_ms_smooth_ < frame_ms_smooth_ * kFurUnder && all_seen;
     }
     if (fur_since_finer_ != ~0u) fur_since_finer_++;
     if (fur_hold_) fur_hold_--;
@@ -8694,9 +8810,10 @@ void VulkanBackend::AutoFurRate() {
         fur_over_ = fur_under_ = 0;
         fur_settle_ = dir > 0 ? kFurSettle : 0;
         if (diag::Perf())
-            LOGR("perf: adaptive fur shading: %s (GPU %.2f ms a frame, frames %.2f ms apart, target %.2f)",
+            LOGR("perf: adaptive fur shading: %s (GPU %.2f ms a frame, frames %.2f ms apart, pictures shown %.1f a "
+                 "second of %.1f, %.2f of %.2f queued a frame)",
                  fur_auto_ == 0 ? "full" : fur_auto_ == 1 ? "half" : "quarter", gpu_ms_smooth_, frame_ms_smooth_,
-                 target);
+                 fur_shown_rate_, fur_want_rate_, fur_seen_, fur_drawn_);
     };
     fur_over_ = over ? fur_over_ + 1 : fur_over_ ? fur_over_ - 1 : 0;  // a frame on time takes one back
     fur_under_ = under ? fur_under_ + 1 : 0;
@@ -8716,7 +8833,7 @@ void VulkanBackend::AutoFurRate() {
         return;
     }
     if (fur_since_finer_ != ~0u && fur_since_finer_ > kFurTrial) {  // the try finer held
-        fur_hold_least_ = kFurUnderFrames;
+        fur_hold_least_ = kFurHoldLeast;
         fur_since_finer_ = ~0u;
         fur_failed_gpu_[fur_auto_ + 1] = 0;
     }
@@ -8731,6 +8848,75 @@ void VulkanBackend::AutoFurRate() {
     }
 }
 
+// the watch onto a new swap chain (its present ids start again), or off one (null) once no wait is on it
+void VulkanBackend::WatchSwap(VkSwapchainKHR sc) {
+    std::unique_lock<std::mutex> g(pw_.lock);
+    pw_.wake.wait(g, [&] { return !pw_.busy; });
+    pw_.swap = sc;
+    pw_.queued = pw_.waited = 0;
+    pw_.last = {};
+    pw_.shown = 0;
+    if (!sc) return;
+    SetWatchGap(1.0 / 60);
+    pw_.trace = diag::Env("XBE_PRESENT_TRACE") != nullptr;
+    if (pw_.trace)
+        LOGR("present trace: monitor %.3f Hz, vsync %s, a picture shown %.2f ms or more after the last", app::MonitorHz(),
+             swap_vsync_ ? "on" : "off", double(pw_.gap_ns.load()) / 1e6);
+    if (!pw_.thread.joinable()) pw_.thread = std::thread([this] { WatchPresents(); });
+}
+
+// the least time a picture is on screen to be counted: with vsync half a refresh (a picture passed over ends with the
+// next), without a quarter of the time pictures are meant to be apart (one queued late is up until the next is done)
+void VulkanBackend::SetWatchGap(double spacing_s) {
+    double gap;
+    if (swap_vsync_) {
+        const double hz = app::MonitorHz();
+        gap = 0.5 / (hz > 1.0 ? hz : 60.0);
+    } else {
+        gap = 0.25 * std::clamp(spacing_s, 1.0 / 1000, 0.25);
+    }
+    pw_.gap_ns.store(int64_t(gap * 1e9), std::memory_order_relaxed);
+}
+
+void VulkanBackend::WatchPresents() {
+    constexpr uint64_t kTimeout = 20'000'000;  // ns: a swap chain going waits no longer than this for the watch
+    std::unique_lock<std::mutex> g(pw_.lock);
+    for (;;) {
+        pw_.wake.wait(g, [&] { return pw_.stop || (pw_.swap && pw_.waited < pw_.queued); });
+        if (pw_.stop) return;
+        const VkSwapchainKHR sc = pw_.swap;
+        const uint64_t id = pw_.waited + 1;
+        pw_.busy = true;
+        g.unlock();
+        const VkResult r = vkWaitForPresentKHR(dev_, sc, id, kTimeout);
+        const auto now = std::chrono::steady_clock::now();
+        g.lock();
+        pw_.busy = false;
+        pw_.wake.notify_all();
+        if (pw_.swap != sc || r == VK_TIMEOUT) continue;
+        pw_.waited = id;  // shown, or the swap chain out of date (passed over)
+        if (r != VK_SUCCESS && r != VK_SUBOPTIMAL_KHR) continue;
+        const auto prev = pw_.last;
+        const bool counted = prev == std::chrono::steady_clock::time_point{} ||
+                             now - prev >= std::chrono::nanoseconds(pw_.gap_ns.load(std::memory_order_relaxed));
+        if (counted) {
+            pw_.shown++;
+            pw_.last = now;
+        }
+        if (pw_.trace) {
+            using ms = std::chrono::duration<double, std::milli>;
+            const auto at = pw_.queued_at[id % 64];
+            LOGR("present %llu: queued %.2f ms ago, done %.2f ms after the last counted, %llu queued since, %s",
+                 (unsigned long long)id, ms(now - at).count(),
+                 prev == std::chrono::steady_clock::time_point{} ? 0.0 : ms(now - prev).count(),
+                 (unsigned long long)(pw_.queued - id), counted ? "counted" : "not counted");
+        }
+    }
+}
+
+// the pictures the display showed (PresentWatch), not the ones drawn: frame generation behind on the game's frames
+// draws pictures it then can't show. Without present waits, those queued on time (Show) and the last of a late batch
+// (ShowHeld)
 void VulkanBackend::CountFps(uint32_t pictures) {
     fps_n_ += pictures;
     auto now = std::chrono::steady_clock::now();
@@ -8836,6 +9022,7 @@ void VulkanBackend::Present(const Surface& front) {
     double since = gen_last_ == decltype(gen_last_){} ? 1.0 : std::chrono::duration<double>(now - gen_last_).count();
     gen_last_ = now;
     if (since < 0.25) gen_period_ += (since - gen_period_) * 0.1;
+    if (pw_.swap) SetWatchGap(gen_period_ * spacing);
     ApplyFade();
     if (ramp_dirty_) UploadGammaRamp();
     perf_t = PerfClock::now();
@@ -8845,9 +9032,8 @@ void VulkanBackend::Present(const Surface& front) {
     BuildUi();
     g_perf.p_ui += PerfLap(perf_t);
     Frame& f = CurrentFrame();
-    uint32_t shown = 0;
     uint64_t first = 0;  // the first picture's timeline value
-    for (size_t i = 0; i < pictures.size(); i++, shown++) {
+    for (size_t i = 0; i < pictures.size(); i++) {
         uint32_t bi = 0;
         perf_t = PerfClock::now();
         const bool acquired = AcquireImage(bi, f.acquired[i]);
@@ -8888,7 +9074,6 @@ void VulkanBackend::Present(const Surface& front) {
     ResetFrame();
     g_perf.p_end += PerfLap(perf_t);
     dlss_src_ = {};  // the pictures they point at are this Present's
-    CountFps(std::max(shown, 1u));
     if (diag::Perf()) LogPerf();
     ApplySettings();
     light_ = LightAhead();
@@ -8951,7 +9136,8 @@ void VulkanBackend::Redisplay(bool blur) {
     }
     frame_++;
     ResetFrame();
-    CountFps(shown);
+    pics_drawn_ += shown;
+    CountShown(shown);  // queued at once, not held
     ApplySettings();
 }
 
