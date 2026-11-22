@@ -196,6 +196,8 @@ inline std::atomic<bool> g_record_dump{false};
 // F7: the game frozen on its last frame, drawn again each refresh with the settings as they are now (d3d8.cpp's Swap
 // waits, Backend::Refresh draws); F8 lets one more frame through, steps, freezing first if it isn't
 inline std::atomic<bool> g_freeze{false};
+// the render thread's time waiting for work, in ns, added up (the backend's pacing takes how busy it is from it)
+inline std::atomic<uint64_t> g_render_wait_ns{0};
 // Debug: a colour vision deficiency simulated over the picture put on screen (the settings menu left out): 0 none,
 // 1 protanopia, 2 deuteranopia, 3 tritanopia, 4 achromatopsia (cvd_hlsl.h). Not saved
 inline std::atomic<uint32_t> g_cvd_sim{0};

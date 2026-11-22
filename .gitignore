@@ -5,6 +5,7 @@ iso/
 *.iso
 
 toolchain/
+tools/__pycache__
 
 # build
 /out/

@@ -72,6 +72,7 @@ void Load() {
     s.fps_cap = t["fps_cap"].value_or(s.fps_cap);
     s.vsync = t["vsync"].value_or(s.vsync);
     s.picture_timing_exact = t["picture_timing_exact"].value_or(s.picture_timing_exact);
+    s.adaptive_interp = t["adaptive_interp"].value_or(s.adaptive_interp);
     s.hdr = t["hdr"].value_or(s.hdr);
     // 0 the display's
     if (uint32_t v = t["hdr_paper_white"].value_or(s.hdr_paper_white))
@@ -168,6 +169,7 @@ toml::table Table() {
                   {"fps_cap", int64_t(s.fps_cap)},
                   {"vsync", s.vsync},
                   {"picture_timing_exact", s.picture_timing_exact},
+                  {"adaptive_interp", s.adaptive_interp},
                   {"hdr", s.hdr},
                   {"hdr_paper_white", int64_t(s.hdr_paper_white)},
                   {"hdr_highlights", int64_t(s.hdr_highlights)},

@@ -2456,6 +2456,13 @@ void Draw(double fps) {
                         ImGui::EndDisabled();
                         Hint(D3d11() ? NoVulkan() : "hint_above_the_refresh_rate_lighter", true);
                     }
+                    // the pictures between frames fewer while they keep the game from its rate (VulkanBackend::AutoInterp)
+                    if (now.frame_generation > 1) {
+                        ImGui::BeginDisabled(D3d11());
+                        Check("adaptive_frame_interpolation", &s.adaptive_interp);
+                        ImGui::EndDisabled();
+                        Hint(D3d11() ? NoVulkan() : "hint_adaptive_frame_interpolation", true);
+                    }
 
                     constexpr uint32_t kAniso[] = {0, 2, 4, 8, 16};
                     int aniso = 0;

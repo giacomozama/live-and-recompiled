@@ -47,6 +47,9 @@ struct Settings {
     // own picture shown at the refresh nearest it, up to half a refresh off, one scene drawn a picture; true, every
     // picture at its own time, most of them drawn again (dearer)
     bool picture_timing_exact = false;
+    // frame interpolation (frame_generation past 1) drawing fewer pictures a frame while the ones between keep the game
+    // from its rate (VulkanBackend::AutoInterp), back up as there's room again
+    bool adaptive_interp = true;
     bool vsync = true;
     // HDR output (an HDR10 swap chain, where the display and compositor offer one): the SDR picture shown with its
     // white at hdr_paper_white nits, 0 the display's (HdrPaperWhite)

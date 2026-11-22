@@ -944,7 +944,8 @@ public:
         return true;
     }
     void Show() override;
-    uint32_t Pictures() override { return cap_ || !swap_ || minimised_ ? 1 : swap_gen_; }
+    // adaptive frame interpolation (AutoInterp) may show fewer than the swap chain was made for
+    uint32_t Pictures() override { return cap_ || !swap_ || minimised_ ? 1 : std::clamp(interp_pics_, 1u, swap_gen_); }
     uint32_t PictureTimes(float* t, float& step) override;
     double InStep();
     bool Light() const override { return light_; }
@@ -1046,6 +1047,12 @@ private:
     Alloc Upload(uint64_t size, uint64_t align = kCbAlign);
     Frame& CurrentFrame() { return frames_[frame_ % kFrames]; }
     void Retire(std::shared_ptr<void> p) { CurrentFrame().garbage.push_back(std::move(p)); }
+    // a vector of images to n, any cut off retired (the GPU may still read them)
+    void ResizeRetiring(std::vector<ImageRef>& v, size_t n) {
+        for (size_t i = n; i < v.size(); i++)
+            if (v[i]) Retire(std::move(v[i]));
+        v.resize(n);
+    }
     ImageRef NewImage(const ImageSpec& s);
     BufferRef NewBuffer(VkDeviceSize size, VkBufferUsageFlags usage, bool readback);
     // the commands' order: a layout change, a full memory barrier, the device's writes to the host
@@ -1915,8 +1922,49 @@ private:
     // no try from it again until the GPU's time there is clearly under it (a lighter scene) or kFurHoldMost frames on
     double fur_tried_gpu_ = 0, fur_failed_gpu_[3] = {};
     // pictures queued and seen a frame (pics_drawn_, pics_seen_), smoothed, and the counts at the last frame
-    double fur_drawn_ = 0, fur_seen_ = 0, fur_shown_rate_ = 0, fur_want_rate_ = 0;
+    double fur_drawn_ = 0, fur_seen_ = 0;
     uint64_t fur_drawn_at_ = 0, fur_seen_at_ = 0;
+    // Whether the game keeps up (UpdatePace, once a frame): the one answer adaptive fur shading and adaptive frame
+    // interpolation go by. The game's frames a second (smoothed) and its target (the fps cap, or the display's rate a
+    // frame's pictures take with vsync); the pictures the screen got a second (CountShown: with present waits the
+    // display's own count) and those the target gives (its frames times a frame's pictures, or the refresh in step
+    // with it); the share of the time between frames the GPU and the render thread were busy (the last frame's);
+    // behind, either rate short of its target; ahead, both at it; game_behind and game_ahead, the game's frames alone
+    // (adaptive fur shading's measure: the in-between pictures go first). No target (uncapped, no vsync): none of them
+    struct Pace {
+        double game_rate = 0, game_target = 0, shown_rate = 0, shown_target = 0;
+        double gpu_share = 0, render_share = 0;
+        bool behind = false, ahead = false, game_behind = false, game_ahead = false;
+    } pace_;
+    uint64_t render_wait_at_ = 0;  // gpu::g_render_wait_ns at the last frame
+    // the rates over the last second (kPaceWindow), not smoothed a frame at a time: the pictures a frame are counted
+    // as their waits end, 1, 2 or 3 at 2 a frame, and an average of them dipped under the target's often enough that a
+    // second ahead in a row never came. Each frame: when, and the pictures seen by then. Emptied when the pictures a
+    // frame change (the target with them)
+    struct PaceSample {
+        std::chrono::steady_clock::time_point at;
+        uint64_t seen;
+    };
+    std::deque<PaceSample> pace_window_;
+    void UpdatePace();
+    void Adapt();  // UpdatePace, then the two that go by it
+    // Adaptive frame interpolation (app::Settings::adaptive_interp, AutoInterp): the pictures a frame now, at most the
+    // swap chain's; frames behind and ahead; frames before another step (after one down); frames before a try up
+    // again (doubling after each that fails); frames since the last step up; and the step down's test: frames left,
+    // the game's rate when it stepped, and frames before another step down after one that didn't help (doubling)
+    uint32_t interp_pics_ = 1;
+    uint32_t interp_over_ = 0, interp_under_ = 0, interp_settle_ = 0, interp_hold_ = 0, interp_hold_least_ = 60;
+    uint32_t interp_since_up_ = ~0u, interp_test_ = 0, interp_down_hold_ = 0, interp_down_hold_least_ = 60;
+    double interp_test_rate_ = 0;
+    void AutoInterp();
+    // XBE_ACQUIRE_TRACE=1: swap chain images waited for past 20 ms, the picture counts a frame, each step of the count
+    uint64_t trace_main_ = 0;
+    std::string trace_images_;  // image@submit for each picture of the frame
+    static bool AcquireTrace() {
+        static const bool on = diag::Env("XBE_ACQUIRE_TRACE") != nullptr;
+        return on;
+    }
+    bool InterpAdapting() const;
     uint32_t fur_failed_age_[3] = {};
     void GpuStamp(bool start);
     void GpuFrameDone();
@@ -2443,7 +2491,9 @@ bool VulkanBackend::CreateDevice() {
                                                              &id_have};
             VkPhysicalDeviceFeatures2 h2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, &wait_have};
             vkGetPhysicalDeviceFeatures2(phys_, &h2);
-            present_wait_ = id_have.presentId && wait_have.presentWait;
+            // XBE_PRESENT_WAIT=0 leaves them off (the FPS counter and pacing count the pictures queued on time)
+            const char* e = diag::Env("XBE_PRESENT_WAIT");
+            present_wait_ = id_have.presentId && wait_have.presentWait && !(e && *e == '0');
         }
     }
     if (present_wait_) {
@@ -2527,6 +2577,10 @@ bool VulkanBackend::CreateSwapChain() {
     VkExtent2D ext = caps.currentExtent.width == UINT32_MAX ? WindowExtent() : caps.currentExtent;
     swap_vsync_ = app::Vsync(app::Get());
     swap_gen_ = std::clamp<uint32_t>(app::Get().frame_generation, 1, kMaxGen);
+    interp_pics_ = swap_gen_;  // the setting's count again, adaptive interpolation stepping down from there
+    pace_window_.clear();
+    interp_over_ = interp_under_ = interp_settle_ = interp_hold_ = interp_test_ = interp_down_hold_ = 0;
+    interp_since_up_ = ~0u;
     swap_stale_ = false;
     minimised_ = !ext.width || !ext.height;
     if (minimised_) return true;
@@ -8351,7 +8405,7 @@ void VulkanBackend::PostTraceEnd(const Target& front) {
 bool VulkanBackend::KeepPicture(const Surface& front, uint32_t slot) {
     Target* t = EnsureTarget(front, false);
     if (!t || slot >= gen_pics_.size()) return false;
-    gen_masks_.resize(gen_pics_.size());
+    ResizeRetiring(gen_masks_, gen_pics_.size());
     FinishFront(*t, &gen_masks_[slot]);
     uint32_t w = t->res->w, h = t->res->h;
     ImageRef& keep = gen_pics_[slot];
@@ -8446,7 +8500,9 @@ void VulkanBackend::Keep(const Surface& front, bool own) {
     gen_taken_ = 0;
     replays_ = 0;
     gen_frame_ = true;
-    gen_pics_.resize(Pictures());
+    // fewer pictures than the frame before (adaptive frame interpolation): those left over go with this frame's
+    // garbage, not at once, as the frames before still in flight read them (DLSS: the GPU hung on a destroyed image)
+    ResizeRetiring(gen_pics_, Pictures());
     if (Target* t = EnsureTarget(front, false); t && LatchCpuWrite(*t)) UploadTarget(*t, front);
     gen_own_ = own;
     if (own) {
@@ -8664,6 +8720,7 @@ void VulkanBackend::ResetFrame() {
         g_perf.wait += PerfMs(perf_wait);
     }
     GpuFrameDone();  // its fence passed: the frame this one drew before
+    Adapt();
     vkResetCommandPool(dev_, f.pool, 0);
     f.garbage.clear();
     f.used = 0;
@@ -8737,7 +8794,6 @@ void VulkanBackend::GpuFrameDone() {
         if (t[2 * i + 1] > t[2 * i]) ticks += t[2 * i + 1] - t[2 * i];
     gpu_ms_ = double(ticks) * gpu_ns_per_tick_ / 1e6;
     gpu_ms_smooth_ = gpu_ms_smooth_ > 0 ? gpu_ms_smooth_ + (gpu_ms_ - gpu_ms_smooth_) * 0.2 : gpu_ms_;
-    AutoFurRate();
 }
 
 namespace {
@@ -8750,12 +8806,162 @@ constexpr uint32_t kFurSettle = 30;       // frames after a step coarser before 
 constexpr uint32_t kFurTrial = 60;        // a step back coarser within this many frames of a try finer: the try failed
 constexpr uint32_t kFurHoldLeast = 60;    // the first wait before trying finer again after a try failed, doubling
 constexpr uint32_t kFurHoldMost = 1200;   // the longest wait before trying finer again
-constexpr double kFurShownMissed = 0.95, kFurShownMet = 0.98;  // pictures shown a second, of the target's: missed, met
+constexpr double kPaceMissed = 0.95, kPaceMet = 0.98;  // a rate of its target's: missed, met (UpdatePace)
+constexpr auto kPaceWindow = std::chrono::seconds(1);  // the rates are counted over this long
+constexpr double kPaceSlackFrames = 1, kPaceSlackPictures = 2;  // what the window's ends may leave out
 constexpr double kFurGpuBound = 0.8;      // the GPU's time a frame past this share of the time between frames
 constexpr double kFurOver = 0.92, kFurUnder = 0.75;  // uncapped: the GPU's share of the time between frames
 constexpr double kFurLighter = 0.85;  // the GPU's time under this share of a failed try's: a lighter scene, try again
 constexpr double kFurSeenMissed = 0.95, kFurSeenMet = 0.99;  // uncapped: the share of queued pictures seen
 }  // namespace
+
+// whether the game keeps up, from this frame's numbers: the one answer AutoFurRate and AutoInterp go by
+void VulkanBackend::UpdatePace() {
+    const uint64_t wait = g_render_wait_ns.load(std::memory_order_relaxed);
+    const double wait_ms = double(wait - render_wait_at_) / 1e6;
+    render_wait_at_ = wait;
+    // pictures queued and seen a frame, smoothed alike with the time between frames
+    fur_drawn_ += (double(pics_drawn_ - fur_drawn_at_) - fur_drawn_) * 0.2;
+    fur_seen_ += (double(pics_seen_ - fur_seen_at_) - fur_seen_) * 0.2;
+    fur_drawn_at_ = pics_drawn_;
+    fur_seen_at_ = pics_seen_;
+    if (frame_ms_ <= 0 || frame_ms_smooth_ <= 0) {
+        pace_ = {};
+        pace_window_.clear();
+        return;
+    }
+    const auto now = std::chrono::steady_clock::now();
+    pace_window_.push_back({now, pics_seen_});
+    while (pace_window_.size() > 2 && now - pace_window_[1].at >= kPaceWindow) pace_window_.pop_front();
+    const double span = std::chrono::duration<double>(now - pace_window_.front().at).count();
+    const double frames = double(pace_window_.size() - 1);
+    const double seen = double(pics_seen_ - pace_window_.front().seen);
+    const app::Settings& set = app::Get();
+    const uint32_t pics = std::max(Pictures(), 1u);
+    // in step with the refresh (InStep) the game holds its own rate under the pictures
+    const bool in_step = swap_vsync_ && InStep() > 0;
+    const uint32_t display = !swap_vsync_ ? 0 : in_step ? set.fps_cap : std::max(app::MonitorRefresh() / pics, 1u);
+    const uint32_t fps = set.fps_cap && display ? std::min(set.fps_cap, display) : set.fps_cap ? set.fps_cap : display;
+    Pace p;
+    p.game_rate = span > 0 ? frames / span : 1000.0 / frame_ms_smooth_;
+    p.game_target = fps;
+    p.shown_rate = span > 0 ? seen / span : 0;
+    p.shown_target = !fps ? 0 : in_step ? app::MonitorHz() : double(fps) * pics;
+    p.gpu_share = gpu_ms_ / frame_ms_;
+    p.render_share = std::clamp(1.0 - wait_ms / frame_ms_, 0.0, 1.0);
+    // judged once the window is half full, against what the targets give over it, give or take the frame or pictures
+    // at its ends (a picture's wait ends a refresh or two after it is queued)
+    if (fps && span >= 0.5 * std::chrono::duration<double>(kPaceWindow).count()) {
+        const double want_frames = p.game_target * span, want_seen = p.shown_target * span;
+        p.game_behind = frames < want_frames * kPaceMissed - kPaceSlackFrames;
+        p.game_ahead = frames >= want_frames * kPaceMet - kPaceSlackFrames;
+        p.behind = p.game_behind || seen < want_seen * kPaceMissed - kPaceSlackPictures;
+        p.ahead = p.game_ahead && seen >= want_seen * kPaceMet - kPaceSlackPictures;
+    }
+    pace_ = p;
+}
+
+void VulkanBackend::Adapt() {
+    UpdatePace();
+    AutoFurRate();
+    AutoInterp();
+}
+
+namespace {
+constexpr uint32_t kInterpOverFrames = 5;   // frames behind (less frames on time since) before a step down
+constexpr uint32_t kInterpUnderFrames = 60; // frames ahead in a row before a try up
+constexpr uint32_t kInterpSettle = 30;      // frames after a step down before another step
+constexpr uint32_t kInterpTest = 60;        // frames after a step down before judging whether it helped
+constexpr uint32_t kInterpTrial = 60;       // a step down within this many frames of a step up: the try up failed
+constexpr uint32_t kInterpHoldLeast = 60, kInterpHoldMost = 1200;  // waits before trying again, doubling
+constexpr double kInterpHelped = 1.03;      // the game's rate up by this much after a step down: it helped
+constexpr double kInterpRenderBound = 0.9;  // the render thread busy past this share of the time between frames
+}  // namespace
+
+bool VulkanBackend::InterpAdapting() const {
+    return app::Get().adaptive_interp && swap_gen_ > 1 && !cap_ && swap_ && !minimised_;
+}
+
+// Adaptive frame interpolation (app::Settings::adaptive_interp). The pictures drawn between the game's frames cost
+// the GPU and the render thread (each is the frame's draws again); when the game falls behind (UpdatePace) with
+// either busy, a picture fewer a frame, down to the frame's own alone. Whether that helped is judged kInterpTest
+// frames on: the game's rate no better and still behind, the pictures weren't what held it back (the game's own
+// work), and the step goes back up, no step down again for a while (doubling each time). Ahead a second running, a
+// try up, which a step down soon after makes wait twice as long the next time. The swap chain keeps its images for
+// the setting's count: a step is no more than the next frame drawing fewer pictures. Without a target (uncapped, no
+// vsync) the setting's count. It goes before adaptive fur shading, which steps coarser only once this is down to the
+// frame's own picture and the game's own frames still miss their rate (AutoFurRate)
+void VulkanBackend::AutoInterp() {
+    const uint32_t was = interp_pics_;
+    const auto changed = [&] {
+        if (interp_pics_ == was) return;
+        pic_slot_ = Pictures() - 1;  // the next frame's own slot, as Present set it
+        pace_window_.clear();        // the target changes with the count: counted afresh
+        if (diag::Perf() || AcquireTrace())
+            LOGR("perf: adaptive frame interpolation: %u pictures a frame (game %.1f of %.1f FPS, pictures shown %.1f a "
+                 "second of %.1f, GPU busy %.0f%%, render thread %.0f%%)",
+                 interp_pics_, pace_.game_rate, pace_.game_target, pace_.shown_rate, pace_.shown_target,
+                 pace_.gpu_share * 100, pace_.render_share * 100);
+    };
+    if (!InterpAdapting() || pace_.game_target <= 0) {
+        interp_pics_ = swap_gen_;
+        interp_over_ = interp_under_ = interp_settle_ = interp_test_ = 0;
+        interp_since_up_ = ~0u;
+        changed();
+        return;
+    }
+    const bool fur_on = app::Get().dlss_fur_auto && shading_rate_;
+    const bool gpu_bound = pace_.gpu_share > kFurGpuBound;
+    // the first to go: down at once; up only once adaptive fur shading is back at full
+    const bool may_up = !fur_on || fur_auto_ == 0;
+    const bool over = pace_.behind && (gpu_bound || pace_.render_share > kInterpRenderBound);
+    interp_over_ = over ? interp_over_ + 1 : interp_over_ ? interp_over_ - 1 : 0;
+    interp_under_ = pace_.ahead ? interp_under_ + 1 : 0;
+    if (interp_since_up_ != ~0u) interp_since_up_++;
+    if (interp_hold_) interp_hold_--;
+    if (interp_down_hold_) interp_down_hold_--;
+    // the last step down judged: no better and still behind, it goes back
+    if (interp_test_ && --interp_test_ == 0) {
+        if (pace_.behind && pace_.game_rate < interp_test_rate_ * kInterpHelped && interp_pics_ < swap_gen_) {
+            interp_pics_++;
+            interp_down_hold_ = interp_down_hold_least_;
+            interp_down_hold_least_ = std::min(interp_down_hold_least_ * 2, kInterpHoldMost);
+            interp_over_ = interp_under_ = 0;
+            changed();
+            return;
+        }
+        interp_down_hold_least_ = kInterpHoldLeast;
+    }
+    if (interp_settle_) {
+        interp_settle_--;
+        return;
+    }
+    if (interp_over_ >= kInterpOverFrames && interp_pics_ > 1 && !interp_down_hold_) {
+        const bool failed_up = interp_since_up_ <= kInterpTrial;
+        if (failed_up) {  // the picture just added held the game back: no test needed
+            interp_hold_least_ = std::min(interp_hold_least_ * 2, kInterpHoldMost);
+            interp_hold_ = interp_hold_least_;
+        }
+        interp_since_up_ = ~0u;
+        interp_pics_--;
+        interp_over_ = interp_under_ = 0;
+        interp_settle_ = kInterpSettle;
+        interp_test_ = failed_up ? 0 : kInterpTest;
+        interp_test_rate_ = pace_.game_rate;
+        changed();
+        return;
+    }
+    if (interp_since_up_ != ~0u && interp_since_up_ > kInterpTrial) {  // the try up held
+        interp_hold_least_ = kInterpHoldLeast;
+        interp_since_up_ = ~0u;
+    }
+    if (interp_pics_ < swap_gen_ && may_up && !interp_hold_ && !interp_test_ && interp_under_ >= kInterpUnderFrames) {
+        interp_since_up_ = 0;
+        interp_pics_++;
+        interp_over_ = interp_under_ = 0;
+        changed();
+    }
+}
 
 // Adaptive fur shading (app::Settings::dlss_fur_auto). With a target (vsync, the display's rate a frame's pictures
 // take, or the fps cap, whichever is lower) it goes by whether the screen gets the pictures it should a second (the
@@ -8775,25 +8981,14 @@ void VulkanBackend::AutoFurRate() {
         return;
     }
     if (frame_ms_ <= 0 || frame_ms_smooth_ <= 0) return;
-    const app::Settings& set = app::Get();
-    // in step with the refresh (InStep) the game holds its own rate under the pictures
-    const uint32_t display = !swap_vsync_ ? 0
-                             : InStep() > 0 ? set.fps_cap
-                                            : std::max(app::MonitorRefresh() / std::max(swap_gen_, 1u), 1u);
-    const uint32_t fps = set.fps_cap && display ? std::min(set.fps_cap, display) : set.fps_cap ? set.fps_cap : display;
-    // pictures queued and seen a frame, smoothed alike with the time between frames
-    fur_drawn_ += (double(pics_drawn_ - fur_drawn_at_) - fur_drawn_) * 0.2;
-    fur_seen_ += (double(pics_seen_ - fur_seen_at_) - fur_seen_) * 0.2;
-    fur_drawn_at_ = pics_drawn_;
-    fur_seen_at_ = pics_seen_;
-    // the pictures the screen should get a second, and gets
-    const double want = !fps ? 0 : swap_vsync_ && InStep() > 0 ? app::MonitorHz() : double(fps) * std::max(Pictures(), 1u);
-    fur_shown_rate_ = fur_seen_ * 1000.0 / frame_ms_smooth_;
-    fur_want_rate_ = want;
+    // the in-between pictures go first (AutoInterp): fur goes by the game's own frames alone (60, or 30 where that's
+    // the target), coarser only once interpolation is down to the frame's own picture (or off, or held from stepping
+    // down, one fewer having not helped); finer whenever the game's frames are on time, before interpolation goes up
+    const bool may_coarser = !InterpAdapting() || Pictures() <= 1 || interp_down_hold_;
     bool over, under;
-    if (want > 0) {
-        over = fur_shown_rate_ < want * kFurShownMissed && gpu_ms_ > frame_ms_ * kFurGpuBound;
-        under = fur_shown_rate_ >= want * kFurShownMet;
+    if (pace_.game_target > 0) {
+        over = may_coarser && pace_.game_behind && pace_.gpu_share > kFurGpuBound;
+        under = pace_.game_ahead;
     } else {
         // no target: late pictures (ShowHeld's) short of those queued are frames missed too
         const bool missing = fur_drawn_ > 0 && fur_seen_ < fur_drawn_ * kFurSeenMissed;
@@ -8810,10 +9005,11 @@ void VulkanBackend::AutoFurRate() {
         fur_over_ = fur_under_ = 0;
         fur_settle_ = dir > 0 ? kFurSettle : 0;
         if (diag::Perf())
-            LOGR("perf: adaptive fur shading: %s (GPU %.2f ms a frame, frames %.2f ms apart, pictures shown %.1f a "
-                 "second of %.1f, %.2f of %.2f queued a frame)",
-                 fur_auto_ == 0 ? "full" : fur_auto_ == 1 ? "half" : "quarter", gpu_ms_smooth_, frame_ms_smooth_,
-                 fur_shown_rate_, fur_want_rate_, fur_seen_, fur_drawn_);
+            LOGR("perf: adaptive fur shading: %s (GPU %.2f ms a frame, game %.1f of %.1f FPS, pictures shown %.1f a "
+                 "second of %.1f, GPU busy %.0f%%, render thread %.0f%%)",
+                 fur_auto_ == 0 ? "full" : fur_auto_ == 1 ? "half" : "quarter", gpu_ms_smooth_, pace_.game_rate,
+                 pace_.game_target, pace_.shown_rate, pace_.shown_target, pace_.gpu_share * 100,
+                 pace_.render_share * 100);
     };
     fur_over_ = over ? fur_over_ + 1 : fur_over_ ? fur_over_ - 1 : 0;  // a frame on time takes one back
     fur_under_ = under ? fur_under_ + 1 : 0;
@@ -9027,6 +9223,8 @@ void VulkanBackend::Present(const Surface& front) {
     if (ramp_dirty_) UploadGammaRamp();
     perf_t = PerfClock::now();
     Submit(false);
+    trace_main_ = fence_value_;
+    trace_images_.clear();
     g_perf.p_submit += PerfLap(perf_t);
 
     BuildUi();
@@ -9036,19 +9234,36 @@ void VulkanBackend::Present(const Surface& front) {
     for (size_t i = 0; i < pictures.size(); i++) {
         uint32_t bi = 0;
         perf_t = PerfClock::now();
+        const auto acquire_t = std::chrono::steady_clock::now();
         const bool acquired = AcquireImage(bi, f.acquired[i]);
         g_perf.p_acquire += PerfLap(perf_t);
+        if (AcquireTrace()) {
+            const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - acquire_t).count();
+            if (ms > 20)
+                LOGR("acquire trace: present %llu picture %zu of %zu waited %.1f ms for image %u (%s); pictures a frame "
+                     "%u (adaptive %u, swap chain's %u), %zu images, %zu held, GPU done %llu of %llu",
+                     (unsigned long long)presents_, i, pictures.size(), ms, bi, acquired ? "got" : "failed", Pictures(),
+                     interp_pics_, swap_gen_, bb_.size(), held_.size(), (unsigned long long)Completed(),
+                     (unsigned long long)fence_value_);
+        }
         if (!acquired) break;
         BeginCommands(f.present[i]);
         DrawFrame(i < shows.size() ? shows[i] : nullptr, bi, true, i < masks.size() ? masks[i] : nullptr);
         g_perf.p_frame += PerfLap(perf_t);
         Submit(false, f.acquired[i], present_sem_[bi]);
         g_perf.p_submit += PerfLap(perf_t);
+        if (AcquireTrace()) trace_images_ += std::to_string(bi) + "@" + std::to_string(fence_value_) + " ";
         if (!i) first = fence_value_;
         const auto offset = std::chrono::duration_cast<std::chrono::steady_clock::duration>(
             std::chrono::duration<double>(gen_period_ * spacing * double(i)));
         held_.push_back({bi, now + offset, i && !swap_vsync_ ? first : 0, offset});
     }
+    if (AcquireTrace())
+        LOGR("acquire trace: present %llu: %zu pictures, pictures a frame %u, %zu held after, %s; submitted %llu (main "
+             "%llu), GPU done %llu, images %s",
+             (unsigned long long)presents_, pictures.size(), Pictures(), held_.size(), upscale_ ? "DLSS" : "no DLSS",
+             (unsigned long long)fence_value_, (unsigned long long)trace_main_, (unsigned long long)Completed(),
+             trace_images_.c_str());
     DeliverReports();
     {
         auto perf_swap = PerfClock::now();
@@ -9104,7 +9319,15 @@ void VulkanBackend::Redisplay(bool blur) {
     Frame& f = CurrentFrame();
     uint32_t bi = 0;
     uint32_t shown = 0;
-    if (AcquireImage(bi, f.acquired[0])) {
+    const auto acquire_t = std::chrono::steady_clock::now();
+    const bool got = AcquireImage(bi, f.acquired[0]);
+    if (AcquireTrace()) {
+        const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - acquire_t).count();
+        if (ms > 20)
+            LOGR("acquire trace: redisplay waited %.1f ms for image %u (%s); pictures a frame %u, %zu images",
+                 ms, bi, got ? "got" : "failed", Pictures(), bb_.size());
+    }
+    if (got) {
         BeginCommands(f.present[0]);
         if (shown_) Transition(*shown_, kRead);  // a remade target copied its picture out of it
         Image* pic = shown_.get();

@@ -670,6 +670,7 @@ private:
             Batch* b;
             {
                 std::unique_lock lock(m_);
+                const auto wait_start = Clock::now();
                 // a held picture is shown at its time, between batches or while there are none
                 for (Clock::time_point at; queue_.empty() && !stop_ && inner_->Due(at);) {
                     if (cv_.wait_until(lock, at, [&] { return stop_ || !queue_.empty(); })) break;
@@ -678,6 +679,9 @@ private:
                     lock.lock();
                 }
                 cv_.wait(lock, [&] { return stop_ || !queue_.empty(); });
+                g_render_wait_ns.fetch_add(
+                    uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - wait_start).count()),
+                    std::memory_order_relaxed);
                 if (queue_.empty()) break;
                 b = queue_.front();
                 queue_.pop_front();
