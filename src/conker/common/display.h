@@ -5,7 +5,7 @@
 // Frame rate and aspect patches (src/conker/game/display.cpp), after the community widescreen and 60 FPS XBE patches.
 namespace display {
 
-// settings.toml frame_rate (0 the highest: the most of these the monitor's refresh rate allows), the pictures shown a second: 30 is the console's (present every second blank), 60 the
+// settings.toml frame_rate, the pictures shown a second: 30 is the console's (present every second blank), 60 the
 // patched game's limit; 120, 180 and 240 run the game at 60 and draw the frames between again (the runtime's frame
 // generation). XBE_FRAME_RATE overrides it. The headless harness keeps 30 unless asked, so its frame-counted pad
 // scripts hold.
@@ -16,6 +16,9 @@ void SetFrameRate(uint32_t rate);
 // the highest frame rate offered: the first of 60, 120, 180 and 240 to reach the monitor's refresh (a rate just under,
 // as 59.94 for 60, counts), past which more pictures only cost; 240 past 240 Hz. A setting above it runs at it
 uint32_t MostFrameRate();
+// the most of 30, 60, 120, 180 and 240 the monitor shows (a rate just under, as 59.94 for 60, counts), up to
+// MostFrameRate: 120 at 165 Hz. The Enhanced preset's, and what an old "Highest" setting (0) becomes
+uint32_t HighestFrameRate();
 // in a system link session with another machine: the frame rate setting can't change, and the game's rate stays as it
 // was when the other came in (peers must tick alike, link.cpp). Any thread
 bool FrameRateLocked();

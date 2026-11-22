@@ -86,8 +86,8 @@ constexpr uint32_t kIntervalImmediate = 0x80000000u;
 constexpr uint32_t kGameMost = 60;     // the ticks are 60ths of a second: the game runs no faster
 constexpr uint32_t kShownMost = 240;   // four pictures a frame, the most the runtime draws
 
-// 30, or a multiple of 60 up to kShownMost
-// (0 is the highest: the most of those the monitor's refresh rate allows, resolved in Shown)
+// 30, or a multiple of 60 up to kShownMost. 0 is the old "Highest" setting, gone: a settings file that still has it
+// is moved to HighestFrameRate on the first frame, once the monitor's refresh rate is known (the level loop below)
 uint32_t Clamp(uint32_t r) { return r == 0 ? 0 :  r <= 30 ? 30 : std::min((r + kGameMost / 2) / kGameMost * kGameMost, kShownMost); }
 
 // what the setting asks for: the pictures shown a second
@@ -98,16 +98,12 @@ uint32_t Shown() {
     }();
     uint32_t r = Clamp(env ? env : g_frame_rate);
     if (r) return env ? r : std::min(r, MostFrameRate());
-    // the most of those the monitor can show (a rate just under, as 59.94, counts for the one above)
-    uint32_t hz = app::MonitorRefresh(), best = 30;
-    for (uint32_t c : {60u, 120u, 180u, 240u})
-        if (c <= hz + 1) best = c;
-    return std::min(best, MostFrameRate());
+    return HighestFrameRate();  // a file's old "Highest", until the first frame moves it
 }
 
 // Online sessions. Copies in a system link session must tick alike (link.cpp: a join is refused at another rate), so
 // while this copy shares one with another machine the game's rate stays what it was as the other came in: the frame
-// rate setting does not change (SetFrameRate), nor does Highest follow a new monitor's refresh rate. Out of a session
+// rate setting does not change (SetFrameRate), nor does a new monitor's refresh rate bring it down. Out of a session
 // (split screen, Dumbots, the story) or alone in one, the rate is free: a host alone advertises its current rate to
 // each search. The game's net state [0x863D08]: 0 none, 1 joining, 2 waiting room, 3 playing, 4 leaving, 5 creating
 // (its writes store no other); the byte [0x864EC1] the machines in the session, this one included. Game thread sets it
@@ -151,6 +147,13 @@ uint32_t MostFrameRate() {
     if (gpu::g_opengl.load(std::memory_order_relaxed)) return hz >= 119.5 ? 120 : 60;
     for (uint32_t c : {60u, 120u, 180u}) if (double(c) >= hz - 0.5) return c;
     return kShownMost;
+}
+
+uint32_t HighestFrameRate() {
+    uint32_t hz = app::MonitorRefresh(), best = 30;
+    for (uint32_t c : {60u, 120u, 180u, 240u})
+        if (c <= hz + 1) best = c;
+    return std::min(best, MostFrameRate());
 }
 
 uint32_t GameRate() { return Rate(); }
@@ -367,8 +370,14 @@ X86_FUNC(sub_002A7B60) {
              display::g_pinned.load() ? " until it ends" : "");
         display::SetFrameRate(display::g_frame_rate);
     }
+    // a settings file's old "Highest" (0): the rate it picked, saved, now the window shows on its monitor
+    if (display::g_frame_rate == 0 && !display::FrameRateLocked()) {
+        display::SetFrameRate(display::HighestFrameRate());
+        LOGR("display: the Highest frame rate setting is now %u", display::g_frame_rate);
+        app::SaveChanged();
+    }
     uint32_t rate = Rate();
-    // the monitor changed: Highest follows it, a setting past its most comes down to that (or back up)
+    // the monitor changed: a setting past its most comes down to that (or back up)
     if (display::Shown() / rate != app::Get().frame_generation) display::SetFrameRate(display::g_frame_rate);
     if (rate != shown) {
         LOGI("display: %u FPS%s", rate, rate > 30 ? ", ticks from the frame time" : " (the console's)");

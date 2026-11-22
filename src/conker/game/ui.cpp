@@ -2428,24 +2428,23 @@ void Draw(double fps) {
                             Hint("hint_how_much_of_fsr_s", true);
                         }
                     }
-                    constexpr uint32_t kRates[] = {30, 60, 120, 180, 240, 0};
+                    constexpr uint32_t kRates[] = {30, 60, 120, 180, 240};
                     int rate = 0;
                     // past the first rate to reach the monitor's refresh, greyed out (a setting there runs at it)
                     const uint32_t most = display::MostFrameRate();
                     uint32_t off = 0;
-                    for (int i = 0; i < 6; i++) {
+                    for (int i = 0; i < 5; i++) {
                         if (kRates[i] > most) off |= 1u << i;
-                        if (kRates[i] == std::min(display::g_frame_rate, most) && (display::g_frame_rate || !kRates[i]))
-                            rate = i;
+                        if (kRates[i] == std::min(display::g_frame_rate, most)) rate = i;
                     }
                     // fixed while a system link session has another machine in it: every player's game must run at the same rate (link.cpp)
                     const bool locked = display::FrameRateLocked();
                     ImGui::BeginDisabled(locked);
-                    if (Segmented("frame_rate", &rate, {"30_original", " 60", " 120", " 180", " 240", " highest"}, off))
+                    if (Segmented("frame_rate", &rate, {"30_original", " 60", " 120", " 180", " 240"}, off))
                         display::SetFrameRate(kRates[rate]);
                     ImGui::EndDisabled();
                     Hint(locked ? "hint_can_t_be_changed_during" :
-                                  "hint_highest_picks_the_most_the", true);
+                                  "hint_rates_past_the_monitor_s", true);
                     // past the monitor's refresh rate with vsync the pictures go one a refresh (VulkanBackend::InStep)
                     // (vsync forced on there)
                     const app::Settings& now = app::Get();

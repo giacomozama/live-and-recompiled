@@ -111,7 +111,7 @@ void Apply(int preset) {
             rope::g_physics = true;
             break;
         case kEnhanced:  // placeholder
-            display::SetFrameRate(0);  // the highest
+            display::SetFrameRate(display::HighestFrameRate());  // picked once, for this monitor
             s.aniso = 16;
             s.msaa = 4;
             s.smaa = false;
