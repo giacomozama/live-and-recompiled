@@ -2686,6 +2686,8 @@ void Draw(double fps) {
                     Hint("hint_conker_s_monologues_on_the", true);
                     Check("speech_subtitles", &subtitles::g_on);
                     Hint("hint_what_characters_say_and_think", true);
+                    Check("redrawn_bubbles", &subtitles::g_redraw);
+                    Hint("hint_redrawn_bubbles", true);
                     Check("fade_instead_of", &loading::g_fade);
                     Hint("hint_loads_fade_to_black_and", true);
                     Check("rope_physics", &rope::g_physics);

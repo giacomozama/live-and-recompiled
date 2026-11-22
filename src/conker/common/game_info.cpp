@@ -90,6 +90,7 @@ const app::GameInfo app::kGame = {
                 {"skippable_cutscenes", &cutscenes::g_skippable, nullptr},  // LT skips any cutscene (hooks.cpp)
                 {"english_bubbles", &cutscenes::g_english_bubbles, nullptr},  // the throne monologues' bubbles in English (hooks.cpp)
                 {"speech_subtitles", &subtitles::g_on, nullptr},  // speech bubbles shown as subtitles instead (subtitles.cpp)
+                {"redrawn_bubbles", &subtitles::g_redraw, nullptr},  // speech bubbles drawn again by the runtime (bubbles.cpp)
                 {"fade_loads", &loading::g_fade, nullptr},  // a fade to black instead of loading screens (hooks.cpp)
                 {"rope_physics", &rope::g_physics, nullptr},  // ropes swing as a weighted chain (rope.cpp)
                 {"grass_wind", &grass::g_wind, nullptr},  // distant grass sways too (hooks.cpp)

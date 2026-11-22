@@ -12,6 +12,7 @@
 #include "common/menus.h"
 #include "common/reflection.h"
 #include "common/rope.h"
+#include "common/subtitles.h"
 #include "common/vignette.h"
 #include "common/water.h"
 
@@ -72,6 +73,7 @@ void Apply(int preset) {
             display::g_hud_split = false;
             menus::g_bright_hints = false;
             cutscenes::g_english_bubbles = false;
+            subtitles::g_redraw = false;
             rope::g_physics = false;
             break;
         case kModern:  // placeholder
@@ -108,6 +110,7 @@ void Apply(int preset) {
             display::g_hud_split = true;
             menus::g_bright_hints = true;
             cutscenes::g_english_bubbles = true;
+            subtitles::g_redraw = true;
             rope::g_physics = true;
             break;
         case kEnhanced:  // placeholder
@@ -144,6 +147,7 @@ void Apply(int preset) {
             display::g_hud_split = true;
             menus::g_bright_hints = true;
             cutscenes::g_english_bubbles = true;
+            subtitles::g_redraw = true;
             rope::g_physics = true;
             break;
         default:
