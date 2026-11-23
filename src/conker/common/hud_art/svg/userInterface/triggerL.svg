@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32">
+<defs>
+<clipPath id="badge"><path d="M7,8 H22.5 A2.5,2.5 0 0 1 25,10.5 V22.5 A2.5,2.5 0 0 1 22.5,25 H7.2 C6.2,25 5.8,23.6 6.2,22.6 C7,21.5 8,21 8,20 V12 C8,11 7,10.5 6.2,9.4 C5.8,8.6 6.3,8 7,8 Z"/></clipPath>
+<linearGradient id="fill" x1="0" y1="8" x2="0" y2="25" gradientUnits="userSpaceOnUse"><stop offset="0.15" stop-color="#122730"/><stop offset="1" stop-color="#284d5f"/></linearGradient>
+<linearGradient id="bevel" x1="0" y1="8" x2="0" y2="25" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#2b566c"/><stop offset="1" stop-color="#397290"/></linearGradient>
+</defs>
+<g clip-path="url(#badge)">
+<path d="M7,8 H22.5 A2.5,2.5 0 0 1 25,10.5 V22.5 A2.5,2.5 0 0 1 22.5,25 H7.2 C6.2,25 5.8,23.6 6.2,22.6 C7,21.5 8,21 8,20 V12 C8,11 7,10.5 6.2,9.4 C5.8,8.6 6.3,8 7,8 Z" fill="url(#fill)" stroke="url(#bevel)" stroke-width="3.92"/>
+<path d="M7,8 H22.5 A2.5,2.5 0 0 1 25,10.5 V22.5 A2.5,2.5 0 0 1 22.5,25 H7.2 C6.2,25 5.8,23.6 6.2,22.6 C7,21.5 8,21 8,20 V12 C8,11 7,10.5 6.2,9.4 C5.8,8.6 6.3,8 7,8 Z" fill="none" stroke="#66c9fd" stroke-width="2.05"/>
+</g>
+<path d="M12.9,12.2 V20.5 H19.6" fill="none" stroke="#63c0ed" stroke-width="1.53" stroke-linecap="square"/>
+</svg>

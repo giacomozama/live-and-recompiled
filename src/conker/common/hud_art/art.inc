@@ -81,6 +81,45 @@ const unsigned char kArt24[] = {
 const unsigned char kArtFull24[] = {
 #embed "globaleffects/sights/vertexSight.full.png"
 };
+const unsigned char kArt25[] = {
+#embed "userInterface/GLOW_GREEN.png"
+};
+const unsigned char kArt26[] = {
+#embed "userInterface/GLOW_RED.png"
+};
+const unsigned char kArt27[] = {
+#embed "userInterface/GLOW_YELLOW.png"
+};
+const unsigned char kArt28[] = {
+#embed "userInterface/PULSE.png"
+};
+const unsigned char kArt29[] = {
+#embed "userInterface/RADAR.png"
+};
+const unsigned char kArt30[] = {
+#embed "userInterface/invSelectL.png"
+};
+const unsigned char kArt31[] = {
+#embed "userInterface/invSelectMultiL.png"
+};
+const unsigned char kArt32[] = {
+#embed "userInterface/invSelectMultiU.png"
+};
+const unsigned char kArt33[] = {
+#embed "userInterface/invSelectR.png"
+};
+const unsigned char kArt34[] = {
+#embed "userInterface/triggerG.png"
+};
+const unsigned char kArt35[] = {
+#embed "userInterface/triggerI.png"
+};
+const unsigned char kArt36[] = {
+#embed "userInterface/triggerL.png"
+};
+const unsigned char kArt37[] = {
+#embed "userInterface/triggerS.png"
+};
 
 const Art kArt[] = {
     {"globaleffects\\sights\\INFRA_HIGHLITE", 64, 64, 1024, 1024, kArt0, sizeof(kArt0), nullptr, 0, {0, 0, 0, 0}},
@@ -108,4 +147,17 @@ const Art kArt[] = {
     {"globaleffects\\sights\\innersightHack", 128, 128, 1024, 1024, kArt22, sizeof(kArt22), nullptr, 0, {0, 0, 0, 0}},
     {"globaleffects\\sights\\outersightHack", 128, 128, 1024, 1024, kArt23, sizeof(kArt23), nullptr, 0, {0, 0, 0, 0}},
     {"globaleffects\\sights\\vertexSight", 64, 64, 1024, 1024, kArt24, sizeof(kArt24), kArtFull24, sizeof(kArtFull24), {17, 0, 17, 0}},
+    {"userInterface\\GLOW_GREEN", 32, 32, 1024, 1024, kArt25, sizeof(kArt25), nullptr, 0, {0, 0, 0, 0}},
+    {"userInterface\\GLOW_RED", 32, 32, 1024, 1024, kArt26, sizeof(kArt26), nullptr, 0, {0, 0, 0, 0}},
+    {"userInterface\\GLOW_YELLOW", 32, 32, 1024, 1024, kArt27, sizeof(kArt27), nullptr, 0, {0, 0, 0, 0}},
+    {"userInterface\\PULSE", 128, 64, 1024, 512, kArt28, sizeof(kArt28), nullptr, 0, {0, 0, 0, 0}},
+    {"userInterface\\RADAR", 128, 64, 1024, 512, kArt29, sizeof(kArt29), nullptr, 0, {0, 0, 0, 0}},
+    {"userInterface\\invSelectL", 128, 128, 1024, 1024, kArt30, sizeof(kArt30), nullptr, 0, {0, 0, 0, 0}},
+    {"userInterface\\invSelectMultiL", 128, 64, 1024, 512, kArt31, sizeof(kArt31), nullptr, 0, {0, 0, 0, 0}},
+    {"userInterface\\invSelectMultiU", 128, 128, 1024, 1024, kArt32, sizeof(kArt32), nullptr, 0, {0, 0, 0, 0}},
+    {"userInterface\\invSelectR", 128, 128, 1024, 1024, kArt33, sizeof(kArt33), nullptr, 0, {0, 0, 0, 0}},
+    {"userInterface\\triggerG", 32, 32, 1024, 1024, kArt34, sizeof(kArt34), nullptr, 0, {0, 0, 0, 0}},
+    {"userInterface\\triggerI", 32, 32, 1024, 1024, kArt35, sizeof(kArt35), nullptr, 0, {0, 0, 0, 0}},
+    {"userInterface\\triggerL", 32, 32, 1024, 1024, kArt36, sizeof(kArt36), nullptr, 0, {0, 0, 0, 0}},
+    {"userInterface\\triggerS", 32, 32, 1024, 1024, kArt37, sizeof(kArt37), nullptr, 0, {0, 0, 0, 0}},
 };

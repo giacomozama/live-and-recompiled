@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="64" viewBox="0 0 128 64">
+<defs>
+<linearGradient id="ring" gradientUnits="userSpaceOnUse" x1="19.78" y1="11.93" x2="106.31" y2="52.02"><stop offset="0" stop-color="#65cbff" stop-opacity="0.352"/><stop offset="1" stop-color="#65cbff" stop-opacity="0.000"/></linearGradient>
+<linearGradient id="dish" gradientUnits="userSpaceOnUse" x1="41.11" y1="19.09" x2="94.29" y2="46.14"><stop offset="0" stop-color="#65cbff" stop-opacity="0.035"/><stop offset="1" stop-color="#65cbff" stop-opacity="0.437"/></linearGradient>
+<radialGradient id="beam" gradientUnits="userSpaceOnUse" cx="64" cy="21.72" r="30.12"><stop offset="0" stop-color="#65cbff" stop-opacity="0.918"/><stop offset="0.33" stop-color="#65cbff" stop-opacity="0.866"/><stop offset="0.67" stop-color="#65cbff" stop-opacity="0.887"/><stop offset="1" stop-color="#65cbff" stop-opacity="0.105"/></radialGradient>
+<radialGradient id="hole" gradientUnits="userSpaceOnUse" cx="0" cy="0" r="1" gradientTransform="translate(64.21 3.62) scale(27.06 12.66)"><stop offset="0" stop-color="#fff" stop-opacity="0.000"/><stop offset="1" stop-color="#fff" stop-opacity="1.000"/></radialGradient>
+<clipPath id="ringClip"><path d="M9.50,32.01 a54.49,31.44 0 1 0 108.98,0 a54.49,31.44 0 1 0 -108.98,0 Z M29.57,26.14 a34.46,20.66 0 1 0 68.92,0 a34.46,20.66 0 1 0 -68.92,0 Z" clip-rule="evenodd"/></clipPath>
+<mask id="beamMask" maskUnits="userSpaceOnUse" x="0" y="-8" width="128" height="40"><rect x="0" y="-8" width="128" height="40" fill="url(#hole)"/></mask>
+</defs>
+<path d="M9.50,32.01 a54.49,31.44 0 1 0 108.98,0 a54.49,31.44 0 1 0 -108.98,0 Z M29.57,26.14 a34.46,20.66 0 1 0 68.92,0 a34.46,20.66 0 1 0 -68.92,0 Z" fill-rule="evenodd" fill="url(#ring)"/>
+<ellipse cx="64.03" cy="26.14" rx="34.46" ry="20.66" fill="url(#dish)"/>
+<path d="M64,21.72 L26.72,-1.63 L101.28,-1.63 Z" fill="url(#beam)" mask="url(#beamMask)"/>
+<path d="M26.72,-1.63 L64,21.72 L101.28,-1.63" fill="none" stroke="#65cbff" stroke-opacity="0.401" stroke-width="1.18" stroke-linejoin="round"/>
+<g clip-path="url(#ringClip)" fill="none" stroke="#65cbff" stroke-opacity="0.502" stroke-width="1.24"><path d="M64.03,5.47 L63.99,0.57"/><path d="M64.03,46.80 L63.99,63.44"/><path d="M87.77,11.16 L102.27,9.63"/><path d="M40.29,11.16 L25.71,9.63"/><path d="M98.46,25.30 L118.47,32.38"/><path d="M29.60,25.30 L9.51,32.38"/><path d="M88.75,40.54 L101.74,54.68"/><path d="M39.32,40.54 L26.24,54.68"/></g>
+<ellipse cx="64.03" cy="26.14" rx="34.46" ry="20.66" fill="none" stroke="#65cbff" stroke-opacity="0.480" stroke-width="1.32"/>
+<ellipse cx="63.99" cy="32.01" rx="54.49" ry="31.44" fill="none" stroke="#65cbff" stroke-opacity="0.877" stroke-width="1.28"/>
+</svg>
