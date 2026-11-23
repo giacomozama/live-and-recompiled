@@ -124,7 +124,7 @@ bool g_placed = false;
 float g_placed_x, g_placed_y, g_placed_w, g_placed_h;
 
 uint32_t g_vertices = 0;
-constexpr uint32_t kCapacity = 32768;  // vertices (a thought's cloud, shadow and lobed trail some 10000)
+constexpr uint32_t kCapacity = 65536;  // vertices (a thought's cloud, shadow, rim and lobed trail some 25000)
 
 float Wider() {
     const float w = app::FrameAspect() * 0.75f;
@@ -517,12 +517,22 @@ void DrawBubble(X86Context& ctx, uint32_t rec) {
         const float dark = 1 - kShade * std::max(g, 0.0f), up = kLight * std::max(-g, 0.0f);
         return Colour((fr + (1 - fr) * up) * dark, (fg + (1 - fg) * up) * dark, (fb + (1 - fb) * up) * dark, alpha);
     };
-    // a soft shadow below, outside the ellipse only (it is see-through): from its edge out by kBlur of its half
-    // height, moved down by kDrop of it, kShadow dark, falling off fast
-    constexpr float kBlur = 0.35f, kDrop = 0.12f, kShadow = 0.4f;
-    const float blur = hy * kBlur, drop = hy * kDrop;
-    const uint32_t shade0 = Colour(0, 0, 0, alpha * kShadow), shade1 = Colour(0, 0, 0, alpha * kShadow * 0.3f),
-                   shade2 = Colour(0, 0, 0, 0);
+    // Lit from the upper left (y down), so it reads raised off the picture: a short shadow cast down and to the right,
+    // as if the bubble stood a little off it, and a rim shaded inside its edge, light toward the light and dark away
+    // from it (Rim). The shadow outside the bubble only (it is see-through): from its edge out by blur, moved by lift
+    // away from the light, kShadow dark, falling off fast; where the edge faces the light little of it shows
+    constexpr float kLightX = -0.55f, kLightY = -0.835f;
+    constexpr float kShadow = 0.5f;
+    const float blur = std::clamp(hy * 0.18f, 4.0f, 10.0f), lift = std::clamp(hy * 0.12f, 3.0f, 6.0f);
+    const float lift_x = -kLightX * lift, lift_y = -kLightY * lift;
+    auto shade = [&](float f) { return Colour(0, 0, 0, alpha * kShadow * f); };
+    const uint32_t shade2 = Colour(0, 0, 0, 0);
+    auto cast = [&](float nx, float ny) {  // how much of the shadow shows past an edge of normal (nx, ny)
+        const float l = std::hypot(nx, ny);
+        const float d = l > 1e-6f ? -(nx * kLightX + ny * kLightY) / l : 0.0f;  // 1 facing away from the light
+        const float s = std::clamp((d + 0.6f) / 1.6f, 0.0f, 1.0f);
+        return s * s * (3 - 2 * s);
+    };
     const float z = F(kSpriteZ);
     // a point of the display's back on the frame
     auto at = [&](float x, float y, uint32_t c) { return Vertex{cx + x / wider, cy + y, z, c, 0.5f, 0.5f, 0}; };
@@ -534,7 +544,57 @@ void DrawBubble(X86Context& ctx, uint32_t rec) {
     };
     const size_t n = p.size();
     auto off = [](const Point& q, float d, float& x, float& y) { x = q.x + q.nx * d, y = q.y + q.ny * d; };
-    // the shadow first, under the bubble's soft edge: the ellipse's alone (a short tail's spread into a fan)
+    auto faded = [](uint32_t c, float f) { return (c & 0x00FFFFFFu) | uint32_t(float(c >> 24) * f + 0.5f) << 24; };
+    // a shadow's band from the edge a..b (unit normals, moved by ox, oy) out by spread and lift times share, fa and fb
+    // of it dark at the edge
+    auto shadow_band = [&](const Point& a, const Point& b, float ox, float oy, float fa, float fb, float spread,
+                           float share) {
+        const float sx = lift_x * share, sy = lift_y * share;
+        const float axm = a.x + a.nx * spread * 0.4f + sx * 0.6f, aym = a.y + a.ny * spread * 0.4f + sy * 0.6f;
+        const float bxm = b.x + b.nx * spread * 0.4f + sx * 0.6f, bym = b.y + b.ny * spread * 0.4f + sy * 0.6f;
+        const float ax1 = a.x + a.nx * spread + sx, ay1 = a.y + a.ny * spread + sy;
+        const float bx1 = b.x + b.nx * spread + sx, by1 = b.y + b.ny * spread + sy;
+        band(ox + a.x, oy + a.y, ox + b.x, oy + b.y, shade(fa), shade(fb), ox + axm, oy + aym, ox + bxm, oy + bym,
+             shade(fa * 0.3f), shade(fb * 0.3f));
+        band(ox + axm, oy + aym, ox + bxm, oy + bym, shade(fa * 0.3f), shade(fb * 0.3f), ox + ax1, oy + ay1, ox + bx1,
+             oy + by1, shade2, shade2);
+    };
+    // The rim: from the edge (moved by ox, oy) in by width, toward the light lighter (white over a coloured bubble),
+    // away from it darker, and a little darker all round, so it bulges; falling off fast inward, out over the soft edge
+    // with it. A point's inset along its unit normal at most cap (the tail's tip, its normal a long miter)
+    constexpr float kRimDark = 0.22f, kRimLight = 0.5f;
+    auto rim_colour = [&](float nx, float ny) {
+        const float l = std::hypot(nx, ny);
+        const float d = l > 1e-6f ? (nx * kLightX + ny * kLightY) / l : 0.0f;  // 1 facing the light
+        const float k = kRimDark * (1 - d) * 0.5f * alpha, h = kRimLight * std::max(d, 0.0f) * alpha;
+        const float a = h + k - h * k;  // white over the bubble, then black over that
+        const float w = a > 1e-6f ? h * (1 - k) / a : 0.0f;
+        return Colour(w, w, w, a);
+    };
+    auto rim = [&](const std::vector<Point>& q, float ox, float oy, float width, float cap) {
+        const size_t m = q.size();
+        auto in = [&](const Point& r, float d, float& x, float& y) {
+            const float l = std::hypot(r.nx, r.ny);
+            const float s = l > 1e-6f && d * l > cap ? cap / l : d;  // d along the (miter) normal, at most cap far
+            x = ox + r.x - r.nx * s, y = oy + r.y - r.ny * s;
+        };
+        for (size_t i = 0; i < m; i++) {
+            const Point& a = q[i];
+            const Point& b = q[(i + 1) % m];
+            const uint32_t ca = rim_colour(a.nx, a.ny), cb = rim_colour(b.nx, b.ny);
+            float ax0, ay0, bx0, by0, axm, aym, bxm, bym, axe, aye, bxe, bye, axo, ayo, bxo, byo;
+            in(a, width, ax0, ay0), in(b, width, bx0, by0);
+            in(a, width * 0.35f, axm, aym), in(b, width * 0.35f, bxm, bym);
+            in(a, soft * 0.5f, axe, aye), in(b, soft * 0.5f, bxe, bye);
+            in(a, -soft * 0.5f, axo, ayo), in(b, -soft * 0.5f, bxo, byo);
+            band(ax0, ay0, bx0, by0, ca & 0x00FFFFFFu, cb & 0x00FFFFFFu, axm, aym, bxm, bym, faded(ca, 0.4f),
+                 faded(cb, 0.4f));
+            band(axm, aym, bxm, bym, faded(ca, 0.4f), faded(cb, 0.4f), axe, aye, bxe, bye, ca, cb);
+            band(axe, aye, bxe, bye, ca, cb, axo, ayo, bxo, byo, ca & 0x00FFFFFFu, cb & 0x00FFFFFFu);
+        }
+    };
+    // the shadow first, under the bubble's soft edge: the ellipse's alone (the tail casts none: its sides' came out a
+    // thin skewed sliver)
     // It fades out under the tail, which is see-through too: over the shadow it came out darker than the bubble. Gone
     // within its base's arc, back over as far again each side
     // (a thought's, the cloud cast along the ellipse's normals: by its own, sharp in its dips, it threw spikes out)
@@ -547,19 +607,11 @@ void DrawBubble(X86Context& ctx, uint32_t rec) {
         const float f = std::clamp((d - under) / std::max(under, 1e-3f), 0.0f, 1.0f);
         return f * f * (3 - 2 * f);
     };
-    auto faded = [](uint32_t c, float f) { return (c & 0x00FFFFFFu) | uint32_t(float(c >> 24) * f + 0.5f) << 24; };
     for (size_t i = 0; i < e.size(); i++) {
         const Point& a = e[i];
         const Point& b = e[(i + 1) % e.size()];
-        const float fa = clear_of_tail(i), fb = clear_of_tail(i + 1);
-        float ax0, ay0, bx0, by0, axm, aym, bxm, bym, ax1, ay1, bx1, by1;
-        off(a, 0, ax0, ay0), off(b, 0, bx0, by0);
-        off(a, blur * 0.35f, axm, aym), off(b, blur * 0.35f, bxm, bym);
-        off(a, blur, ax1, ay1), off(b, blur, bx1, by1);
-        aym += drop * 0.5f, bym += drop * 0.5f, ay1 += drop, by1 += drop;
-        band(ax0, ay0, bx0, by0, faded(shade0, fa), faded(shade0, fb), axm, aym, bxm, bym, faded(shade1, fa),
-             faded(shade1, fb));
-        band(axm, aym, bxm, bym, faded(shade1, fa), faded(shade1, fb), ax1, ay1, bx1, by1, shade2, shade2);
+        shadow_band(a, b, 0, 0, clear_of_tail(i) * cast(a.nx, a.ny), clear_of_tail(i + 1) * cast(b.nx, b.ny), blur,
+                    1.0f);
     }
     // the fill: the whole ellipse fanned from its middle, and the tail fanned from its tip over the ellipse's arc
     // under its base, so no triangle reaches from the middle to the tip (its shading streaked across the bubble). Their
@@ -630,6 +682,8 @@ void DrawBubble(X86Context& ctx, uint32_t rec) {
         const uint32_t ca = fa & 0x00FFFFFFu, cb = fb2 & 0x00FFFFFFu;  // the same, clear
         band(fx[i], fy[i], fx[(i + 1) % n], fy[(i + 1) % n], fa, fb2, ax1, ay1, bx1, by1, ca, cb);
     }
+    // the rim over the fill (a cloud's lobes each their own, the dips between them creased)
+    rim(p, 0, 0, std::clamp(hy * 0.3f, 4.0f, 12.0f), tail ? length * 0.4f : 1e30f);
     // a thought's trail: kTrail small clouds of the frame's pixels (their lobes' outer edge about that far from their
     // middle) from where it leaves the cloud toward the anchor, a gap between, a soft shadow below each
     if (g_thought) {
@@ -654,12 +708,11 @@ void DrawBubble(X86Context& ctx, uint32_t rec) {
             const std::vector<Point> q = Cloud(r - out, r - out, lobe, out, kTrailFewest,
                                                (g_obj ^ bub.page) * 0x9E3779B1u + uint32_t(k + 1), Clock(now), sm);
             const size_t m = q.size();
-            const float rs = blur * 0.35f;  // the shadow's, along the smoothed normals, down by its drop
+            // the shadow's along the smoothed normals, shorter and closer (it stands less high)
             for (size_t i = 0; i < m; i++) {
                 const Point& a = sm[i];
                 const Point& b = sm[(i + 1) % m];
-                band(ox + a.x, oy + a.y, ox + b.x, oy + b.y, shade0, shade0, ox + a.x + a.nx * rs,
-                     oy + a.y + a.ny * rs + drop, ox + b.x + b.nx * rs, oy + b.y + b.ny * rs + drop, shade2, shade2);
+                shadow_band(a, b, ox, oy, cast(a.nx, a.ny), cast(b.nx, b.ny), blur * 0.6f, 0.6f);
             }
             // the fill fanned from its middle (inside every lobe, so it sees all the edge), then the soft edge
             for (size_t i = 0; i < m; i++) {
@@ -672,6 +725,7 @@ void DrawBubble(X86Context& ctx, uint32_t rec) {
                 v.push_back(at(ox + bix, oy + biy, c));
                 band(ox + aix, oy + aiy, ox + bix, oy + biy, c, c, ox + aox, oy + aoy, ox + box, oy + boy, cc, cc);
             }
+            rim(q, ox, oy, std::max(r * 0.35f, 2.0f), 1e30f);
         }
     }
     if (v.size() > kCapacity) {
