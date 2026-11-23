@@ -1181,9 +1181,10 @@ void DrawController(int player) {
     Slider("camera_stick_y", &gamepad::g_look_stick_y_percent[player], kStickMin, gamepad::kLookYMax, kStickDefault);
     Hint("hint_camera_stick_speed");
     Slider("camera_dead_zone", &gamepad::g_look_stick_dead_zone[player], 0, kDeadZoneMax, kDeadZoneDefault);
-    WarningCard("hint_single_player_only_these_settings", true);
+    WarningCard("hint_single_player_only_invert_aim", true);
     Check("invert_aim", &gamepad::g_invert_aim[player]);
     Hint("hint_up_on_the_right_stick", true);
+    WarningCard("hint_single_player_only_vibration", true);
     // one slider: 0 is off (the game's own vibration flag follows it)
     uint32_t level = gamepad::g_vibration[player] ? std::min(gamepad::g_vibration_percent[player], 100u) : 0;
     Slider("vibration", &level, 0, 100, 100);
