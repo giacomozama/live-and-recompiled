@@ -527,9 +527,12 @@ void ConkerFurTag(X86Context& ctx, uint8_t* base) {
     fur::TagShells(ctx.ebx);
 }
 
+// not in a multiplayer match ([0x76F0E0]): a match's players are all furry and all drawn with their full model
+// (characters::g_max_lod), so every shell on every far player cost the render thread its 60 FPS in a busy fight
+// (log 2026-11-23: some 3000 draws a frame)
 static bool FurDistant() {
     static const char* env = diag::Env("XBE_FUR_DISTANT");
-    return env ? env[0] != '0' : fur::g_distant;
+    return env ? env[0] != '0' : fur::g_distant && !kernel::G<uint8_t>(0x76F0E0);
 }
 
 // [[hook]] at 0x8210C, xmm0 the object's distance from the player and xmm3 R
