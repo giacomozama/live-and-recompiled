@@ -2387,9 +2387,12 @@ void Draw(double fps) {
                     // DLSS: left out on a GPU without it unless already chosen (so it can be turned off), greyed
                     // out where something can be done about it (the files, a failed start); it sets the render size
                     // itself, so the render size and FSR 1 step aside while it is on. A renderer without it (4,
-                    // D3D11) draws as if it were off: the setting kept, its rows left out but the box to turn it off
+                    // D3D11) draws as if it were off: the setting kept, its rows left out but the box to turn it off.
+                    // FSR 3.1 the same way, on any GPU the Vulkan renderer can run it on; the two are one setting
                     const int dlss_state = gpu::g_dlss_state.load();
+                    const int fsr3_state = gpu::g_fsr3_state.load();
                     bool dlss = s.upscaler == "dlss";
+                    bool fsr3 = s.upscaler == "fsr3";
                     if ((dlss_state != 0 && dlss_state != 4) || dlss) {
                         ImGui::BeginDisabled(dlss_state != 1 && !dlss);
                         if (Check("nvidia_dlss", &dlss)) s.upscaler = dlss ? "dlss" : "off";
@@ -2401,7 +2404,32 @@ void Draw(double fps) {
                                                : "hint_dlss_needs_an_nvidia_rtx",
                              true);
                     }
-                    if (dlss && dlss_state != 4) {
+                    fsr3 = s.upscaler == "fsr3";  // the DLSS box may have just taken its place
+                    if (fsr3_state != 0 || fsr3) {
+                        ImGui::BeginDisabled(fsr3_state != 1 && !fsr3);
+                        if (Check("amd_fsr_3", &fsr3)) s.upscaler = fsr3 ? "fsr3" : "off";
+                        ImGui::EndDisabled();
+                        Hint(D3d11()             ? NoVulkan()
+                             : fsr3_state == 2   ? "hint_fsr_3_failed_to_start"
+                             : fsr3_state == 1   ? "hint_dlss_renders_fewer_pixels_and"
+                                                 : "hint_fsr_3_needs_more_of_the_gpu",
+                             true);
+                        dlss = s.upscaler == "dlss";
+                    }
+                    const bool fsr3_runs = fsr3 && fsr3_state != 0 && !D3d11();
+                    if (fsr3_runs) {
+                        int quality = int(std::min<uint32_t>(s.upscaler_quality, 4));
+                        if (Segmented("fsr3_quality", &quality,
+                                      {"native_aa", "quality", "balanced", "performance", "ultra_performance"}))
+                            s.upscaler_quality = uint32_t(quality);
+                        Hint("hint_how_many_pixels_fsr_3_renders");
+                        Slider("dlss_sharpness", &s.dlss_sharpness, 0, 100, app::Settings{}.dlss_sharpness);
+                        Hint("hint_rcas_sharpening_over_fsr_3", true);
+                        if (s.dlss_sharpness > 0) {
+                            Slider("fur_sharpness", &s.fur_sharpness, 0, 100, app::Settings{}.fur_sharpness);
+                            Hint("hint_how_much_of_fsr_s", true);
+                        }
+                    } else if (dlss && dlss_state != 4) {
                         int quality = int(std::min<uint32_t>(s.upscaler_quality, 4));
                         if (Segmented("dlss_quality", &quality,
                                       {"dlaa", "quality", "balanced", "performance", "ultra_performance"}))
@@ -2476,13 +2504,16 @@ void Draw(double fps) {
                     constexpr uint32_t kAa[] = {0, 1, 2, 4, 8};  // 0 off, 1 SMAA, else MSAA samples
                     // DLSS anti-aliases the picture itself: the choice is kept for when it is off
                     int aa = s.smaa ? 1 : s.msaa >= 8 ? 4 : s.msaa >= 4 ? 3 : s.msaa >= 2 ? 2 : 0;
-                    ImGui::BeginDisabled(dlss);
+                    ImGui::BeginDisabled(dlss || fsr3_runs);
                     if (Segmented("anti_aliasing", &aa, {"off", "SMAA", "MSAA 2x", "MSAA 4x", "MSAA 8x"})) {
                         s.smaa = aa == 1;
                         s.msaa = aa >= 2 ? kAa[aa] : 1;
                     }
                     ImGui::EndDisabled();
-                    Hint(dlss ? "hint_dlss_anti_aliases_the_picture" : "hint_smooths_jagged_edges_smaa_is", true);
+                    Hint(fsr3_runs ? "hint_fsr_3_anti_aliases_the_picture"
+                         : dlss    ? "hint_dlss_anti_aliases_the_picture"
+                                   : "hint_smooths_jagged_edges_smaa_is",
+                         true);
                 }
 
                 if (Section("post_processing")) {

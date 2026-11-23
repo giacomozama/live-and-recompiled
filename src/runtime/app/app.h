@@ -30,13 +30,14 @@ struct Settings {
     DisplayMode display_mode = DisplayMode::Borderless;
     uint32_t width = 0, height = 0;  // 0 is the desktop mode
     uint32_t render_percent = 100;   // of the size the frame is shown at (RenderScale)
-    // a temporal upscaler over the frame's pictures, which then sets the render size itself: "off", or "dlss" (an
-    // NVIDIA RTX GPU, with the DLSS module beside the game); its quality, XbeDlssQuality (gpu/dlss.h)
+    // a temporal upscaler over the frame's pictures, which then sets the render size itself: "off", "dlss" (an NVIDIA
+    // RTX GPU, with the DLSS module beside the game) or "fsr3" (AMD FSR 3.1, any GPU the Vulkan renderer runs it on);
+    // its quality, XbeDlssQuality (gpu/dlss.h), FSR 3.1's modes in the same order with native AA for DLAA
     std::string upscaler = "off";
     uint32_t upscaler_quality = 1;
     // the model DLSS runs, XbeDlssModel (gpu/dlss.h): K, M, L, or NVIDIA's pick for the quality mode
     uint32_t dlss_model = 0;
-    // RCAS (FSR 1's sharpening) over DLSS's picture, in % (0 off); fsr_sharpness is FSR 1's own
+    // RCAS (FSR 1's sharpening) over DLSS's or FSR 3.1's picture, in % (0 off); fsr_sharpness is FSR 1's own
     uint32_t dlss_sharpness = 0;
     // super fur's shells shaded once per 2x1 or 2x2 pixels as far as the frame rate needs it (VulkanBackend::AutoFurRate),
     // else once per pixel, with DLSS or without: under DLSS it rebuilds their strands from the jitter alike, at a

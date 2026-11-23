@@ -176,6 +176,9 @@ inline std::atomic<uint64_t> g_perf_rec_cycles[5];
 // but failed to start, 3 an NVIDIA GPU but no DLSS module beside the game (the log says why), 4 a renderer without
 // DLSS (D3D11, OpenGL)
 inline std::atomic<int> g_dlss_state{0};
+// FSR 3.1 as the Vulkan renderer found it, for the menu: 0 not there (another renderer, or a GPU without what it
+// needs), 1 there, 2 there but its shaders failed to compile (the log says why)
+inline std::atomic<int> g_fsr3_state{0};
 // the D3D11 renderer draws: the menu greys out what only Vulkan's draws (adaptive fur shading, picture timing, the
 // colour vision simulation, the calibration's patterns)
 inline std::atomic<bool> g_d3d11{false};

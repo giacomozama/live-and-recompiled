@@ -286,6 +286,40 @@ else()
     set(XBE_SDL_SOURCES ${XBE_ROOT_DIR}/src/runtime/core/input.cpp ${XBE_ROOT_DIR}/src/runtime/app/main_sdl.cpp
         ${XBE_ROOT_DIR}/src/runtime/audio/sdl_audio.cpp ${imgui_SOURCE_DIR}/backends/imgui_impl_sdl3.cpp)
 endif()
+# FSR 3.1's upscaler shaders (src/runtime/gpu/ffx, AMD's FidelityFX SDK, MIT) as text in the executable, each by its
+# path under ffx/ and ending in a 0: the Vulkan renderer compiles them with glslang when FSR 3.1 is first asked for
+# (gpu/fsr3.cpp)
+set(XBE_FFX_DIR ${XBE_ROOT_DIR}/src/runtime/gpu/ffx)
+file(GLOB_RECURSE XBE_FFX_FILES CONFIGURE_DEPENDS ${XBE_FFX_DIR}/*.h ${XBE_FFX_DIR}/*.glsl)
+list(SORT XBE_FFX_FILES)
+set(XBE_FFX_ARRAYS "")
+set(XBE_FFX_TABLE "")
+set(i 0)
+foreach(f ${XBE_FFX_FILES})
+    file(RELATIVE_PATH rel ${XBE_FFX_DIR} ${f})
+    file(READ ${f} hex HEX)
+    string(REGEX REPLACE "(..)" "0x\\1," hex "${hex}")
+    string(APPEND XBE_FFX_ARRAYS "const unsigned char k${i}[] = {${hex}0};\n")
+    string(APPEND XBE_FFX_TABLE "    {\"${rel}\", reinterpret_cast<const char*>(k${i}), sizeof(k${i}) - 1},\n")
+    math(EXPR i "${i} + 1")
+endforeach()
+set(XBE_FFX_SOURCES ${CMAKE_BINARY_DIR}/xbe_ffx_sources.cpp)
+file(CONFIGURE OUTPUT ${XBE_FFX_SOURCES} @ONLY CONTENT "// generated from src/runtime/gpu/ffx
+#include <cstddef>
+namespace gpu::fsr3 {
+struct SourceFile {
+    const char* path;
+    const char* text;
+    size_t size;
+};
+namespace {
+${XBE_FFX_ARRAYS}}
+extern const SourceFile kSources[] = {
+${XBE_FFX_TABLE}};
+extern const size_t kSourceCount = sizeof(kSources) / sizeof(kSources[0]);
+}
+")
+list(APPEND XBE_RUNTIME_SOURCES ${XBE_FFX_SOURCES})
 # SDL's headers go to the code that uses it alone (it is linked LINK_ONLY), so the generated sources' compile line stays
 # the same
 set_source_files_properties(${XBE_SDL_SOURCES} PROPERTIES INCLUDE_DIRECTORIES "${sdl3_SOURCE_DIR}/include")
@@ -294,6 +328,9 @@ set(XBE_VULKAN_INCLUDES ${vulkan_headers_SOURCE_DIR}/include ${volk_SOURCE_DIR})
 set_source_files_properties(${XBE_ROOT_DIR}/src/runtime/gpu/vulkan.cpp PROPERTIES
     INCLUDE_DIRECTORIES "${XBE_VULKAN_INCLUDES};${vma_SOURCE_DIR}/include;${glslang_SOURCE_DIR};${glslang_BINARY_DIR}/include"
     COMPILE_DEFINITIONS "ENABLE_HLSL;IMGUI_IMPL_VULKAN_USE_VOLK" COMPILE_OPTIONS -Wno-nullability-completeness)
+set_source_files_properties(${XBE_ROOT_DIR}/src/runtime/gpu/fsr3.cpp PROPERTIES
+    INCLUDE_DIRECTORIES "${XBE_VULKAN_INCLUDES};${vma_SOURCE_DIR}/include;${glslang_SOURCE_DIR};${glslang_BINARY_DIR}/include"
+    COMPILE_OPTIONS -Wno-nullability-completeness)
 set_source_files_properties(${imgui_SOURCE_DIR}/backends/imgui_impl_vulkan.cpp PROPERTIES
     INCLUDE_DIRECTORIES "${XBE_VULKAN_INCLUDES}" COMPILE_DEFINITIONS IMGUI_IMPL_VULKAN_USE_VOLK)
 # the OpenGL renderer: SDL's headers for its GL headers and context, its shaders glslang's and SPIRV-Cross's

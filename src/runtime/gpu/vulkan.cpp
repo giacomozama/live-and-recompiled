@@ -25,6 +25,7 @@
 
 #include "gpu/dlss.h"
 #include "gpu/dxgi_formats.h"
+#include "gpu/fsr3.h"
 
 #include <algorithm>
 #include <array>
@@ -1136,6 +1137,7 @@ private:
     VkExtent2D PictureExtent() const;
     app::Scale UpscaleScale();
     bool EnsureDlss(uint32_t w, uint32_t h, uint32_t out_w, uint32_t out_h);
+    void Fsr3Camera(fsr3::Evaluate& e) const;
     void Upscale(std::vector<Image*>& shows, const std::vector<Image*>& sources,
                  const std::vector<uint32_t>& slots, ImageRef& last);
     bool EnsureSmaaTextures();
@@ -1895,6 +1897,11 @@ private:
     // texture LOD bias the render size takes
     const XbeDlssApi* dlss_ = nullptr;
     bool dlss_device_ = false;
+    // FSR 3.1 (gpu/fsr3.h): made with the device when the GPU can run it, its shaders compiled when first asked for;
+    // whether it is the upscaler of the frame's pictures rather than DLSS, and when the last pictures were upscaled
+    std::unique_ptr<fsr3::Upscaler> fsr3_;
+    bool fsr3_on_ = false;
+    std::chrono::steady_clock::time_point fsr3_last_{};
     // VK_KHR_fragment_shading_rate's pipelineFragmentShadingRate (ProgramShading::coarse), and the most samples a
     // coarse pixel may cover (its size times the target's samples)
     bool shading_rate_ = false;
@@ -1973,7 +1980,7 @@ private:
     bool dlss_missing_ = false;  // no module beside the game (LoadDlss)
     int dlss_init_ = 0;
     bool upscale_ = false;
-    std::array<uint32_t, 6> dlss_made_{};
+    std::array<uint32_t, 7> dlss_made_{};  // and 1 DLSS, 2 FSR 3.1
     std::array<ImageRef, kMaxGen> dlss_out_;
     std::array<Image*, kMaxGen> dlss_src_{};  // the picture each was made from, for its fur mark; this Present's only
     ImageRef dlss_still_depth_, dlss_still_motion_;
@@ -2066,6 +2073,7 @@ VulkanBackend::~VulkanBackend() {
     if (pw_.thread.joinable()) pw_.thread.join();
     if (dev_) vkDeviceWaitIdle(dev_);
     if (dlss_ && dlss_init_ > 0) dlss_->shutdown();
+    fsr3_.reset();
     if (ui_) ImGui_ImplVulkan_Shutdown();
     if (cap_) fclose(cap_);
     // every image and buffer before the allocator
@@ -2564,6 +2572,8 @@ bool VulkanBackend::CreateDevice() {
         return false;
     }
     g_vk = {dev_, vma_};
+    fsr3_ = fsr3::Upscaler::Make(phys_, dev_, vma_);
+    g_fsr3_state = fsr3_ ? 1 : 0;
     VkSemaphoreTypeCreateInfo ti{VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO};
     ti.semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE;
     VkSemaphoreCreateInfo si{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO, &ti};
@@ -6929,20 +6939,28 @@ void VulkanBackend::AddDlssDeviceExtensions(std::vector<const char*>& exts) {
     g_dlss_state = 1;
 }
 
-// whether the frame to come is upscaled: DLSS asked for and there, NGX started the first time; the LOD bias and the
-// jitter's cycle for the sizes it takes
+// whether the frame to come is upscaled, and by which: DLSS asked for and there, NGX started the first time, or FSR
+// 3.1 asked for and its shaders compiled the first time; the LOD bias and the jitter's cycle for the sizes it takes
 void VulkanBackend::UpdateUpscaler() {
-    bool want = app::Get().upscaler == "dlss" && dlss_ && dlss_device_ && dlss_init_ >= 0 && !minimised_;
+    const std::string& asked = app::Get().upscaler;
+    bool want = asked == "dlss" && dlss_ && dlss_device_ && dlss_init_ >= 0 && !minimised_;
     if (want && !dlss_init_) {
         dlss_init_ = dlss_->init(inst_, phys_, dev_, vkGetInstanceProcAddr, vkGetDeviceProcAddr) ? 1 : -1;
         if (dlss_init_ < 0) g_dlss_state = 2;
         else LOGI("dlss: NGX started");
         want = dlss_init_ > 0;
     }
-    if (want != upscale_) {
+    bool fsr3 = false;
+    if (!want && asked == "fsr3" && fsr3_ && !minimised_) {
+        fsr3 = fsr3_->Prepare();
+        if (!fsr3) g_fsr3_state = 2;
+        want = fsr3;
+    }
+    if (want != upscale_ || fsr3 != fsr3_on_) {
         upscale_ = want;
+        fsr3_on_ = fsr3;
         dlss_reset_ = true;
-        LOGI("dlss: %s", want ? "upscaling" : "off");
+        LOGI("upscaler: %s", !want ? "off" : fsr3 ? "FSR 3.1" : "DLSS");
     }
 }
 
@@ -6954,9 +6972,11 @@ app::Scale VulkanBackend::UpscaleScale() {
     if (!upscale_ || !guest_w_ || !guest_h_) return {0, 0};
     VkExtent2D out = PictureExtent();
     uint32_t w = 0, h = 0;
-    if (out.width < 32 || out.height < 32 ||
-        !dlss_->render_size(out.width, out.height, int(app::Get().upscaler_quality), &w, &h) || !w || !h)
+    if (out.width < 32 || out.height < 32) return {0, 0};
+    if (fsr3_on_) fsr3::RenderSize(out.width, out.height, app::Get().upscaler_quality, w, h);
+    else if (!dlss_->render_size(out.width, out.height, int(app::Get().upscaler_quality), &w, &h))
         return {0, 0};
+    if (!w || !h) return {0, 0};
     const app::Scale scale{float(w) / float(guest_w_), float(h) / float(guest_h_)};
     const float ratio = float(out.height) / float(h);
     // NVIDIA's advice: textures as sharp as at the output's size, and 8 jitter phases per output pixel a render pixel
@@ -6973,30 +6993,56 @@ app::Scale VulkanBackend::UpscaleScale() {
 
 // the upscaler made for these sizes, made again (the device idle) when they change; false when it can't be
 bool VulkanBackend::EnsureDlss(uint32_t w, uint32_t h, uint32_t out_w, uint32_t out_h) {
-    const uint32_t quality = app::Get().upscaler_quality, model = app::Get().dlss_model;
-    std::array<uint32_t, 6> want{w, h, out_w, out_h, quality + 1, model};
+    const uint32_t quality = app::Get().upscaler_quality, model = fsr3_on_ ? 0 : app::Get().dlss_model;
+    std::array<uint32_t, 7> want{w, h, out_w, out_h, quality + 1, model, fsr3_on_ ? 2u : 1u};
     if (want == dlss_made_) return true;
     if (dlss_made_[4]) {
         Flush();
         vkDeviceWaitIdle(dev_);
-        dlss_->release();
+        if (dlss_made_[6] == 2) fsr3_->Release();
+        else dlss_->release();
     }
     dlss_made_ = {};
     EndRendering();
-    if (!dlss_->create(cmd_, w, h, out_w, out_h, int(quality), int(model))) return false;
+    const bool made = fsr3_on_ ? fsr3_->Create(cmd_, w, h, out_w, out_h)
+                               : dlss_->create(cmd_, w, h, out_w, out_h, int(quality), int(model));
+    if (!made) return false;
     ForgetDrawCmd();
     dlss_made_ = want;
     dlss_reset_ = true;
     return true;
 }
 
-// each picture through DLSS at the picture's size, in the order they are shown: its own depth and motion when its
-// motion pass drew them, else (no 3D) none, and no history either
+// FSR 3.1's camera, which turns depth into distance for weighing disocclusions: the guest's own projection isn't
+// read yet, so a stand-in field of view and planes, XBE_FSR_NEAR, XBE_FSR_FAR and XBE_FSR_FOV (degrees) for trying
+// others
+void VulkanBackend::Fsr3Camera(fsr3::Evaluate& e) const {
+    static const std::array<float, 3> cam = [] {
+        auto get = [](const char* name, float fallback) {
+            const char* v = diag::Env(name);
+            const float f = v ? float(std::atof(v)) : 0.0f;
+            return f > 0 ? f : fallback;
+        };
+        return std::array<float, 3>{get("XBE_FSR_NEAR", 1.0f), get("XBE_FSR_FAR", 10000.0f),
+                                    get("XBE_FSR_FOV", 60.0f) * 3.14159265f / 180.0f};
+    }();
+    e.near_plane = cam[0];
+    e.far_plane = cam[1];
+    e.fov_y = cam[2];
+}
+
+// each picture through DLSS or FSR 3.1 at the picture's size, in the order they are shown: its own depth and motion
+// when its motion pass drew them, else (no 3D) none, and no history either
 void VulkanBackend::Upscale(std::vector<Image*>& shows, const std::vector<Image*>& sources,
                             const std::vector<uint32_t>& slots, ImageRef& last) {
     VkExtent2D out = PictureExtent();
     Image& first = *sources[0];
     if (!EnsureDlss(first.w, first.h, out.width, out.height)) return;
+    // FSR's frame time: since the pictures before, shared among these
+    const auto now = std::chrono::steady_clock::now();
+    float picture_ms = std::chrono::duration<float, std::milli>(now - fsr3_last_).count() / float(sources.size());
+    if (!(picture_ms > 0 && picture_ms < 1000)) picture_ms = 16.7f;
+    fsr3_last_ = now;
     // depth 1 and no motion, for pictures without 3D
     if (!dlss_still_depth_ || dlss_still_depth_->w != first.w || dlss_still_depth_->h != first.h) {
         for (ImageRef* r : {&dlss_still_depth_, &dlss_still_motion_})
@@ -7048,8 +7094,24 @@ void VulkanBackend::Upscale(std::vector<Image*>& shows, const std::vector<Image*
         e.motion_scale[0] = float(color.w);
         e.motion_scale[1] = float(color.h);
         e.reset = dlss_reset_ || !moved;
-        bool ok = dlss_->evaluate(cmd_, &e);
-        ForgetDrawCmd();  // NGX bound its own pipeline and descriptors
+        bool ok;
+        if (fsr3_on_) {
+            fsr3::Evaluate f;
+            f.color = e.color;
+            f.depth = e.depth;
+            f.motion = e.motion;
+            f.output = e.output;
+            std::copy_n(e.jitter, 2, f.jitter);
+            std::copy_n(e.motion_scale, 2, f.motion_scale);
+            f.reset = e.reset;
+            f.frame_ms = picture_ms;
+            Fsr3Camera(f);
+            EndRendering();
+            ok = fsr3_->Run(cmd_, f);
+        } else {
+            ok = dlss_->evaluate(cmd_, &e);
+        }
+        ForgetDrawCmd();  // NGX or FSR bound its own pipeline and descriptors
         if (!ok) continue;
         dlss_reset_ = false;
         Transition(*dst, kRead);
@@ -9261,7 +9323,7 @@ void VulkanBackend::Present(const Surface& front) {
     if (AcquireTrace())
         LOGR("acquire trace: present %llu: %zu pictures, pictures a frame %u, %zu held after, %s; submitted %llu (main "
              "%llu), GPU done %llu, images %s",
-             (unsigned long long)presents_, pictures.size(), Pictures(), held_.size(), upscale_ ? "DLSS" : "no DLSS",
+             (unsigned long long)presents_, pictures.size(), Pictures(), held_.size(), upscale_ ? (fsr3_on_ ? "FSR 3.1" : "DLSS") : "no upscaler",
              (unsigned long long)fence_value_, (unsigned long long)trace_main_, (unsigned long long)Completed(),
              trace_images_.c_str());
     DeliverReports();
