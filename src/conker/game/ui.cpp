@@ -1892,6 +1892,9 @@ void DrawAchievementToast() {
 
 }  // namespace
 
+// for the overlay drawn elsewhere: subtitles.cpp's how-to panels take "press_key"
+const char* Text(const char* id) { return T(id); }
+
 void Draw(double fps) {
     static bool was_open = false;
     static bool titled = false;
@@ -2723,10 +2726,17 @@ void Draw(double fps) {
                     Hint("hint_hold_any_button_but_pause", true);
                     Check("speech_bubbles_in", &cutscenes::g_english_bubbles);
                     Hint("hint_conker_s_monologues_on_the", true);
-                    Check("speech_subtitles", &subtitles::g_on);
-                    Hint("hint_what_characters_say_and_think", true);
-                    Check("redrawn_bubbles", &subtitles::g_redraw);
-                    Hint("hint_redrawn_bubbles", true);
+                    // one of three: the game's bubbles, the runtime's (redrawn_bubbles) or subtitles (speech_subtitles,
+                    // which comes first where an older settings file has both)
+                    int speech = subtitles::g_on ? 2 : subtitles::g_redraw ? 1 : 0;
+                    if (Segmented("speech", &speech, {"game_bubbles", "redrawn_bubbles", "subtitles"})) {
+                        subtitles::g_on = speech == 2;
+                        subtitles::g_redraw = speech == 1;
+                    }
+                    Hint(speech == 2   ? "hint_what_characters_say_and_think"
+                         : speech == 1 ? "hint_redrawn_bubbles"
+                                       : "hint_game_bubbles",
+                         true);
                     Check("fade_instead_of", &loading::g_fade);
                     Hint("hint_loads_fade_to_black_and", true);
                     Check("rope_physics", &rope::g_physics);

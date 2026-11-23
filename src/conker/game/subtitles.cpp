@@ -22,6 +22,14 @@
 // 0xFFB5 LIGHTNING. The other codes are the text's own characters (Unicode). The cutscene's speech command takes a
 // line's first 0xBE/0xBF for a thought's/electronic bubble's mark and starts the text after it (no line has one; in
 // Spanish 0xBF is ¿, see Capture).
+//
+// A hint (0x2CAF90: the manual's pages, the reminders) waits on the player: its descriptor has flag 0x10 and its object
+// 0 at +0x34 (0xE0850 sets 1, the hint clears it), and in state 0x20 0xE0CD0 turns its page only on a button. The
+// camera leaves it room for a big bubble, so it isn't a subtitle: its page shows whole, as a panel where the game puts
+// the bubble's body (its own draw run with nothing drawn, bubbles.cpp's BubblePlacing), with the key that turns it
+// under it. There are five (the table at 0x6F22BC: manual_instructions, manual_catapult, remember_frying_pan,
+// remember_helicopter_jump, remember_vitamins). The pad's +0x88 (A) always turns the page, +0x8C (B) closes the
+// hint unless flag 0x40; with flag 0x80 (remember_vitamins) B on the last page answers no.
 #include "common/subtitles.h"
 
 #include <algorithm>
@@ -32,7 +40,10 @@
 #include <string>
 #include <vector>
 
+#include "app/app.h"
 #include "audio/audio.h"
+#include "common/prompts.h"
+#include "core/input.h"
 #include "cpu/x86_ops.h"
 #include "kernel/kernel.h"
 
@@ -124,6 +135,12 @@ double g_voice_time = 0.0, g_voice_seen = 0.0;
 
 struct Bubble {
     uint32_t obj = 0, page = 0, flags = 0;
+    // a key-paced bubble shown whole: its body's box at full scale on the 640 by 480 frame, the page shown of how many
+    bool panel = false;
+    float x = 0, y = 0, w = 0, h = 0;
+    int page_no = 0, pages = 1;
+    bool kb = false;     // the pieces as they read with keys (KbRewrite)
+    std::u16string key;  // what the panel's key line shows: the key's code, or a question's answers with theirs
     std::u16string raw;                // the page as read
     std::vector<std::u16string> pieces;  // fixed, split and tidied
     std::u16string piece;
@@ -279,7 +296,156 @@ std::u16string SentenceOf(const std::u16string& piece, double elapsed, double pa
     return piece.substr(std::min(from, piece.size()), to > from ? to - from : 0);
 }
 
-void Capture(uint32_t obj) {
+// player 1 last used the keyboard or the mouse, the keyboard prompts on: the buttons show as keys (any thread)
+bool KeyboardInUse() { return prompts::g_on && input::LastUsed(0) == input::Source::Keyboard; }
+
+// the sticks as the keyboard rewrite tells them apart: the one that moves and the one that turns the camera
+constexpr char16_t kLeftStick = 0xFFC0, kRightStick = 0xFFC1;
+
+// The text as it reads with keys for the buttons (KbRewrite), every line that needs it in the six languages: a
+// trigger is pressed, not pulled, and no longer called a trigger; a stick's left or right goes, the key or the mouse
+// in its place says which (the stick's code becomes kLeftStick or kRightStick). In a pattern \x01 is a gap (spaces,
+// line breaks, piece markers); in a replacement each \x01 is the pattern's next gap as it was, and the markers of
+// the gaps it leaves out go first, so a line's pieces stay as many. T stands for {L} or {R}, J for a stick
+struct Rewrite {
+    std::u16string_view from, to;
+};
+constexpr Rewrite kRewrites[] = {
+    // the trigger's name ("pull the {L} trigger", "la gâchette {L}", "den Schalter {L}", ...)
+    {u"the\x01T\x01trigger", u"T"},
+    {u"la\x01gâchette\x01T", u"T"},
+    {u"den\x01Schalter\x01T", u"T"},
+    {u"il\x01grilletto\x01T", u"T"},
+    {u"el\x01disparador\x01T", u"T"},
+    // pulled
+    {u"pull\x01T", u"press\x01T"},
+    {u"Pull\x01T", u"Press\x01T"},
+    {u"zieh\x01einfach\x01T", u"drück\x01einfach\x01T"},
+    {u"T\x01ziehen", u"T\x01drücken"},
+    {u"tira de\x01T", u"presiona\x01T"},
+    {u"T\x01を引いて", u"T\x01を押して"},
+    {u"T\x01を引くんだ", u"T\x01を押すんだ"},
+    // the sticks' sides
+    {u"left\x01J", u"\uFFC0"},      {u"right\x01J", u"\uFFC1"},
+    {u"linken\x01J", u"\uFFC0"},    {u"rechten\x01J", u"\uFFC1"},
+    {u"J\x01gauche", u"\uFFC0"},    {u"J\x01droit", u"\uFFC1"},
+    {u"J\x01sinistra", u"\uFFC0"},  {u"J\x01destra", u"\uFFC1"},
+    {u"J\x01izquierdo", u"\uFFC0"}, {u"J\x01derecho", u"\uFFC1"}, {u"derecho\x01J", u"\uFFC1"},
+    {u"左の\x01J", u"\uFFC0"},      {u"右の\x01J", u"\uFFC1"},
+};
+
+bool Gap(char16_t c) { return c == u' ' || c == u'\n' || c == 0xA0 || c == 0x3000 || c == kMarker; }
+// (not 0xFE, the piece marker, nor × ÷)
+bool Letter(char16_t c) {
+    return (c >= u'a' && c <= u'z') || (c >= u'A' && c <= u'Z') ||
+           (c >= 0xC0 && c < 0x250 && c != kMarker && c != 0xD7 && c != 0xF7);
+}
+// a pattern's letter (T and J stand for codes), which the text's word has to start or end with
+bool WordEdge(char16_t c) { return c != u'T' && c != u'J' && Letter(c); }
+
+std::u16string KbRewrite(std::u16string text) {
+    for (const Rewrite& r : kRewrites) {
+        std::u16string out;
+        size_t i = 0;
+        while (i < text.size()) {
+            // the pattern at i: its gaps and what T and J stood for
+            std::vector<std::u16string> gaps;
+            char16_t t = 0, j = 0;
+            size_t k = i;
+            bool ok = !WordEdge(r.from[0]) || i == 0 || !Letter(text[i - 1]);
+            for (size_t p = 0; ok && p < r.from.size(); p++) {
+                const char16_t c = r.from[p];
+                if (c == u'\x01') {
+                    size_t e = k;
+                    while (e < text.size() && Gap(text[e])) e++;
+                    ok = e > k;
+                    gaps.push_back(text.substr(k, e - k));
+                    k = e;
+                } else if (k >= text.size()) {
+                    ok = false;
+                } else if (c == u'T') {
+                    ok = text[k] == 0xFFAF || text[k] == 0xFFB0;
+                    t = text[k++];
+                } else if (c == u'J') {
+                    ok = text[k] == 0xFFB1 || text[k] == 0xFFBE;
+                    j = text[k++];
+                } else {
+                    ok = text[k++] == c;
+                }
+            }
+            if (ok && WordEdge(r.from.back()) && k < text.size() && Letter(text[k])) ok = false;
+            if (!ok) {
+                out.push_back(text[i++]);
+                continue;
+            }
+            (void)j;
+            size_t used = std::count(r.to.begin(), r.to.end(), u'\x01');
+            for (size_t g = used; g < gaps.size(); g++)
+                for (char16_t c : gaps[g])
+                    if (c == kMarker) out.push_back(c);
+            size_t g = 0;
+            for (char16_t c : r.to) {
+                if (c == u'\x01') out += gaps[std::min(g++, gaps.size() - 1)];
+                else out.push_back(c == u'T' ? t : c);
+            }
+            i = k;
+        }
+        text.swap(out);
+    }
+    return text;
+}
+
+struct Place {
+    float x, y, w, h;
+};
+
+bool FaceButton(char16_t c) { return c == 0xFFA8 || c == 0xFFA9 || c == 0xFFBC || c == 0xFFBD; }
+
+// a question's answer: a word after its button ("{A} Yes", "{A} : Sí", "{A}\u3000ハイ"), short and on its own
+bool Answer(std::u16string& w) {
+    const std::u16string_view trim = u" :\n\u3000\u00A0";
+    const size_t from = w.find_first_not_of(trim), to = w.find_last_not_of(trim);
+    if (from == w.npos) return false;
+    w = w.substr(from, to + 1 - from);
+    if (w.size() > 16) return false;
+    for (char16_t c : w)
+        if (c == u' ' || c == u'\n' || c >= 0xFFA0) return false;
+    return true;
+}
+
+// The key line of a hint's page (the page as the panel shows it, which loses the line). A page that ends in a
+// question's answers ("{A} Yes  {B} No", as three of the five do in every language) has them: the answers come
+// off the page. Any other, the key the text names for it (manual_instructions' "To skip it, just press {B}": the
+// last A or B on the page) where the game takes it, else A, which always does
+std::u16string KeyLine(std::u16string& page, uint32_t flags) {
+    const size_t k2 = page.find_last_of(u"\uFFA8\uFFA9\uFFBC\uFFBD");
+    if (k2 != page.npos && k2 > 0) {
+        const size_t k1 = page.find_last_of(u"\uFFA8\uFFA9\uFFBC\uFFBD", k2 - 1);
+        std::u16string w2 = page.substr(k2 + 1);
+        std::u16string w1 = k1 == page.npos ? std::u16string() : page.substr(k1 + 1, k2 - k1 - 1);
+        if (k1 != page.npos && Answer(w1) && Answer(w2)) {
+            std::u16string line;
+            line.push_back(page[k1]), line.append(u" ").append(w1).append(u" / ");
+            line.push_back(page[k2]), line.append(u" ").append(w2);
+            page.resize(k1);
+            const size_t end = page.find_last_not_of(u" \n\u3000\u00A0");
+            page.resize(end == page.npos ? 0 : end + 1);
+            return line;
+        }
+    }
+    const size_t named = page.find_last_of(u"\uFFA8\uFFA9");
+    const bool b = named != page.npos && page[named] == 0xFFA9 && !(flags & 0x40);
+    return std::u16string(1, b ? char16_t(0xFFA9) : char16_t(0xFFA8));
+}
+
+// a bubble that waits on the player's button to turn its page (a hint)
+bool KeyPaced(uint32_t obj) {
+    const uint32_t desc = obj ? R32(obj + 0x30) : 0;
+    if (!desc || !(R32(desc) & 0x10) || R8(obj + 0x34)) return false;
+    return !R32(desc + 0x2038) && !R32(desc + 0x203C) && !R32(desc + 0x2040);
+}
+
+void Capture(uint32_t obj, const Place* place = nullptr) {
     if (!obj || R8(kHidden) || !R8(obj + 0x2D)) return;
     const uint32_t desc = R32(obj + 0x30), page = R32(obj + 0x48);
     if (!desc || !page) return;
@@ -315,11 +481,14 @@ void Capture(uint32_t obj) {
     else if (running) b.elapsed += GameSeconds(now - b.last);
     b.last = now;
     b.flags = flags;
-    if (b.pieces.empty() || b.raw != raw) {  // the page's text, fixed and in pieces, again only when it changes
+    const bool kb = KeyboardInUse();
+    if (b.pieces.empty() || b.raw != raw || b.kb != kb) {  // the page's text, fixed and in pieces, again on a change
         b.raw = raw;
+        b.kb = kb;
         const uint32_t language = R32(kLanguage);
         std::u16string text = raw;
         text = FixPage(text, language);
+        if (kb) text = KbRewrite(text);
         b.pieces.assign(1, {});
         for (char16_t c : text) {
             if (c == kMarker) b.pieces.emplace_back();
@@ -328,6 +497,20 @@ void Capture(uint32_t obj) {
         for (auto& p : b.pieces) p = Tidy(p, language);
     }
     const std::vector<std::u16string>& pieces = b.pieces;
+
+    b.panel = place != nullptr;
+    if (place) {  // the whole page
+        b.x = place->x, b.y = place->y, b.w = place->w, b.h = place->h;
+        b.page_no = int(R8(obj + 0x46)), b.pages = std::max(int(R8(desc + 0x2008)), 1);
+        b.piece.clear();
+        for (const auto& p : pieces) {
+            if (p.empty()) continue;
+            if (!b.piece.empty()) b.piece.push_back(u' ');
+            b.piece += p;
+        }
+        b.key = KeyLine(b.piece, flags);
+        return;
+    }
 
     size_t index = 0;
     if (scripted) {
@@ -355,6 +538,16 @@ void Capture(uint32_t obj) {
 // shows goes to the overlay; off, the bubble is drawn again (bubbles.cpp)
 X86_EXTERN_FUNC(__imp__sub_000E1880);
 X86_FUNC(sub_000E1880) {
+    const uint32_t obj = R32(ctx.esp + 4);
+    if (subtitles::g_on && KeyPaced(obj)) {
+        subtitles::BubblePlacing(obj);
+        __imp__sub_000E1880(ctx, base);
+        Place place;
+        const bool placed = subtitles::BubblePlaced(place.x, place.y, place.w, place.h);
+        subtitles::BubblePlacing(0);
+        if (placed) Capture(obj, &place);
+        return;
+    }
     if (!subtitles::g_on) {
         subtitles::BubbleDrawing(R32(ctx.esp + 4));
         subtitles::BubbleMeasure(ctx);
@@ -378,13 +571,26 @@ X86_FUNC(sub_0001B210) {
 
 #if __has_include(<imgui.h>) && !defined(XBE_HEADLESS)
 
+#include <array>
+#include <climits>
 #include <cmath>
+#include <cstdio>
+#include <string_view>
 
 #include <imgui.h>
 
+#include "common/keyboard.h"
+#include "common/prompts.h"
+#include "common/ui.h"
+#include "core/input.h"
+
 namespace {
 
-enum class Kind { Text, Icon, Button };
+// player 1 last used the keyboard or the mouse (and the keyboard prompts are on): buttons drawn as their keys. Set
+// as each Draw starts
+bool g_kb = false;
+
+enum class Kind { Text, Icon, Button, Break };  // Break: a line break, a word of its own
 
 struct Atom {
     Kind kind = Kind::Text;
@@ -393,6 +599,7 @@ struct Atom {
     ImU32 colour = 0;  // RGB, alpha 0 (the subtitle's alpha goes in at drawing)
     bool throb = false;
     float w = 0.0f;
+    std::string key;  // Kind::Button, with g_kb: its key's name ("E", "Mouse 2", "WASD", "Mouse" the look stick)
 };
 using Word = std::vector<Atom>;
 
@@ -420,9 +627,59 @@ bool IsIcon(uint16_t c) { return c >= 0xFFB2 && c <= 0xFFB5; }
 constexpr float kIconSize = 0.7f, kIconAdvance = 0.74f;
 // and shaking, each its own way: offset by up to this much of the text's size, turned by up to this many radians
 constexpr float kShake = 0.035f, kShakeTurn = 0.12f;
+// JOYSTICK, TXT_JOYSTICK, and KbRewrite's sticks that move and turn the camera
+bool IsStick(uint16_t c) { return c == 0xFFBE || c == 0xFFB1 || c == kLeftStick || c == kRightStick; }
 bool IsButton(uint16_t c) {
-    return c == 0xFFA8 || c == 0xFFA9 || c == 0xFFBC || c == 0xFFBD || c == 0xFFBE || (c >= 0xFFAA && c <= 0xFFB0);
+    return c == 0xFFA8 || c == 0xFFA9 || c == 0xFFBC || c == 0xFFBD || IsStick(c) || (c >= 0xFFAA && c <= 0xFFB0);
 }
+
+// a button's key for player 1, as their controls drive it: of the keys of the actions on the button (L and R the
+// triggers) a mouse button first (B the right one, RT the left, in the default controls), else the first; the
+// movement keys for the stick that moves (WASD), "Mouse" for the one that turns the camera (a stick the text gives
+// no side). Empty: the console's button stays (Z, the arrows, an unbound button)
+std::string KeyLabel(uint16_t code) {
+    const bool left = code == kLeftStick;
+    using namespace keyboard;
+    const int scheme = Scheme(0);
+    auto first = [](int action) -> std::string {
+        for (int vk : g_keys[0][action])
+            if (const char* name = vk ? KeyName(vk) : nullptr) return name;
+        return {};
+    };
+    if (IsStick(code)) {
+        if (left == Southpaw(scheme)) return "Mouse";
+        std::string all, each[4];
+        bool short_names = true;
+        for (int i = 0; i < 4; i++) {
+            each[i] = first(std::array{kMoveUp, kMoveLeft, kMoveDown, kMoveRight}[size_t(i)]);
+            short_names = short_names && each[i].size() == 1;
+        }
+        if (short_names) return each[0] + each[1] + each[2] + each[3];
+        return each[0];
+    }
+    int button = -1;
+    switch (code) {
+        case 0xFFA8: button = kButtonA; break;
+        case 0xFFA9: button = kButtonB; break;
+        case 0xFFBC: button = kButtonX; break;
+        case 0xFFBD: button = kButtonY; break;
+        case 0xFFAF: button = kButtonLT; break;
+        case 0xFFB0: button = kButtonRT; break;
+        default: return {};
+    }
+    std::string key;
+    for (int a = 0; a < kActions; a++) {
+        if (Drives(scheme, a) != button) continue;
+        for (int vk : g_keys[0][a]) {
+            const char* name = vk ? KeyName(vk) : nullptr;
+            if (!name) continue;
+            if (std::strncmp(name, "Mouse", 5) == 0) return name;
+            if (key.empty()) key = name;
+        }
+    }
+    return key;
+}
+bool IsMouse(const std::string& key) { return key == "Mouse" || key == "Mouse 1" || key == "Mouse 2" || key == "Mouse 3"; }
 bool IsTrigger(uint16_t c) { return c == 0xFFAF || c == 0xFFB0; }
 
 // the piece as words (wrapped only between them), each atom in its colour
@@ -452,11 +709,19 @@ std::vector<Word> Words(const std::u16string& piece, ImU32 base) {
         } else if (c == 0xFFA6 || c == 0xFFA7) {
             throb = true;
         } else if (IsIcon(c) || IsButton(c)) {
-            atom(Kind::Icon).code = c;
-            if (IsButton(c)) words.back().back().kind = Kind::Button;
+            Atom& a = atom(Kind::Icon);
+            a.code = c;
+            if (IsButton(c)) {
+                a.kind = Kind::Button;
+                if (g_kb) a.key = KeyLabel(c);
+            }
             censor = IsIcon(c);
         } else if (c == ' ' || c == '\n') {  // not 0xA0: French's before ! ? : ; keeps the mark on the word's line
             if (!words.back().empty()) words.emplace_back();
+            if (c == '\n') {
+                words.back().push_back({Kind::Break, {}, 0, colour, false, 0.0f});
+                words.emplace_back();
+            }
         } else if (c < 0xFFA0 && c != 0x3E8) {
             AppendUtf8(atom(Kind::Text).text, c);
         }
@@ -530,6 +795,9 @@ void DrawButton(ImDrawList* dl, ImFont* font, uint16_t code, ImVec2 lo, float s,
         case 0xFFBD: disc(235, 195, 40, "Y", black); break;
         case 0xFFAE: disc(225, 225, 225, "Z", black); break;
         case 0xFFBE:  // the stick
+        case 0xFFB1:
+        case kLeftStick:
+        case kRightStick:
             dl->AddCircleFilled(c, s * 0.44f, IM_COL32(90, 90, 90, int(alpha * 255.0f)));
             dl->AddCircleFilled(c, s * 0.26f, IM_COL32(40, 40, 40, int(alpha * 255.0f)));
             break;
@@ -550,10 +818,219 @@ void DrawButton(ImDrawList* dl, ImFont* font, uint16_t code, ImVec2 lo, float s,
     }
 }
 
+// a key as the keyboard prompts draw them (light): a key cap with its name, a mouse button a mouse with the button lit
+void DrawKey(ImDrawList* dl, ImFont* font, const std::string& key, ImVec2 lo, float s, float w, float alpha) {
+    const int a = int(alpha * 255.0f);
+    const ImU32 cap = IM_COL32(236, 236, 236, a), edge = IM_COL32(150, 150, 150, a), ink = IM_COL32(25, 25, 25, a);
+    if (IsMouse(key)) {
+        const float mw = s * 0.62f, mh = s * 0.92f;
+        const ImVec2 m0(lo.x + (w - mw) * 0.5f, lo.y + (s - mh) * 0.5f), m1(m0.x + mw, m0.y + mh);
+        const float split = m0.y + mh * 0.42f, mid = (m0.x + m1.x) * 0.5f, r = mw * 0.48f;
+        dl->AddRectFilled(m0, m1, cap, r);
+        // the button meant lit as the prompt sprites have it: the body's shape cut to its corner
+        const ImU32 lit = IM_COL32(230, 80, 60, a);
+        if (key == "Mouse 1" || key == "Mouse 2") {
+            const bool l = key == "Mouse 1";
+            dl->PushClipRect(ImVec2(l ? m0.x : mid, m0.y), ImVec2(l ? mid : m1.x, split), true);
+            dl->AddRectFilled(m0, m1, lit, r);
+            dl->PopClipRect();
+        }
+        const float t = std::max(1.0f, s * 0.05f);
+        dl->AddRect(m0, m1, edge, r, 0, t);
+        dl->AddLine(ImVec2(m0.x, split), ImVec2(m1.x, split), edge, t);
+        dl->AddLine(ImVec2(mid, m0.y), ImVec2(mid, split), edge, t);
+        dl->AddRectFilled(ImVec2(mid - mw * 0.09f, m0.y + mh * 0.12f), ImVec2(mid + mw * 0.09f, m0.y + mh * 0.32f),
+                          key == "Mouse 3" ? lit : edge, mw * 0.09f);
+        return;
+    }
+    std::string name = key;
+    if (name.rfind("Mouse ", 0) == 0) name = "M" + name.substr(6);  // the side buttons
+    const ImVec2 k0(lo.x, lo.y + s * 0.04f), k1(lo.x + w, lo.y + s * 0.96f);
+    dl->AddRectFilled(ImVec2(k0.x, k0.y + s * 0.06f), ImVec2(k1.x, k1.y), edge, s * 0.2f);  // its side, below
+    dl->AddRectFilled(k0, ImVec2(k1.x, k1.y - s * 0.06f), cap, s * 0.2f);
+    const float fs = s * 0.58f;
+    const ImVec2 ts = font->CalcTextSizeA(fs, FLT_MAX, 0.0f, name.c_str());
+    dl->AddText(font, fs, ImVec2(lo.x + (w - ts.x) * 0.5f, k0.y + (k1.y - s * 0.06f - k0.y - ts.y) * 0.5f), ink,
+                name.c_str());
+}
+
+// a key's width at a text size
+float KeyWidth(ImFont* font, const std::string& key, float size) {
+    if (IsMouse(key)) return size * 0.75f;
+    std::string name = key;
+    if (name.rfind("Mouse ", 0) == 0) name = "M" + name.substr(6);
+    return std::max(size * 0.95f, font->CalcTextSizeA(size * 0.95f * 0.58f, FLT_MAX, 0.0f, name.c_str()).x + size * 0.5f);
+}
+
 struct Line {
     std::vector<const Atom*> atoms;  // with nullptr for a space between words
     float w = 0.0f;
 };
+
+// each atom's width at a size
+void Measure(std::vector<Word>& words, ImFont* font, float size) {
+    for (Word& w : words)
+        for (Atom& a : w) {
+            if (a.kind == Kind::Text) a.w = font->CalcTextSizeA(size, FLT_MAX, 0.0f, a.text.c_str()).x;
+            else if (a.kind == Kind::Icon) a.w = size * kIconAdvance;
+            else if (a.kind == Kind::Button && !a.key.empty()) a.w = KeyWidth(font, a.key, size) + size * 0.06f;
+            else if (a.kind == Kind::Button) a.w = size * (IsTrigger(a.code) ? 1.45f : 1.0f) + size * 0.06f;
+            else a.w = 0.0f;
+        }
+}
+
+// the lines, filled word by word up to wrap; a line break starts a new one when breaks, else it is a space
+std::vector<Line> Fill(const std::vector<Word>& words, float wrap, float space, bool breaks) {
+    std::vector<Line> lines(1);
+    for (const Word& w : words) {
+        if (w.size() == 1 && w[0].kind == Kind::Break) {
+            if (breaks) lines.emplace_back();
+            continue;
+        }
+        float ww = 0.0f;
+        for (const Atom& a : w) ww += a.w;
+        if (!lines.back().atoms.empty() && lines.back().w + space + ww > wrap) lines.emplace_back();
+        Line& cur = lines.back();
+        if (!cur.atoms.empty()) cur.atoms.push_back(nullptr), cur.w += space;
+        for (const Atom& a : w) cur.atoms.push_back(&a);
+        cur.w += ww;
+    }
+    while (lines.size() > 1 && lines.back().atoms.empty()) lines.pop_back();
+    return lines;
+}
+
+// a line from (x, y), its top
+void DrawLine(ImDrawList* dl, ImFont* font, const Line& l, float x, float y, float size, float space, float alpha,
+              bool thought, double now) {
+    const float mid = y + size * 0.5f;
+    int n = 0;
+    for (const Atom* a : l.atoms) {
+        if (!a) {
+            x += space;
+            continue;
+        }
+        const ImU32 col = WithAlpha(a->colour, alpha);
+        const int first_vtx = dl->VtxBuffer.Size;
+        if (a->kind == Kind::Text) {
+            dl->AddText(font, size, ImVec2(x, y), col, a->text.c_str());
+        } else if (a->kind != Kind::Break) {
+            const float scale = a->throb ? 1.0f + 0.12f * std::sin(float(now) * 9.0f + float(n)) : 1.0f;
+            if (a->kind == Kind::Icon) {  // a letter's size, about a capital's middle, shaking
+                const float s = size * kIconSize * scale, t = float(now), k = float(n);
+                const ImVec2 c(x + a->w * 0.5f + size * kShake * std::sin(t * 37.0f + k * 1.7f),
+                               y + size * 0.53f + size * kShake * std::sin(t * 29.0f + k * 2.3f + 1.0f));
+                DrawIcon(dl, a->code, ImVec2(c.x - s * 0.5f, c.y - s * 0.5f), s, col, alpha);
+                const float turn = kShakeTurn * std::sin(t * 23.0f + k * 1.3f);
+                const float cs = std::cos(turn), sn = std::sin(turn);
+                for (int v = first_vtx; v < dl->VtxBuffer.Size; v++) {
+                    ImVec2& q = dl->VtxBuffer[v].pos;
+                    const float qx = q.x - c.x, qy = q.y - c.y;
+                    q = ImVec2(c.x + qx * cs - qy * sn, c.y + qx * sn + qy * cs);
+                }
+            } else if (!a->key.empty()) {
+                const float s = size * 0.95f * scale, box = a->w - size * 0.06f;
+                DrawKey(dl, font, a->key, ImVec2(x + size * 0.03f, y + (size - s) * 0.5f), s, box, alpha);
+            } else {
+                const float s = size * 0.95f * scale;
+                const float box = a->w - size * 0.06f;
+                const ImVec2 at(x + size * 0.03f + (box - s * (box / size)) * 0.5f, y + (size - s) * 0.5f);
+                DrawButton(dl, font, a->code, at, s, s * (box / size), alpha);
+            }
+        }
+        // a thought in italics: its words (and the censor's marks) leaned about the line's middle; a button stays
+        // upright
+        if (thought && a->kind != Kind::Button)
+            for (int v = first_vtx; v < dl->VtxBuffer.Size; v++)
+                dl->VtxBuffer[v].pos.x += (mid - dl->VtxBuffer[v].pos.y) * 0.2f;
+        x += a->w;
+        n++;
+    }
+}
+
+// UTF-8 as UTF-16 (the overlay's text has nothing past the BMP)
+std::u16string Utf16(const char* s) {
+    std::u16string out;
+    for (const auto* p = reinterpret_cast<const unsigned char*>(s); *p;) {
+        uint32_t c = *p++;
+        int more = c >= 0xE0 ? 2 : c >= 0xC0 ? 1 : 0;
+        c &= more == 2 ? 0x0F : more == 1 ? 0x1F : 0x7F;
+        for (; more > 0 && (*p & 0xC0) == 0x80; more--) c = c << 6 | (*p++ & 0x3F);
+        out.push_back(char16_t(c));
+    }
+    return out;
+}
+
+// A key-paced bubble's page whole, in a panel where the game puts the bubble's body: about its middle, as wide as
+// it at least (the room the camera leaves it), wider while the page would be taller than the frame allows, kept on
+// the frame. The 640 by 480 frame is shown letterboxed to FrameAspect
+void DrawPanel(const Bubble& b, ImDrawList* dl, ImFont* font, double now) {
+    const ImVec2 display = ImGui::GetIO().DisplaySize;
+    float aspect = app::FrameAspect();
+    if (!(aspect > 0.1f) || !std::isfinite(aspect)) aspect = 4.0f / 3.0f;
+    const float fw = std::min(display.x, display.y * aspect), fh = fw / aspect;
+    const float ox = (display.x - fw) * 0.5f, oy = (display.y - fh) * 0.5f;
+    const float kx = fw / 640.0f, ky = fh / 480.0f;
+
+    const float alpha = float(std::clamp((now - b.first) / 0.15, 0.0, 1.0));
+    const bool electronic = (b.flags & kElectronic) && !(b.flags & kThought);
+    std::vector<Word> words = Words(b.piece, electronic ? kElectronicColour : kWhite);
+    if (words.empty()) return;
+    const float size = std::max(15.0f, std::round(fh / 26.0f));
+    Measure(words, font, size);
+    const float space = font->CalcTextSizeA(size, FLT_MAX, 0.0f, " ").x;
+    const float pad = std::round(size * 0.75f), line_h = std::round(size * 1.24f);
+    const float margin = std::round(size * 0.5f);
+    const bool paged = b.pages > 1;
+    // the key line under the words: "(Press [B])" in the overlay's language, the key where its %s is
+    const float key_size = std::round(size * 0.82f), key_line_h = std::round(key_size * 1.3f);
+    const float key_space = font->CalcTextSizeA(key_size, FLT_MAX, 0.0f, " ").x;
+    std::vector<Word> key_words;
+    if (!b.key.empty()) {
+        std::u16string line = Utf16(ui::Text("press_key"));
+        const size_t at = line.find(u"%s");
+        if (at != line.npos) line.replace(at, 2, b.key);
+        else line = b.key;
+        key_words = Words(line, kWhite);
+        Measure(key_words, font, key_size);
+    }
+    const std::vector<Line> key_line = Fill(key_words, FLT_MAX, key_space, false);
+    const float key_w = key_words.empty() ? 0.0f : key_line[0].w;
+    const float footer = key_words.empty() && !paged ? 0.0f : std::round(pad * 0.5f) + key_line_h;
+
+    const float most_w = fw - 2 * (margin + pad), most_h = fh - 2 * (margin + pad) - footer;
+    float wrap = std::clamp(b.w * kx - 2 * pad, std::min(size * 18.0f, most_w), most_w);
+    std::vector<Line> lines = Fill(words, wrap, space, true);
+    while (float(lines.size()) * line_h > most_h && wrap < most_w) {
+        wrap = std::min(wrap * 1.15f, most_w);
+        lines = Fill(words, wrap, space, true);
+    }
+    float block_w = key_w + (paged ? key_size * 8.0f : 0.0f);
+    for (const Line& l : lines) block_w = std::max(block_w, l.w);
+    const float w = block_w + 2 * pad, h = float(lines.size()) * line_h + 2 * pad + footer;
+    const float cx = ox + b.x * kx, cy = oy + b.y * ky;
+    auto keep = [](float v, float lo, float hi) { return hi < lo ? (lo + hi) * 0.5f : std::clamp(v, lo, hi); };
+    const float x0 = std::round(keep(cx - w * 0.5f, ox + margin, ox + fw - margin - w));
+    const float y0 = std::round(keep(cy - h * 0.5f, oy + margin, oy + fh - margin - h));
+    const ImVec2 lo(x0, y0), hi(x0 + std::round(w), y0 + std::round(h));
+    dl->AddRectFilled(lo, hi, IM_COL32(10, 12, 18, int(alpha * 205.0f)), size * 0.45f);
+
+    for (size_t li = 0; li < lines.size(); li++) {
+        const float y = y0 + pad + line_h * float(li) + (line_h - size) * 0.5f;
+        DrawLine(dl, font, lines[li], x0 + pad, y, size, space, alpha, false, now);
+    }
+    const float key_y = hi.y - pad - key_line_h + (key_line_h - key_size) * 0.5f;
+    if (!key_words.empty())  // in the middle, a little dimmer than the words
+        DrawLine(dl, font, key_line[0], std::round((lo.x + hi.x - key_w) * 0.5f), key_y, key_size, key_space,
+                 alpha * 0.85f, false, now);
+    if (paged) {  // the page of how many, on the right
+        char t[16];
+        std::snprintf(t, sizeof t, "%d / %d", std::clamp(b.page_no + 1, 1, b.pages), b.pages);
+        const float fs = std::round(size * 0.72f);
+        const ImVec2 ts = font->CalcTextSizeA(fs, FLT_MAX, 0.0f, t);
+        dl->AddText(font, fs, ImVec2(hi.x - pad - ts.x, key_y + (key_size - ts.y) * 0.5f),
+                    IM_COL32(255, 255, 255, int(alpha * 140.0f)), t);
+    }
+}
 
 }  // namespace
 
@@ -574,6 +1051,7 @@ void subtitles::Draw() {
     }
     if (shown.empty()) return;
     std::sort(shown.begin(), shown.end(), [](const Bubble& a, const Bubble& b) { return a.first > b.first; });
+    g_kb = prompts::g_on && input::LastUsed(0) == input::Source::Keyboard;
 
     const ImVec2 display = ImGui::GetIO().DisplaySize;
     ImFont* font = ImGui::GetFont();
@@ -585,30 +1063,18 @@ void subtitles::Draw() {
     const double now = Now();
     float bottom = std::round(display.y * 0.93f);
 
+    for (const Bubble& b : shown)
+        if (b.panel) DrawPanel(b, dl, font, now);
+
     // the newest at the bottom, the older above it
     for (const Bubble& b : shown) {
+        if (b.panel) continue;
         const float alpha = float(std::clamp((now - b.first) / 0.15, 0.0, 1.0));
         const bool thought = b.flags & kThought, electronic = (b.flags & kElectronic) && !thought;
         std::vector<Word> words = Words(b.piece, electronic ? kElectronicColour : kWhite);
         if (words.empty()) continue;
-
-        // measure, then fill the lines word by word
-        std::vector<Line> lines(1);
-        for (Word& w : words) {
-            float ww = 0.0f;
-            for (Atom& a : w) {
-                if (a.kind == Kind::Text) a.w = font->CalcTextSizeA(size, FLT_MAX, 0.0f, a.text.c_str()).x;
-                else if (a.kind == Kind::Icon) a.w = size * kIconAdvance;
-                else a.w = size * (IsTrigger(a.code) ? 1.45f : 1.0f) + size * 0.06f;
-                ww += a.w;
-            }
-            Line& l = lines.back();
-            if (!l.atoms.empty() && l.w + space + ww > wrap) lines.emplace_back();
-            Line& cur = lines.back();
-            if (!cur.atoms.empty()) cur.atoms.push_back(nullptr), cur.w += space;
-            for (const Atom& a : w) cur.atoms.push_back(&a);
-            cur.w += ww;
-        }
+        Measure(words, font, size);
+        const std::vector<Line> lines = Fill(words, wrap, space, false);
 
         float block_w = 0.0f;
         for (const Line& l : lines) block_w = std::max(block_w, l.w);
@@ -621,47 +1087,7 @@ void subtitles::Draw() {
         for (size_t li = 0; li < lines.size(); li++) {
             const Line& l = lines[li];
             const float y = top + line_h * float(li) + (line_h - size) * 0.5f;
-            float x = std::round((display.x - l.w) * 0.5f);
-            const float mid = y + size * 0.5f;
-            int n = 0;
-            for (const Atom* a : l.atoms) {
-                if (!a) {
-                    x += space;
-                    continue;
-                }
-                const ImU32 col = WithAlpha(a->colour, alpha);
-                const int first_vtx = dl->VtxBuffer.Size;
-                if (a->kind == Kind::Text) {
-                    dl->AddText(font, size, ImVec2(x, y), col, a->text.c_str());
-                } else {
-                    const float scale = a->throb ? 1.0f + 0.12f * std::sin(float(now) * 9.0f + float(n)) : 1.0f;
-                    if (a->kind == Kind::Icon) {  // a letter's size, about a capital's middle, shaking
-                        const float s = size * kIconSize * scale, t = float(now), k = float(n);
-                        const ImVec2 c(x + a->w * 0.5f + size * kShake * std::sin(t * 37.0f + k * 1.7f),
-                                       y + size * 0.53f + size * kShake * std::sin(t * 29.0f + k * 2.3f + 1.0f));
-                        DrawIcon(dl, a->code, ImVec2(c.x - s * 0.5f, c.y - s * 0.5f), s, col, alpha);
-                        const float turn = kShakeTurn * std::sin(t * 23.0f + k * 1.3f);
-                        const float cs = std::cos(turn), sn = std::sin(turn);
-                        for (int v = first_vtx; v < dl->VtxBuffer.Size; v++) {
-                            ImVec2& q = dl->VtxBuffer[v].pos;
-                            const float qx = q.x - c.x, qy = q.y - c.y;
-                            q = ImVec2(c.x + qx * cs - qy * sn, c.y + qx * sn + qy * cs);
-                        }
-                    } else {
-                        const float s = size * 0.95f * scale;
-                        const float box = a->w - size * 0.06f;
-                        const ImVec2 at(x + size * 0.03f + (box - s * (box / size)) * 0.5f, y + (size - s) * 0.5f);
-                        DrawButton(dl, font, a->code, at, s, s * (box / size), alpha);
-                    }
-                }
-                // a thought in italics: its words (and the censor's marks) leaned about the line's middle; a button
-                // stays upright
-                if (thought && a->kind != Kind::Button)
-                    for (int v = first_vtx; v < dl->VtxBuffer.Size; v++)
-                        dl->VtxBuffer[v].pos.x += (mid - dl->VtxBuffer[v].pos.y) * 0.2f;
-                x += a->w;
-                n++;
-            }
+            DrawLine(dl, font, l, std::round((display.x - l.w) * 0.5f), y, size, space, alpha, thought, now);
         }
         bottom = lo.y - std::round(size * 0.35f) - pad_y;
     }

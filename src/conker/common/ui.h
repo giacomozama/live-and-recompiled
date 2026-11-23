@@ -9,6 +9,10 @@
 // real Win32 headers are absent, so nothing here may pull either in.
 namespace ui {
 
+// the overlay's text for an ID (src/conker/game/ui_text.inc) in the overlay's language; render thread, not on the
+// headless harness
+const char* Text(const char* id);
+
 // the GameInfo::ui hook: drawn inside the ImGui frame on the render thread, with app::UiLock held
 void Draw(double fps);
 

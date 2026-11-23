@@ -110,7 +110,7 @@ void Apply(int preset) {
             display::g_hud_split = true;
             menus::g_bright_hints = true;
             cutscenes::g_english_bubbles = true;
-            subtitles::g_redraw = true;
+            subtitles::g_redraw = !subtitles::g_on;  // one or the other
             rope::g_physics = true;
             break;
         case kEnhanced:  // placeholder
@@ -147,7 +147,7 @@ void Apply(int preset) {
             display::g_hud_split = true;
             menus::g_bright_hints = true;
             cutscenes::g_english_bubbles = true;
-            subtitles::g_redraw = true;
+            subtitles::g_redraw = !subtitles::g_on;  // one or the other
             rope::g_physics = true;
             break;
         default:

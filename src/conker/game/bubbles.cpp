@@ -117,6 +117,12 @@ Box g_words_now;
 // shows them (a box of both came out twice as wide), so only their size is kept
 bool g_unseen = false;
 
+// the bubble is being placed alone (BubblePlacing): its sprites and words drawn not at all, the body's box at full
+// scale kept (on the 640 by 480 frame)
+bool g_place = false;
+bool g_placed = false;
+float g_placed_x, g_placed_y, g_placed_w, g_placed_h;
+
 uint32_t g_vertices = 0;
 constexpr uint32_t kCapacity = 16384;  // vertices (a thought's cloud, shadow and trail some 4200)
 
@@ -754,6 +760,22 @@ void subtitles::BubbleDrawing(uint32_t obj) {
             it = g_frame - it->second.seen > 120 ? g_bubbles.erase(it) : std::next(it);
 }
 
+// [[hook]] 0xE1880 (subtitles.cpp) calls this around a key-paced bubble's draw: obj the bubble, 0 at the end
+void subtitles::BubblePlacing(uint32_t obj) {
+    g_obj = obj;
+    g_place = obj != 0;
+    g_placed = false;
+    g_tail = false;
+    const uint32_t desc = obj ? R32(obj + 0x30) : 0;
+    g_thought = desc && (R32(desc) & kThought) != 0;
+}
+
+bool subtitles::BubblePlaced(float& x, float& y, float& w, float& h) {
+    if (!g_placed) return false;
+    x = g_placed_x, y = g_placed_y, w = g_placed_w, h = g_placed_h;
+    return true;
+}
+
 // from ConkerTextQuad: a glyph's quad; one of a bubble's words into its box
 void subtitles::BubbleGlyph() {
     if (!g_words) return;
@@ -776,6 +798,17 @@ X86_FUNC(sub_00356750) {
         g_tail_x0 = F(kBoxLeft), g_tail_y0 = F(kBoxTop), g_tail_w = F(kBoxWidth), g_tail_h = F(kBoxHeight);
         return;
     }
+    if (g_place) {
+        // the body at full scale: the game scales its box by [obj+0x50] and sets it off from the anchor by as much
+        const float bx = F(kBoxLeft), by = F(kBoxTop), bw = F(kBoxWidth), bh = F(kBoxHeight);
+        const float scale = std::clamp(F(g_obj + kScale), 0.0f, 1.0f);
+        if (!(bw > 1 && bh > 1) || !std::isfinite(bx + by + bw + bh) || !(scale > 0.01f)) return;
+        const float ax = F(g_obj + kAnchor), ay = F(g_obj + kAnchor + 4);
+        g_placed_x = ax + (bx + bw * 0.5f - ax) / scale, g_placed_y = ay + (by + bh * 0.5f - ay) / scale;
+        g_placed_w = bw / scale, g_placed_h = bh / scale;
+        g_placed = std::isfinite(g_placed_x + g_placed_y);
+        return;
+    }
     DrawBubble(ctx, rec);
 }
 
@@ -795,6 +828,7 @@ X86_EXTERN_FUNC(__imp__sub_000E2940);
 X86_FUNC(sub_000E2940) {
     const uint32_t obj = ctx.eax;
     if (!g_obj || obj != g_obj) return __imp__sub_000E2940(ctx, base);
+    if (g_place) return kernel::Return(ctx, ctx.eax, 0);  // cdecl
     Bubble& b = g_bubbles[obj];
     // the words' middle as the game would draw them, from the body's, to the ellipse's
     const float mx = b.words.Empty() || g_unseen ? 0.0f : b.x - (b.raw_x + (b.words.x0 + b.words.x1) * 0.5f);
