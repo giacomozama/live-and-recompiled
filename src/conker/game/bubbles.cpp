@@ -124,7 +124,7 @@ bool g_placed = false;
 float g_placed_x, g_placed_y, g_placed_w, g_placed_h;
 
 uint32_t g_vertices = 0;
-constexpr uint32_t kCapacity = 16384;  // vertices (a thought's cloud, shadow and trail some 4200)
+constexpr uint32_t kCapacity = 32768;  // vertices (a thought's cloud, shadow and lobed trail some 10000)
 
 float Wider() {
     const float w = app::FrameAspect() * 0.75f;
@@ -197,28 +197,31 @@ std::vector<Point> Outline(float hx, float hy, bool tail, float tx, float ty, fl
 
 // a thought's cloud's lobes' radius on average, and how far it stands out of its ellipse, about (Cloud): the frame's
 // pixels
-float CloudLobe(float hy) { return std::clamp(hy * 0.84f, 12.0f, 80.0f); }
+float CloudLobe(float hy) { return std::clamp(hy * 0.74f, 11.0f, 70.0f); }
 float CloudOut(float hy) { return CloudLobe(hy) * 0.35f; }
+constexpr int kCloudFewest = 6;  // lobes, the least a cloud has
+// each lobe's radius moves back and forth by this share over time, at this rate (rad/s)
+constexpr float kWobble = 0.04f, kWobbleRate = 3.1f;
+// points along each lobe's arc
+constexpr int kArcSteps = 32;
 
 // A thought's cloud: round lobes about the ellipse, its edge their circles' outer arcs. The circles' middles go
 // round an ellipse inside it, evenly along it (by its length: by its angle they bunched at its narrow ends and left
-// gaps along its long sides), each of CloudLobe's radius on average (and some 7% back and forth over time, by
-// clock), of sizes and spaced a little unevenly (from seed, the same while the page shows), close enough that each
-// meets the next. Each lobe's arc
-// runs outside from where it meets the one before to where it meets the next, with its circle's normals (each lobe's
-// soft edge its own: the edge's normals, sharp at the dips, overlapped there in streaks); smooth gets them averaged
-// over a lobe each side, for the shadow
-std::vector<Point> Cloud(float hx, float hy, uint32_t seed, float clock, std::vector<Point>& smooth) {
+// gaps along its long sides), each of lobe's radius on average (at least fewest of them; kWobble back and forth over
+// time, by clock), its edge out of the ellipse by out, of sizes and spaced a little unevenly (from seed, the same
+// while the page shows), close enough that each meets the next. Each lobe's arc runs outside from where it meets the
+// one before to where it meets the next, with its circle's normals (each lobe's soft edge its own: the edge's
+// normals, sharp at the dips, overlapped there in streaks); smooth gets them averaged over a lobe each side, for the
+// shadow
+std::vector<Point> Cloud(float hx, float hy, float lobe, float out, int fewest, uint32_t seed, float clock,
+                         std::vector<Point>& smooth) {
     constexpr float kTurn = 6.2831853f;
-    constexpr int kArcSteps = 16;
-    constexpr float kWobble = 0.07f, kWobbleRate = 3.1f;  // each lobe's radius back and forth by this share, rad/s
     auto random = [&](uint32_t i) {  // 0..1
         uint32_t x = seed * 0x9E3779B1u ^ (i + 1) * 0x85EBCA77u;
         x ^= x >> 15, x *= 0x2C1B3C6Du, x ^= x >> 12, x *= 0x297A2D39u, x ^= x >> 15;
         return float(x >> 8) / float(1 << 24);
     };
-    const float lobe = CloudLobe(hy);  // its middles inside the ellipse by as much less CloudOut, its edge out by that
-    const float in = lobe - CloudOut(hy);
+    const float in = lobe - out;  // its middles inside the ellipse by lobe less out, its edge out by that
     const float ax = std::max(hx - in, hx * 0.3f), ay = std::max(hy - in, hy * 0.3f);
     // the inner ellipse's length at each of kTable angles, to space the middles by it
     constexpr int kTable = 512;
@@ -228,7 +231,7 @@ std::vector<Point> Cloud(float hx, float hy, uint32_t seed, float clock, std::ve
         run[i + 1] = run[i] + std::hypot(ax * std::sin(m), ay * std::cos(m)) * kTurn / kTable;
     }
     const float perimeter = run[kTable];
-    const int lobes = std::max(5, int(std::ceil(perimeter / (lobe * 1.3f))));
+    const int lobes = std::max(fewest, int(std::ceil(perimeter / (lobe * 1.3f))));
     struct Circle {
         float x, y, r;
     };
@@ -490,7 +493,7 @@ void DrawBubble(X86Context& ctx, uint32_t rec) {
     std::vector<Point> smooth_normals;  // a cloud's along the ellipse's normals: its shadow's
     std::vector<Point> p;
     if (g_thought) {
-        p = Cloud(hx, hy, g_obj ^ bub.page, Clock(now), smooth_normals);
+        p = Cloud(hx, hy, CloudLobe(hy), CloudOut(hy), kCloudFewest, g_obj ^ bub.page, Clock(now), smooth_normals);
     } else {
         p = Outline(hx, hy, tail, tx, ty, t0, kTailBase, &gap_from, &gap_to);
         Normals(p);
@@ -627,31 +630,47 @@ void DrawBubble(X86Context& ctx, uint32_t rec) {
         const uint32_t ca = fa & 0x00FFFFFFu, cb = fb2 & 0x00FFFFFFu;  // the same, clear
         band(fx[i], fy[i], fx[(i + 1) % n], fy[(i + 1) % n], fa, fb2, ax1, ay1, bx1, by1, ca, cb);
     }
-    // a thought's trail: kTrail circles of the frame's pixels from where it leaves the cloud toward the anchor, a
-    // gap between, a soft shadow below each
+    // a thought's trail: kTrail small clouds of the frame's pixels (their lobes' outer edge about that far from their
+    // middle) from where it leaves the cloud toward the anchor, a gap between, a soft shadow below each
     if (g_thought) {
-        constexpr float kTrail[] = {11.0f, 7.0f}, kGap = 6.0f;
-        // from past the cloud's edge: its largest lobe at its fullest, from its middle inside the ellipse
-        float along = kGap + std::max(CloudLobe(hy) * 1.15f * 1.07f - (CloudLobe(hy) - CloudOut(hy)), 0.0f);
+        constexpr float kTrail[] = {22.0f, 13.0f}, kGap = -2.0f;  // overlapping a little
+        constexpr float kFirstIn = 4.0f;  // the first pulled this much further into the cloud
+        constexpr float kTrailLobe = 0.55f;  // their lobes' radius, of theirs
+        constexpr int kTrailFewest = 5;
+        constexpr float kSwell = 0.08f, kSwellRate = 3.1f;  // each grows and shrinks by this share as well, rad/s
+        // from past the cloud's edge: a lobe of its average size, from its middle inside the ellipse
+        float along = kGap - kFirstIn + std::max(CloudLobe(hy) - (CloudLobe(hy) - CloudOut(hy)), 0.0f);
+        const uint32_t c = fill(0, 0), cc = c & 0x00FFFFFFu;
         for (size_t k = 0; k < std::size(kTrail); k++) {
-            const float wobble = 1 + 0.08f * std::sin(Clock(now) * 3.1f + 2.1f * float(k + 1));
-            const float r = kTrail[k] * wobble;
-            const float ox = ex + std::cos(aim) * (along + kTrail[k]), oy = ey + std::sin(aim) * (along + kTrail[k]);
-            along += 2 * kTrail[k] + kGap;
-            if (r < soft) continue;
-            constexpr int kRound = 32;
-            const uint32_t c = fill(0, 0), cc = c & 0x00FFFFFFu;
-            for (int i = 0; i < kRound; i++) {
-                const float a0 = kTurn * float(i) / kRound, a1 = kTurn * float(i + 1) / kRound;
-                const float c0 = std::cos(a0), s0 = std::sin(a0), c1 = std::cos(a1), s1 = std::sin(a1);
-                const float rs = r + blur * 0.35f;  // the shadow's, down by its drop
-                band(ox + c0 * r, oy + s0 * r, ox + c1 * r, oy + s1 * r, shade0, shade0, ox + c0 * rs,
-                     oy + s0 * rs + drop, ox + c1 * rs, oy + s1 * rs + drop, shade2, shade2);
-                const float ri = r - soft * 0.5f, ro = r + soft * 0.5f;
-                v.push_back(at(ox, oy, c)), v.push_back(at(ox + c0 * ri, oy + s0 * ri, c));
-                v.push_back(at(ox + c1 * ri, oy + s1 * ri, c));
-                band(ox + c0 * ri, oy + s0 * ri, ox + c1 * ri, oy + s1 * ri, c, c, ox + c0 * ro, oy + s0 * ro,
-                     ox + c1 * ro, oy + s1 * ro, cc, cc);
+            const float r0 = kTrail[k];
+            const float ox = ex + std::cos(aim) * (along + r0), oy = ey + std::sin(aim) * (along + r0);
+            along += 2 * r0 + kGap;
+            if (r0 < soft) continue;
+            // its size swells and shrinks about its place, each out of step with the other
+            const float r = kTrail[k] * (1 + kSwell * std::sin(Clock(now) * kSwellRate + 2.1f * float(k + 1)));
+            // a cloud's edge is its inner ellipse plus a lobe: that ellipse r less a lobe out, so the edge is r out
+            const float lobe = r * kTrailLobe, out = lobe * 0.35f;
+            std::vector<Point> sm;
+            const std::vector<Point> q = Cloud(r - out, r - out, lobe, out, kTrailFewest,
+                                               (g_obj ^ bub.page) * 0x9E3779B1u + uint32_t(k + 1), Clock(now), sm);
+            const size_t m = q.size();
+            const float rs = blur * 0.35f;  // the shadow's, along the smoothed normals, down by its drop
+            for (size_t i = 0; i < m; i++) {
+                const Point& a = sm[i];
+                const Point& b = sm[(i + 1) % m];
+                band(ox + a.x, oy + a.y, ox + b.x, oy + b.y, shade0, shade0, ox + a.x + a.nx * rs,
+                     oy + a.y + a.ny * rs + drop, ox + b.x + b.nx * rs, oy + b.y + b.ny * rs + drop, shade2, shade2);
+            }
+            // the fill fanned from its middle (inside every lobe, so it sees all the edge), then the soft edge
+            for (size_t i = 0; i < m; i++) {
+                const Point& a = q[i];
+                const Point& b = q[(i + 1) % m];
+                float aix, aiy, bix, biy, aox, aoy, box, boy;
+                off(a, -soft * 0.5f, aix, aiy), off(b, -soft * 0.5f, bix, biy);
+                off(a, soft * 0.5f, aox, aoy), off(b, soft * 0.5f, box, boy);
+                v.push_back(at(ox, oy, c)), v.push_back(at(ox + aix, oy + aiy, c));
+                v.push_back(at(ox + bix, oy + biy, c));
+                band(ox + aix, oy + aiy, ox + bix, oy + biy, c, c, ox + aox, oy + aoy, ox + box, oy + boy, cc, cc);
             }
         }
     }
