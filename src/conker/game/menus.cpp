@@ -794,6 +794,7 @@ constexpr PanelIcon kPanelIcons[] = {
 constexpr float kTriggerKey = 0.6f;  // the trigger's key, of its box's side
 int g_hud_port = -1;             // whose HUD 0x1C7C60 draws, -1 outside it. Game thread
 uint32_t g_trigger_texture = 0;  // the trigger's box's own texture, while its key's sprite stands in
+uint32_t g_art_texture = 0;      // a quad's own texture, while redrawn art's larger picture stands in
 uint32_t g_corners = 0;          // a panel key's four corners in guest memory
 uint32_t g_trigger_corners = 0;  // the trigger key's
 
@@ -831,8 +832,10 @@ void menus::HudPlayer(uint32_t hud) {
     if (port < input::kPorts) g_hud_port = port;
 }
 
-// [[hook]] at 0x1CB031, 0x1CAD90 about to draw its quad (its texture set): the trigger's box as its key
+// [[hook]] at 0x1CB031, 0x1CAD90 about to draw its quad (its texture set): redrawn HUD art larger than its square drawn
+// so (hud_art::HudQuad), or the trigger's box as its key
 void ConkerHudQuad(X86Context& ctx, uint8_t* base) {
+    if ((g_art_texture = hud_art::HudQuad(ctx))) return;
     if (g_hud_port < 0 || R32(ctx.esp + 8) != kTriggerQuad) return;
     const uint32_t key = prompts::ButtonIcon(g_hud_port, keyboard::kButtonLT);
     if (!key) return;
@@ -848,9 +851,15 @@ void ConkerHudQuad(X86Context& ctx, uint8_t* base) {
 }
 
 // [[hook]] at 0x1CB052, 0x1CAD90's quad drawn (its corners still pushed, ebx the color, esi the texture): the trigger's
-// texture back, or a panel piece's key over its icon
+// texture back (or the redrawn art's), or a panel piece's key over its icon
 void ConkerHudQuadDrawn(X86Context& ctx, uint8_t* base) {
     const uint32_t eax = ctx.eax, ebx = ctx.ebx;
+    if (g_art_texture) {
+        SetTexture(ctx, g_art_texture);
+        g_art_texture = 0;
+        ctx.eax = eax;
+        return;
+    }
     if (g_trigger_texture) {
         SetTexture(ctx, g_trigger_texture);
         g_trigger_texture = 0;

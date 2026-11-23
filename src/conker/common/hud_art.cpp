@@ -16,8 +16,9 @@
 // kSpriteDraws hooks, DrawVerticesUP of the sprite's quad, built on the stack each draw), the quad is drawn larger by
 // that much, from a copy of its vertices, the square where it was, its texture coordinates as they were, and with a
 // stand-in texture of ours tagged with the larger picture (d3d::TextureForNextDraw). The screen quads of 0x15D280
-// (vertexSight's, 48-byte vertices) are drawn so too. Any other draw of the texture has the square's picture. Those
-// quads (padded or not) are also narrowed about their middle against the widescreen stretch of the 4:3 frame, as the
+// (vertexSight's, 48-byte vertices) are drawn so too, and the HUD's quads of 0x1CAD90 (boostMarker's among them),
+// which go into the push buffer, by their corners (HudQuad). Any other draw of the texture has the square's picture. The
+// DrawVerticesUP quads (padded or not) are also narrowed about their middle against the widescreen stretch of the 4:3 frame, as the
 // multiplayer HUD's split does.
 #include "common/hud_art.h"
 
@@ -281,6 +282,44 @@ void hud_art::QuadDraw(X86Context& ctx, int uv_offset) {
     if (standin) d3d::TextureForNextDraw(0, standin);
 }
 
+uint32_t hud_art::HudQuad(X86Context& ctx) {
+    if (!g_on || g_headers.empty()) return 0;
+    constexpr uint32_t kCorners = 0xC, kTexture = 0x1C, kSetTexture = 0x539960;  // D3DDevice_SetTexture, eax the stage
+    const uint32_t tex = kernel::R32(ctx.esp + kTexture);
+    const auto at = g_headers.find(tex);
+    if (at == g_headers.end() || mem::VirtualFromPhysical(kernel::R32(tex + 4)) != at->second) return 0;
+    const auto tag = g_tagged.find(at->second);
+    if (tag == g_tagged.end()) return 0;
+    const int s = tag->second.art;
+    const Art& art = kArt[s];
+    if (!art.full_png) return 0;
+    const uint32_t standin = StandIn(s);
+    static uint32_t grown = 0;
+    if (!grown) grown = mem::AllocSystem(32);
+    if (!standin || !grown) return 0;
+    // the corners: top left, top right, bottom left, bottom right, each an x and a y; the quad's texture coordinates
+    // are 0..1 over them (0x1CA7F0), so the full picture's corners lie at -l..1+r by -t..1+b of the square
+    float c[4][2];
+    for (uint32_t i = 0; i < 4; i++) {
+        const uint32_t p = kernel::R32(ctx.esp + kCorners + i * 4);
+        if (!p || !mem::IsCommitted(p) || !mem::IsCommitted(p + 7)) return 0;
+        c[i][0] = kernel::G<float>(p), c[i][1] = kernel::G<float>(p + 4);
+    }
+    const float l = float(art.pad[0]) / float(art.pw), t = float(art.pad[1]) / float(art.ph);
+    const float r = float(art.pad[2]) / float(art.pw), b = float(art.pad[3]) / float(art.ph);
+    const float uv[4][2] = {{-l, -t}, {1 + r, -t}, {-l, 1 + b}, {1 + r, 1 + b}};
+    for (uint32_t i = 0; i < 4; i++) {
+        const float u = uv[i][0], v = uv[i][1];
+        for (int k = 0; k < 2; k++)  // bilinear over the four corners, carried past them
+            kernel::G<float>(grown + i * 8 + k * 4) = c[0][k] * (1 - u) * (1 - v) + c[1][k] * u * (1 - v) +
+                                                       c[2][k] * (1 - u) * v + c[3][k] * u * v;
+        kernel::W32(ctx.esp + kCorners + i * 4, grown + i * 8);
+    }
+    ctx.eax = 0;
+    kernel::CallGuest(ctx, kSetTexture, {standin});
+    return tex;
+}
+
 void hud_art::Poll() {
     constexpr uint32_t kEvery = 8;  // frames between walks
     static uint32_t frame = 0;
@@ -293,5 +332,6 @@ bool hud_art::g_on = true;
 void hud_art::Init() {}
 void hud_art::Poll() {}
 void hud_art::QuadDraw(X86Context&, int) {}
+uint32_t hud_art::HudQuad(X86Context&) { return 0; }
 
 #endif

@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cstdint>
+
 struct X86Context;
 
 // HUD art redrawn as vectors (src/conker/common/hud_art.cpp): each picture, rasterized from its SVG by
@@ -19,5 +21,10 @@ void Poll();
 // larger, with that picture, and kept to its own shape on a widescreen display. uv_offset: where the vertex's texture
 // coordinates are, -1 its last 8 bytes
 void QuadDraw(X86Context& ctx, int uv_offset);
+// 0x1CAD90 about to draw its quad through the push buffer (its texture set, the corners' pointers at [esp+0xC]..
+// [esp+0x18], the texture at [esp+0x1C]): a texture with a picture of more than its square drawn larger, the corners
+// moved out by the picture's margins and the stand-in texture set. Returns the game's texture to set back once the
+// quad is drawn, 0 if nothing changed
+uint32_t HudQuad(X86Context& ctx);
 
 }  // namespace hud_art
