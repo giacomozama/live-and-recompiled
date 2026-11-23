@@ -2384,39 +2384,42 @@ void Draw(double fps) {
                 }
 
                 if (Section("quality")) {
-                    // DLSS: left out on a GPU without it unless already chosen (so it can be turned off), greyed
-                    // out where something can be done about it (the files, a failed start); it sets the render size
-                    // itself, so the render size and FSR 1 step aside while it is on. A renderer without it (4,
-                    // D3D11) draws as if it were off: the setting kept, its rows left out but the box to turn it off.
-                    // FSR 3.1 the same way, on any GPU the Vulkan renderer can run it on; the two are one setting
+                    // Upscaling, one setting: none, FSR 1.0 (app::Settings::fsr, over the render size), or FSR 3.1 or
+                    // DLSS (app::Settings::upscaler), which set the render size themselves. A choice the GPU or
+                    // renderer can't run is greyed out unless it is the one chosen (so it can be left); a renderer
+                    // without either (D3D11, OpenGL) draws as if none were chosen, the setting kept, their rows left
+                    // out. The hint says what the choice does, or why it can't
                     const int dlss_state = gpu::g_dlss_state.load();
                     const int fsr3_state = gpu::g_fsr3_state.load();
-                    bool dlss = s.upscaler == "dlss";
-                    bool fsr3 = s.upscaler == "fsr3";
-                    if ((dlss_state != 0 && dlss_state != 4) || dlss) {
-                        ImGui::BeginDisabled(dlss_state != 1 && !dlss);
-                        if (Check("nvidia_dlss", &dlss)) s.upscaler = dlss ? "dlss" : "off";
-                        ImGui::EndDisabled();
-                        Hint(dlss_state == 4   ? NoVulkan()
-                             : dlss_state == 3 ? "hint_the_dlss_files_aren_t"
-                             : dlss_state == 2 ? "hint_dlss_failed_to_start_on"
-                             : dlss_state == 1 ? "hint_dlss_renders_fewer_pixels_and"
-                                               : "hint_dlss_needs_an_nvidia_rtx",
-                             true);
+                    int pick = s.upscaler == "dlss" ? 3 : s.upscaler == "fsr3" ? 2 : s.fsr ? 1 : 0;
+                    const uint32_t greyed = (pick != 3 && dlss_state != 1 ? 8u : 0u) |
+                                            (pick != 2 && (fsr3_state != 1 || D3d11()) ? 4u : 0u);
+                    if (Segmented("upscaling", &pick,
+                                  {"upscaler_none", "upscaler_fsr1", "upscaler_fsr3", "upscaler_dlss"}, greyed)) {
+                        s.upscaler = pick == 3 ? "dlss" : pick == 2 ? "fsr3" : "off";
+                        s.fsr = pick == 1;
                     }
-                    fsr3 = s.upscaler == "fsr3";  // the DLSS box may have just taken its place
-                    if (fsr3_state != 0 || fsr3) {
-                        ImGui::BeginDisabled(fsr3_state != 1 && !fsr3);
-                        if (Check("amd_fsr_3", &fsr3)) s.upscaler = fsr3 ? "fsr3" : "off";
-                        ImGui::EndDisabled();
-                        Hint(D3d11()             ? NoVulkan()
-                             : fsr3_state == 2   ? "hint_fsr_3_failed_to_start"
-                             : fsr3_state == 1   ? "hint_dlss_renders_fewer_pixels_and"
-                                                 : "hint_fsr_3_needs_more_of_the_gpu",
-                             true);
-                        dlss = s.upscaler == "dlss";
-                    }
-                    const bool fsr3_runs = fsr3 && fsr3_state != 0 && !D3d11();
+                    const char* why = nullptr;
+                    if (pick == 3)
+                        why = dlss_state == 4   ? NoVulkan()
+                              : dlss_state == 3 ? "hint_the_dlss_files_aren_t"
+                              : dlss_state == 2 ? "hint_dlss_failed_to_start_on"
+                              : dlss_state == 1 ? "hint_dlss_renders_fewer_pixels_and"
+                                                : "hint_dlss_needs_an_nvidia_rtx";
+                    else if (pick == 2)
+                        why = D3d11()             ? NoVulkan()
+                              : fsr3_state == 2   ? "hint_fsr_3_failed_to_start"
+                              : fsr3_state == 1   ? "hint_dlss_renders_fewer_pixels_and"
+                                                  : "hint_fsr_3_needs_more_of_the_gpu";
+                    else if (pick == 1)
+                        why = "hint_amd_fidelityfx_super_resolution_edge";
+                    else
+                        why = dlss_state == 3   ? "hint_the_dlss_files_aren_t"
+                              : dlss_state == 2 ? "hint_dlss_failed_to_start_on"
+                                                : "hint_upscaling_none";
+                    Hint(why, true);
+                    const bool dlss = pick == 3;
+                    const bool fsr3_runs = pick == 2 && fsr3_state != 0 && !D3d11();
                     if (fsr3_runs) {
                         int quality = int(std::min<uint32_t>(s.upscaler_quality, 4));
                         if (Segmented("fsr3_quality", &quality,
@@ -2446,10 +2449,8 @@ void Draw(double fps) {
                         }
                     } else {
                         Slider("render", &s.render_percent, 25, 200, app::Settings{}.render_percent);
-                        Hint("hint_the_size_the_game_is");
-                        Check("amd_fsr_1", &s.fsr);
-                        Hint("hint_amd_fidelityfx_super_resolution_edge", true);
-                        if (s.fsr) {
+                        Hint("hint_the_size_the_game_is", pick != 1);
+                        if (pick == 1) {
                             Slider("fsr_sharpness", &s.fsr_sharpness, 0, 100, app::Settings{}.fsr_sharpness);
                             Hint("hint_how_strongly_the_upscaled_picture");
                             Slider("fur_sharpness", &s.fur_sharpness, 0, 100, app::Settings{}.fur_sharpness);
