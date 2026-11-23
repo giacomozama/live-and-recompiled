@@ -22,7 +22,10 @@
 // multiplayer HUD's split does.
 #include "common/hud_art.h"
 
+#include <algorithm>
 #include <cctype>
+#include <chrono>
+#include <iterator>
 #include <cmath>
 #include <mutex>
 #include <cstdint>
@@ -32,6 +35,7 @@
 #include <unordered_set>
 #include <vector>
 
+#include "core/diag.h"
 #include "core/log.h"
 #include "gpu/texture.h"
 #include "kernel/kernel.h"
@@ -121,11 +125,20 @@ struct Tagged {
 };
 std::unordered_map<uint32_t, Tagged> g_tagged;  // by the texture's data; game thread
 std::unordered_map<uint32_t, uint32_t> g_headers;  // the textures found: their D3D texture to their data; game thread
+// each table entry's picture by its path's address, matched once: the table holds thousands of resources, and matching
+// every path against every name each walk took the game thread long enough to miss frames (a multiplayer match at 120)
+struct Known {
+    uint32_t path;
+    int art;
+    uint32_t walk;  // the last walk that saw it
+};
+std::unordered_map<uint32_t, Known> g_known;  // by the entry; game thread
 
 void UntagAll() {
     for (const auto& [data, t] : g_tagged) gpu::TagReplacement(data, -1, 0, 0, 0, 0);
     g_tagged.clear();
     g_headers.clear();
+    g_known.clear();
 }
 
 void Walk() {
@@ -136,6 +149,8 @@ void Walk() {
     constexpr uint32_t kTable = 0x84D458, kBuckets = 0x65, kLinkNext = 4, kEntryPath = 8, kEntryLink = 0x10;
     constexpr uint32_t kEntryResource = 0x18, kResourceTexture = 0x24;
     static bool warned[kCount] = {};
+    static uint32_t walk = 0;
+    walk++;
     std::unordered_set<uint32_t> seen;
     g_headers.clear();
     int left = 50000;  // links walked at most
@@ -144,13 +159,19 @@ void Walk() {
             if (!mem::IsCommitted(link) || !mem::IsCommitted(link + 7)) break;
             const uint32_t entry = link - kEntryLink;
             const uint32_t path = kernel::R32(entry + kEntryPath);
-            char text[256];
-            size_t n = 0;
-            for (; path && n + 1 < sizeof(text) && mem::IsCommitted(path + uint32_t(n)); n++) {
-                text[n] = char(mem::Base()[path + n]);
-                if (!text[n]) break;
+            Known& known = g_known[entry];
+            if (known.walk == 0 || known.path != path) {
+                char text[256];
+                size_t n = 0;
+                for (; path && n + 1 < sizeof(text) && mem::IsCommitted(path + uint32_t(n)); n++) {
+                    text[n] = char(mem::Base()[path + n]);
+                    if (!text[n]) break;
+                }
+                known.path = path;
+                known.art = ArtOfPath(std::string_view(text, n));
             }
-            const int s = ArtOfPath(std::string_view(text, n));
+            known.walk = walk;
+            const int s = known.art;
             if (s < 0) continue;
             const uint32_t res = kernel::R32(entry + kEntryResource);
             gpu::TextureDesc d;
@@ -173,6 +194,8 @@ void Walk() {
             gpu::TagReplacement(d.data, g_index[s], d.format, d.width, d.height, hash);
         }
     }
+    for (auto it = g_known.begin(); it != g_known.end();)  // entries gone from the table
+        it = it->second.walk != walk ? g_known.erase(it) : std::next(it);
     for (auto it = g_tagged.begin(); it != g_tagged.end();) {
         if (seen.count(it->first)) {
             ++it;
@@ -323,7 +346,30 @@ uint32_t hud_art::HudQuad(X86Context& ctx) {
 void hud_art::Poll() {
     constexpr uint32_t kEvery = 8;  // frames between walks
     static uint32_t frame = 0;
-    if (frame++ % kEvery == 0) Walk();
+    if (frame++ % kEvery != 0) return;
+    if (!diag::Perf()) {
+        Walk();
+        return;
+    }
+    // XBE_PERF: the walks' longest time a second, on the game thread
+    using Clock = std::chrono::steady_clock;
+    static Clock::time_point since = Clock::now();
+    static double most = 0, total = 0;
+    static uint32_t walks = 0;
+    const auto start = Clock::now();
+    Walk();
+    const auto end = Clock::now();
+    const double ms = std::chrono::duration<double, std::milli>(end - start).count();
+    most = std::max(most, ms);
+    total += ms;
+    walks++;
+    if (end - since >= std::chrono::seconds(1)) {
+        LOGR("perf: hud art walks: %u, longest %.2f ms, %.2f ms on average, %zu entries known, %zu textures tagged",
+             walks, most, total / walks, g_known.size(), g_tagged.size());
+        since = end;
+        most = total = 0;
+        walks = 0;
+    }
 }
 
 #else
