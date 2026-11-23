@@ -69,6 +69,11 @@ enum Res : uint8_t {
     kReconDepth,      // RECONSTRUCTED_PREVIOUS_NEAREST_DEPTH
     kCbMain,          // cbFSR3Upscaler
     kCbSpd,           // cbSPD
+    kInReactive,      // INPUT_REACTIVE_MASK: the picture's (Evaluate::reactive), else the default
+    kInOpaque,        // the reactive mask's pass (Reactive): INPUT_OPAQUE_ONLY,
+    kReactiveColor,   // INPUT_COLOR (the picture with what blends over it),
+    kReactiveOut,     // AUTOREACTIVE (and AUTOCOMPOSITION, which it doesn't write)
+    kCbReactive,      // cbGenerateReactive
 };
 
 enum Kind : uint8_t { kSrv, kUav, kCb };
@@ -86,7 +91,7 @@ struct PassDesc {
 };
 
 enum Pass { kPrepareInputs, kLumaPyramid, kShadingChangePyramid, kShadingChangePass, kPrepareReactivity,
-            kLumaInstability, kAccumulate, kPassCount };
+            kLumaInstability, kAccumulate, kAutogenReactive, kPassCount };
 
 const PassDesc& Desc(int pass) {
     static const PassDesc kPasses[kPassCount] = {
@@ -106,7 +111,7 @@ const PassDesc& Desc(int pass) {
           {10, Res(kSpdMip0 + 5), kUav}, {11, kCbMain, kCb}, {12, kCbSpd, kCb}}},
         {"shading_change", {{0, kSpdMips, kSrv}, {1, kShadingChange, kUav}, {2, kCbMain, kCb}}},
         {"prepare_reactivity",
-         {{0, kReconDepth, kSrv}, {1, kDilatedMotion, kSrv}, {2, kDilatedDepth, kSrv}, {3, kDefaultReactive, kSrv},
+         {{0, kReconDepth, kSrv}, {1, kDilatedMotion, kSrv}, {2, kDilatedDepth, kSrv}, {3, kInReactive, kSrv},
           {4, kDefaultReactive, kSrv}, {5, kAccumRead, kSrv}, {6, kShadingChange, kSrv}, {7, kLumaCurrent, kSrv},
           {8, kExposure, kSrv}, {9, kDilatedReactive, kUav}, {10, kNewLocks, kUav}, {11, kAccumWrite, kUav},
           {12, kCbMain, kCb}}},
@@ -119,6 +124,9 @@ const PassDesc& Desc(int pass) {
           {4, kLanczos, kSrv}, {5, kFarthestMip1, kSrv}, {6, kLumaCurrent, kSrv}, {7, kIntermediate, kSrv},
           {8, kInColor, kSrv}, {9, kUpscaledWrite, kUav}, {10, kOutput, kUav}, {11, kNewLocks, kUav},
           {12, kCbMain, kCb}}},
+        {"autogen_reactive",
+         {{0, kInOpaque, kSrv}, {1, kReactiveColor, kSrv}, {2, kReactiveOut, kUav}, {3, kReactiveOut, kUav},
+          {4, kCbMain, kCb}, {5, kCbReactive, kCb}}},
     };
     return kPasses[pass];
 }
@@ -537,6 +545,59 @@ Upscaler::~Upscaler() = default;
 void Upscaler::Release() { s_->Release(); }
 bool Upscaler::Prepare() { return s_->MakePipelines(); }
 
+// ffxFsr3UpscalerContextGenerateReactiveMask with the parameters AMD's samples give it: tonemapped, the largest
+// channel's change, 0.9 past 0.2 and 0 under
+bool Upscaler::Reactive(VkCommandBuffer cmd, const XbeDlssImage& opaque, const XbeDlssImage& color,
+                        const XbeDlssImage& out) {
+    State& s = *s_;
+    if (!s.compiled || opaque.width != color.width || opaque.height != color.height || out.width != color.width ||
+        out.height != color.height)
+        return false;
+    struct {
+        float scale, threshold, binary;
+        uint32_t flags;
+    } k{1.0f, 0.2f, 0.9f, 1u | 4u | 8u};  // APPLY_TONEMAP | APPLY_THRESHOLD | USE_COMPONENTS_MAX
+    const VkDescriptorBufferInfo cb_main = s.Stage(&s.c, sizeof s.c);
+    const VkDescriptorBufferInfo cb_reactive = s.Stage(&k, sizeof k);
+    VkMemoryBarrier mb{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+    mb.srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT;
+    mb.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, &mb, 0,
+                         nullptr, 0, nullptr);
+    const PassDesc& d = Desc(kAutogenReactive);
+    std::array<VkDescriptorImageInfo, 8> images{};
+    std::array<VkWriteDescriptorSet, 8> writes{};
+    uint32_t n = 0;
+    for (const Bind& b : d.binds) {
+        VkWriteDescriptorSet& w = writes[n];
+        w = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+        w.dstBinding = b.binding;
+        w.descriptorCount = 1;
+        if (b.kind == kCb) {
+            w.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+            w.pBufferInfo = b.res == kCbReactive ? &cb_reactive : &cb_main;
+        } else {
+            w.descriptorType = b.kind == kSrv ? VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE : VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+            images[n] = b.res == kInOpaque       ? VkDescriptorImageInfo{VK_NULL_HANDLE, opaque.view,
+                                                                       VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL}
+                        : b.res == kReactiveColor ? VkDescriptorImageInfo{VK_NULL_HANDLE, color.view,
+                                                                          VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL}
+                                                  : VkDescriptorImageInfo{VK_NULL_HANDLE, out.view,
+                                                                          VK_IMAGE_LAYOUT_GENERAL};
+            w.pImageInfo = &images[n];
+        }
+        n++;
+    }
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, s.pipes[kAutogenReactive]);
+    vkCmdPushDescriptorSetKHR(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, s.layouts[kAutogenReactive], 0, n, writes.data());
+    vkCmdDispatch(cmd, (color.width + 7) / 8, (color.height + 7) / 8, 1);
+    mb.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+    mb.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 1, &mb, 0,
+                         nullptr, 0, nullptr);
+    return true;
+}
+
 // fsr3upscalerCreate: its images (FfxInternalResourceDescription's and the shared ones), and their first contents
 bool Upscaler::Create(VkCommandBuffer cmd, uint32_t w, uint32_t h, uint32_t out_w, uint32_t out_h) {
     State& s = *s_;
@@ -766,6 +827,7 @@ bool Upscaler::Run(VkCommandBuffer cmd, const Evaluate& e) {
             case kDilatedDepth: info.imageView = s.dilated_depth.view; return;
             case kDilatedMotion: info.imageView = s.dilated_motion.view; return;
             case kReconDepth: info.imageView = s.recon_depth.view; return;
+            case kInReactive: info.imageView = e.reactive.view ? e.reactive.view : s.default_reactive.view; return;
             default:
                 if (r >= kSpdMip0 && r <= kSpdMip5) info.imageView = s.spd_mips.mips[r - kSpdMip0];
                 return;

@@ -1100,7 +1100,12 @@ private:
     int PosW(const State& s);
     bool ScreenSpaceDraw(const State& s, const Assembled& a);
     bool ReadsTarget(const State& s);
-    void TrackPost(const State& s, bool flat);
+    void TrackPost(const State& s, bool flat, bool can_copy = true);
+    // FSR 3.1's reactive mask: the picture copied before the 3D that blends over it without writing depth (taken again
+    // when such a draw follows one that writes depth), and at the occlusion (the 3D done, before the effects) AMD's
+    // pass over how far the picture has come from it
+    void Fsr3Opaque(const State& s, Target& rt, bool can_copy);
+    void Fsr3Reactive();
     void ApplyPost(Target& t);
     // the ambient occlusion, first of the effects: the view and depth of the frame's 3D draws (g_view_constants), a
     // draw that reads the frame (the title's bloom and depth of field take their copies so), and the passes
@@ -1658,6 +1663,13 @@ private:
     };
     std::array<ViewCamera, kMaxGen> view_cam_{};
     ViewCamera view_cam_last_{};
+    // FSR 3.1's reactive mask (Fsr3Opaque, Fsr3Reactive): by picture slot the copy before what blends and the mask, the
+    // frame the mask was made in (presents_ + 1 while drawing); this picture's copies, whether depth was written
+    // since the last, and whether the picture gave up on one (too many copies, or a copy wanted where it can't be)
+    std::array<ImageRef, kMaxGen> fsr_opaque_, fsr_reactive_;
+    std::array<uint64_t, kMaxGen> fsr_reactive_frame_{};
+    uint32_t fsr_copies_ = 0;
+    bool fsr_solid_since_ = false, fsr_gave_up_ = false;
     ImageRef occlusion_tmp_[3];
     // XBE_POST_TRACE: what the picture's draws did to the effects, logged in FinishFront when it changes
     struct PostTrace {
@@ -2104,6 +2116,8 @@ VulkanBackend::~VulkanBackend() {
     dlss_out_ = {};
     dlss_still_depth_.reset();
     dlss_still_motion_.reset();
+    fsr_opaque_ = {};
+    fsr_reactive_ = {};
     for (auto& f : frames_) {
         f.garbage.clear();
         f.upload.reset();
@@ -5916,7 +5930,7 @@ bool VulkanBackend::ReadsTarget(const State& s) {
 
 // a 3D draw onto the frame-sized target marks it; the first screen space one after that draws the effects under it.
 // The occlusion goes before: at the first screen space draw onto the frame or reading it, under the title's own passes
-void VulkanBackend::TrackPost(const State& s, bool flat) {
+void VulkanBackend::TrackPost(const State& s, bool flat, bool can_copy) {
     // XBE_POST_TRACE: the outline marks' draws (stencil writing the top two bits a mark, d3d::OutlineMark)
     if (g_outlines.load(std::memory_order_relaxed)) {
         const bool marked = s.rs[kRsStencilEnable] && (SimpleState(s, kMStencilWriteMask) & 0xC0) == 0xC0 &&
@@ -5953,6 +5967,7 @@ void VulkanBackend::TrackPost(const State& s, bool flat) {
         pt.solid++;
         post_rt_ = rt->data;
         TrackView(s);
+        if (fsr3_on_) Fsr3Opaque(s, *rt, can_copy);
         if (s.rs[kRsZEnable]) {
             motion_rs_ = s.rt;
             motion_zs_ = s.zs;
@@ -6029,10 +6044,83 @@ bool VulkanBackend::ReadsFrame(const State& s) {
     return false;
 }
 
+// a 3D draw onto the picture under FSR 3.1: one that blends without writing depth, first in the picture or after one
+// that wrote depth, has the picture copied first (the copy before the last such run is the one the mask goes by: the
+// game draws what blends after what doesn't, mostly). More than 16 copies, or one due where it can't be made, and the
+// picture goes without. XBE_FSR_REACTIVE=0 leaves the mask out, for finding what it brings out
+void VulkanBackend::Fsr3Opaque(const State& s, Target& rt, bool can_copy) {
+    static const bool off = [] {
+        const char* v = diag::Env("XBE_FSR_REACTIVE");
+        return v && *v == '0';
+    }();
+    if (off || fsr_gave_up_ || !s.rs[kRsZEnable]) return;
+    PsoKey k;
+    std::memset(&k, 0, sizeof(k));
+    KeyBlend(s, k);
+    const bool zwrite = SimpleState(s, kMZWriteEnable) != 0;
+    if (zwrite || !k.blend) {
+        fsr_solid_since_ = fsr_solid_since_ || zwrite;
+        return;
+    }
+    if (fsr_copies_ && !fsr_solid_since_) return;  // the run's copy taken
+    if (!can_copy || ++fsr_copies_ > 16 || !rt.res || rt.res->samples != VK_SAMPLE_COUNT_1_BIT) {
+        fsr_gave_up_ = true;
+        return;
+    }
+    fsr_solid_since_ = false;
+    ImageRef& im = fsr_opaque_[pic_slot_ % kMaxGen];
+    if (!im || im->w != rt.w || im->h != rt.h || im->format != rt.fmt) {
+        if (im) Retire(im);
+        im = NewImage({.fmt = rt.fmt, .w = rt.w, .h = rt.h,
+                       .usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT});
+        if (!im) {
+            fsr_gave_up_ = true;
+            return;
+        }
+    }
+    Transition(*rt.res, kSrc);
+    Transition(*im, kDst);
+    Barrier();
+    VkImageCopy r{};
+    r.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    r.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    r.extent = {rt.w, rt.h, 1};
+    vkCmdCopyImage(cmd_, rt.res->image, kSrc, im->image, kDst, 1, &r);
+}
+
+// the picture's reactive mask, when it has a copy from before what blends over it and wrote no depth since
+void VulkanBackend::Fsr3Reactive() {
+    const uint32_t slot = pic_slot_ % kMaxGen;
+    const bool usable = fsr_copies_ && !fsr_gave_up_ && !fsr_solid_since_;
+    fsr_copies_ = 0;
+    fsr_solid_since_ = fsr_gave_up_ = false;
+    ImageRef& opaque = fsr_opaque_[slot];
+    Target* t = FindTarget(post_surf_, false);
+    if (!usable || !opaque || !t || t->data != post_rt_ || !t->res || t->w != opaque->w || t->h != opaque->h) return;
+    ImageRef& out = fsr_reactive_[slot];
+    if (!out || out->w != t->w || out->h != t->h) {
+        if (out) Retire(out);
+        out = NewImage({.fmt = VK_FORMAT_R32_SFLOAT, .w = t->w, .h = t->h,
+                        .usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT});
+        if (!out) return;
+    }
+    Transition(*t->res, kRead);
+    Transition(*opaque, kRead);
+    Transition(*out, VK_IMAGE_LAYOUT_GENERAL);
+    Barrier();
+    const XbeDlssImage o{opaque->image, opaque->view, opaque->format, VK_IMAGE_ASPECT_COLOR_BIT, opaque->w, opaque->h};
+    const XbeDlssImage c{t->res->image, t->res->view, t->res->format, VK_IMAGE_ASPECT_COLOR_BIT, t->w, t->h};
+    const XbeDlssImage m{out->image, out->view, out->format, VK_IMAGE_ASPECT_COLOR_BIT, out->w, out->h};
+    const bool ok = fsr3_->Reactive(cmd_, o, c, m);
+    ForgetDrawCmd();
+    if (ok) fsr_reactive_frame_[slot] = presents_ + 1;
+}
+
 // the occlusion's passes over the frame, by the depth buffer its last 3D draw with a view tested
 void VulkanBackend::ApplyOcclusion() {
     occlusion_done_ = true;
     KeepMotionDepth();
+    if (fsr3_on_) Fsr3Reactive();
     const app::Settings& set = app::Get();
     if (!set.ambient_occlusion || !view_ok_ || (light_ && !replay_)) return;
     Target* t = FindTarget(post_surf_, false);
@@ -7146,6 +7234,13 @@ void VulkanBackend::Upscale(std::vector<Image*>& shows, const std::vector<Image*
             std::copy_n(e.motion_scale, 2, f.motion_scale);
             f.reset = e.reset;
             f.frame_ms = picture_ms;
+            const uint32_t rs = slots[i] % kMaxGen;
+            if (moved && fsr_reactive_frame_[rs] == presents_ + 1 && fsr_reactive_[rs] &&
+                fsr_reactive_[rs]->w == color.w && fsr_reactive_[rs]->h == color.h) {
+                Image& r = *fsr_reactive_[rs];
+                Transition(r, VK_IMAGE_LAYOUT_GENERAL);
+                f.reactive = {r.image, r.view, r.format, VK_IMAGE_ASPECT_COLOR_BIT, r.w, r.h};
+            }
             Fsr3Camera(f, slots[i]);
             EndRendering();
             ok = fsr3_->Run(cmd_, f);
@@ -7853,7 +7948,7 @@ bool VulkanBackend::KeptConstants(const State& s, const Assembled* a) {
     if (!kept_.plain || !KeptConstantsOn()) return false;
     if (PostWanted() && !post_done_) {
         if (!a || !kept_.solid || ScreenSpaceDraw(s, *a)) return false;
-        TrackPost(s, false);
+        TrackPost(s, false, false);  // the draw before's state: no copy for FSR's reactive mask can fall due here
     }
     last_vc_ = Upload(sizeof(s.vsc.v));
     std::memcpy(last_vc_.cpu, s.vsc.data(), sizeof(s.vsc.v));
@@ -8460,6 +8555,8 @@ void VulkanBackend::FinishFront(Target& t, ImageRef* mask) {
 // what one picture's effects kept, forgotten for the next: the frame's pictures each have their own (a picture drawn
 // again after its frame's own, not shown, kept the effects marked done, and showed without ambient occlusion)
 void VulkanBackend::EndPicture() {
+    fsr_copies_ = 0;
+    fsr_solid_since_ = fsr_gave_up_ = false;
     post_rt_ = 0;
     post_done_ = false;
     occlusion_done_ = view_ok_ = many_views_ = false;
@@ -9312,6 +9409,8 @@ void VulkanBackend::Present(const Surface& front) {
     hdr_part_n_ = -1;
     hdr_stale_ = false;
     occlusion_done_ = view_ok_ = many_views_ = false;
+    fsr_copies_ = 0;
+    fsr_solid_since_ = fsr_gave_up_ = false;
     if (t && interp::Recording()) RecordPictures(sources, notes, t->gw, t->gh);
     if (MotionView() && !sources.empty()) ShowMotion(shows, sources, slots);
     if (pictures.empty()) pictures.push_back(VK_NULL_HANDLE);

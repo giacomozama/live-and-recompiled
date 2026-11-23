@@ -23,9 +23,11 @@ void RenderSize(uint32_t out_w, uint32_t out_h, uint32_t quality, uint32_t& w, u
 // right and y down; motion_scale: render pixels per unit of motion (motion is where a pixel was less where it is);
 // reset: no history. depth_to_view turns depth into the view (AMD's fDeviceToViewDepth), which FSR weighs
 // disocclusions by: distance = [1] / (depth - [0]), and across, ndc x and y (y up) times [2] and [3] times distance;
-// meters_per_unit its units' size; frame_ms the time since the picture before
+// meters_per_unit its units' size; frame_ms the time since the picture before. reactive: how far each pixel's history
+// is to give way to the picture (Reactive's, R32_SFLOAT, GENERAL), none (null image) for none
 struct Evaluate {
     XbeDlssImage color, depth, motion, output;
+    XbeDlssImage reactive{};
     float jitter[2] = {};
     float motion_scale[2] = {};
     bool reset = false;
@@ -50,6 +52,10 @@ public:
     bool Create(VkCommandBuffer cmd, uint32_t w, uint32_t h, uint32_t out_w, uint32_t out_h);
     // a picture upscaled, recorded into cmd outside a render pass; cmd's compute bindings are its own after
     bool Run(VkCommandBuffer cmd, const Evaluate& e);
+    // a reactive mask (out, R32_SFLOAT at the render size, GENERAL) from how far color, the picture with what blends
+    // over it, is from opaque, the picture before it (both read only): AMD's pass for it, recorded into cmd outside a
+    // render pass once Prepare has made the pipelines
+    bool Reactive(VkCommandBuffer cmd, const XbeDlssImage& opaque, const XbeDlssImage& color, const XbeDlssImage& out);
     // its images released: the device idle
     void Release();
 
