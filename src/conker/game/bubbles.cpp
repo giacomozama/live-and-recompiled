@@ -612,18 +612,28 @@ void DrawBubble(X86Context& ctx, uint32_t rec) {
     };
     auto rim = [&](const std::vector<Point>& q, float ox, float oy, float width, float cap) {
         const size_t m = q.size();
-        auto in = [&](const Point& r, float d, float& x, float& y) {
+        // a point's rim width: width along its (miter) normal, at most cap far; its inner lines share it alike
+        auto inset = [&](const Point& r) {
             const float l = std::hypot(r.nx, r.ny);
-            const float s = l > 1e-6f && d * l > cap ? cap / l : d;  // d along the (miter) normal, at most cap far
+            return l > 1e-6f && width * l > cap ? cap / l : width;
+        };
+        auto in = [&](const Point& r, float s, float& x, float& y) {
             x = ox + r.x - r.nx * s, y = oy + r.y - r.ny * s;
+        };
+        // The tail's tip takes none of the rim: its sides' bands meet down its middle whatever their width (it is
+        // narrower than the rim near the tip), and the side toward the light drew a whitish cone there
+        auto colour = [&](const Point& r) {
+            const uint32_t c = rim_colour(r.nx, r.ny);
+            return r.tip ? c & 0x00FFFFFFu : c;
         };
         for (size_t i = 0; i < m; i++) {
             const Point& a = q[i];
             const Point& b = q[(i + 1) % m];
-            const uint32_t ca = rim_colour(a.nx, a.ny), cb = rim_colour(b.nx, b.ny);
+            const uint32_t ca = colour(a), cb = colour(b);
+            const float wa = inset(a), wb = inset(b);
             float ax0, ay0, bx0, by0, axm, aym, bxm, bym, axe, aye, bxe, bye, axo, ayo, bxo, byo;
-            in(a, width, ax0, ay0), in(b, width, bx0, by0);
-            in(a, width * 0.35f, axm, aym), in(b, width * 0.35f, bxm, bym);
+            in(a, wa, ax0, ay0), in(b, wb, bx0, by0);
+            in(a, wa * 0.35f, axm, aym), in(b, wb * 0.35f, bxm, bym);
             in(a, soft * 0.5f, axe, aye), in(b, soft * 0.5f, bxe, bye);
             in(a, -soft * 0.5f, axo, ayo), in(b, -soft * 0.5f, bxo, byo);
             band(ax0, ay0, bx0, by0, ca & 0x00FFFFFFu, cb & 0x00FFFFFFu, axm, aym, bxm, bym, faded(ca, 0.4f),
