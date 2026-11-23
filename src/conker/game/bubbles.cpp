@@ -57,7 +57,7 @@ constexpr uint32_t kThoughtCall1 = 0xE1CA2, kThoughtCall2 = 0xE1E54;
 constexpr uint32_t kTailCall = 0xE2161, kTailTurnedCall1 = 0xE2027, kTailTurnedCall2 = 0xE212F, kBodyCall = 0xE21FD;
 constexpr uint32_t kBoxLeft = 0x801740, kBoxTop = 0x80173C, kBoxWidth = 0x801734, kBoxHeight = 0x801730;
 constexpr uint32_t kColoured = 0x80174C, kRed = 0x801758, kGreen = 0x801759, kBlue = 0x80175A;
-constexpr uint32_t kSpriteAlpha = 0xA;
+constexpr uint32_t kSpriteAlpha = 0xA, kSpriteFlips = 0xD;
 constexpr uint32_t kState = 0x35, kShowing = 0x20, kWords = 0xE2940;
 constexpr uint32_t kScale = 0x50, kAnchor = 0x68, kTextX = 0x78, kTextY = 0x7C, kPage = 0x48, kToward = 0xB4;
 constexpr uint32_t kSpriteZ = 0x648D1C;  // the sprites' z
@@ -111,6 +111,7 @@ uint32_t g_obj = 0;
 bool g_tail = false, g_tail_turned = false;
 bool g_thought = false;  // the bubble is a thought's (descriptor flag 2): a cloud and a trail of circles, no tail
 float g_tail_x0, g_tail_y0, g_tail_w, g_tail_h;
+uint8_t g_tail_flips = 0;  // the tail sprite's flips (+0xD): 1 mirrored across, 2 upside down
 bool g_words = false;
 Box g_words_now;
 // the words are drawing unseen (MeasureWords): drawn as the game places them while it opens, which is not where it
@@ -431,13 +432,32 @@ void DrawBubble(X86Context& ctx, uint32_t rec) {
     // the tail's tip: toward its speaker from the turned tail's middle, as far as half its sprite's height, or the
     // bubble's anchor (the game sets its body off from it at an angle, its tail's corner on it)
     float tip_x = 0, tip_y = 0;
-    if (g_tail && g_tail_turned) {
-        float dx = float(int32_t(R32(g_obj + kToward))), dy = float(int32_t(R32(g_obj + kToward + 4)));
-        const float l = std::hypot(dx, dy);
-        if (l > 1e-3f) dx /= l, dy /= l;
-        else dx = 0, dy = 1;
-        tip_x = g_tail_x0 + dx * g_tail_h * 0.5f / wider, tip_y = g_tail_y0 + dy * g_tail_h * 0.5f;
-    } else if (g_tail || g_thought) {
+    // The game's tail sprite is a slanted triangle: its base along the box's top, its tip at the bottom corner on the
+    // right, on the left mirrored (flip 1), upside down with flip 2. 0xE1880 mirrors it toward the side its speaker is
+    // on, and a turned one (0x356790) it turns about its middle by -atan(dx / dy) of the way to its speaker
+    // ([obj+0xB4], [obj+0xB8]), which takes the sprite's down to that way: its tip leans past the way, as the game's
+    // shows. Its base's middle and its tip on the frame, which the tail takes after
+    bool game_tail = false;
+    float game_base_x = 0, game_base_y = 0;
+    if (g_tail && !g_thought) {
+        const float s = (g_tail_flips & 1) ? -1.0f : 1.0f, u = (g_tail_flips & 2) ? -1.0f : 1.0f;
+        float bx0 = 0, by0 = -u * g_tail_h * 0.5f, tx0 = s * g_tail_w * 0.5f, ty0 = u * g_tail_h * 0.5f;
+        float mx = g_tail_x0 + g_tail_w * 0.5f, my = g_tail_y0 + g_tail_h * 0.5f;
+        if (g_tail_turned) {
+            mx = g_tail_x0, my = g_tail_y0;  // 0x356950 keeps its middle in the box's corner
+            const float dx = float(int32_t(R32(g_obj + kToward))), dy = float(int32_t(R32(g_obj + kToward + 4)));
+            const float l = std::hypot(dx, dy);
+            const float c = l > 1e-3f ? dy / l : 1.0f, sn = l > 1e-3f ? -dx / l : 0.0f;
+            auto turn = [&](float& x, float& y) {
+                const float rx = x * c - y * sn, ry = x * sn + y * c;
+                x = rx, y = ry;
+            };
+            turn(bx0, by0), turn(tx0, ty0);
+        }
+        game_tail = std::isfinite(mx + my + bx0 + by0 + tx0 + ty0);
+        game_base_x = mx + bx0, game_base_y = my + by0, tip_x = mx + tx0, tip_y = my + ty0;
+    }
+    if (!game_tail && (g_tail || g_thought)) {
         tip_x = F(g_obj + kAnchor), tip_y = F(g_obj + kAnchor + 4);
     }
     // its place and tip as the game's are, which jump where the game's do (a camera cut in a cutscene); its size eased
@@ -468,7 +488,7 @@ void DrawBubble(X86Context& ctx, uint32_t rec) {
     // middle of its base to its tip, its base kTailBase along the ellipse each side of that middle. Its base's middle
     // is on the ellipse's bottom, a kTailArc share of its perimeter about its lowest point: there, the point nearest
     // the bubble's anchor. From it the tail aims at the anchor, no more than kSlant off square to the ellipse
-    constexpr float kTailBase = 9.0f, kTailLong = 18.0f, kTailArc = 1.0f / 3, kSlant = 0.35f;
+    constexpr float kTailBase = 7.0f, kTailLong = 23.0f, kTailArc = 1.0f / 3, kSlant = 0.9f;
     constexpr float kTurn = 6.2831853f, kBottom = kTurn / 4;  // the ellipse's angle at its lowest point (y down)
     float tx = (bub.tip_x - cx) * wider, ty = bub.tip_y - cy;
     float t0 = kBottom;
@@ -481,11 +501,20 @@ void DrawBubble(X86Context& ctx, uint32_t rec) {
         const float perimeter = kTurn / 2 * (hx + hy) * (1 + 3 * h / (10 + std::sqrt(4 - 3 * h)));
         const float left = Along(hx, hy, kBottom, 1, perimeter * kTailArc / 2);   // toward -x (angle up from 90)
         const float right = Along(hx, hy, kBottom, -1, perimeter * kTailArc / 2);  // toward +x
-        const float nearest = kBottom + std::remainder(Nearest(hx, hy, tx, ty) - kBottom, kTurn);
-        t0 = std::clamp(nearest, right, left);
+        // A speech tail's base: where the line from the middle toward the game's tail's base leaves the ellipse; it
+        // aims the way the game's leans, from its base to its tip. (Its base nearest the tip, it stood square to the
+        // ellipse there whatever way the game's leaned)
+        const float gbx = (game_base_x - cx) * wider, gby = game_base_y - cy;
+        float base;
+        if (tail && game_tail) base = std::hypot(gbx, gby) > 1e-3f ? std::atan2(gby / hy, gbx / hx) : kBottom;
+        else base = Nearest(hx, hy, tx, ty);
+        t0 = std::clamp(kBottom + std::remainder(base - kBottom, kTurn), right, left);
         ex = hx * std::cos(t0), ey = hy * std::sin(t0);
         const float normal = std::atan2(std::sin(t0) / hy, std::cos(t0) / hx);
-        const float toward = std::hypot(tx - ex, ty - ey) > 1e-3f ? std::atan2(ty - ey, tx - ex) : normal;
+        const float toward = tail && game_tail && std::hypot(tx - gbx, ty - gby) > 1e-3f
+                                 ? std::atan2(ty - gby, tx - gbx)
+                             : std::hypot(tx - ex, ty - ey) > 1e-3f ? std::atan2(ty - ey, tx - ex)
+                                                                     : normal;
         aim = normal + std::clamp(std::remainder(toward - normal, kTurn), -kSlant, kSlant);
         tx = ex + std::cos(aim) * length, ty = ey + std::sin(aim) * length;
     }
@@ -762,11 +791,12 @@ void DrawBubble(X86Context& ctx, uint32_t rec) {
             traced = g_frame;
             LOGR("bubbles: %08X body %.1f %.1f %.1f x %.1f, words %.1f..%.1f %.1f..%.1f, "
                  "ellipse at %.1f %.1f %.1f x %.1f, tip %.1f %.1f, tail %d%s %.1f %.1f %.1f x %.1f, "
-                 "colour %d %02X%02X%02X alpha %02X, wider %.3f, state %02X, thought %d",
+                 "colour %d %02X%02X%02X alpha %02X, wider %.3f, state %02X, thought %d, flips %d, toward %d %d",
                  g_obj, bx, by, bw, bh, bub.words.x0, bub.words.x1, bub.words.y0, bub.words.y1, cx, cy, bub.width,
                  bub.tall, bub.tip_x, bub.tip_y, int(g_tail), g_tail_turned ? " turned" : "", g_tail_x0, g_tail_y0,
                  g_tail_w, g_tail_h, int(coloured), B(kRed), B(kGreen), B(kBlue), B(rec + kSpriteAlpha),
-                 double(wider), B(g_obj + kState), int(g_thought));
+                 double(wider), B(g_obj + kState), int(g_thought), int(g_tail_flips),
+                 int(int32_t(R32(g_obj + kToward))), int(int32_t(R32(g_obj + kToward + 4))));
         }
     }
 }
@@ -864,10 +894,11 @@ X86_FUNC(sub_00356750) {
     const bool circle = g_thought && (from == kThoughtCall1 || from == kThoughtCall2 || from == kTailCall);
     if (!g_obj || (!circle && from != kTailCall && from != kBodyCall)) return __imp__sub_00356750(ctx, base);
     const uint32_t rec = ctx.eax;
+    const uint8_t flips = base[rec + kSpriteFlips];
     SeeThrough<__imp__sub_00356750>(ctx, base);
     if (circle) return;
     if (from == kTailCall) {
-        g_tail = true, g_tail_turned = false;
+        g_tail = true, g_tail_turned = false, g_tail_flips = flips;
         g_tail_x0 = F(kBoxLeft), g_tail_y0 = F(kBoxTop), g_tail_w = F(kBoxWidth), g_tail_h = F(kBoxHeight);
         return;
     }
@@ -889,6 +920,7 @@ X86_EXTERN_FUNC(__imp__sub_00356790);
 X86_FUNC(sub_00356790) {
     const uint32_t from = R32(ctx.esp);
     if (!g_obj || (from != kTailTurnedCall1 && from != kTailTurnedCall2)) return __imp__sub_00356790(ctx, base);
+    g_tail_flips = base[ctx.eax + kSpriteFlips];
     SeeThrough<__imp__sub_00356790>(ctx, base);
     // 0x356950 keeps its middle where the box's left would be
     g_tail = true, g_tail_turned = true;
