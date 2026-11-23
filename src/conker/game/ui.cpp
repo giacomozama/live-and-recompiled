@@ -2314,7 +2314,7 @@ void Draw(double fps) {
                     for (int i = 0; i < kAspects; i++)
                         if (s.aspect == aspects[i]) aspect = i;
                     std::string items;
-                    for (int i = 0; i < kAspects; i++) items += std::string(i ? aspects[i] : T("auto")) + '\0';
+                    for (int i = 0; i < kAspects; i++) items += std::string(i ? aspects[i] : T("monitor")) + '\0';
                     if (aspect < 0) items += s.aspect + '\0', aspect = kAspects;  // a custom W:H from settings.toml
                     items += '\0';
                     if (ImGui::Combo(Beside("aspect_ratio"), &aspect, items.c_str()) && aspect < kAspects) s.aspect = aspects[aspect];
@@ -2355,17 +2355,9 @@ void Draw(double fps) {
                         if (s.renderer != start_renderer) WarningCard("hint_restart_the_game_for_this");
                     }
 
-                    // forced on past the monitor's refresh (app::VsyncForced): shown on and greyed, the setting kept
-                    if (app::VsyncForced(app::Get())) {
-                        bool on = true;
-                        ImGui::BeginDisabled();
-                        Check("v_sync", &on);
-                        ImGui::EndDisabled();
-                        Hint("hint_always_on_while_the_frame", true);
-                    } else {
-                        Check("v_sync", &s.vsync);
-                        Hint("hint_waits_for_the_display_to", true);
-                    }
+                }
+
+                if (Section("tone_and_calibration")) {
                     {
                         // offered once the swap chain found an HDR10 format; kept clickable while on, to turn it off
                         bool can = gpu::HdrAvailable() || s.hdr;
@@ -2396,19 +2388,71 @@ void Draw(double fps) {
                     if (ImGui::Button(T("calibrate_display"))) g_calib_step.store(0);
                     ImGui::EndDisabled();
                     Hint(D3d11() ? NoVulkan() : "hint_test_patterns_for_brightness_and", true);
+                }
+
+                if (Section("frame_rate")) {
+                    constexpr uint32_t kRates[] = {30, 60, 120, 180, 240};
+                    int rate = 0;
+                    // past the first rate to reach the monitor's refresh, greyed out (a setting there runs at it)
+                    const uint32_t most = display::MostFrameRate();
+                    uint32_t off = 0;
+                    for (int i = 0; i < 5; i++) {
+                        if (kRates[i] > most) off |= 1u << i;
+                        if (kRates[i] == std::min(display::g_frame_rate, most)) rate = i;
+                    }
+                    // fixed while a system link session has another machine in it: every player's game must run at the same rate (link.cpp)
+                    const bool locked = display::FrameRateLocked();
+                    ImGui::BeginDisabled(locked);
+                    if (Segmented("frame_rate", &rate, {"30_original", " 60", " 120", " 180", " 240"}, off))
+                        display::SetFrameRate(kRates[rate]);
+                    ImGui::EndDisabled();
+                    Hint(locked ? "hint_can_t_be_changed_during" :
+                                  "hint_rates_past_the_monitor_s", true);
+                    // forced on past the monitor's refresh (app::VsyncForced): shown on and greyed, the setting kept
+                    if (app::VsyncForced(app::Get())) {
+                        bool on = true;
+                        ImGui::BeginDisabled();
+                        Check("v_sync", &on);
+                        ImGui::EndDisabled();
+                        Hint("hint_always_on_while_the_frame", true);
+                    } else {
+                        Check("v_sync", &s.vsync);
+                        Hint("hint_waits_for_the_display_to", true);
+                    }
+                    // past the monitor's refresh rate with vsync the pictures go one a refresh (VulkanBackend::InStep)
+                    // (vsync forced on there)
+                    const app::Settings& now = app::Get();
+                    if (now.frame_generation > 1 && app::VsyncForced(now)) {
+                        int timing = s.picture_timing_exact ? 1 : 0;
+                        ImGui::BeginDisabled(D3d11());
+                        if (Segmented("picture_timing", &timing, {"lighter", "exact"}))
+                            s.picture_timing_exact = timing == 1;
+                        ImGui::EndDisabled();
+                        Hint(D3d11() ? NoVulkan() : "hint_above_the_refresh_rate_lighter", true);
+                    }
+                    // the pictures between frames fewer while they keep the game from its rate (VulkanBackend::AutoInterp)
+                    if (now.frame_generation > 1) {
+                        ImGui::BeginDisabled(D3d11());
+                        Check("adaptive_frame_interpolation", &s.adaptive_interp);
+                        ImGui::EndDisabled();
+                        Hint(D3d11() ? NoVulkan() : "hint_adaptive_frame_interpolation", true);
+                    }
                     Check("fps_counter", &g_fps_overlay);
                     Hint("hint_shows_the_frame_rate_in", true);
                 }
 
-                if (Section("quality")) {
+                // the picture's size and what rebuilds it; hoisted so the quality section sees what runs even folded
+                const int dlss_state = gpu::g_dlss_state.load();
+                const int fsr3_state = gpu::g_fsr3_state.load();
+                int pick = s.upscaler == "dlss" ? 3 : s.upscaler == "fsr3" ? 2 : s.fsr ? 1 : 0;
+                bool dlss = pick == 3;
+                bool fsr3_runs = pick == 2 && fsr3_state != 0 && !D3d11();
+                if (Section("upscaling")) {
                     // Upscaling, one setting: none, FSR 1.0 (app::Settings::fsr, over the render size), or FSR 3.1 or
                     // DLSS (app::Settings::upscaler), which set the render size themselves. A choice the GPU or
                     // renderer can't run is greyed out unless it is the one chosen (so it can be left); a renderer
                     // without either (D3D11, OpenGL) draws as if none were chosen, the setting kept, their rows left
                     // out. The hint says what the choice does, or why it can't
-                    const int dlss_state = gpu::g_dlss_state.load();
-                    const int fsr3_state = gpu::g_fsr3_state.load();
-                    int pick = s.upscaler == "dlss" ? 3 : s.upscaler == "fsr3" ? 2 : s.fsr ? 1 : 0;
                     const uint32_t greyed = (pick != 3 && dlss_state != 1 ? 8u : 0u) |
                                             (pick != 2 && (fsr3_state != 1 || D3d11()) ? 4u : 0u);
                     if (Segmented("upscaling", &pick,
@@ -2435,8 +2479,8 @@ void Draw(double fps) {
                               : dlss_state == 2 ? "hint_dlss_failed_to_start_on"
                                                 : "hint_upscaling_none";
                     Hint(why, true);
-                    const bool dlss = pick == 3;
-                    const bool fsr3_runs = pick == 2 && fsr3_state != 0 && !D3d11();
+                    dlss = pick == 3;
+                    fsr3_runs = pick == 2 && fsr3_state != 0 && !D3d11();
                     if (fsr3_runs) {
                         int quality = int(std::min<uint32_t>(s.upscaler_quality, 5));
                         if (Segmented("fsr3_quality", &quality,
@@ -2482,42 +2526,9 @@ void Draw(double fps) {
                             Hint("hint_how_much_of_fsr_s", true);
                         }
                     }
-                    constexpr uint32_t kRates[] = {30, 60, 120, 180, 240};
-                    int rate = 0;
-                    // past the first rate to reach the monitor's refresh, greyed out (a setting there runs at it)
-                    const uint32_t most = display::MostFrameRate();
-                    uint32_t off = 0;
-                    for (int i = 0; i < 5; i++) {
-                        if (kRates[i] > most) off |= 1u << i;
-                        if (kRates[i] == std::min(display::g_frame_rate, most)) rate = i;
-                    }
-                    // fixed while a system link session has another machine in it: every player's game must run at the same rate (link.cpp)
-                    const bool locked = display::FrameRateLocked();
-                    ImGui::BeginDisabled(locked);
-                    if (Segmented("frame_rate", &rate, {"30_original", " 60", " 120", " 180", " 240"}, off))
-                        display::SetFrameRate(kRates[rate]);
-                    ImGui::EndDisabled();
-                    Hint(locked ? "hint_can_t_be_changed_during" :
-                                  "hint_rates_past_the_monitor_s", true);
-                    // past the monitor's refresh rate with vsync the pictures go one a refresh (VulkanBackend::InStep)
-                    // (vsync forced on there)
-                    const app::Settings& now = app::Get();
-                    if (now.frame_generation > 1 && app::VsyncForced(now)) {
-                        int timing = s.picture_timing_exact ? 1 : 0;
-                        ImGui::BeginDisabled(D3d11());
-                        if (Segmented("picture_timing", &timing, {"lighter", "exact"}))
-                            s.picture_timing_exact = timing == 1;
-                        ImGui::EndDisabled();
-                        Hint(D3d11() ? NoVulkan() : "hint_above_the_refresh_rate_lighter", true);
-                    }
-                    // the pictures between frames fewer while they keep the game from its rate (VulkanBackend::AutoInterp)
-                    if (now.frame_generation > 1) {
-                        ImGui::BeginDisabled(D3d11());
-                        Check("adaptive_frame_interpolation", &s.adaptive_interp);
-                        ImGui::EndDisabled();
-                        Hint(D3d11() ? NoVulkan() : "hint_adaptive_frame_interpolation", true);
-                    }
+                }
 
+                if (Section("quality")) {
                     constexpr uint32_t kAniso[] = {0, 2, 4, 8, 16};
                     int aniso = 0;
                     for (int i = 0; i < 5; i++)
