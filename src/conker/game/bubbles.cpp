@@ -59,6 +59,7 @@ constexpr uint32_t kBoxLeft = 0x801740, kBoxTop = 0x80173C, kBoxWidth = 0x801734
 constexpr uint32_t kColoured = 0x80174C, kRed = 0x801758, kGreen = 0x801759, kBlue = 0x80175A;
 constexpr uint32_t kSpriteAlpha = 0xA, kSpriteFlips = 0xD;
 constexpr uint32_t kState = 0x35, kShowing = 0x20, kWords = 0xE2940;
+constexpr uint32_t kLineCount = 0x8472E0;  // the page's lines, as 0xE2940 last counted them
 constexpr uint32_t kScale = 0x50, kAnchor = 0x68, kTextX = 0x78, kTextY = 0x7C, kPage = 0x48, kToward = 0xB4;
 constexpr uint32_t kSpriteZ = 0x648D1C;  // the sprites' z
 constexpr uint32_t kDrawVerticesUP = 0x53A600, kTriangleList = 5;
@@ -91,6 +92,10 @@ struct Bubble {
     uint32_t page = 0;
     Box words;                   // over the page so far, from the body's middle, unmoved
     Box unseen;                  // as MeasureWords last measured them, for their size alone
+    // a scrolling page's (more than four lines) all lines as MeasureWords measured them stepping through its scroll:
+    // their widest (x0..x1) and the tallest of the steps (y1 - y0), for their size alone; swept once a page
+    Box whole;
+    bool swept = false;
     float raw_x = 0, raw_y = 0;  // the body's middle as the game placed it this frame
     float x = 0, y = 0;          // the ellipse's middle
     float width = 0, tall = 0;   // its size, eased (the display's pixels)
@@ -117,6 +122,8 @@ Box g_words_now;
 // the words are drawing unseen (MeasureWords): drawn as the game places them while it opens, which is not where it
 // shows them (a box of both came out twice as wide), so only their size is kept
 bool g_unseen = false;
+// the words are drawing unseen with their alpha (MeasureWords' sweep): the lines' draws (0x1F31B0, 0x1F3340) get alpha 0
+bool g_sweeping = false;
 
 // the bubble is being placed alone (BubblePlacing): its sprites and words drawn not at all, the body's box at full
 // scale kept (on the 640 by 480 frame)
@@ -423,10 +430,13 @@ void DrawBubble(X86Context& ctx, uint32_t rec) {
     // before the words have drawn, their size as measured unseen (MeasureWords), else the body narrowed
     constexpr float kMargin = 8.0f, kSnug = 1.35f;
     float width = bw / scale, height = full;  // the display's pixels (the frame's x times wider)
+    // a scrolling page at least as big as all its lines (a wide line or a tall icon scrolling in grew it midway)
     const Box& words = !bub.words.Empty() ? bub.words : bub.unseen;
-    if (!words.Empty()) {
-        width = 2 * kSnug * ((words.x1 - words.x0) * wider * 0.5f + kMargin);
-        height = std::min(2 * kSnug * ((words.y1 - words.y0) * 0.5f + kMargin), full);
+    if (!words.Empty() || !bub.whole.Empty()) {
+        float ww = words.Empty() ? 0.0f : words.x1 - words.x0, wh = words.Empty() ? 0.0f : words.y1 - words.y0;
+        if (!bub.whole.Empty()) ww = std::max(ww, bub.whole.x1 - bub.whole.x0), wh = std::max(wh, bub.whole.y1);
+        width = 2 * kSnug * (ww * wider * 0.5f + kMargin);
+        height = std::min(2 * kSnug * (wh * 0.5f + kMargin), full);
     }
     width = std::max(width, height);
     // the tail's tip: toward its speaker from the turned tail's middle, as far as half its sprite's height, or the
@@ -807,19 +817,79 @@ void DrawBubble(X86Context& ctx, uint32_t rec) {
 // than four lines skips its faint lines, so its box grows as it would have. Before 0xE1880 runs: the words' drawing
 // takes the texture off (0x1F31B0), and in the body's draw it left the body and the ellipse drawn without the
 // bubble's texture, opaque white
+//
+// A page of more than four lines scrolls, its lines faded in and out of a window of four, so only the shown ones were
+// measured and the bubble grew midway when a wider line or a taller icon came in. Once a page it is swept: drawn
+// unseen at steps through its scroll, every line passing the window, with its alpha (the faint lines skip by it) but
+// the lines' draws given alpha 0. 0xE2940 times the scroll by its descriptor ([obj+0x30]): +0x2050 the time gone
+// (each call adds the clock since +0x2054, the clock then) over +0x2044 times [0x64922C] / [0x648D2C], or in a
+// voiced cutscene ([0x76EC82] set, [0x8472A0] 13) the voice's place ([0x76F0F8 + 4 * +0x2038]) past +0x2048 over
+// +0x2044; all four put back after
+void SweepWords(X86Context& ctx, Bubble& b) {
+    b.swept = true;
+    const uint32_t desc = R32(g_obj + 0x30);
+    const uint32_t lines = R32(kLineCount);  // as the measure just now left it
+    if (!desc || lines < 5 || lines > 64) return;
+    const uint32_t duration = R32(desc + 0x2044);
+    if (!duration) return;
+    const uint32_t gone = R32(desc + 0x2050), clock = R32(desc + 0x2054), start = R32(desc + 0x2048);
+    const bool voiced = B(0x76EC82) != 0 && R32(0x8472A0) == 13;
+    const uint32_t voice = voiced ? R32(0x76F0F8 + 4 * R32(desc + 0x2038)) : 0;
+    const float per = F(0x64922C) / F(0x648D2C);  // time gone a whole scroll takes, per +0x2044
+    if (!voiced && !(std::isfinite(per) && per > 0)) return;
+    Box whole;
+    const uint32_t steps = 2 * lines;
+    for (uint32_t i = 0; i <= steps; i++) {
+        const float at = float(i) / float(steps);
+        if (voiced) kernel::W32(desc + 0x2048, voice - uint32_t(int32_t(at * float(int32_t(duration)))));
+        else kernel::W32(desc + 0x2050, uint32_t(int32_t(at * float(int32_t(duration)) * per)));
+        b.unseen = {};
+        g_unseen = g_sweeping = true;
+        kernel::CallGuest(ctx, kWords, {0, 0, 0, 255});
+        g_unseen = g_sweeping = false;
+        if (b.unseen.Empty()) continue;
+        whole.x0 = std::min(whole.x0, b.unseen.x0), whole.x1 = std::max(whole.x1, b.unseen.x1);
+        whole.y0 = 0, whole.y1 = std::max(whole.y1, b.unseen.y1 - b.unseen.y0);
+    }
+    kernel::W32(desc + 0x2050, gone), kernel::W32(desc + 0x2054, clock), kernel::W32(desc + 0x2048, start);
+    b.unseen = {};
+    b.whole = whole;
+    if (Trace())
+        LOGR("bubbles: %08X swept %u lines: %.1f x %.1f", g_obj, lines, double(whole.x1 - whole.x0),
+             double(whole.y1));
+}
+
 void MeasureWords(X86Context& ctx, uint8_t* base) {
     if (!g_obj) return;
-    const Bubble& b = g_bubbles[g_obj];
+    Bubble& b = g_bubbles[g_obj];
     if (!b.words.Empty() || !R32(g_obj + kPage)) return;
     const uint8_t state = base[g_obj + kState];
     base[g_obj + kState] = kShowing;
     const uint32_t eax = ctx.eax;
     ctx.eax = g_obj;
+    kernel::W32(kLineCount, 0);  // left as it is if the words return before counting
     g_unseen = true;
     kernel::CallGuest(ctx, kWords, {0, 0, 0, 0});
     g_unseen = false;
+    if (!b.swept) {
+        const Box unseen = b.unseen;
+        SweepWords(ctx, b);
+        b.unseen = unseen;
+    }
     ctx.eax = eax;
     base[g_obj + kState] = state;
+}
+
+// 0x1F31B0 and 0x1F3340, a line of words drawn (cdecl, its alpha the sixth argument): alpha 0 while swept
+X86_EXTERN_FUNC(__imp__sub_001F31B0);
+X86_FUNC(sub_001F31B0) {
+    if (g_sweeping) kernel::W32(ctx.esp + 0x18, 0);
+    __imp__sub_001F31B0(ctx, base);
+}
+X86_EXTERN_FUNC(__imp__sub_001F3340);
+X86_FUNC(sub_001F3340) {
+    if (g_sweeping) kernel::W32(ctx.esp + 0x18, 0);
+    __imp__sub_001F3340(ctx, base);
 }
 
 // a tail or body sprite drawn see-through: its box kept, the draw's state left for the bubble's
@@ -849,7 +919,7 @@ void subtitles::BubbleDrawing(uint32_t obj) {
         const uint32_t page = R32(obj + kPage);
         if (b.page != page) {
             b.page = page;
-            b.words = {}, b.unseen = {};
+            b.words = {}, b.unseen = {}, b.whole = {}, b.swept = false;
         }
         b.seen = ++g_frame;
         return;
