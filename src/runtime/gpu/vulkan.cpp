@@ -1098,8 +1098,20 @@ private:
     // target after a 3D one, else at Present
     bool PostWanted() const;
     bool HdrExpand() const { return swap_hdr_ && app::Get().hdr_highlights > 0; }
+    // the HUD kept out of the upscaler: DLSS or FSR 3.1 take the picture's 3D as the 2D came to draw over it (the
+    // highlights' copy, kept per picture by MakeHdrMask), and the 2D is laid back over what they make where the mask
+    // says it drew (kHudApartHlsl), so it carries none of the 3D's motion and leaves no trails. XBE_HUD_SPLIT=0 off
+    bool HudApart() const {
+        static const bool off = [] {
+            const char* e = diag::Env("XBE_HUD_SPLIT");
+            return e && *e == '0';
+        }();
+        return upscale_ && !off && !MotionView();
+    }
+    // the 3D copy and the masks made: for the highlights or HudApart
+    bool Keep3d() const { return HdrExpand() || HudApart(); }
     void KeepHdr3d(Target& t);
-    void MakeHdrMask(Target& t, ImageRef& mask);
+    void MakeHdrMask(Target& t, ImageRef& mask, ImageRef* copy = nullptr);
     bool HdrCompare(Target& t, ImageRef& dst);
     void HdrTrack(const State& s, bool flat);
     void SendHdrMetadata();
@@ -1150,8 +1162,8 @@ private:
     bool EnsureDlss(uint32_t w, uint32_t h, uint32_t out_w, uint32_t out_h);
     // FSR 3.1's camera for the picture in slot (view_cam_)
     void Fsr3Camera(fsr3::Evaluate& e, uint32_t slot) const;
-    void Upscale(std::vector<Image*>& shows, const std::vector<Image*>& sources,
-                 const std::vector<uint32_t>& slots, ImageRef& last);
+    void Upscale(std::vector<Image*>& shows, const std::vector<Image*>& sources, const std::vector<Image*>& copies,
+                 const std::vector<Image*>& masks, const std::vector<uint32_t>& slots, ImageRef& last);
     bool EnsureSmaaTextures();
     // Draw, in call order, each callee right after its caller
     bool DepthCopy(const State& s);
@@ -1269,7 +1281,7 @@ private:
     void StartCapture();
     void ResizeSwap();
     void UploadGammaRamp();
-    void FinishFront(Target& t, ImageRef* mask = nullptr);
+    void FinishFront(Target& t, ImageRef* mask = nullptr, ImageRef* copy = nullptr);
     void EndPicture();
     bool KeepPicture(const Surface& front, uint32_t slot);
     bool AcquireImage(uint32_t& bi, VkSemaphore acquired);
@@ -1410,6 +1422,9 @@ private:
     int hdr_part_n_ = -1;
     bool hdr_stale_ = false;
     std::vector<ImageRef> gen_masks_;
+    // HudApart: each picture's 3D copy, the front buffer's alone and frame generation's per slot, as gen_masks_
+    ImageRef front_3d_;
+    std::vector<ImageRef> gen_3d_;
     bool hdr_metadata_ = false;  // VK_EXT_hdr_metadata
     float hdr_meta_sent_ = 0;    // the peak it last told the swap chain, 0 none yet
     uint32_t swap_gen_ = 1;    // the frame generation it has images for
@@ -2010,6 +2025,7 @@ private:
     bool upscale_ = false;
     std::array<uint32_t, 7> dlss_made_{};  // and 1 DLSS, 2 FSR 3.1
     std::array<ImageRef, kMaxGen> dlss_out_;
+    std::array<ImageRef, kMaxGen> dlss_raw_;  // HudApart: the upscaler's own, before the 2D goes over it into dlss_out_
     std::array<Image*, kMaxGen> dlss_src_{};  // the picture each was made from, for its fur mark; this Present's only
     ImageRef dlss_still_depth_, dlss_still_motion_;
     bool dlss_reset_ = true;
@@ -2110,8 +2126,9 @@ VulkanBackend::~VulkanBackend() {
     late_.clear();
     cap_tex_.clear();
     bb_.clear();
-    for (ImageRef* im : {&hdr_frame_, &hdr_ui_, &hdr_3d_, &front_mask_, &shown_mask_}) im->reset();
+    for (ImageRef* im : {&hdr_frame_, &hdr_ui_, &hdr_3d_, &front_mask_, &shown_mask_, &front_3d_}) im->reset();
     gen_masks_.clear();
+    gen_3d_.clear();
     dummy_2d_.reset();
     dummy_3d_.reset();
     dummy_cube_.reset();
@@ -2121,6 +2138,7 @@ VulkanBackend::~VulkanBackend() {
     motion_view_ = {};
     motion_before_.reset();
     dlss_out_ = {};
+    dlss_raw_ = {};
     dlss_still_depth_.reset();
     dlss_still_motion_.reset();
     fsr_opaque_ = {};
@@ -5958,7 +5976,7 @@ bool VulkanBackend::PostWanted() const {
     const app::Settings& set = app::Get();
     return set.smaa || set.film_grain || set.chromatic_aberration ||
            (set.ambient_occlusion && g_view_constants.viewport >= 0) ||
-           (set.motion_blur && g_view_constants.camera >= 0) || HdrExpand() ||
+           (set.motion_blur && g_view_constants.camera >= 0) || Keep3d() ||
            g_outlines.load(std::memory_order_relaxed) || MotionOn();
 }
 
@@ -5973,11 +5991,20 @@ int VulkanBackend::PosW(const State& s) {
 
 bool VulkanBackend::ScreenSpaceDraw(const State& s, const Assembled& a) { return ScreenSpace(s, a, PosW(s)); }
 
-// stage 0 samples a target: the title's own passes over the frame (bloom, depth of field), which stay under the effects
+// stage 0 samples a target, or any stage a depth buffer through a color format: the title's own passes over the frame
+// (bloom, depth of field), which stay under the effects. The depth of field's haze over a cutscene (a full-screen
+// triangle blending by the depth's bytes, 0417 in capture 194232) read as 2D: the effects and HDR's copy went under it
+// and the HUD kept apart from the upscaler (HudApart) took the whole haze for HUD
 bool VulkanBackend::ReadsTarget(const State& s) {
     TextureDesc d;
-    if (!s.textures[0] || !Describe(s.textures[0], d)) return false;
-    return targets_.count(SizedTargetKey(d.data, Format(d.format).depth, d.width, d.height)) != 0;
+    if (s.textures[0] && Describe(s.textures[0], d) &&
+        targets_.count(SizedTargetKey(d.data, Format(d.format).depth, d.width, d.height)))
+        return true;
+    for (uint32_t tex : s.textures)
+        if (tex && Describe(tex, d) && !Format(d.format).depth &&
+            targets_.count(SizedTargetKey(d.data, true, d.width, d.height)))
+            return true;
+    return false;
 }
 
 // a 3D draw onto the frame-sized target marks it; the first screen space one after that draws the effects under it.
@@ -7214,8 +7241,10 @@ void VulkanBackend::Fsr3Camera(fsr3::Evaluate& e, uint32_t slot) const {
 }
 
 // each picture through DLSS or FSR 3.1 at the picture's size, in the order they are shown: its own depth and motion
-// when its motion pass drew them, else (no 3D) none, and no history either
+// when its motion pass drew them, else (no 3D) none, and no history either. With the HUD kept apart (HudApart) a picture
+// with its 3D copy and mask hands them the copy, and its 2D goes over their result after
 void VulkanBackend::Upscale(std::vector<Image*>& shows, const std::vector<Image*>& sources,
+                            const std::vector<Image*>& copies, const std::vector<Image*>& masks,
                             const std::vector<uint32_t>& slots, ImageRef& last) {
     VkExtent2D out = PictureExtent();
     Image& first = *sources[0];
@@ -7251,15 +7280,26 @@ void VulkanBackend::Upscale(std::vector<Image*>& shows, const std::vector<Image*
         }();
         Image& depth = moved && !no_depth ? *m.depth : *dlss_still_depth_;
         Image& motion = moved ? *m.velocity : *dlss_still_motion_;
+        Image* copy = i < copies.size() ? copies[i] : nullptr;
+        Image* mask = i < masks.size() ? masks[i] : nullptr;
+        const bool split = HudApart() && copy && mask && copy->w == color.w && copy->h == color.h &&
+                           mask->w == color.w && mask->h == color.h;
+        Image& input = split ? *copy : color;
         ImageRef& dst = dlss_out_[i % kMaxGen];
-        if (!dst || dst->w != out.width || dst->h != out.height) {
-            if (dst) Retire(dst);
-            dst = NewImage({.fmt = VK_FORMAT_R8G8B8A8_UNORM, .w = out.width, .h = out.height,
-                            .usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT});
-            if (!dst) return;
+        ImageRef& raw = dlss_raw_[i % kMaxGen];
+        for (ImageRef* r : {&dst, &raw}) {
+            if (r == &raw && !split) continue;
+            ImageRef& im = *r;
+            if (im && im->w == out.width && im->h == out.height) continue;
+            if (im) Retire(im);
+            im = NewImage({.fmt = VK_FORMAT_R8G8B8A8_UNORM, .w = out.width, .h = out.height,
+                           .usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+                                    VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT});
+            if (!im) return;
         }
-        for (Image* im : {&color, &depth, &motion}) Transition(*im, kRead);
-        Transition(*dst, VK_IMAGE_LAYOUT_GENERAL);
+        Image& made = split ? *raw : *dst;  // what the upscaler writes
+        for (Image* im : {&input, &depth, &motion}) Transition(*im, kRead);
+        Transition(made, VK_IMAGE_LAYOUT_GENERAL);
         Barrier();
         // XBE_DLSS_JITTER=-1 hands DLSS the jitter the other way round, for finding which way it takes it
         static const float sign = diag::Env("XBE_DLSS_JITTER") && std::atoi(diag::Env("XBE_DLSS_JITTER")) < 0 ? -1 : 1;
@@ -7267,10 +7307,10 @@ void VulkanBackend::Upscale(std::vector<Image*>& shows, const std::vector<Image*
         jitter[0] *= sign;
         jitter[1] *= sign;
         XbeDlssEvaluate e{};
-        e.color = {color.image, color.view, color.format, VK_IMAGE_ASPECT_COLOR_BIT, color.w, color.h};
+        e.color = {input.image, input.view, input.format, VK_IMAGE_ASPECT_COLOR_BIT, input.w, input.h};
         e.depth = {depth.image, depth.Sampled(), depth.format, VK_IMAGE_ASPECT_DEPTH_BIT, depth.w, depth.h};
         e.motion = {motion.image, motion.view, motion.format, VK_IMAGE_ASPECT_COLOR_BIT, motion.w, motion.h};
-        e.output = {dst->image, dst->view, dst->format, VK_IMAGE_ASPECT_COLOR_BIT, dst->w, dst->h};
+        e.output = {made.image, made.view, made.format, VK_IMAGE_ASPECT_COLOR_BIT, made.w, made.h};
         e.jitter[0] = jitter[0];
         e.jitter[1] = jitter[1];
         e.motion_scale[0] = float(color.w);
@@ -7303,6 +7343,15 @@ void VulkanBackend::Upscale(std::vector<Image*>& shows, const std::vector<Image*
         ForgetDrawCmd();  // NGX or FSR bound its own pipeline and descriptors
         if (!ok) continue;
         dlss_reset_ = false;
+        if (split) {
+            // XBE_HUD_SPLIT_VIEW=1 tints what came from the picture itself, the 2D and what it covers
+            static const float view = diag::Env("XBE_HUD_SPLIT_VIEW") ? 1.0f : 0.0f;
+            for (Image* im : {&made, &color, mask}) Transition(*im, kRead);
+            const VkImageView views[3] = {made.view, color.Sampled(), mask->view};
+            const float p[8] = {1.0f / float(out.width), 1.0f / float(out.height), float(color.w), float(color.h),
+                                view};
+            Pass(kHudApartHlsl, "hudmix", dst->format, *dst, dst->w, dst->h, views, p, -1);
+        }
         Transition(*dst, kRead);
         shows[i] = dst.get();
         dlss_src_[i % kMaxGen] = &color;
@@ -7466,7 +7515,7 @@ void VulkanBackend::ApplyPost(Target& t) {
 
 // HDR's highlights: the 3D picture, effects and all, as the 2D comes to draw over it
 void VulkanBackend::KeepHdr3d(Target& t) {
-    if (!HdrExpand()) return;
+    if (!Keep3d()) return;
     if (!hdr_3d_ || hdr_3d_->w != t.w || hdr_3d_->h != t.h || hdr_3d_->format != t.fmt) {
         if (hdr_3d_) Retire(std::exchange(hdr_3d_, nullptr));
         hdr_3d_ = NewImage({.fmt = t.fmt, .w = t.w, .h = t.h,
@@ -7487,15 +7536,20 @@ void VulkanBackend::KeepHdr3d(Target& t) {
 }
 
 // where the finished picture is still its 3D one, the highlights' mask; null when it has no 3D
-void VulkanBackend::MakeHdrMask(Target& t, ImageRef& mask) {
-    const bool have = HdrExpand() && hdr_3d_rt_ == t.data && hdr_3d_ && hdr_3d_->w == t.w && hdr_3d_->h == t.h;
+// copy, when set, takes the copy itself for HudApart (the picture's own till Present), null with the mask
+void VulkanBackend::MakeHdrMask(Target& t, ImageRef& mask, ImageRef* copy) {
+    const bool have = Keep3d() && hdr_3d_rt_ == t.data && hdr_3d_ && hdr_3d_->w == t.w && hdr_3d_->h == t.h;
     if (!have) {
         if (mask) Retire(std::exchange(mask, nullptr));
+        if (copy && *copy) Retire(std::exchange(*copy, nullptr));
         return;
     }
     if (hdr_stale_) KeepHdr3d(t);  // the title's passes or 3D since the last 2D: all of it in the copy
     hdr_stale_ = false;
-    HdrCompare(t, mask);
+    const bool made = HdrCompare(t, mask);
+    if (!copy) return;
+    if (made && HudApart()) std::swap(*copy, hdr_3d_);  // the next picture's copy into the one this frame's had
+    else if (*copy) Retire(std::exchange(*copy, nullptr));
 }
 
 // where the picture is still the copy, and was in the mask so far, into dst
@@ -7522,7 +7576,7 @@ bool VulkanBackend::HdrCompare(Target& t, ImageRef& dst) {
 // after the copy: a draw onto the frame that isn't the 2D (the title's own pass over the frame, reading a target, or
 // 3D) folds the mask so far before it draws; the next 2D draw, the copy taken again under it
 void VulkanBackend::HdrTrack(const State& s, bool flat) {
-    if (!HdrExpand()) return;
+    if (!Keep3d()) return;
     Target* rt = FindTarget(s.rt, false);
     if (!rt || rt->data != hdr_3d_rt_ || !hdr_3d_ || hdr_3d_->w != rt->w || hdr_3d_->h != rt->h) return;
     const bool late = !flat || ReadsTarget(s) || ReadsFrame(s);
@@ -8593,7 +8647,7 @@ void VulkanBackend::DrawFrame(Image* picture, uint32_t bi, bool fsr, Image* mask
 
 // the front buffer's picture done: the effects under the 2D, when no 2D came to draw them, samples resolved, readable;
 // the next picture's effects start afresh
-void VulkanBackend::FinishFront(Target& t, ImageRef* mask) {
+void VulkanBackend::FinishFront(Target& t, ImageRef* mask, ImageRef* copy) {
     if (!post_done_ && post_rt_ == t.data && PostWanted()) {
         post_trace_.applied = "at the front buffer";
         ApplyPost(t);
@@ -8601,7 +8655,7 @@ void VulkanBackend::FinishFront(Target& t, ImageRef* mask) {
     PostTraceEnd(t);
     ResolveSamples(t);
     Transition(*t.res, kRead);
-    if (mask) MakeHdrMask(t, *mask);
+    if (mask) MakeHdrMask(t, *mask, copy);
     EndPicture();
 }
 
@@ -8659,7 +8713,8 @@ bool VulkanBackend::KeepPicture(const Surface& front, uint32_t slot) {
     Target* t = EnsureTarget(front, false);
     if (!t || slot >= gen_pics_.size()) return false;
     ResizeRetiring(gen_masks_, gen_pics_.size());
-    FinishFront(*t, &gen_masks_[slot]);
+    ResizeRetiring(gen_3d_, gen_pics_.size());
+    FinishFront(*t, &gen_masks_[slot], &gen_3d_[slot]);
     uint32_t w = t->res->w, h = t->res->h;
     ImageRef& keep = gen_pics_[slot];
     if (!keep || keep->w != w || keep->h != h) {
@@ -9418,6 +9473,7 @@ void VulkanBackend::Present(const Surface& front) {
     std::vector<Image*> sources;
     std::vector<std::string> notes;
     std::vector<Image*> masks;  // each source's highlights mask (MakeHdrMask), null without
+    std::vector<Image*> copies;  // each source's 3D copy for HudApart, null without
     ImageRef last, last_mask;
     std::vector<uint32_t> slots;
     double spacing = 1.0;  // the time between two of the frame's pictures, in frames
@@ -9429,6 +9485,7 @@ void VulkanBackend::Present(const Surface& front) {
             sources.push_back(gen_pics_[i].get());
             last_mask = i < gen_masks_.size() ? gen_masks_[i] : nullptr;
             masks.push_back(last_mask.get());
+            copies.push_back(i < gen_3d_.size() ? gen_3d_[i].get() : nullptr);
             slots.push_back(uint32_t(i));
             notes.push_back(i + 1 < gen_pics_.size() || !gen_own_ ? interp::Note(uint32_t(i)) : "the frame's own");
             last = gen_pics_[i];
@@ -9439,10 +9496,11 @@ void VulkanBackend::Present(const Surface& front) {
     Target* t = EnsureTarget(front, false);
     if (pictures.empty() && t) {
         if (LatchCpuWrite(*t)) UploadTarget(*t, front);
-        FinishFront(*t, &front_mask_);
+        FinishFront(*t, &front_mask_, &front_3d_);
         pictures.push_back(t->res->view);
         sources.push_back(t->res.get());
         masks.push_back(front_mask_.get());
+        copies.push_back(front_3d_.get());
         last_mask = front_mask_;
         slots.push_back(pic_slot_);
         notes.push_back("the frame's own, alone");
@@ -9451,7 +9509,7 @@ void VulkanBackend::Present(const Surface& front) {
     // what each picture's DrawFrame shows: its source, or what DLSS or the motion view made of it
     std::vector<Image*> shows = sources;
     perf_t = PerfClock::now();
-    if (upscale_ && !MotionView() && !sources.empty()) Upscale(shows, sources, slots, last);
+    if (upscale_ && !MotionView() && !sources.empty()) Upscale(shows, sources, copies, masks, slots, last);
     g_perf.p_dlss += PerfLap(perf_t);
     // kept past a remade target or frame generation's pictures going, for Redisplay; the one before goes with this
     // frame's garbage, once the GPU is done with it

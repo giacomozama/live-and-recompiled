@@ -81,6 +81,59 @@ float4 mask(O i) : SV_Target {
 }
 )";
 
+// the HUD kept apart from the upscaler (VulkanBackend::HudApart): the upscaler's picture of the 3D (t0, at the output's size) with the 2D
+// laid back over it. Where the mask (t2, kHdrHlsl's, at the picture's size) says the finished picture (t1) is no
+// longer its 3D, the finished picture upscaled itself: Catmull-Rom from 9 bilinear taps, held to its nearest 4
+// pixels' range so the text's edges don't ring. p.xy: one output pixel; p.zw: the picture's size; q.x: tint what came
+// from the picture (XBE_HUD_SPLIT_VIEW)
+inline const char* kHudApartHlsl = R"(
+cbuffer B : register(b1) { float4 p; float4 q; };
+Texture2D up : register(t0);
+Texture2D img : register(t1);
+Texture2D msk : register(t2);
+SamplerState ls : register(s0);
+struct O { float4 p : SV_Position; float2 uv : TEXCOORD0; };
+O vs(uint id : SV_VertexID) {
+    O o;
+    float2 t = float2((id << 1) & 2, id & 2);
+    o.p = float4(t * float2(2, -2) + float2(-1, 1), 0, 1);
+    o.uv = t;
+    return o;
+}
+float3 Tap(float x, float y) { return img.SampleLevel(ls, float2(x, y), 0).rgb; }
+float4 hudmix(O i) : SV_Target {
+    float4 u = up.Load(int3(int2(i.p.xy), 0));
+    float2 uv = i.p.xy * p.xy;
+    float m = msk.SampleLevel(ls, uv, 0).r;
+    if (m >= 1) return u;
+    float2 size = p.zw;
+    float2 pos = uv * size - 0.5;
+    float2 tc = floor(pos);
+    float2 f = pos - tc;
+    float2 w0 = f * (-0.5 + f * (1.0 - 0.5 * f));
+    float2 w1 = 1.0 + f * f * (-2.5 + 1.5 * f);
+    float2 w2 = f * (0.5 + f * (2.0 - 1.5 * f));
+    float2 w3 = f * f * (-0.5 + 0.5 * f);
+    float2 w12 = w1 + w2;
+    float2 t0 = (tc - 0.5) / size;
+    float2 t3 = (tc + 2.5) / size;
+    float2 t12 = (tc + 0.5 + w2 / w12) / size;
+    float3 c = Tap(t0.x, t0.y) * (w0.x * w0.y) + Tap(t12.x, t0.y) * (w12.x * w0.y) + Tap(t3.x, t0.y) * (w3.x * w0.y) +
+               Tap(t0.x, t12.y) * (w0.x * w12.y) + Tap(t12.x, t12.y) * (w12.x * w12.y) +
+               Tap(t3.x, t12.y) * (w3.x * w12.y) + Tap(t0.x, t3.y) * (w0.x * w3.y) +
+               Tap(t12.x, t3.y) * (w12.x * w3.y) + Tap(t3.x, t3.y) * (w3.x * w3.y);
+    int2 b = int2(tc);
+    int2 last = int2(size) - 1;
+    float3 a0 = img.Load(int3(clamp(b, 0, last), 0)).rgb;
+    float3 a1 = img.Load(int3(clamp(b + int2(1, 0), 0, last), 0)).rgb;
+    float3 a2 = img.Load(int3(clamp(b + int2(0, 1), 0, last), 0)).rgb;
+    float3 a3 = img.Load(int3(clamp(b + int2(1, 1), 0, last), 0)).rgb;
+    c = clamp(c, min(min(a0, a1), min(a2, a3)), max(max(a0, a1), max(a2, a3)));
+    if (q.x > 0) c = lerp(c, float3(1, 0, 1), 0.35);
+    return float4(lerp(c, u.rgb, m), u.a);
+}
+)";
+
 // a D24S8 depth buffer as the console's memory holds it, read through a 32 bit color format:
 // R G B A take the bytes order picks.
 // fur.x 1: the frame (t2) holds fur's mark in its alpha (ProgramShading::unsharpened), and a pixel fur mostly covers
