@@ -1973,6 +1973,7 @@ private:
     MotionSame motion_same_;
     bool motion_changed_ = true;
     void MotionChanged(bool any) override { motion_changed_ = any; }
+    void MotionTraceLog();
     void DrawMotionKept(const State& s, const Before& before, MotionKept& e, Target* rt);
     // the frame's own draw serial (its pass_serial_) kept for drawing again, when its geometry is the one a assembles;
     // and kept geometry bound and drawn
@@ -6466,10 +6467,14 @@ void VulkanBackend::MotionPass(bool on, uint32_t slot) {
     kept_.ok = false;
     bound_rt_ = bound_ds_ = nullptr;
     jitter_ = {};
+    // the 3D's viewport, not the last HUD element's place (g_hud_split): Draw resets it, the motion draws don't go
+    // through Draw. Left as the frame's last draw had it, a wide display's multiplayer HUD narrowed every motion draw
+    // to an element's place, its depth missed: motion only on the sky and a patch of ground (XBE_MOTION_TRACE)
+    hud_.Reset();
     motion_layer_ = 0;
     motion_pass_ = false;
     motion_n_ = 0;
-    if (!on) return;
+    if (!on) return MotionTraceLog();
     slot %= kMaxGen;
     // a frame with no 2D after its 3D: its depth as it left it; one with 3D after the depth was kept, again
     if (slot == pic_slot_ % kMaxGen) KeepMotionDepth(true);
@@ -6512,9 +6517,67 @@ constexpr float kTessMotionSlope = -8;
 // without its tessellation, at or in front of what lies there, a little toward the eye: its whole surface takes its
 // motion, where its depth pass wrote the rippled surface and where that left the floor under it showing (along the
 // tiles' edges), which otherwise drew the floor's motion in lines across the water's none
+// XBE_MOTION_TRACE=1: where the motion passes' draws went, once a second: left out and why, drawn into another
+// target than the slot's depth was kept for, or drawn, with or without constants of the picture before that differ
+// from this one's (none: it can show no motion of its own)
+namespace {
+enum MotionWhy : uint8_t {
+    kMwNoPass, kMwKeptSkip, kMwKeptReuse, kMwPoints, kMwTessFlat, kMwBlended, kMwOtherTarget, kMwScreen, kMwQuad,
+    kMwNoShaders, kMwNoPipeline, kMwMoved, kMwStill, kMwCount
+};
+struct MotionTrace {
+    uint64_t why[kMwCount] = {};
+    uint64_t passes = 0, skips_asked = 0;
+    uint32_t other_rt = 0, other_slot_rt = 0;
+    std::chrono::steady_clock::time_point last{};
+};
+MotionTrace g_motion_trace;
+bool MotionTraceOn() {
+    static const bool on = [] {
+        const char* e = diag::Env("XBE_MOTION_TRACE");
+        return e && *e == '1';
+    }();
+    return on;
+}
+}  // namespace
+
+// a pass over: once a second, its counts a pass and where the depth it tests against came from
+void VulkanBackend::MotionTraceLog() {
+    if (!MotionTraceOn()) return;
+    MotionTrace& t = g_motion_trace;
+    t.passes++;
+    const auto now = std::chrono::steady_clock::now();
+    if (now - t.last < std::chrono::seconds(1)) return;
+    t.last = now;
+    const double n = double(std::max<uint64_t>(t.passes, 1));
+    const auto w = [&](MotionWhy i) { return double(t.why[i]) / n; };
+    LOGR("motion: %.0f passes; a pass: drawn %.1f (%.1f with constants of the picture before that differ, %.1f with "
+         "none), left out: kept %.1f (and %.1f asked ahead), points %.1f, untested %.1f, blended %.1f, screen space "
+         "%.1f, quads %.1f; another target %.1f (last %08X, the slot's %08X), no shaders %.1f, no pipeline %.1f, kept "
+         "plain %.1f",
+         n, w(kMwMoved) + w(kMwStill), w(kMwMoved), w(kMwStill), w(kMwKeptSkip), double(t.skips_asked) / n,
+         w(kMwPoints), w(kMwTessFlat), w(kMwBlended), w(kMwScreen), w(kMwQuad), w(kMwOtherTarget), t.other_rt,
+         t.other_slot_rt, w(kMwNoShaders), w(kMwNoPipeline), w(kMwKeptReuse));
+    LOGR("motion: depth from %08X (target %08X); slots' targets %08X %08X %08X %08X, taken at %llu %llu %llu %llu, "
+         "picture %llu",
+         motion_zs_.data, motion_rs_.data, motion_[0].rt, motion_[1 % kMaxGen].rt, motion_[2 % kMaxGen].rt,
+         motion_[3 % kMaxGen].rt, (unsigned long long)motion_[0].taken, (unsigned long long)motion_[1 % kMaxGen].taken,
+         (unsigned long long)motion_[2 % kMaxGen].taken, (unsigned long long)motion_[3 % kMaxGen].taken,
+         (unsigned long long)presents_ + 1);
+    t = MotionTrace{};
+    t.last = now;
+}
+
 void VulkanBackend::DrawMotion(const State& s, const Before& before, uint32_t prim, uint32_t start, uint32_t count,
                                const uint8_t* indices) {
     const uint32_t n = motion_n_++;
+    MotionWhy why = kMwNoPass;
+    struct Count {
+        MotionWhy& w;
+        ~Count() {
+            if (MotionTraceOn()) g_motion_trace.why[w]++;
+        }
+    } count_why{why};
     // the draw before's setup taken up only when it was worked out to its end and no state came between (MotionSame)
     const bool same_in = !std::exchange(motion_changed_, true) && motion_same_.ok;
     motion_same_.ok = false;
@@ -6529,9 +6592,11 @@ void VulkanBackend::DrawMotion(const State& s, const Before& before, uint32_t pr
     if (MotionKept* kept = MotionEntry(n, false)) {
         if (kept->skip) {
             g_perf.motion_skipped++;
+            why = kMwKeptSkip;
             return;
         }
         if (kept->reuse) {
+            why = kMwKeptReuse;
             Target* rt = FindTarget(s.rt, false);
             if (rt && rt->data == m.rt) DrawMotionKept(s, before, *kept, rt);
             if (perf) g_perf.motion_reused_ms += PerfMs(perf_t);
@@ -6547,6 +6612,7 @@ void VulkanBackend::DrawMotion(const State& s, const Before& before, uint32_t pr
         e.reuse = false;
         g_perf.motion_skipped++;
     };
+    why = kMwPoints;
     if (prim == kPrimPoints || FixedSprite(s, prim)) return skip();
     const bool tess = TessellatedDraw(s, prim);
     PsoKey k;
@@ -6554,12 +6620,22 @@ void VulkanBackend::DrawMotion(const State& s, const Before& before, uint32_t pr
     KeyBlend(s, k);
     bool zen = s.rs[kRsZEnable] != 0;
     bool zwrite = zen && SimpleState(s, kMZWriteEnable) != 0;
+    why = kMwTessFlat;
     if (tess && !zen) return skip();
+    why = kMwBlended;
     if (!tess && k.blend && !zwrite && !(zen && SurfaceDepth(s, start, count, indices))) return skip();
     if (k.blend) zwrite = true;
     Target* rt = FindTarget(s.rt, false);
-    if (!rt || rt->data != m.rt) return;  // the slot's target: another pass's may differ
+    why = kMwOtherTarget;
+    if (!rt || rt->data != m.rt) {  // the slot's target: another pass's may differ
+        if (MotionTraceOn()) {
+            g_motion_trace.other_rt = rt ? rt->data : 0;
+            g_motion_trace.other_slot_rt = m.rt;
+        }
+        return;
+    }
     Assembled& a = asm_;
+    why = kMwScreen;
     if (!AssembleDraw(s, prim, start, count, indices, a, false) || ScreenSpaceDraw(s, a)) return skip();
     // the frame's own draw of it, kept for drawing again: its geometry, stage textures, draw constants and views are
     // this draw's (the motion pass counts the frame's draws as it did)
@@ -6606,6 +6682,7 @@ void VulkanBackend::DrawMotion(const State& s, const Before& before, uint32_t pr
         g_perf.motion_same++;
     } else {
         ClassifyShaders(s, a, count, sh);
+        why = kMwQuad;
         if (sh.quad || (!sh.prog && a.pretransformed)) return skip();
         if (sh.prog) EnsureProgramHash(s);
         sh.shading = DrawShading(s, sh);
@@ -6681,6 +6758,7 @@ void VulkanBackend::DrawMotion(const State& s, const Before& before, uint32_t pr
         }
         sh.ps_code = pit->second.code;
         reads |= pit->second.reads;
+        why = kMwNoShaders;
         if (!sh.vs_code || !sh.ps_code) return;
         step(3);
 
@@ -6729,6 +6807,7 @@ void VulkanBackend::DrawMotion(const State& s, const Before& before, uint32_t pr
                 record_.Add(shader_record::kMotionPipeline, &me, sizeof(me));
             }
         }
+        why = kMwNoPipeline;
         if (!pso->second) return;
         pso_made = pso->second;
         step(4);
@@ -6789,6 +6868,7 @@ void VulkanBackend::DrawMotion(const State& s, const Before& before, uint32_t pr
     }
     step(7);
     if (perf) g_perf.motion_slow_ms += PerfMs(perf_t);
+    why = before.vsc.empty() && before.xf.empty() ? kMwStill : kMwMoved;
     {
         MotionSame& next = motion_same_;
         next.ok = true;
@@ -6912,10 +6992,12 @@ void VulkanBackend::MotionPasses(bool on, const uint32_t* slots, uint32_t n) {
     kept_.ok = false;
     bound_rt_ = bound_ds_ = nullptr;
     jitter_ = {};
+    hud_.Reset();  // the 3D's viewport, as MotionPass
     motion_pass_ = false;
     motion_n_ = 0;
     motion_cur_.ok = false;
     if (!on) {
+        MotionTraceLog();
         if (!motion_all_) return;
         motion_all_ = false;
         // each picture's velocity out to its slot's, where Upscale and the motion view take it
@@ -7090,6 +7172,7 @@ bool VulkanBackend::MotionSkips() {
     if (!e || !e->skip) return false;
     motion_n_++;
     g_perf.motion_skipped++;
+    if (MotionTraceOn()) g_motion_trace.skips_asked++;
     return true;
 }
 
