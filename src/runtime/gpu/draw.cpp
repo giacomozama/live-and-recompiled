@@ -1246,10 +1246,11 @@ void LogPerf() {
         }
         if (p.motion_slow || p.motion_reused) {
             const double* m = p.ms_steps;
-            LOGR("perf: motion draw steps per frame: worked out %.0f: assemble %.2f vs %.2f textures %.2f ps %.2f pso %.2f "
-                 "consts %.2f before %.2f record %.2f | taken %.0f: consts %.2f before %.2f record %.2f",
-                 p.motion_slow / n, m[0] / n, m[1] / n, m[2] / n, m[3] / n, m[4] / n, m[5] / n, m[6] / n, m[7] / n,
-                 p.motion_reused / n, m[8] / n, m[9] / n, m[10] / n);
+            LOGR("perf: motion draw steps per frame: worked out %.0f (%.0f in the state before): assemble %.2f vs %.2f "
+                 "textures %.2f ps %.2f pso %.2f consts %.2f before %.2f record %.2f | taken %.0f: consts %.2f before %.2f "
+                 "record %.2f",
+                 p.motion_slow / n, p.motion_same / n, m[0] / n, m[1] / n, m[2] / n, m[3] / n, m[4] / n, m[5] / n,
+                 m[6] / n, m[7] / n, p.motion_reused / n, m[8] / n, m[9] / n, m[10] / n);
         }
         if (g_slow_draw.ms > 0) {
             const SlowDraw& d = g_slow_draw;

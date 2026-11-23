@@ -96,6 +96,9 @@ public:
     // asked before each draw of a motion pass: true, the backend leaves it out (it counted it), so its constants for
     // the picture before and this one needn't be worked out
     virtual bool MotionSkips() { return false; }
+    // told before a motion pass's draw that isn't left out: whether state came between it and the last such draw
+    // (more than constants and vertex sources), so the backend may take up the setup it worked out for that one
+    virtual void MotionChanged(bool /*any*/) {}
     // MotionAll: the backend takes all the frame's pictures in one pass after the last is drawn. Each picture's depth is
     // kept right after it is drawn (MotionDepth), then between MotionPasses(true, slots, n) and MotionPasses(false, ..)
     // each draw comes through DrawMotionAt once for each picture p (0..n-1, slots[p] its slot), in turn, the first's

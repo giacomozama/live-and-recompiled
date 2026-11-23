@@ -1577,6 +1577,8 @@ private:
         bool ok = false;
         bool surface = false;  // blends and tests depth without writing it: a draw like it may be a g_surface_depth one
         bool solid = false;    // a 3D draw to the effects (TrackPost): one like it, in its state, is one too
+        // a HUD draw g_hud_split placed: one like it is placed too (FastDraw), its place in its viewport
+        bool hud = false;
         std::array<float, 2> jitter{};  // its viewport's offset (Jitter)
         ConstReads reads;
         bool quad = false;
@@ -1952,6 +1954,25 @@ private:
     std::vector<MotionKept> motion_kept_;
     uint32_t motion_n_ = 0, ring_gen_ = 0;
     MotionKept* MotionEntry(uint32_t n, bool make);
+    // the last draw this pass worked out to its end, for the next in its state (DrawMotion): what it was drawn with,
+    // and what of the draw decides that; motion_changed_ is MotionChanged's, taken by the next draw
+    struct MotionSame {
+        bool ok = false;
+        uint32_t prim = 0;
+        bool quad = false, tess = false, zwrite = false, pretransformed = false, inst = false, dc_kept = false;
+        Target* rt = nullptr;
+        DrawShaders sh;
+        ConstReads reads;
+        DrawTextures stages{};
+        PsoKey k;
+        VkPipeline pso = VK_NULL_HANDLE;
+        GuestExtent size{};
+        VkDescriptorBufferInfo dc{};
+        VkImageView view4 = VK_NULL_HANDLE, view5 = VK_NULL_HANDLE;
+    };
+    MotionSame motion_same_;
+    bool motion_changed_ = true;
+    void MotionChanged(bool any) override { motion_changed_ = any; }
     void DrawMotionKept(const State& s, const Before& before, MotionKept& e, Target* rt);
     // the frame's own draw serial (its pass_serial_) kept for drawing again, when its geometry is the one a assembles;
     // and kept geometry bound and drawn
@@ -5555,8 +5576,15 @@ void VulkanBackend::DrawGeometry(const Assembled& a) {
 }
 
 // a list (not a strip, not patches) whose every binding holds the same number of whole vertices, the draw's own
+// A strip joins as the list of its primitives (JoinRun): a shadow's soft blob is blurred into its 32x32 target a column
+// of 66 vertices at a time, 32 draws in one state, 12 characters in view 384 of them a frame (capture 214349).
+// XBE_STRIP_RUNS=0: strips drawn alone, as before, to compare against
 bool VulkanBackend::Mergeable(const Assembled& a) const {
-    if (!a.buffer_count || !a.regs || a.strip || a.topology == Topology::Patches) return false;
+    static const bool strips = [] {
+        const char* e = diag::Env("XBE_STRIP_RUNS");
+        return !(e && *e == '0');
+    }();
+    if (!a.buffer_count || !a.regs || a.topology == Topology::Patches || (a.strip && !strips)) return false;
     uint32_t v = 0;
     for (uint32_t i = 0; i < a.buffer_count; i++) {
         const VertexBuffer& b = a.buffers[i];
@@ -5589,7 +5617,10 @@ bool VulkanBackend::GrowRun(const VertexBuffer& b) {
 void VulkanBackend::JoinRun(const Assembled& a) {
     constexpr uint32_t kRunVertices = 1u << 18;
     uint32_t v = a.buffers[0].bytes / a.buffers[0].stride;
-    int topo = int(PrimitiveTopology(a));
+    // a strip as its list (Mergeable): the pipeline's topology class is the same
+    int topo = !a.strip                          ? int(PrimitiveTopology(a))
+               : a.topology == Topology::Lines ? int(VK_PRIMITIVE_TOPOLOGY_LINE_LIST)
+                                               : int(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
     bool direct = a.buffer_count == 1;
     bool fits = run_.draws && run_.buffers == a.buffer_count && run_.topo == topo && run_.vertices + v <= kRunVertices;
     for (uint32_t i = 0; fits && i < a.buffer_count; i++) fits = run_.strides[i] == a.buffers[i].stride;
@@ -5613,9 +5644,43 @@ void VulkanBackend::JoinRun(const Assembled& a) {
     // written in place, the list grown once: a push_back an index was most of a merged draw's joining
     const uint32_t n = a.index_count ? a.index_count : a.draw_count;
     const size_t at = run_.indices.size();
+    const uint32_t add = uint32_t(a.base_vertex) + base;  // wraps as int64_t(idx) + base_vertex + base did
+    if (a.strip) {
+        // the strip's primitives in Vulkan's order for a strip (primitive i of a triangle strip is i, i+1+i%2,
+        // i+2-i%2): the same facing and provoking vertex as drawn as a strip
+        auto index = [&](uint32_t k) -> uint32_t {
+            if (!a.index_count) return base + k;
+            const uint8_t* src = static_cast<const uint8_t*>(a.index_src);
+            if (a.index16) {
+                uint16_t x;
+                std::memcpy(&x, src + k * 2, 2);
+                return x + add;
+            }
+            uint32_t x;
+            std::memcpy(&x, src + k * 4, 4);
+            return x + add;
+        };
+        const bool lines = a.topology == Topology::Lines;
+        const uint32_t prims = n < (lines ? 2u : 3u) ? 0 : n - (lines ? 1 : 2);
+        run_.indices.resize(at + size_t(prims) * (lines ? 2 : 3));
+        uint32_t* out = run_.indices.data() + at;
+        for (uint32_t i = 0; i < prims; i++) {
+            if (lines) {
+                *out++ = index(i);
+                *out++ = index(i + 1);
+            } else {
+                *out++ = index(i);
+                *out++ = index(i + 1 + (i & 1));
+                *out++ = index(i + 2 - (i & 1));
+            }
+        }
+        run_.vertices += v;
+        run_.draws++;
+        run_.last = pass_serial_;
+        return;
+    }
     run_.indices.resize(at + n);
     uint32_t* out = run_.indices.data() + at;
-    const uint32_t add = uint32_t(a.base_vertex) + base;  // wraps as int64_t(idx) + base_vertex + base did
     if (!a.index_count) {
         for (uint32_t k = 0; k < n; k++) out[k] = base + k;
     } else if (a.index16) {
@@ -5700,6 +5765,8 @@ bool VulkanBackend::ReuseRun(const State& s) {
     while (kept_run_next_ < kept_runs_.size() && kept_runs_[kept_run_next_].first < pass_serial_) kept_run_next_++;
     if (kept_run_next_ >= kept_runs_.size() || kept_runs_[kept_run_next_].first != pass_serial_) return false;
     const KeptRun& r = kept_runs_[kept_run_next_];
+    // a run of placed HUD draws: placed a draw at a time (FastDraw), not reused unplaced
+    if (kept_.hud) return false;
     if (bound_rt_ != kept_.rt || bound_ds_ != kept_.ds || bound_ms_ != kept_.ms || (!bound_rt_ && !bound_ds_))
         return false;
     if (!KeptConstants(s, nullptr)) return false;
@@ -6448,6 +6515,9 @@ constexpr float kTessMotionSlope = -8;
 void VulkanBackend::DrawMotion(const State& s, const Before& before, uint32_t prim, uint32_t start, uint32_t count,
                                const uint8_t* indices) {
     const uint32_t n = motion_n_++;
+    // the draw before's setup taken up only when it was worked out to its end and no state came between (MotionSame)
+    const bool same_in = !std::exchange(motion_changed_, true) && motion_same_.ok;
+    motion_same_.ok = false;
     if (!motion_pass_ || !count) return;
     MotionSlot& m = motion_[motion_slot_];
     static const bool perf = diag::Perf();
@@ -6495,150 +6565,185 @@ void VulkanBackend::DrawMotion(const State& s, const Before& before, uint32_t pr
     // this draw's (the motion pass counts the frame's draws as it did)
     const KeptOne* fr = FrameDrawGeometry(n + 1, a);
     DrawShaders sh;
-    ClassifyShaders(s, a, count, sh);
-    if (sh.quad || (!sh.prog && a.pretransformed)) return skip();
-    if (sh.prog) EnsureProgramHash(s);
-    sh.shading = DrawShading(s, sh);
-    g_perf.motion_slow++;
-    step(0);
-
-    uint64_t vkey = VertexKey(s, a, sh) ^ kMotionVertexSalt, hash;
-    auto vit = motion_shaders_.find(vkey);
-    // the shaders and pipelines as shaders.rec keeps them, for the next run to make ahead (WarmUp)
-    auto motion_vs = [&](bool instanced) {
-        MotionVertexEntry mv;
-        std::memset(&mv, 0, sizeof(mv));
-        mv.v = MakeVertexEntry(s, a, sh);
-        mv.instanced = instanced;
-        return mv;
-    };
-    if (vit == motion_shaders_.end()) {
-        const MotionVertexEntry mv = motion_vs(false);
-        std::string src = MotionVertexHlsl(mv.v, DrawProgram(s, sh));
-        if (motion_layer_ok_) src = MotionLayeredHlsl(std::move(src), false);
-        const Spirv* code = Compile(src, "main", "vs_5_0", hash);
-        if (code) record_.Add(shader_record::kMotionVertex, &mv, sizeof(mv));
-        vit = motion_shaders_.emplace(vkey, MotionShader{code, ReadsOf(src)}).first;
-    }
-    sh.vs_code = vit->second.code;
-    ConstReads reads = vit->second.reads;
-    // all the places in one draw: the program's shader made for it, when it can be
-    bool inst = motion_all_ && motion_all_places_ > 1 && motion_inst_ok_ && sh.prog && !sh.fixed_transform &&
-                MotionInstanced();
-    uint64_t ikey = vkey ^ kMotionInstSalt;
-    if (inst) {
-        auto iit = motion_shaders_.find(ikey);
-        if (iit == motion_shaders_.end()) {
-            const MotionVertexEntry mv = motion_vs(true);
-            std::string src = MotionInstancedHlsl(MotionVertexHlsl(mv.v, DrawProgram(s, sh)));
-            if (!src.empty()) src = MotionLayeredHlsl(std::move(src), true);
-            const Spirv* code = src.empty() ? nullptr : Compile(src, "main", "vs_5_0", hash);
-            if (code) record_.Add(shader_record::kMotionVertex, &mv, sizeof(mv));
-            static bool told = false;
-            if (!code && !src.empty() && !std::exchange(told, true))
-                LOGR("vulkan: a motion shader for all the pictures at once didn't compile, its draws go a picture at a "
-                     "time");
-            iit = motion_shaders_.emplace(ikey, MotionShader{code, reads}).first;
-        }
-        inst = iit->second.code != nullptr;
-        if (inst) sh.vs_code = iit->second.code;
-    }
-    step(1);
-
-    // the stages for its alpha tests and discards; the draw's targets are not bound
+    ConstReads reads;
+    bool inst = false;
     DrawTextures stages{};
-    if (fr && FrameDrawSetup()) {
-        stages = fr->kept.stages;
-    } else {
-        draw_rt_ = draw_ds_ = nullptr;
-        stages.sampled = SampledStages(s);
-        stages.kept = ShadingStages(sh.shading);
-        for (int i = 0; i < 4; i++) stages.res[i] = BindTexture(s, i, stages);
-    }
-    step(2);
-    PixelKey pk = MakePixelKey(s, stages.info);
-    pk.shading = sh.shading;
     // a draw tested equal to the depth it wrote needs no discards of its own: the test passes only where it wrote. Its
     // shading (super fur's strands, worked out a shell at a time) left out, the test can run before the pixel shader
     const bool plain = zwrite || tess;
-    uint64_t pkey = Hash(&pk, sizeof(pk)) ^ (plain ? kMotionPlainSalt : kMotionPixelSalt);
-    auto pit = motion_shaders_.find(pkey);
-    MotionPixelEntry mp;
-    std::memset(&mp, 0, sizeof(mp));
-    mp.pk = pk;
-    mp.plain = plain;
-    if (pit == motion_shaders_.end()) {
-        std::string src = PixelHlsl(pk, true, !plain);
-        const Spirv* code = Compile(src, "main", "ps_5_0", hash);
-        if (code) record_.Add(shader_record::kMotionPixel, &mp, sizeof(mp));
-        pit = motion_shaders_.emplace(pkey, MotionShader{code, ReadsOf(src)}).first;
-    }
-    sh.ps_code = pit->second.code;
-    reads |= pit->second.reads;
-    if (!sh.vs_code || !sh.ps_code) return;
-    step(3);
-
-    // the pipeline, its shaders by their keys: the velocity as its colour, the depth tested and kept, no blend or
-    // stencil
-    BuildPipelineKey(s, a, inst ? ikey ^ (uint64_t(motion_all_places_) * 0x9E3779B97F4A7C15ull) : vkey, pkey, k);
-    KeyDepthStencil(s, a, k);
-    k.has_rt = k.has_ds = 1;
-    k.rtfmt = DXGI_FORMAT_R16G16_FLOAT;
-    k.samples = 1;
-    k.blend = k.src = k.dst = k.op = 0;
-    k.wmask = 0x3;
-    if (zwrite) k.zfunc = kCmpEqual;
-    if (tess) {
-        k.zen = 1;
-        k.zfunc = kCmpLessEqual;
-        k.zbias = kTessMotionBias;
-        k.zslope = kTessMotionSlope;
-    }
-    k.zwrite = 0;
-    k.sten = k.sfunc = k.smask = k.swmask = k.sfail = k.szfail = k.spass = 0;
-    const PsoKey pk_made = PipelineKey(k);  // k itself sets the dynamic state at the draw
-    auto [pso, fresh] = motion_psos_.try_emplace(Hash(&pk_made, sizeof(pk_made)), VK_NULL_HANDLE);
-    if (fresh) {
-        const uint32_t viewports = inst ? motion_all_places_ : 1;
-        const uint64_t h = Hash(&pk_made, sizeof(pk_made));
-        {
-            std::lock_guard<std::mutex> lock(warm_.lock);
-            auto w = warm_.psos.find(h);
-            if (w != warm_.psos.end()) {
-                pso->second = w->second;
-                warm_.psos.erase(w);
-            }
-        }
-        if (!pso->second) pso->second = CreateDrawPipeline(k, *sh.vs_code, *sh.ps_code, nullptr, nullptr, nullptr, viewports);
-        if (!pso->second) {
-            LOGE("vulkan: motion pipeline creation failed");
-        } else {
-            MotionPipelineEntry me;
-            std::memset(&me, 0, sizeof(me));
-            const MotionVertexEntry mv = motion_vs(inst);
-            me.vs_id = shader_record::Id(shader_record::kMotionVertex, &mv, sizeof(mv));
-            me.ps_id = shader_record::Id(shader_record::kMotionPixel, &mp, sizeof(mp));
-            std::memcpy(&me.k, &pk_made, sizeof(pk_made));
-            me.viewports = viewports;
-            record_.Add(shader_record::kMotionPipeline, &me, sizeof(me));
-        }
-    }
-    if (!pso->second) return;
-    step(4);
-
-    // the constants, then those the picture before had after them (cp), then its fixed function transform (mwvp)
+    VkPipeline pso_made = VK_NULL_HANDLE;
     GuestExtent size;
-    SurfaceSize(s.rt, size.w, size.h);
     DrawConstants c{};
     Bindings b;
-    // the frame's draw's: of the render states alone, and a shading's (fur) as the frame worked them out, with the
-    // field and screen views they go with; the fixed function's transforms are each picture's own
-    if (fr && FrameDrawSetup() && !sh.fixed_transform && fr->kept.plain == !sh.shading) {
-        b.cb[1] = fr->kept.b.cb[1];
-        b.view[4] = fr->kept.b.view[4];
-        b.view[5] = fr->kept.b.view[5];
+    // in the state of the draw before it, which this pass worked out (MotionChanged: no state between them but
+    // constants and vertex sources): its shaders, stages, pipeline and draw constants. The draws the frame drew in the
+    // state before were worked out again each, some 480 a frame (1.45 ms) at the beach. XBE_MOTION_SAME=0: each worked
+    // out, to compare against
+    static const bool same_on = [] {
+        const char* e = diag::Env("XBE_MOTION_SAME");
+        return !(e && *e == '0');
+    }();
+    MotionSame& ms = motion_same_;
+    const bool quad_now = count <= kQuadVertices && !s.rs[kRsZEnable] && a.topology != Topology::Points;
+    // not a shading's (fur), whose registers pick its passes (as KeptConstants)
+    if (same_on && same_in && !ms.sh.shading && ms.prim == prim && ms.quad == quad_now && ms.rt == rt &&
+        ms.tess == tess && ms.zwrite == zwrite && ms.pretransformed == a.pretransformed) {
+        sh = ms.sh;
+        reads = ms.reads;
+        inst = ms.inst;
+        stages = ms.stages;
+        k = ms.k;
+        pso_made = ms.pso;
+        size = ms.size;
+        if (ms.dc_kept) {
+            b.cb[1] = ms.dc;
+            b.view[4] = ms.view4;
+            b.view[5] = ms.view5;
+        } else {
+            UploadConstants(s, sh, k, stages, size, c, b, false);
+        }
+        g_perf.motion_slow++;  // worked out, the draw before's setup taken (motion_same)
+        g_perf.motion_same++;
     } else {
-        UploadConstants(s, sh, k, stages, size, c, b, false);
+        ClassifyShaders(s, a, count, sh);
+        if (sh.quad || (!sh.prog && a.pretransformed)) return skip();
+        if (sh.prog) EnsureProgramHash(s);
+        sh.shading = DrawShading(s, sh);
+        g_perf.motion_slow++;
+        step(0);
+
+        uint64_t vkey = VertexKey(s, a, sh) ^ kMotionVertexSalt, hash;
+        auto vit = motion_shaders_.find(vkey);
+        // the shaders and pipelines as shaders.rec keeps them, for the next run to make ahead (WarmUp)
+        auto motion_vs = [&](bool instanced) {
+            MotionVertexEntry mv;
+            std::memset(&mv, 0, sizeof(mv));
+            mv.v = MakeVertexEntry(s, a, sh);
+            mv.instanced = instanced;
+            return mv;
+        };
+        if (vit == motion_shaders_.end()) {
+            const MotionVertexEntry mv = motion_vs(false);
+            std::string src = MotionVertexHlsl(mv.v, DrawProgram(s, sh));
+            if (motion_layer_ok_) src = MotionLayeredHlsl(std::move(src), false);
+            const Spirv* code = Compile(src, "main", "vs_5_0", hash);
+            if (code) record_.Add(shader_record::kMotionVertex, &mv, sizeof(mv));
+            vit = motion_shaders_.emplace(vkey, MotionShader{code, ReadsOf(src)}).first;
+        }
+        sh.vs_code = vit->second.code;
+        reads = vit->second.reads;
+        // all the places in one draw: the program's shader made for it, when it can be
+        inst = motion_all_ && motion_all_places_ > 1 && motion_inst_ok_ && sh.prog && !sh.fixed_transform &&
+                    MotionInstanced();
+        uint64_t ikey = vkey ^ kMotionInstSalt;
+        if (inst) {
+            auto iit = motion_shaders_.find(ikey);
+            if (iit == motion_shaders_.end()) {
+                const MotionVertexEntry mv = motion_vs(true);
+                std::string src = MotionInstancedHlsl(MotionVertexHlsl(mv.v, DrawProgram(s, sh)));
+                if (!src.empty()) src = MotionLayeredHlsl(std::move(src), true);
+                const Spirv* code = src.empty() ? nullptr : Compile(src, "main", "vs_5_0", hash);
+                if (code) record_.Add(shader_record::kMotionVertex, &mv, sizeof(mv));
+                static bool told = false;
+                if (!code && !src.empty() && !std::exchange(told, true))
+                    LOGR("vulkan: a motion shader for all the pictures at once didn't compile, its draws go a picture at a "
+                         "time");
+                iit = motion_shaders_.emplace(ikey, MotionShader{code, reads}).first;
+            }
+            inst = iit->second.code != nullptr;
+            if (inst) sh.vs_code = iit->second.code;
+        }
+        step(1);
+
+        // the stages for its alpha tests and discards; the draw's targets are not bound
+        if (fr && FrameDrawSetup()) {
+            stages = fr->kept.stages;
+        } else {
+            draw_rt_ = draw_ds_ = nullptr;
+            stages.sampled = SampledStages(s);
+            stages.kept = ShadingStages(sh.shading);
+            for (int i = 0; i < 4; i++) stages.res[i] = BindTexture(s, i, stages);
+        }
+        step(2);
+        PixelKey pk = MakePixelKey(s, stages.info);
+        pk.shading = sh.shading;
+        uint64_t pkey = Hash(&pk, sizeof(pk)) ^ (plain ? kMotionPlainSalt : kMotionPixelSalt);
+        auto pit = motion_shaders_.find(pkey);
+        MotionPixelEntry mp;
+        std::memset(&mp, 0, sizeof(mp));
+        mp.pk = pk;
+        mp.plain = plain;
+        if (pit == motion_shaders_.end()) {
+            std::string src = PixelHlsl(pk, true, !plain);
+            const Spirv* code = Compile(src, "main", "ps_5_0", hash);
+            if (code) record_.Add(shader_record::kMotionPixel, &mp, sizeof(mp));
+            pit = motion_shaders_.emplace(pkey, MotionShader{code, ReadsOf(src)}).first;
+        }
+        sh.ps_code = pit->second.code;
+        reads |= pit->second.reads;
+        if (!sh.vs_code || !sh.ps_code) return;
+        step(3);
+
+        // the pipeline, its shaders by their keys: the velocity as its colour, the depth tested and kept, no blend or
+        // stencil
+        BuildPipelineKey(s, a, inst ? ikey ^ (uint64_t(motion_all_places_) * 0x9E3779B97F4A7C15ull) : vkey, pkey, k);
+        KeyDepthStencil(s, a, k);
+        k.has_rt = k.has_ds = 1;
+        k.rtfmt = DXGI_FORMAT_R16G16_FLOAT;
+        k.samples = 1;
+        k.blend = k.src = k.dst = k.op = 0;
+        k.wmask = 0x3;
+        if (zwrite) k.zfunc = kCmpEqual;
+        if (tess) {
+            k.zen = 1;
+            k.zfunc = kCmpLessEqual;
+            k.zbias = kTessMotionBias;
+            k.zslope = kTessMotionSlope;
+        }
+        k.zwrite = 0;
+        k.sten = k.sfunc = k.smask = k.swmask = k.sfail = k.szfail = k.spass = 0;
+        const PsoKey pk_made = PipelineKey(k);  // k itself sets the dynamic state at the draw
+        auto [pso, fresh] = motion_psos_.try_emplace(Hash(&pk_made, sizeof(pk_made)), VK_NULL_HANDLE);
+        if (fresh) {
+            const uint32_t viewports = inst ? motion_all_places_ : 1;
+            const uint64_t h = Hash(&pk_made, sizeof(pk_made));
+            {
+                std::lock_guard<std::mutex> lock(warm_.lock);
+                auto w = warm_.psos.find(h);
+                if (w != warm_.psos.end()) {
+                    pso->second = w->second;
+                    warm_.psos.erase(w);
+                }
+            }
+            if (!pso->second) pso->second = CreateDrawPipeline(k, *sh.vs_code, *sh.ps_code, nullptr, nullptr, nullptr, viewports);
+            if (!pso->second) {
+                LOGE("vulkan: motion pipeline creation failed");
+            } else {
+                MotionPipelineEntry me;
+                std::memset(&me, 0, sizeof(me));
+                const MotionVertexEntry mv = motion_vs(inst);
+                me.vs_id = shader_record::Id(shader_record::kMotionVertex, &mv, sizeof(mv));
+                me.ps_id = shader_record::Id(shader_record::kMotionPixel, &mp, sizeof(mp));
+                std::memcpy(&me.k, &pk_made, sizeof(pk_made));
+                me.viewports = viewports;
+                record_.Add(shader_record::kMotionPipeline, &me, sizeof(me));
+            }
+        }
+        if (!pso->second) return;
+        pso_made = pso->second;
+        step(4);
+
+        // the constants, then those the picture before had after them (cp), then its fixed function transform (mwvp)
+        SurfaceSize(s.rt, size.w, size.h);
+        // the frame's draw's: of the render states alone, and a shading's (fur) as the frame worked them out, with the
+        // field and screen views they go with; the fixed function's transforms are each picture's own
+        if (fr && FrameDrawSetup() && !sh.fixed_transform && fr->kept.plain == !sh.shading) {
+            b.cb[1] = fr->kept.b.cb[1];
+            b.view[4] = fr->kept.b.view[4];
+            b.view[5] = fr->kept.b.view[5];
+        } else {
+            UploadConstants(s, sh, k, stages, size, c, b, false);
+        }
     }
     step(5);
     if (inst) {
@@ -6660,9 +6765,9 @@ void VulkanBackend::DrawMotion(const State& s, const Before& before, uint32_t pr
     bound_rt_ = rt;  // the viewport's size, the velocity's
     bound_ds_ = nullptr;
     EnsureRendering();
-    if (pso->second != drawn_.pso) {
-        vkCmdBindPipeline(cmd_, VK_PIPELINE_BIND_POINT_GRAPHICS, pso->second);
-        drawn_.pso = pso->second;
+    if (pso_made != drawn_.pso) {
+        vkCmdBindPipeline(cmd_, VK_PIPELINE_BIND_POINT_GRAPHICS, pso_made);
+        drawn_.pso = pso_made;
     }
     SetDynamic(k);
     SetTextureViewsAndSamplers(s, a, stages, b, fr && FrameDrawSetup() ? &fr->kept.filled : nullptr);
@@ -6684,12 +6789,33 @@ void VulkanBackend::DrawMotion(const State& s, const Before& before, uint32_t pr
     }
     step(7);
     if (perf) g_perf.motion_slow_ms += PerfMs(perf_t);
+    {
+        MotionSame& next = motion_same_;
+        next.ok = true;
+        next.prim = prim;
+        next.quad = quad_now;
+        next.rt = rt;
+        next.tess = tess;
+        next.zwrite = zwrite;
+        next.pretransformed = a.pretransformed;
+        next.sh = sh;
+        next.reads = reads;
+        next.inst = inst;
+        next.stages = stages;
+        next.k = k;
+        next.pso = pso_made;
+        next.size = size;
+        next.dc_kept = !sh.fixed_transform && !sh.shading && DrawConstantsKept();
+        next.dc = b.cb[1];
+        next.view4 = b.view[4];
+        next.view5 = b.view[5];
+    }
 
     // MotionAll's other pictures: this one's setup, their constants their own
     if (motion_all_) {
         MotionCur& mc = motion_cur_;
         mc.ok = true;
-        mc.pso = pso->second;
+        mc.pso = pso_made;
         mc.sh = sh;
         mc.k = k;
         mc.stages = stages;
@@ -6708,7 +6834,7 @@ void VulkanBackend::DrawMotion(const State& s, const Before& before, uint32_t pr
     e.reuse = plain;
     if (!plain) return;
     e.ring = ring_gen_;
-    e.pso = pso->second;
+    e.pso = pso_made;
     e.sh = sh;
     e.k = k;
     e.stages = stages;
@@ -8240,15 +8366,26 @@ void VulkanBackend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t
         kk = o;
         p = op;
     };
-    if ((!sh.shading || g_program_shading[sh.shading - 1].plain) && !zpso && &s != &sprite_ && !hud) {
+    // a HUD draw g_hud_split placed is kept too: the draws after it in its state are placed in FastDraw, an element
+    // placed elsewhere ending the run with its viewport (SetViewportScissor). Text was a draw a letter the whole way,
+    // the frame's and each picture's HUD drawn again: a kill feed and a scrolling message 214 a frame (capture 220604).
+    // Not one with bars (cleared after it) nor for the frame's drawing again, whose kept draws aren't placed.
+    // XBE_HUD_KEEP=0: placed draws go the whole way, to compare against
+    static const bool keep_hud = [] {
+        const char* e = diag::Env("XBE_HUD_KEEP");
+        return !(e && *e == '0');
+    }();
+    if ((!sh.shading || g_program_shading[sh.shading - 1].plain) && !zpso && &s != &sprite_ &&
+        (!hud || (keep_hud && !hud_.bars))) {
         KeepDraw(a, sh, stages, pso, b, size);
         kept_.k = k;
         kept_.surface = k.blend && k.zen && !k.zwrite;
         kept_.solid = !flat;
+        kept_.hud = hud;
         kept_.jitter = jitter_;
         // for the frame's drawing again (ReuseDraw): a draw kept (a plain shading's too: per-pixel lighting, the
         // bloodbath's soldiers), its geometry bound as DrawGeometry left it
-        if (!replay_ && !hud_replay_ && !bound && !cap_ && Pictures() > 1) {
+        if (!replay_ && !hud_replay_ && !bound && !cap_ && Pictures() > 1 && !hud) {
             KeptOne& one = kept_draws_.emplace_back();
             one.serial = pass_serial_;
             one.flat = flat;
@@ -8375,6 +8512,16 @@ bool VulkanBackend::FastDraw(const State& s, uint32_t prim, uint32_t start, uint
     fast_why_ = ProgramPerf::kTargets;
     if (bound_rt_ != kept_.rt || bound_ds_ != kept_.ds || bound_ms_ != kept_.ms || (!bound_rt_ && !bound_ds_))
         return false;
+    // placed as the whole way would place it (its element's box grown with it), the place in its viewport: a HUD draw
+    // like an unplaced kept one, or the other way round, or one with bars, goes the whole way (which places it again,
+    // its box the same)
+    fast_why_ = ProgramPerf::kGated;
+    const bool hud = bound_rt_ && hud_.Place(s, a, start, count, indices, PosW(s), bound_rt_->gw, bound_rt_->gh,
+                                             guest_w_, guest_h_, replay_ || hud_replay_);
+    if (hud != kept_.hud || hud_.bars) {
+        hud_.Reset();
+        return false;
+    }
     if (!KeptConstants(s, &a)) return false;
     const DrawTextures& stages = kept_.stages;
     g_perf.d_setup += PerfLap(lap);
@@ -9412,6 +9559,23 @@ void VulkanBackend::GpuFrameDone() {
         if (t[2 * i + 1] > t[2 * i]) ticks += t[2 * i + 1] - t[2 * i];
     gpu_ms_ = double(ticks) * gpu_ns_per_tick_ / 1e6;
     gpu_ms_smooth_ = gpu_ms_smooth_ > 0 ? gpu_ms_smooth_ + (gpu_ms_ - gpu_ms_smooth_) * 0.2 : gpu_ms_;
+    // XBE_PERF: the GPU's time a frame (its command buffers', the pictures' included) against the frame's, once a second
+    if (diag::Perf()) {
+        static double sum_gpu = 0, sum_frame = 0, most = 0;
+        static uint32_t frames = 0;
+        static auto since = now;
+        sum_gpu += gpu_ms_;
+        sum_frame += frame_ms_;
+        most = std::max(most, gpu_ms_);
+        frames++;
+        if (now - since >= std::chrono::seconds(1)) {
+            LOGR("perf: gpu %.2f ms a frame (most %.2f), the frame %.2f ms: busy %.0f%%", sum_gpu / frames, most,
+                 sum_frame / frames, sum_frame > 0 ? sum_gpu / sum_frame * 100 : 0.0);
+            sum_gpu = sum_frame = most = 0;
+            frames = 0;
+            since = now;
+        }
+    }
 }
 
 namespace {

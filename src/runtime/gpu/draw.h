@@ -90,6 +90,7 @@ struct Perf {
     uint64_t redraw_textures = 0;  // refused: its stages of other kinds than the frame's draw had
     // motion passes' draws: worked out the whole way, taken whole from the frame's first pass, left out
     uint64_t motion_slow = 0, motion_reused = 0, motion_skipped = 0;
+    uint64_t motion_same = 0;  // motion draws worked out with the setup of the draw before (MotionSame)
     double motion_slow_ms = 0, motion_reused_ms = 0;  // the backend's time for each kind
     // inside them, logged as 'perf: motion draw steps': worked out (assemble and classify, vertex shader, textures,
     // pixel shader, pipeline, constants, the picture before's constants, recording), then taken from the first pass
