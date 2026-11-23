@@ -3,7 +3,9 @@
 // instead.
 #include <algorithm>
 #include <atomic>
+#include <cmath>
 #include <cstdint>
+#include <cstring>
 
 #include "cpu/x86_ops.h"
 #include "kernel/memory.h"
@@ -36,6 +38,14 @@ bool gamepad::g_invert_aim[input::kPorts] = {};
 bool gamepad::g_vibration[input::kPorts] = {true, true, true, true};
 uint32_t gamepad::g_vibration_percent[input::kPorts] = {100, 100, 100, 100};
 
+uint32_t gamepad::g_move_stick_percent[input::kPorts] = {kStickDefault, kStickDefault, kStickDefault, kStickDefault};
+uint32_t gamepad::g_look_stick_x_percent[input::kPorts] = {kStickDefault, kStickDefault, kStickDefault, kStickDefault};
+uint32_t gamepad::g_look_stick_y_percent[input::kPorts] = {kStickDefault, kStickDefault, kStickDefault, kStickDefault};
+uint32_t gamepad::g_move_stick_dead_zone[input::kPorts] = {kDeadZoneDefault, kDeadZoneDefault, kDeadZoneDefault,
+                                                           kDeadZoneDefault};
+uint32_t gamepad::g_look_stick_dead_zone[input::kPorts] = {kDeadZoneDefault, kDeadZoneDefault, kDeadZoneDefault,
+                                                           kDeadZoneDefault};
+
 namespace {
 // each player's invert as 0x4D1F0 last left it (*edi, zero inverts, as at 0x84B140), the profile's in a match
 std::atomic<bool> g_game_invert[input::kPorts];
@@ -52,6 +62,113 @@ void gamepad::Rumble(int port, uint16_t& left, uint16_t& right) {
     const uint32_t percent = std::min(g_vibration_percent[port], 100u);
     left = uint16_t(uint32_t(left) * percent / 100);
     right = uint16_t(uint32_t(right) * percent / 100);
+}
+
+namespace {
+// Both sticks go through 0x4D110 (the filters at [0x806ABC] and [0x806AB4], set at 0x4C969): 0x4CF80 clamps each
+// axis to full, reads a stick inside 0.3 of full as still, and past it reads (m - 0.3) / 0.7 along the stick's
+// direction n (m its length), each axis clamped to full (so a square gate's corner reads full on both); 0x4D110 then
+// cuts each axis to 64 steps. Stick works out what the game should read, g, from the player's own dead zone and
+// percents, then hands the game the stick that reads as g: g (0.3 / |g| + 0.7), along g, its axes inside full while
+// g's are. With the game's dead zone and 100 that is the stick as it was
+struct Shape {
+    float dead_zone;  // of full
+    float power_x, power_y;  // 100 / percent
+    bool radial;  // one power for the length, the direction kept (the stick that moves); else each axis its own
+};
+
+void Bend(int16_t& x, int16_t& y, const Shape& s) {
+    constexpr float kGameDeadZone = 0.3f;
+    const float fx = std::clamp(float(x) / 32767.0f, -1.0f, 1.0f), fy = std::clamp(float(y) / 32767.0f, -1.0f, 1.0f);
+    const float m = std::hypot(fx, fy);
+    if (m <= s.dead_zone) {
+        x = y = 0;
+        return;
+    }
+    const float t = (m - s.dead_zone) / (1.0f - s.dead_zone);
+    float gx = std::clamp(fx / m * t, -1.0f, 1.0f), gy = std::clamp(fy / m * t, -1.0f, 1.0f);
+    if (s.radial) {
+        const float r = std::hypot(gx, gy);
+        if (r < 1.0f) {
+            const float scale = std::pow(r, s.power_x - 1.0f);
+            gx *= scale, gy *= scale;
+        }
+    } else {
+        gx = std::copysign(std::pow(std::fabs(gx), s.power_x), gx);
+        gy = std::copysign(std::pow(std::fabs(gy), s.power_y), gy);
+    }
+    const float g = std::hypot(gx, gy);
+    if (g <= 0.0f) {
+        x = y = 0;
+        return;
+    }
+    const float scale = kGameDeadZone / g + (1.0f - kGameDeadZone);
+    x = int16_t(std::clamp(std::lround(gx * scale * 32767.0f), -32767L, 32767L));
+    y = int16_t(std::clamp(std::lround(gy * scale * 32767.0f), -32767L, 32767L));
+}
+
+float Power(uint32_t percent) {
+    return 100.0f / float(std::clamp(percent, gamepad::kStickMin, gamepad::kStickMax));
+}
+float DeadZone(uint32_t percent) { return float(std::min(percent, gamepad::kDeadZoneMax)) / 100.0f; }
+}  // namespace
+
+void gamepad::Sticks(int port, input::Pad& pad, bool southpaw) {
+    if (port < 0 || port >= input::kPorts) return;
+    const float move_power = Power(g_move_stick_percent[port]);
+    const Shape move = {DeadZone(g_move_stick_dead_zone[port]), move_power, move_power, true};
+    // the camera's stick keeps the game's curve (its speed is Turn's), its own dead zone
+    const Shape look = {DeadZone(g_look_stick_dead_zone[port]), 1.0f, 1.0f, false};
+    Bend(pad.lx, pad.ly, southpaw ? look : move);
+    Bend(pad.rx, pad.ry, southpaw ? move : look);
+}
+
+// The stick's turn (see the 0x2F99A0 hook in mouse.cpp): the frame's yaw turn at +0x08 (the callers take it off their
+// own yaw), the yaw at +0x04 (wrapped 0..360) and its eased value at +0x10; the pitch at +0x40, held inside the
+// camera's settings [turn]+0x18..+0x1C, its eased value at +0x4C and the frame's pitch turn at +0x44. A caller takes
+// the turns or the angles, so both grow by the same share. The game's whole turn scales, its fast turn and that ramp
+// too, so a full tilt turns faster or slower as well. The tank's aim on foot (0x3F4E0, zoomed aim) is not this turn
+void gamepad::Turn(uint32_t actions, uint32_t turn, float pitch_was) {
+    constexpr uint32_t kPlayer1Actions = 0x763260, kActionsSize = 0x1B0;
+    constexpr uint32_t kYaw = 0x04, kYawTurn = 0x08, kYawEased = 0x10;
+    constexpr uint32_t kPitch = 0x40, kPitchTurn = 0x44, kPitchEased = 0x4C;
+    constexpr uint32_t kPitchMin = 0x18, kPitchMax = 0x1C;
+    if (actions < kPlayer1Actions || (actions - kPlayer1Actions) % kActionsSize) return;
+    const uint32_t port = (actions - kPlayer1Actions) / kActionsSize;
+    if (port >= uint32_t(input::kPorts)) return;
+    const float kx = float(std::clamp(g_look_stick_x_percent[port], kStickMin, kLookXMax)) / 100.0f;
+    const float ky = float(std::clamp(g_look_stick_y_percent[port], kStickMin, kLookYMax)) / 100.0f;
+    if (kx == 1.0f && ky == 1.0f) return;
+    auto readable = [](uint32_t va, uint32_t size) {
+        return va && mem::IsCommitted(va) && mem::IsCommitted(va + size - 1);
+    };
+    if (!readable(turn, kPitchEased + 4)) return;
+    uint8_t* base = mem::Base();
+    auto rf = [&](uint32_t va) { float f; std::memcpy(&f, base + va, 4); return f; };
+    auto wf = [&](uint32_t va, float f) { std::memcpy(base + va, &f, 4); };
+    if (kx != 1.0f) {
+        const float extra = rf(turn + kYawTurn) * (kx - 1.0f);
+        if (std::isfinite(extra) && extra != 0.0f) {
+            wf(turn + kYawTurn, rf(turn + kYawTurn) + extra);
+            float y = rf(turn + kYaw) - extra;
+            while (y < 0.0f) y += 360.0f;
+            while (y >= 360.0f) y -= 360.0f;
+            wf(turn + kYaw, y);
+            wf(turn + kYawEased, rf(turn + kYawEased) - extra);
+        }
+    }
+    if (ky != 1.0f) {
+        const float turned = rf(turn + kPitchTurn) * (ky - 1.0f);
+        if (std::isfinite(turned)) wf(turn + kPitchTurn, rf(turn + kPitchTurn) + turned);
+        const uint32_t settings = kernel::R32(turn);
+        const float was = rf(turn + kPitch), extra = (was - pitch_was) * (ky - 1.0f);
+        if (std::isfinite(extra) && extra != 0.0f && readable(settings, kPitchMax + 4)) {
+            const float lo = rf(settings + kPitchMin), hi = rf(settings + kPitchMax);
+            const float now = lo <= hi ? std::clamp(was + extra, std::min(lo, was), std::max(hi, was)) : was + extra;
+            wf(turn + kPitch, now);
+            wf(turn + kPitchEased, rf(turn + kPitchEased) + (now - was));
+        }
+    }
 }
 
 X86_EXTERN_FUNC(__imp__sub_0004D1F0);

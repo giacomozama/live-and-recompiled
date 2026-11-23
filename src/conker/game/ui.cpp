@@ -1169,6 +1169,18 @@ void DrawDevices(int player) {
 // a player's controller options, the game's own two (they replace its Options menu's)
 void DrawController(int player) {
     if (!Section("controller")) return;
+    // the sticks' curves and dead zones, in a match too
+    using gamepad::kStickMin, gamepad::kStickMax, gamepad::kStickDefault;
+    // movement, then the camera; the dead zone's hint, under the movement row, is for both
+    using gamepad::kDeadZoneMax, gamepad::kDeadZoneDefault;
+    Slider("movement_stick", &gamepad::g_move_stick_percent[player], kStickMin, kStickMax, kStickDefault);
+    Hint("hint_stick_sensitivity");
+    Slider("movement_dead_zone", &gamepad::g_move_stick_dead_zone[player], 0, kDeadZoneMax, kDeadZoneDefault);
+    Hint("hint_stick_dead_zone");
+    Slider("camera_stick_x", &gamepad::g_look_stick_x_percent[player], kStickMin, gamepad::kLookXMax, kStickDefault);
+    Slider("camera_stick_y", &gamepad::g_look_stick_y_percent[player], kStickMin, gamepad::kLookYMax, kStickDefault);
+    Hint("hint_camera_stick_speed");
+    Slider("camera_dead_zone", &gamepad::g_look_stick_dead_zone[player], 0, kDeadZoneMax, kDeadZoneDefault);
     WarningCard("hint_single_player_only_these_settings", true);
     Check("invert_aim", &gamepad::g_invert_aim[player]);
     Hint("hint_up_on_the_right_stick", true);

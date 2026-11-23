@@ -896,6 +896,56 @@ constexpr Line kLines[] = {
      "Arriba en el stick derecho apunta hacia abajo al apuntar. La cámara y el ratón no se ven afectados.",
      "Su sulla leva destra mira verso il basso durante la mira. La telecamera e il mouse non sono interessati.",
      "照準中に右スティックを上に倒すと下を向きます。カメラとマウスには影響しません。"},
+    {"movement_stick", "Movement stick %", "Bewegungsstick %", "Stick de déplacement %", "Stick de movimiento %",
+     "Levetta di movimento %", "移動スティック %"},
+    {"camera_stick_x", "Camera left/right %", "Kamera links/rechts %", "Caméra gauche/droite %",
+     "Cámara izquierda/derecha %", "Telecamera sinistra/destra %", "カメラ左右 %"},
+    {"camera_stick_y", "Camera up/down %", "Kamera hoch/runter %", "Caméra haut/bas %", "Cámara arriba/abajo %",
+     "Telecamera su/giù %", "カメラ上下 %"},
+    {"movement_dead_zone", "Movement dead zone %", "Totzone Bewegung %", "Zone morte déplacement %",
+     "Zona muerta de movimiento %", "Zona morta movimento %", "移動デッドゾーン %"},
+    {"camera_dead_zone", "Camera dead zone %", "Totzone Kamera %", "Zone morte caméra %", "Zona muerta de cámara %",
+     "Zona morta telecamera %", "カメラデッドゾーン %"},
+    {"hint_stick_dead_zone",
+     "How far a stick has to go before it counts. The game's is **30**. Lower lets small tilts count; if the "
+     "character or camera moves on its own, raise it.",
+     "Wie weit ein Stick ausschlagen muss, bevor er zählt. Das Spiel nutzt **30**. Weniger lässt kleine Ausschläge "
+     "zählen; bewegt sich Figur oder Kamera von selbst, erhöhe den Wert.",
+     "La distance qu'un stick doit parcourir avant de compter. Le jeu utilise **30**. Moins fait compter les petites "
+     "inclinaisons ; si le personnage ou la caméra bouge tout seul, augmentez la valeur.",
+     "Cuánto debe moverse una palanca antes de contar. El juego usa **30**. Menos hace que cuenten las inclinaciones "
+     "pequeñas; si el personaje o la cámara se mueven solos, súbelo.",
+     "Quanto deve muoversi una levetta prima di contare. Il gioco usa **30**. Meno fa contare le piccole "
+     "inclinazioni; se il personaggio o la telecamera si muovono da soli, alzalo.",
+     "スティックがどこまで倒れたら反応するかです。ゲーム本来は**30**。下げると小さな傾きも反応します。"
+     "キャラクターやカメラが勝手に動く場合は上げてください。"},
+    {"hint_stick_sensitivity",
+     "How much a partial tilt does. Below **100**, small tilts do less, for finer walking; above, they do more. A "
+     "full tilt still runs. Applies in multiplayer too.",
+     "Wie viel ein halber Ausschlag bewirkt. Unter **100** bewirken kleine Ausschläge weniger, für feineres Gehen; "
+     "darüber mehr. Voller Ausschlag läuft weiterhin. Gilt auch im Mehrspieler.",
+     "L'effet d'une inclinaison partielle. Sous **100**, les petites inclinaisons agissent moins, pour marcher plus "
+     "finement ; au-dessus, elles agissent plus. L'inclinaison complète fait toujours courir. S'applique aussi en "
+     "multijoueur.",
+     "Cuánto hace una inclinación parcial. Por debajo de **100**, las inclinaciones pequeñas hacen menos, para "
+     "caminar con más precisión; por encima, hacen más. La inclinación completa sigue corriendo. También vale en "
+     "multijugador.",
+     "Quanto conta un'inclinazione parziale. Sotto **100** le piccole inclinazioni contano meno, per camminare con "
+     "più precisione; sopra contano di più. L'inclinazione completa fa ancora correre. Vale anche nel "
+     "multigiocatore.",
+     "スティックを少し倒したときの効き具合です。**100**未満では小さな傾きの効きが弱まり、歩きを細かく調整できます。"
+     "それ以上では強まります。最大まで倒せば走ります。マルチプレイでも有効です。"},
+    {"hint_camera_stick_speed",
+     "How fast the camera turns, at any tilt. **100** is the game's speed. Applies in multiplayer too.",
+     "Wie schnell sich die Kamera dreht, bei jedem Ausschlag. **100** ist das Tempo des Spiels. Gilt auch im "
+     "Mehrspieler.",
+     "La vitesse de rotation de la caméra, quelle que soit l'inclinaison. **100** est la vitesse du jeu. S'applique "
+     "aussi en multijoueur.",
+     "La velocidad a la que gira la cámara, con cualquier inclinación. **100** es la velocidad del juego. También "
+     "vale en multijugador.",
+     "La velocità con cui gira la telecamera, a qualsiasi inclinazione. **100** è la velocità del gioco. Vale anche "
+     "nel multigiocatore.",
+     "スティックの傾きにかかわらず、カメラが回る速さです。**100**がゲーム本来の速さです。マルチプレイでも有効です。"},
     {"vibration", "Vibration %", "Vibration %", "Vibration %", "Vibración %", "Vibrazione %", "振動 %"},
     {"hint_how_hard_the_controller_shakes",
      "How hard the controller shakes. **0** turns it off.",

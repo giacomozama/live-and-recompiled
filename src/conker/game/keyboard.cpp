@@ -420,6 +420,17 @@ void Load(const void* table) {
         gamepad::g_vibration[p] = (*player)["vibration"].value_or(gamepad::g_vibration[p]);
         gamepad::g_vibration_percent[p] =
             std::min((*player)["vibration_percent"].value_or(gamepad::g_vibration_percent[p]), 100u);
+        using gamepad::kStickMin, gamepad::kStickMax;
+        gamepad::g_move_stick_percent[p] =
+            std::clamp((*player)["move_stick_percent"].value_or(gamepad::g_move_stick_percent[p]), kStickMin, kStickMax);
+        gamepad::g_look_stick_x_percent[p] = std::clamp(
+            (*player)["look_stick_x_percent"].value_or(gamepad::g_look_stick_x_percent[p]), kStickMin, gamepad::kLookXMax);
+        gamepad::g_look_stick_y_percent[p] = std::clamp(
+            (*player)["look_stick_y_percent"].value_or(gamepad::g_look_stick_y_percent[p]), kStickMin, gamepad::kLookYMax);
+        gamepad::g_move_stick_dead_zone[p] = std::min(
+            (*player)["move_stick_dead_zone"].value_or(gamepad::g_move_stick_dead_zone[p]), gamepad::kDeadZoneMax);
+        gamepad::g_look_stick_dead_zone[p] = std::min(
+            (*player)["look_stick_dead_zone"].value_or(gamepad::g_look_stick_dead_zone[p]), gamepad::kDeadZoneMax);
     }
 }
 
@@ -433,6 +444,11 @@ void Save(void* table) {
         player->insert_or_assign("invert_aim", gamepad::g_invert_aim[p]);
         player->insert_or_assign("vibration", gamepad::g_vibration[p]);
         player->insert_or_assign("vibration_percent", int64_t(gamepad::g_vibration_percent[p]));
+        player->insert_or_assign("move_stick_percent", int64_t(gamepad::g_move_stick_percent[p]));
+        player->insert_or_assign("move_stick_dead_zone", int64_t(gamepad::g_move_stick_dead_zone[p]));
+        player->insert_or_assign("look_stick_x_percent", int64_t(gamepad::g_look_stick_x_percent[p]));
+        player->insert_or_assign("look_stick_y_percent", int64_t(gamepad::g_look_stick_y_percent[p]));
+        player->insert_or_assign("look_stick_dead_zone", int64_t(gamepad::g_look_stick_dead_zone[p]));
         player->insert_or_assign("creep_percent", int64_t(g_creep_percent[p]));
         player->insert_or_assign("walk_percent", int64_t(g_walk_percent[p]));
         player->insert_or_assign("keys", SaveKeys(g_keys[p]));
@@ -494,6 +510,7 @@ void Pad(int port, input::Pad& pad) {
     // their part
     const int scheme = Scheme(port);
     const bool southpaw = Southpaw(scheme);
+    gamepad::Sticks(port, pad, southpaw);  // the controller's, before the keys and the mouse take a stick
     auto down = [&](Action a) { return Down(port, a); };
     bool held[kButtons] = {};
     for (int a = 0; a < kActions; a++)

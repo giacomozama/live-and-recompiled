@@ -1172,9 +1172,12 @@ X86_FUNC(sub_002F99A0) {
     const uint32_t actions = ctx.eax, turn = ctx.ecx, player = ctx.esi;
     uint32_t ret;
     std::memcpy(&ret, base + ctx.esp, 4);
+    float pitch_was = 0.0f;  // the pitch as the call begins, for the stick's speed (gamepad::Turn)
+    if (mem::IsCommitted(turn + 0x40) && mem::IsCommitted(turn + 0x43)) std::memcpy(&pitch_was, base + turn + 0x40, 4);
     g_turn_actions = actions;
     __imp__sub_002F99A0(ctx, base);
     g_turn_actions = 0;
+    gamepad::Turn(actions, turn, pitch_was);  // the stick's turn at the player's camera speed, before the mouse's
     mouse::Turn(actions, turn, ret, player);
 }
 
