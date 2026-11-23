@@ -58,6 +58,11 @@ public:
     bool Reactive(VkCommandBuffer cmd, const XbeDlssImage& opaque, const XbeDlssImage& color, const XbeDlssImage& out);
     // its images released: the device idle
     void Release();
+#ifdef XBE_FSR3_DEBUG
+    // an internal image's first level copied into dst, for the headless test: 0 dilated reactive masks, 1 and 2 the
+    // accumulation pair, 3 dilated depth, 4 reconstructed depth, 5 and 6 the luma pair, 7 shading change; its format
+    VkFormat DebugImage(VkCommandBuffer cmd, int which, VkBuffer dst, uint32_t& w, uint32_t& h);
+#endif
 
     struct State;
 

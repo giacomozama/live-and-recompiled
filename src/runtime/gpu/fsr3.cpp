@@ -131,7 +131,9 @@ const PassDesc& Desc(int pass) {
     return kPasses[pass];
 }
 
-// the samplers' bindings, past every pass's own (AMD's are 1000 and 1001, Patched)
+// the samplers' bindings, past every pass's own (AMD's are 1000 and 1001, Patched). Pushed with each pass's other
+// descriptors (AddSamplers): as immutable samplers of the push descriptor layouts, left unpushed, every sampled read
+// came back 0, history and accumulation alike, and FSR kept no history
 constexpr uint32_t kBindPoint = 30, kBindLinear = 31;
 
 // the permutation AMD's backend would pick here: SDR color, motion vectors at the render size and without the jitter,
@@ -359,6 +361,9 @@ struct Upscaler::State {
         ici.tiling = VK_IMAGE_TILING_OPTIMAL;
         ici.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
                     (storage ? VK_IMAGE_USAGE_STORAGE_BIT : 0);
+#ifdef XBE_FSR3_DEBUG
+        ici.usage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;  // DebugImage
+#endif
         ici.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
         VmaAllocationCreateInfo aci{};
         aci.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
@@ -415,8 +420,8 @@ struct Upscaler::State {
                                                                   : VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
                 b.push_back({bind.binding, type, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr});
             }
-            b.push_back({kBindPoint, VK_DESCRIPTOR_TYPE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, &point});
-            b.push_back({kBindLinear, VK_DESCRIPTOR_TYPE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, &linear});
+            b.push_back({kBindPoint, VK_DESCRIPTOR_TYPE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr});
+            b.push_back({kBindLinear, VK_DESCRIPTOR_TYPE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr});
             VkDescriptorSetLayoutCreateInfo dci{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
             dci.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_PUSH_DESCRIPTOR_BIT_KHR;
             dci.bindingCount = uint32_t(b.size());
@@ -462,6 +467,21 @@ struct Upscaler::State {
         LOGI("fsr3: shaders compiled in %.0f ms",
              std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
         return true;
+    }
+
+    // the two samplers' writes after a pass's n others (infos beside them)
+    uint32_t AddSamplers(VkWriteDescriptorSet* writes, VkDescriptorImageInfo* infos, uint32_t n) {
+        const VkSampler samplers[2] = {point, linear};
+        for (int i = 0; i < 2; i++) {
+            infos[n] = {samplers[i], VK_NULL_HANDLE, VK_IMAGE_LAYOUT_UNDEFINED};
+            writes[n] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+            writes[n].dstBinding = i ? kBindLinear : kBindPoint;
+            writes[n].descriptorCount = 1;
+            writes[n].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+            writes[n].pImageInfo = &infos[n];
+            n++;
+        }
+        return n;
     }
 
     // a slot of the ring with these bytes in it
@@ -545,6 +565,22 @@ Upscaler::~Upscaler() = default;
 void Upscaler::Release() { s_->Release(); }
 bool Upscaler::Prepare() { return s_->MakePipelines(); }
 
+#ifdef XBE_FSR3_DEBUG
+VkFormat Upscaler::DebugImage(VkCommandBuffer cmd, int which, VkBuffer dst, uint32_t& w, uint32_t& h) {
+    State& s = *s_;
+    Tex* all[] = {&s.dilated_reactive, &s.accum[0], &s.accum[1], &s.dilated_depth, &s.recon_depth,
+                  &s.luma[0],          &s.luma[1],  &s.shading_change};
+    Tex& t = *all[which];
+    VkBufferImageCopy c{};
+    c.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    c.imageExtent = {t.w, t.h, 1};
+    vkCmdCopyImageToBuffer(cmd, t.image, VK_IMAGE_LAYOUT_GENERAL, dst, 1, &c);
+    w = t.w;
+    h = t.h;
+    return t.format;
+}
+#endif
+
 // ffxFsr3UpscalerContextGenerateReactiveMask with the parameters AMD's samples give it: tonemapped, the largest
 // channel's change, 0.9 past 0.2 and 0 under
 bool Upscaler::Reactive(VkCommandBuffer cmd, const XbeDlssImage& opaque, const XbeDlssImage& color,
@@ -565,8 +601,8 @@ bool Upscaler::Reactive(VkCommandBuffer cmd, const XbeDlssImage& opaque, const X
     vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, &mb, 0,
                          nullptr, 0, nullptr);
     const PassDesc& d = Desc(kAutogenReactive);
-    std::array<VkDescriptorImageInfo, 8> images{};
-    std::array<VkWriteDescriptorSet, 8> writes{};
+    std::array<VkDescriptorImageInfo, 10> images{};
+    std::array<VkWriteDescriptorSet, 10> writes{};
     uint32_t n = 0;
     for (const Bind& b : d.binds) {
         VkWriteDescriptorSet& w = writes[n];
@@ -589,6 +625,7 @@ bool Upscaler::Reactive(VkCommandBuffer cmd, const XbeDlssImage& opaque, const X
         n++;
     }
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, s.pipes[kAutogenReactive]);
+    n = s.AddSamplers(writes.data(), images.data(), n);
     vkCmdPushDescriptorSetKHR(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, s.layouts[kAutogenReactive], 0, n, writes.data());
     vkCmdDispatch(cmd, (color.width + 7) / 8, (color.height + 7) / 8, 1);
     mb.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
@@ -835,8 +872,8 @@ bool Upscaler::Run(VkCommandBuffer cmd, const Evaluate& e) {
     };
     auto dispatch = [&](int pass, uint32_t x, uint32_t y) {
         const PassDesc& d = Desc(pass);
-        std::array<VkDescriptorImageInfo, 16> images{};
-        std::array<VkWriteDescriptorSet, 16> writes{};
+        std::array<VkDescriptorImageInfo, 18> images{};
+        std::array<VkWriteDescriptorSet, 18> writes{};
         uint32_t n = 0;
         for (const Bind& b : d.binds) {
             VkWriteDescriptorSet& w = writes[n];
@@ -854,6 +891,7 @@ bool Upscaler::Run(VkCommandBuffer cmd, const Evaluate& e) {
             n++;
         }
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, s.pipes[pass]);
+        n = s.AddSamplers(writes.data(), images.data(), n);
         vkCmdPushDescriptorSetKHR(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, s.layouts[pass], 0, n, writes.data());
         vkCmdDispatch(cmd, std::max(x, 1u), std::max(y, 1u), 1);
         // the next pass reads what this one wrote

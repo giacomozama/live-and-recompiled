@@ -7094,7 +7094,8 @@ app::Scale VulkanBackend::UpscaleScale() {
         const char* e = diag::Env("XBE_LOD_BIAS");
         return e && *e == '0';
     }();
-    lod_bias_ = no_bias ? 0.0f : -std::log2(std::max(ratio, 1.0f));
+    // AMD's for FSR: a step sharper again (log2(render / display) - 1, -1.58 at Quality)
+    lod_bias_ = no_bias ? 0.0f : -std::log2(std::max(ratio, 1.0f)) - (fsr3_on_ ? 1.0f : 0.0f);
     jitter_phases_ = std::clamp(uint32_t(std::lround(8 * ratio * ratio)), 8u, 72u);
     return scale;
 }
