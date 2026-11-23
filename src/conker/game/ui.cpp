@@ -51,6 +51,7 @@
 #include "common/reflection.h"
 #include "common/rope.h"
 #include "common/vignette.h"
+#include "common/hud_art.h"
 #include "common/warp.h"
 #include "common/water.h"
 #include "gpu/shader_record.h"
@@ -2704,6 +2705,11 @@ void Draw(double fps) {
                     Hint("hint_water_ripples_and_makes_waves", true);
                     Check("floor_depth_of", &reflection::g_floor_depth);
                     Hint("hint_fixes_the_blur_on_shiny", true);
+                    // the redrawn pictures are bound by the Vulkan renderer alone (gpu::Replacement)
+                    ImGui::BeginDisabled(D3d11());
+                    Check("redrawn_hud", &hud_art::g_on);
+                    ImGui::EndDisabled();
+                    Hint(D3d11() ? NoVulkan() : "hint_sights_and_other_hud_pictures", true);
                 }
                 end_tab();
             }

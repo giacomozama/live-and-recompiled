@@ -586,6 +586,12 @@ struct Tex {
     uint32_t font_levels = 1;
     uint64_t font_id = 0;   // FontAtlas::id it was made from
     uint64_t font_sig = 0;  // sig of the title's texels it was made over
+    // a picture drawn in its place (Replacement), found by the texels' hash at each upload: its image once made
+    int repl = -1;
+    bool repl_checked = false;  // looked for since the last upload
+    uint64_t repl_tags = 0;     // ReplacementTags when looked for
+    ImageRef repl_img;
+    uint32_t repl_levels = 1;
 };
 
 // one lightmap for the worker: level 0 as BGRA texels, or the DXT blocks it decodes first
@@ -1534,6 +1540,7 @@ private:
     void QueueLightmap(Tex& tx, const TextureDesc& d, const FormatInfo& fi, const uint8_t* p, const uint32_t* colors);
     void FinishLightmap(Tex& tx);
     void MakeFontAtlas(Tex& tx, const TextureDesc& d, const FontAtlas& a, const uint8_t* p, const uint32_t* colors);
+    void MakeReplacement(Tex& tx, const Replacement& r);
     // the lightmap smoother: compute shaders on a queue of their own that make a lightmap's larger picture and its
     // levels in an image of its own, one lightmap at a time under its lock (the lightmap worker's)
     struct LightmapSmoother {
@@ -4246,6 +4253,7 @@ bool VulkanBackend::CreateTexture(Tex& tx, const TextureDesc& d, const FormatInf
     if (tx.res) Retire(tx.res);
     if (tx.lm) Retire(tx.lm);
     if (tx.font) Retire(tx.font);
+    if (tx.repl_img) Retire(tx.repl_img);
     tx = Tex{};
     tx.d = d;
     // a DXT texture smaller than a block keeps its size: padded to 4x4, texcoords 0..1 would stretch over the
@@ -4385,6 +4393,7 @@ Image* VulkanBackend::BindGuestTexture(const State& s, int stage, const TextureD
             tx.whole = total > kSigWholeMax ? Hash(p, total) ^ mark : 0;
             tx.sign = sign;
             UploadTexture(tx, d, p, palette.va ? palette.colors : nullptr);
+            tx.repl_checked = false;
             // new bytes: the smoothed copy is of the old ones
             if (tx.lm) Retire(tx.lm);
             tx.lm.reset();
@@ -4393,6 +4402,27 @@ Image* VulkanBackend::BindGuestTexture(const State& s, int stage, const TextureD
     }
     if (fi.depth) info.shadow = ShadowDepthKind(d.format);
     info.sign = sign;
+    // a picture drawn in its place (a game's redrawn HUD art), once made; the title's texture until then
+    if ((AnyReplacement() || tx.repl >= 0) && !sign && !fi.depth) {
+        if (const uint64_t tags = ReplacementTags(); !tx.repl_checked || tx.repl_tags != tags) {
+            tx.repl_checked = true;
+            tx.repl_tags = tags;
+            const int repl = FindReplacement(d, static_cast<const uint8_t*>(kernel::HostPtr(d.data)));
+            if (repl != tx.repl && tx.repl_img) {
+                Retire(tx.repl_img);
+                tx.repl_img.reset();
+            }
+            tx.repl = repl;
+        }
+        if (tx.repl >= 0 && !tx.repl_img)
+            if (const std::shared_ptr<const Replacement> r = ReplacementPicture(tx.repl)) MakeReplacement(tx, *r);
+        if (tx.repl_img) {
+            stages.view[stage] = tx.repl_img->view;
+            stages.levels[stage] = tx.repl_levels;
+            stages.smooth[stage] = true;
+            return tx.repl_img.get();
+        }
+    }
     // a glyph atlas drawn again from the player's font: its picture in the title's place, filtered across our levels
     if (AnyFontAtlas() || tx.font) {
         std::shared_ptr<const FontAtlas> atlas;
@@ -4556,6 +4586,28 @@ void VulkanBackend::MakeFontAtlas(Tex& tx, const TextureDesc& d, const FontAtlas
     }
     std::swap(tx.res, tx.font);
     Transition(*tx.font, kRead);
+}
+
+// a replacement's picture (Replacement) as the image bound in the texture's place, with its levels
+void VulkanBackend::MakeReplacement(Tex& tx, const Replacement& r) {
+    PerfScope perf_up{g_perf.texup};
+    ImageSpec sp;
+    sp.w = r.w;
+    sp.h = r.h;
+    sp.levels = uint32_t(r.levels.size());
+    tx.repl_img = NewImage(sp);
+    if (!tx.repl_img) {
+        tx.repl = -1;  // the title's texture stays, until its bytes change
+        return;
+    }
+    tx.repl_levels = sp.levels;
+    Transition(*tx.repl_img, kDst);
+    // UploadTextureLevel writes the texture's res: point it at the picture for the while
+    std::swap(tx.res, tx.repl_img);
+    for (uint32_t l = 0; l < sp.levels; l++) UploadTextureLevel(tx, 0, l, r.levels[l], std::max(r.w >> l, 1u) * 4);
+    std::swap(tx.res, tx.repl_img);
+    Transition(*tx.repl_img, kRead);
+    LOGI("textures: %08X drawn as its replacement, %ux%u", tx.d.data, r.w, r.h);
 }
 
 // The lightmap smoother's compute shaders. The first makes the larger picture from PrepareLightmap's field
@@ -8847,6 +8899,7 @@ void VulkanBackend::ReleaseOldTextures() {
             Retire(it->second.res);
             if (it->second.lm) Retire(it->second.lm);
             if (it->second.font) Retire(it->second.font);
+            if (it->second.repl_img) Retire(it->second.repl_img);
             it = textures_.erase(it);
         } else {
             ++it;

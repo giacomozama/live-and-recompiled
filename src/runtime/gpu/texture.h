@@ -101,6 +101,31 @@ void ComposeFontAtlas(const FontAtlas& a, const std::vector<uint8_t>& px, std::v
 // the levels for such a picture: each a box over the one before, from out (level 0) down to below the title's size
 uint32_t FontAtlasLevels(const FontAtlas& a);
 
+// A picture drawn in place of a title's texture (a game's redrawn HUD art). The game registers each picture with what
+// makes its level 0 (made on a worker the first time a renderer needs it, kept after), and tags the textures to draw
+// it for as it finds them (by the name the title loaded them under): the texture at data_va, its format and size, and
+// the hash of its level 0's bytes when tagged (TextureHash), so memory the title reuses for another picture isn't
+// taken for it. The picture covers what the texture does, any size, BGRA with straight alpha; its levels go down to a
+// texel, each a box over the one before in premultiplied colour. Vulkan only
+struct Replacement {
+    uint32_t w = 0, h = 0;
+    std::vector<std::vector<uint8_t>> levels;  // level l: max(w >> l, 1) by max(h >> l, 1), rows tightly packed
+};
+// level 0 as w by h BGRA texels (out), false where it can't be made
+using ReplacementSource = bool (*)(int id, std::vector<uint8_t>& out, uint32_t& w, uint32_t& h);
+// the picture's index for TagReplacement; before the renderer's first frame
+int AddReplacement(ReplacementSource make, int id);
+// the texture at data_va drawn as picture index from now on (-1: as itself again); any thread
+void TagReplacement(uint32_t data_va, int index, uint32_t xbox_format, uint32_t w, uint32_t h, uint64_t hash);
+uint64_t TextureHash(const uint8_t* p, size_t n);  // FNV-1a 64
+bool AnyReplacement();  // cheap
+// moves at each TagReplacement: a renderer looks its textures up again
+uint64_t ReplacementTags();
+// the picture the texture at p (d.data's bytes) is tagged with, -1 none: its format, size and hash checked
+int FindReplacement(const TextureDesc& d, const uint8_t* p);
+// the picture of FindReplacement's index: null while it is made (asked for on the first call) or where it can't be
+std::shared_ptr<const Replacement> ReplacementPicture(int index);
+
 // vertex declarations and pixel shader constant routing, both follow the XDK's definitions
 void ParseDeclaration(VertexShader& vs);
 // SetPixelShaderConstant: the stages of the current shader mapped to these registers take the values

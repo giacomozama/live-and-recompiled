@@ -17,6 +17,7 @@
 #include "common/prompts.h"
 #include "common/reflection.h"
 #include "common/rope.h"
+#include "common/hud_art.h"
 #include "common/ui.h"
 #include "common/vignette.h"
 #include "common/water.h"
@@ -44,6 +45,7 @@ void Init() {
     lighting::Init();
     reflection::Init();
     game_fonts::Init();
+    hud_art::Init();
 }
 
 // the settings file's tables: each player's ([playerN]) and the models' fur looks ([fur_models])
@@ -109,7 +111,8 @@ const app::GameInfo app::kGame = {
                 {"bright_menu_hints", &menus::g_bright_hints, nullptr},  // solid page hints (src/conker/game/menus.cpp)
                 {"skip_intro_fmvs", &menus::g_skip_intro, nullptr},  // the launch movies skipped (menus.cpp, hooks.cpp)
                 {"attract_video", &menus::g_attract, nullptr},  // the idle menu's attract video (menus.cpp)
-                {"keyboard_prompts", &prompts::g_on, nullptr}},  // button icons drawn as keys on kb+mouse (prompts.cpp)
+                {"keyboard_prompts", &prompts::g_on, nullptr},  // button icons drawn as keys on kb+mouse (prompts.cpp)
+                {"redrawn_hud", &hud_art::g_on, nullptr}},  // HUD art drawn from vector pictures (src/conker/common/hud_art.cpp)
     // the [playerN] tables: each player's keyboard bindings, mouse look, invert aim and vibration
     // (src/conker/game/keyboard.cpp, mouse.cpp, hooks.cpp); [fur_models]: each model's super fur look (fur.cpp)
     .load = LoadTables,

@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="64" height="64" viewBox="0 0 64 64">
+<defs>
+<filter id="soft" x="-10%" y="-10%" width="120%" height="120%"><feGaussianBlur stdDeviation="0.5"/></filter>
+<radialGradient id="g1" gradientUnits="userSpaceOnUse" cx="32.50" cy="32.50" r="21.38"><stop offset="0.000" stop-color="#cffc13" stop-opacity="0.051"/><stop offset="0.461" stop-color="#bff719" stop-opacity="0.051"/><stop offset="0.538" stop-color="#d0fd18" stop-opacity="0.268"/><stop offset="0.615" stop-color="#d9fe16" stop-opacity="0.365"/><stop offset="0.692" stop-color="#dbfe14" stop-opacity="0.435"/><stop offset="0.769" stop-color="#d9fe12" stop-opacity="0.516"/><stop offset="0.846" stop-color="#d2fe11" stop-opacity="0.598"/><stop offset="0.923" stop-color="#c5fc11" stop-opacity="0.658"/><stop offset="1.000" stop-color="#b0f412" stop-opacity="0.116"/></radialGradient>
+</defs>
+
+<g fill="url(#g1)" stroke="url(#g1)"><path d="M49.363,19.325 A21.4,21.4 0 0 1 49.013,46.112 L39.908,38.606 A9.6,9.6 0 0 0 40.065,26.590 Z" stroke="none"/><path d="M35.108,53.740 A21.4,21.4 0 0 1 12.801,40.862 L23.663,36.251 A9.6,9.6 0 0 0 33.670,42.028 Z" stroke="none"/><path d="M11.829,26.961 A21.4,21.4 0 0 1 32.873,11.103 L32.668,22.901 A9.6,9.6 0 0 0 23.227,30.015 Z" stroke="none"/></g>
+</svg>

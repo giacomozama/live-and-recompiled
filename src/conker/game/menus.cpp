@@ -30,6 +30,7 @@
 #include "common/display.h"
 #include "common/game_fonts.h"
 #include "common/gamepad.h"
+#include "common/hud_art.h"
 #include "common/keyboard.h"
 #include "common/menus.h"
 #include "common/subtitles.h"
@@ -706,10 +707,18 @@ void ConkerTriggerIconDone(X86Context& ctx, uint8_t* base) {
     g_trigger_icon = -1;
 }
 
+// [[hook]] at 0x15D59D, 0x15D280's DrawVerticesUP of a screen quad (redrawn HUD art: vertexSight's among them): 48-byte vertices, the
+// texture coordinates the sight's stage reads at 16
+void ConkerScreenQuadDraw(X86Context& ctx, uint8_t* base) {
+    (void)base;
+    hud_art::QuadDraw(ctx, 16);
+}
+
 // [[hook]] before each of the sprite routines' DrawVerticesUP calls (kSpriteDraws in game.toml): a button's icon, while
 // the pause screen is up
 void ConkerSpriteDraw(X86Context& ctx, uint8_t* base) {
     (void)base;
+    hud_art::QuadDraw(ctx, -1);  // before the mouse's part reads the vertices
     const int64_t now = NowUs();
     const int page = menus::KeyPage();
     if (page < 0) return;

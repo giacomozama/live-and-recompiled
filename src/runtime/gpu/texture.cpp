@@ -4,6 +4,7 @@
 #include <bit>
 #include <cmath>
 #include <cstring>
+#include <future>
 #include <mutex>
 #include <unordered_map>
 
@@ -527,6 +528,118 @@ void ComposeFontAtlas(const FontAtlas& a, const std::vector<uint8_t>& px, std::v
 uint32_t FontAtlasLevels(const FontAtlas& a) {
     const uint32_t m = std::min(a.w, a.h) * a.scale;
     return uint32_t(std::min(int(std::bit_width(m)), int(std::bit_width(a.scale)) + 2));
+}
+
+namespace {
+struct ReplacementEntry {
+    ReplacementSource make;
+    int id;
+    std::shared_future<std::shared_ptr<const Replacement>> picture;  // valid once asked for
+};
+struct ReplacementTag {
+    int index;
+    uint32_t format, w, h;
+    uint64_t hash;
+};
+struct Replacements {
+    std::mutex lock;
+    std::vector<ReplacementEntry> entries;
+    std::unordered_map<uint32_t, ReplacementTag> tags;  // by the texture's data
+    std::atomic<bool> any{false};
+    std::atomic<uint64_t> generation{0};
+};
+Replacements& Reps() {
+    static Replacements r;
+    return r;
+}
+
+// level 0 from the game, and each level after a box over the one before in premultiplied colour
+std::shared_ptr<const Replacement> MakeReplacement(ReplacementSource make, int id) {
+    auto r = std::make_shared<Replacement>();
+    std::vector<uint8_t> px;
+    if (!make(id, px, r->w, r->h) || !r->w || !r->h || px.size() < size_t(r->w) * r->h * 4) return nullptr;
+    px.resize(size_t(r->w) * r->h * 4);
+    r->levels.push_back(std::move(px));
+    uint32_t w = r->w, h = r->h;
+    while (w > 1 || h > 1) {
+        const std::vector<uint8_t>& up = r->levels.back();
+        const uint32_t nw = std::max(w >> 1, 1u), nh = std::max(h >> 1, 1u);
+        std::vector<uint8_t> out(size_t(nw) * nh * 4);
+        for (uint32_t y = 0; y < nh; y++)
+            for (uint32_t x = 0; x < nw; x++) {
+                const uint32_t xs[2] = {std::min(x * 2, w - 1), std::min(x * 2 + 1, w - 1)};
+                const uint32_t ys[2] = {std::min(y * 2, h - 1), std::min(y * 2 + 1, h - 1)};
+                uint32_t c[3] = {}, a = 0;
+                for (uint32_t sy : ys)
+                    for (uint32_t sx : xs) {
+                        const uint8_t* t = &up[(size_t(sy) * w + sx) * 4];
+                        for (int i = 0; i < 3; i++) c[i] += uint32_t(t[i]) * t[3];
+                        a += t[3];
+                    }
+                uint8_t* o = &out[(size_t(y) * nw + x) * 4];
+                for (int i = 0; i < 3; i++) o[i] = uint8_t(a ? (c[i] + a / 2) / a : 0);
+                o[3] = uint8_t((a + 2) / 4);
+            }
+        r->levels.push_back(std::move(out));
+        w = nw;
+        h = nh;
+    }
+    return r;
+}
+}  // namespace
+
+int AddReplacement(ReplacementSource make, int id) {
+    Replacements& r = Reps();
+    std::lock_guard<std::mutex> lock(r.lock);
+    r.entries.push_back({make, id, {}});
+    return int(r.entries.size() - 1);
+}
+
+void TagReplacement(uint32_t data_va, int index, uint32_t xbox_format, uint32_t w, uint32_t h, uint64_t hash) {
+    Replacements& r = Reps();
+    std::lock_guard<std::mutex> lock(r.lock);
+    if (index < 0) r.tags.erase(data_va);
+    else r.tags[data_va] = {index, xbox_format, w, h, hash};
+    r.any.store(!r.tags.empty(), std::memory_order_release);
+    r.generation.fetch_add(1, std::memory_order_acq_rel);
+}
+
+uint64_t TextureHash(const uint8_t* p, size_t n) {
+    uint64_t h = 0xCBF29CE484222325ull;
+    for (size_t i = 0; i < n; i++) h = (h ^ p[i]) * 0x100000001B3ull;
+    return h;
+}
+
+bool AnyReplacement() { return Reps().any.load(std::memory_order_acquire); }
+
+uint64_t ReplacementTags() { return Reps().generation.load(std::memory_order_acquire); }
+
+int FindReplacement(const TextureDesc& d, const uint8_t* p) {
+    if (!AnyReplacement() || !p || d.cube || d.depth != 1) return -1;
+    Replacements& r = Reps();
+    ReplacementTag t;
+    {
+        std::lock_guard<std::mutex> lock(r.lock);
+        const auto it = r.tags.find(d.data);
+        if (it == r.tags.end()) return -1;
+        t = it->second;
+    }
+    if (t.format != d.format || t.w != d.width || t.h != d.height) return -1;
+    return TextureHash(p, LevelSize(d, 0)) == t.hash ? t.index : -1;
+}
+
+std::shared_ptr<const Replacement> ReplacementPicture(int index) {
+    Replacements& r = Reps();
+    std::shared_future<std::shared_ptr<const Replacement>> f;
+    {
+        std::lock_guard<std::mutex> lock(r.lock);
+        if (index < 0 || size_t(index) >= r.entries.size()) return nullptr;
+        ReplacementEntry& e = r.entries[size_t(index)];
+        if (!e.picture.valid()) e.picture = std::async(std::launch::async, MakeReplacement, e.make, e.id).share();
+        f = e.picture;
+    }
+    if (f.wait_for(std::chrono::seconds(0)) != std::future_status::ready) return nullptr;
+    return f.get();
 }
 
 bool CopySurfaceMemory(const Surface& src, const Surface& dst, uint32_t count, uint32_t rects, uint32_t points) {

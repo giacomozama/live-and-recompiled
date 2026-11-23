@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="64" height="64" viewBox="0 0 64 64">
+<defs>
+<linearGradient id="g1" gradientUnits="userSpaceOnUse" x1="0.00" y1="1.50" x2="0.00" y2="26.50"><stop offset="0.000" stop-color="#ffffff" stop-opacity="0.027"/><stop offset="0.500" stop-color="#ffffff" stop-opacity="0.251"/><stop offset="1.000" stop-color="#ffffff" stop-opacity="0.470"/></linearGradient>
+<linearGradient id="g2" gradientUnits="userSpaceOnUse" x1="0.00" y1="37.50" x2="0.00" y2="62.50"><stop offset="0.000" stop-color="#ffffff" stop-opacity="0.475"/><stop offset="0.500" stop-color="#ffffff" stop-opacity="0.274"/><stop offset="1.000" stop-color="#ffffff" stop-opacity="0.039"/></linearGradient>
+<linearGradient id="g3" gradientUnits="userSpaceOnUse" x1="1.50" y1="0.00" x2="26.50" y2="0.00"><stop offset="0.000" stop-color="#ffffff" stop-opacity="0.025"/><stop offset="0.500" stop-color="#ffffff" stop-opacity="0.252"/><stop offset="1.000" stop-color="#ffffff" stop-opacity="0.469"/></linearGradient>
+<linearGradient id="g4" gradientUnits="userSpaceOnUse" x1="37.50" y1="0.00" x2="62.50" y2="0.00"><stop offset="0.000" stop-color="#ffffff" stop-opacity="0.476"/><stop offset="0.500" stop-color="#ffffff" stop-opacity="0.273"/><stop offset="1.000" stop-color="#ffffff" stop-opacity="0.040"/></linearGradient>
+</defs>
+<g fill="url(#g1)" stroke="url(#g1)"><rect x="31" y="1" width="2" height="26" stroke="none"/></g>
+<g fill="url(#g2)" stroke="url(#g2)"><rect x="31" y="37" width="2" height="26" stroke="none"/></g>
+<g fill="url(#g3)" stroke="url(#g3)"><rect x="1" y="31" width="26" height="2" stroke="none"/></g>
+<g fill="url(#g4)" stroke="url(#g4)"><rect x="37" y="31" width="26" height="2" stroke="none"/></g>
+<g fill="#ffffff" stroke="#ffffff" fill-opacity="1.000" stroke-opacity="1.000"><rect x="31" y="31" width="2" height="2" stroke="none"/></g>
+</svg>

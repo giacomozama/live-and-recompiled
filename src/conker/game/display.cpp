@@ -68,6 +68,7 @@
 #include "common/achievements.h"
 #include "common/menus.h"
 #include "common/mouse.h"
+#include "common/hud_art.h"
 #include "common/warp.h"
 #include "gpu/backend.h"
 #include "gpu/shaders.h"
@@ -354,6 +355,7 @@ X86_EXTERN_FUNC(__imp__sub_002A7B60);
 X86_FUNC(sub_002A7B60) {
     warp::Poll(ctx);  // a frame of the level loop: the Debug tab's warps can run
     achievements::Poll(ctx);
+    hud_art::Poll();  // the redrawn HUD art's textures, by name
     gpu::g_hud_split.store(display::HudSplit(), std::memory_order_relaxed);
     gpu::g_outlines.store(display::g_player_outlines && warp::Multiplayer() && !warp::Frontend(),
                           std::memory_order_relaxed);

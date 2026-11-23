@@ -612,6 +612,11 @@ call = "ConkerTriggerIconR"
 at = 0x20C860  # drawn
 call = "ConkerTriggerIconDone"
 
+# 0x15D280's screen quad, DrawVerticesUP: redrawn HUD art drawn larger (hud_art.cpp)
+[[hook]]
+at = 0x15D59D
+call = "ConkerScreenQuadDraw"
+
 # kSpriteDraws: the sprite routines' DrawVerticesUP calls, single player's pause prompts' icons among them, for the mouse
 [[hook]]
 at = 0x356E21
