@@ -1180,6 +1180,15 @@ private:
     void UpdateUpscaler();
     VkExtent2D PictureExtent() const;
     app::Scale UpscaleScale();
+    // app::Settings::upscaler_quality's Custom; the mode DLSS is made in for it (its model by the quality, and NGX's
+    // settings), the nearest of its size
+    static constexpr uint32_t kUpscaleCustom = 5;
+    static uint32_t DlssQuality() {
+        const app::Settings& s = app::Get();
+        if (s.upscaler_quality != kUpscaleCustom) return std::min<uint32_t>(s.upscaler_quality, 4);
+        const uint32_t p = s.upscaler_percent;
+        return p >= 100 ? 0 : p >= 63 ? 1 : p >= 54 ? 2 : p >= 42 ? 3 : 4;
+    }
     bool EnsureDlss(uint32_t w, uint32_t h, uint32_t out_w, uint32_t out_h);
     // FSR 3.1's camera for the picture in slot (view_cam_)
     void Fsr3Camera(fsr3::Evaluate& e, uint32_t slot) const;
@@ -7229,9 +7238,18 @@ app::Scale VulkanBackend::UpscaleScale() {
     VkExtent2D out = PictureExtent();
     uint32_t w = 0, h = 0;
     if (out.width < 32 || out.height < 32) return {0, 0};
-    if (fsr3_on_) fsr3::RenderSize(out.width, out.height, app::Get().upscaler_quality, w, h);
-    else if (!dlss_->render_size(out.width, out.height, int(app::Get().upscaler_quality), &w, &h))
+    // Custom (quality 5): the render size the setting's share of the output's each way, past the modes' too (DLSS's
+    // own end at 33%: it takes less)
+    const app::Settings& set = app::Get();
+    if (set.upscaler_quality == kUpscaleCustom) {
+        const uint32_t percent = std::clamp<uint32_t>(set.upscaler_percent, 10, 100);
+        w = std::max(out.width * percent / 100, 1u);
+        h = std::max(out.height * percent / 100, 1u);
+    } else if (fsr3_on_) {
+        fsr3::RenderSize(out.width, out.height, app::Get().upscaler_quality, w, h);
+    } else if (!dlss_->render_size(out.width, out.height, int(app::Get().upscaler_quality), &w, &h)) {
         return {0, 0};
+    }
     if (!w || !h) return {0, 0};
     const app::Scale scale{float(w) / float(guest_w_), float(h) / float(guest_h_)};
     const float ratio = float(out.height) / float(h);
@@ -7250,7 +7268,7 @@ app::Scale VulkanBackend::UpscaleScale() {
 
 // the upscaler made for these sizes, made again (the device idle) when they change; false when it can't be
 bool VulkanBackend::EnsureDlss(uint32_t w, uint32_t h, uint32_t out_w, uint32_t out_h) {
-    const uint32_t quality = app::Get().upscaler_quality, model = fsr3_on_ ? 0 : app::Get().dlss_model;
+    const uint32_t quality = DlssQuality(), model = fsr3_on_ ? 0 : app::Get().dlss_model;
     std::array<uint32_t, 7> want{w, h, out_w, out_h, quality + 1, model, fsr3_on_ ? 2u : 1u};
     if (want == dlss_made_) return true;
     if (dlss_made_[4]) {
@@ -7263,7 +7281,13 @@ bool VulkanBackend::EnsureDlss(uint32_t w, uint32_t h, uint32_t out_w, uint32_t 
     EndRendering();
     const bool made = fsr3_on_ ? fsr3_->Create(cmd_, w, h, out_w, out_h)
                                : dlss_->create(cmd_, w, h, out_w, out_h, int(quality), int(model));
-    if (!made) return false;
+    if (!made) {
+        // a size past what the upscaler takes (XBE_UPSCALE_PERCENT) is refused here, told once a size
+        static std::array<uint32_t, 7> told{};
+        if (told != want) LOGR("upscaler: %s refused %ux%u to %ux%u", fsr3_on_ ? "FSR 3.1" : "DLSS", w, h, out_w, out_h);
+        told = want;
+        return false;
+    }
     ForgetDrawCmd();
     dlss_made_ = want;
     dlss_reset_ = true;

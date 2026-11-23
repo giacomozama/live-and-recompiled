@@ -2438,11 +2438,15 @@ void Draw(double fps) {
                     const bool dlss = pick == 3;
                     const bool fsr3_runs = pick == 2 && fsr3_state != 0 && !D3d11();
                     if (fsr3_runs) {
-                        int quality = int(std::min<uint32_t>(s.upscaler_quality, 4));
+                        int quality = int(std::min<uint32_t>(s.upscaler_quality, 5));
                         if (Segmented("fsr3_quality", &quality,
-                                      {"native_aa", "quality", "balanced", "performance", "ultra_performance"}))
+                                      {"native_aa", "quality", "balanced", "performance", "ultra_performance", "custom"}))
                             s.upscaler_quality = uint32_t(quality);
-                        Hint("hint_how_many_pixels_fsr_3_renders");
+                        Hint("hint_how_many_pixels_fsr_3_renders", quality != 5);
+                        if (quality == 5) {  // Custom: the render size's share, past the modes' too
+                            Slider("render", &s.upscaler_percent, 10, 100, app::Settings{}.upscaler_percent);
+                            Hint("hint_the_size_the_game_is", true);
+                        }
                         Slider("dlss_sharpness", &s.dlss_sharpness, 0, 100, app::Settings{}.dlss_sharpness);
                         Hint("hint_rcas_sharpening_over_fsr_3", true);
                         if (s.dlss_sharpness > 0) {
@@ -2450,11 +2454,15 @@ void Draw(double fps) {
                             Hint("hint_how_much_of_fsr_s", true);
                         }
                     } else if (dlss && dlss_state != 4) {
-                        int quality = int(std::min<uint32_t>(s.upscaler_quality, 4));
+                        int quality = int(std::min<uint32_t>(s.upscaler_quality, 5));
                         if (Segmented("dlss_quality", &quality,
-                                      {"dlaa", "quality", "balanced", "performance", "ultra_performance"}))
+                                      {"dlaa", "quality", "balanced", "performance", "ultra_performance", "custom"}))
                             s.upscaler_quality = uint32_t(quality);
-                        Hint("hint_how_many_pixels_dlss_renders");
+                        Hint("hint_how_many_pixels_dlss_renders", quality != 5);
+                        if (quality == 5) {  // Custom: the render size's share, past the modes' too
+                            Slider("render", &s.upscaler_percent, 10, 100, app::Settings{}.upscaler_percent);
+                            Hint("hint_the_size_the_game_is", true);
+                        }
                         int model = int(std::min<uint32_t>(s.dlss_model, 3));
                         if (Segmented("dlss_model", &model, {"K", "M", "L", "by_quality"})) s.dlss_model = uint32_t(model);
                         Hint("hint_k_is_the_lightest_m", true);

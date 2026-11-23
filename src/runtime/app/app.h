@@ -32,9 +32,11 @@ struct Settings {
     uint32_t render_percent = 100;   // of the size the frame is shown at (RenderScale)
     // a temporal upscaler over the frame's pictures, which then sets the render size itself: "off", "dlss" (an NVIDIA
     // RTX GPU, with the DLSS module beside the game) or "fsr3" (AMD FSR 3.1, any GPU the Vulkan renderer runs it on);
-    // its quality, XbeDlssQuality (gpu/dlss.h), FSR 3.1's modes in the same order with native AA for DLAA
+    // its quality, XbeDlssQuality (gpu/dlss.h), FSR 3.1's modes in the same order with native AA for DLAA, then 5
+    // Custom: the render size upscaler_percent % of the output's each way
     std::string upscaler = "off";
     uint32_t upscaler_quality = 1;
+    uint32_t upscaler_percent = 33;
     // the model DLSS runs, XbeDlssModel (gpu/dlss.h): K, M, L, or NVIDIA's pick for the quality mode
     uint32_t dlss_model = 0;
     // RCAS (FSR 1's sharpening) over DLSS's or FSR 3.1's picture, in % (0 off); fsr_sharpness is FSR 1's own

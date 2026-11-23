@@ -65,7 +65,8 @@ void Load() {
     s.height = t["height"].value_or(s.height);
     s.render_percent = std::min<uint32_t>(t["render_percent"].value_or(s.render_percent), 200);
     s.upscaler = t["upscaler"].value_or(s.upscaler);
-    s.upscaler_quality = std::min<uint32_t>(t["upscaler_quality"].value_or(s.upscaler_quality), 4);
+    s.upscaler_quality = std::min<uint32_t>(t["upscaler_quality"].value_or(s.upscaler_quality), 5);
+    s.upscaler_percent = std::clamp<uint32_t>(t["upscaler_percent"].value_or(s.upscaler_percent), 10, 100);
     s.dlss_model = std::min<uint32_t>(t["dlss_model"].value_or(s.dlss_model), 3);
     s.dlss_sharpness = std::min<uint32_t>(t["dlss_sharpness"].value_or(s.dlss_sharpness), 100);
     s.dlss_fur_auto = t["dlss_fur_auto"].value_or(s.dlss_fur_auto);
@@ -163,6 +164,7 @@ toml::table Table() {
                   {"render_percent", int64_t(s.render_percent)},
                   {"upscaler", s.upscaler},
                   {"upscaler_quality", int64_t(s.upscaler_quality)},
+                  {"upscaler_percent", int64_t(s.upscaler_percent)},
                   {"dlss_sharpness", int64_t(s.dlss_sharpness)},
                   {"dlss_model", int64_t(s.dlss_model)},
                   {"dlss_fur_auto", s.dlss_fur_auto},

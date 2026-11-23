@@ -309,12 +309,17 @@ constexpr Line kLines[] = {
      "Qualità FSR 3.1", "FSR 3.1画質"},
     {"native_aa", "Native AA", "Natives AA", "AA natif", "AA nativo", "AA nativo", "ネイティブAA"},
     {"hint_how_many_pixels_fsr_3_renders",
-     "How many pixels the game renders before FSR 3.1 scales them up. **Native AA** renders them all.",
-     "Wie viele Pixel das Spiel rendert, bevor FSR 3.1 sie hochskaliert. **Natives AA** rendert alle.",
-     "Combien de pixels le jeu calcule avant que FSR 3.1 ne les agrandisse. **AA natif** les calcule tous.",
-     "Cuántos píxeles dibuja el juego antes de que FSR 3.1 los amplíe. **AA nativo** los dibuja todos.",
-     "Quanti pixel il gioco disegna prima che FSR 3.1 li ingrandisca. **AA nativo** li disegna tutti.",
-     "FSR 3.1が拡大する前にゲームが描画するピクセル数です。**ネイティブAA**ではすべて描画します。"},
+     "How many pixels the game renders before FSR 3.1 scales them up. **Native AA** renders them all, **Custom** "
+     "takes the share from a slider.",
+     "Wie viele Pixel das Spiel rendert, bevor FSR 3.1 sie hochskaliert. **Natives AA** rendert alle, bei **Eigene** "
+     "bestimmt ein Regler den Anteil.",
+     "Combien de pixels le jeu calcule avant que FSR 3.1 ne les agrandisse. **AA natif** les calcule tous, "
+     "**Personnalisé** prend la part d'un curseur.",
+     "Cuántos píxeles dibuja el juego antes de que FSR 3.1 los amplíe. **AA nativo** los dibuja todos, "
+     "**Personalizado** toma la proporción de un control deslizante.",
+     "Quanti pixel il gioco disegna prima che FSR 3.1 li ingrandisca. **AA nativo** li disegna tutti, "
+     "**Personalizzato** prende la quota da un cursore.",
+     "FSR 3.1が拡大する前にゲームが描画するピクセル数です。**ネイティブAA**ではすべて描画し、**カスタム**ではスライダーで割合を決めます。"},
     {"hint_rcas_sharpening_over_fsr_3",
      "AMD's contrast-adaptive sharpening over FSR 3.1's picture. **0** leaves it as FSR 3.1 made it.",
      "AMDs kontrastadaptives Schärfen über dem Bild von FSR 3.1. Bei **0** bleibt es, wie FSR 3.1 es erzeugt hat.",
@@ -345,6 +350,7 @@ constexpr Line kLines[] = {
     {"performance", "Performance", "Leistung", "Performance", "Rendimiento", "Prestazioni", "パフォーマンス"},
     {"ultra_performance", "Ultra performance", "Ultra-Leistung", "Ultra performance", "Ultra rendimiento",
      "Ultra prestazioni", "ウルトラパフォーマンス"},
+    {"custom", "Custom", "Eigene", "Personnalisé", "Personalizado", "Personalizzato", "カスタム"},
     {"dlss_model", "DLSS model", "DLSS-Modell", "Modèle DLSS", "Modelo de DLSS", "Modello DLSS", "DLSSモデル"},
     {"adaptive_frame_interpolation", "Adaptive frame interpolation", "Adaptive Bildinterpolation",
      "Interpolation d'images adaptative", "Interpolación de fotogramas adaptativa",
@@ -471,12 +477,17 @@ constexpr Line kLines[] = {
      "**Vulkan** è l'impostazione predefinita. **OpenGL** è per le schede grafiche senza Vulkan; ciò che non può disegnare è in grigio in questo menu.",
      "**Vulkan** が標準です。**OpenGL** はVulkanのないグラフィックスカード向けで、描画できないものはこのメニューでグレー表示になります。"},
     {"hint_how_many_pixels_dlss_renders",
-     "How many pixels the game renders before DLSS scales them up. **DLAA** renders them all.",
-     "Wie viele Pixel das Spiel rendert, bevor DLSS sie hochskaliert. **DLAA** rendert alle.",
-     "Combien de pixels le jeu calcule avant que DLSS ne les agrandisse. **DLAA** les calcule tous.",
-     "Cuántos píxeles dibuja el juego antes de que DLSS los amplíe. **DLAA** los dibuja todos.",
-     "Quanti pixel il gioco disegna prima che DLSS li ingrandisca. **DLAA** li disegna tutti.",
-     "DLSSが拡大する前にゲームが描画するピクセル数です。**DLAA**はすべて描画します。"},
+     "How many pixels the game renders before DLSS scales them up. **DLAA** renders them all, **Custom** takes the "
+     "share from a slider.",
+     "Wie viele Pixel das Spiel rendert, bevor DLSS sie hochskaliert. **DLAA** rendert alle, bei **Eigene** bestimmt "
+     "ein Regler den Anteil.",
+     "Combien de pixels le jeu calcule avant que DLSS ne les agrandisse. **DLAA** les calcule tous, **Personnalisé** "
+     "prend la part d'un curseur.",
+     "Cuántos píxeles dibuja el juego antes de que DLSS los amplíe. **DLAA** los dibuja todos, **Personalizado** "
+     "toma la proporción de un control deslizante.",
+     "Quanti pixel il gioco disegna prima che DLSS li ingrandisca. **DLAA** li disegna tutti, **Personalizzato** "
+     "prende la quota da un cursore.",
+     "DLSSが拡大する前にゲームが描画するピクセル数です。**DLAA**はすべて描画し、**カスタム**ではスライダーで割合を決めます。"},
     {"hint_the_size_the_game_is", "The size the game is drawn at, as a share of the screen's. Less is faster, more is sharper.", "Die Größe, in der das Spiel gezeichnet wird, als Anteil des Bildschirms. Weniger ist schneller, mehr schärfer.", "La taille de dessin du jeu, en part de celle de l'écran. Moins est plus rapide, plus est plus net.", "El tamaño con que se dibuja el juego, como parte del de la pantalla. Menos es más rápido, más es más nítido.", "La dimensione con cui il gioco viene disegnato, come quota di quella dello schermo. Meno è più veloce, più è più nitido.", "画面サイズに対する描画サイズの割合です。小さいと高速に、大きいと鮮明になります。"},
     {"hint_how_strongly_the_upscaled_picture", "How strongly the upscaled picture is sharpened.", "Wie stark das hochskalierte Bild geschärft wird.", "À quel point l'image agrandie est affinée.", "Cuánto se enfoca la imagen ampliada.", "Quanto viene nitidita l'immagine ingrandita.", "拡大した画像をどれだけシャープにするかです。"},
     {"hint_keeps_textures_sharp_at_a", "Keeps textures sharp when seen at a slant, such as the ground ahead.", "Hält Texturen scharf, wenn sie schräg gesehen werden, etwa der Boden vor einem.", "Garde les textures nettes vues de biais, comme le sol devant soi.", "Mantiene nítidas las texturas vistas de reojo, como el suelo de enfrente.", "Mantiene nitide le texture viste di sbieco, come il terreno davanti a sé.", "斜めから見たテクスチャ（前方の地面など）を鮮明に保ちます。"},
