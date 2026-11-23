@@ -862,9 +862,12 @@ std::pair<float, float> StepOf(const Frame& prev, const Frame& cur, const Snap& 
 // the paired one only within the sprite's own size. A paired draw judged another sprite yet within half its size of
 // where it was is the same letter with other values: a thought bubble's letters each bob and change a frame on, and
 // one of 'AHH!' took the other H, byte for byte its own a frame before, the two drawn swapped half way (capture
-// 182652 pic 70). It is kept as the frame has it
+// 182652 pic 70). It is kept as the frame has it. Near is as far as kNear draws each side: a string's letters follow
+// its first, each paired as far on from the first's match, and when that slipped by a few letters a letter took the
+// same glyph further along, carried whole, its own out of reach of three: the E's of 'hundred years', four draws
+// apart, swapped half way. Recording draws no followers, so the captures never showed it
 void Nearest(const Frame& prev, Frame& cur, uint32_t n, SpriteBox& box) {
-    constexpr int32_t kNear = 3;
+    constexpr int32_t kNear = 32;
     constexpr float kSame = 0.5f;  // of the sprite's size
     Snap& sn = cur.snaps[n];
     int32_t base = sn.from;

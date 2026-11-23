@@ -957,13 +957,19 @@ bool subtitles::BubblePlaced(float& x, float& y, float& w, float& h) {
     return true;
 }
 
-// from ConkerTextQuad: a glyph's quad; one of a bubble's words into its box
+// from ConkerTextQuad: a glyph's quad; one of a bubble's words into its box. Drawn unseen, the quad is then folded
+// to its first corner, so it covers no pixel: alpha 0 didn't hide the sweep's glyphs, every step of the scroll drawn
+// over the page for its first frame
 void subtitles::BubbleGlyph() {
     if (!g_words) return;
     float sx[4], sy[4];
     if (!menus::GlyphScreen(sx, sy)) return;
     g_words_now.Add(std::min({sx[0], sx[1], sx[2], sx[3]}), std::min({sy[0], sy[1], sy[2], sy[3]}),
                     std::max({sx[0], sx[1], sx[2], sx[3]}), std::max({sy[0], sy[1], sy[2], sy[3]}));
+    if (!g_unseen) return;
+    constexpr uint32_t kQuad = 0x807230, kVertex = 0x1C;  // the glyph's four vertices (x, y, z first)
+    for (uint32_t i = 1; i < 4; i++)
+        for (uint32_t k = 0; k < 12; k += 4) kernel::W32(kQuad + i * kVertex + k, R32(kQuad + k));
 }
 
 X86_EXTERN_FUNC(__imp__sub_00356750);
