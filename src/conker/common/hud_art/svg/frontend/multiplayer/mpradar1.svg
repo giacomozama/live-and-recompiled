@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<svg
+   width="64"
+   height="64"
+   viewBox="0 0 64 64"
+   version="1.1"
+   id="svg1"
+   sodipodi:docname="mpradar1.svg"
+   xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
+   xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
+   xmlns="http://www.w3.org/2000/svg"
+   xmlns:svg="http://www.w3.org/2000/svg">
+  <sodipodi:namedview
+     id="namedview1"
+     pagecolor="#ffffff"
+     bordercolor="#666666"
+     borderopacity="1.0"
+     inkscape:showpageshadow="2"
+     inkscape:pageopacity="0.0"
+     inkscape:pagecheckerboard="0"
+     inkscape:deskcolor="#d1d1d1" />
+  <defs
+     id="defs1">
+    <clipPath
+       id="d">
+      <circle
+         cx="32"
+         cy="32"
+         r="31"
+         id="circle1" />
+    </clipPath>
+  </defs>
+  <g
+     opacity="0.8"
+     clip-path="url(#d)"
+     id="g1">
+    <rect
+       width="64"
+       height="64"
+       fill="#bab8ba"
+       id="rect1" />
+    <polygon
+       points="31.3,30.8 -0.5,-1.8 63.1,-1.8"
+       fill="#fff"
+       id="polygon1" />
+  </g>
+</svg>

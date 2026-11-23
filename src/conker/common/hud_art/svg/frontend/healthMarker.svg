@@ -1,0 +1,116 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<svg
+   width="128"
+   height="32"
+   viewBox="0 0 128 32"
+   version="1.1"
+   id="svg10"
+   sodipodi:docname="healthMarker.svg"
+   xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
+   xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
+   xmlns="http://www.w3.org/2000/svg"
+   xmlns:svg="http://www.w3.org/2000/svg">
+  <sodipodi:namedview
+     id="namedview10"
+     pagecolor="#ffffff"
+     bordercolor="#666666"
+     borderopacity="1.0"
+     inkscape:showpageshadow="2"
+     inkscape:pageopacity="0.0"
+     inkscape:pagecheckerboard="0"
+     inkscape:deskcolor="#d1d1d1" />
+  <defs
+     id="defs4">
+    <radialGradient
+       id="p"
+       gradientUnits="userSpaceOnUse"
+       cx="63.99"
+       cy="23.99"
+       r="7.26">
+      <stop
+         offset="0"
+         stop-color="#65cbff"
+         stop-opacity="0.547"
+         id="stop1" />
+      <stop
+         offset="0.333"
+         stop-color="#65cbff"
+         stop-opacity="0.674"
+         id="stop2" />
+      <stop
+         offset="0.667"
+         stop-color="#65cbff"
+         stop-opacity="0.882"
+         id="stop3" />
+      <stop
+         offset="1"
+         stop-color="#65cbff"
+         stop-opacity="0.992"
+         id="stop4" />
+    </radialGradient>
+  </defs>
+  <path
+     d="M0.39,-1 C1.08,9.67 5.69,16.35 17.49,16.35 L24.07,15.71 C10.68,15.71 7.14,11.31 5.81,-1 Z"
+     fill="#65cbff"
+     fill-opacity="0.356"
+     id="path4" />
+  <g
+     opacity="0.453"
+     id="g6">
+    <path
+       d="M0.39,-1 C1.08,9.67 5.69,16.35 17.49,16.35"
+       fill="none"
+       stroke="#65cbff"
+       stroke-width="1.37"
+       id="path5" />
+    <path
+       d="M5.81,-1 C7.14,11.31 10.68,15.71 24.07,15.71"
+       fill="none"
+       stroke="#65cbff"
+       stroke-width="1.37"
+       id="path6" />
+    <rect
+       x="17.49"
+       y="15.03"
+       width="40.51"
+       height="2.00"
+       fill="#65cbff"
+       id="rect6" />
+  </g>
+  <g
+     transform="matrix(-1 0 0 1 128 0)"
+     id="g10">
+    <path
+       d="M2.47,-1 C2.06,6.16 6.71,16.33 17.86,16.33 L23.77,15.56 C11.21,15.56 8.50,8.19 7.58,-1 Z"
+       fill="#65cbff"
+       fill-opacity="0.357"
+       id="path7" />
+    <g
+       opacity="0.453"
+       id="g9">
+      <path
+         d="M2.47,-1 C2.06,6.16 6.71,16.33 17.86,16.33"
+         fill="none"
+         stroke="#65cbff"
+         stroke-width="1.30"
+         id="path8" />
+      <path
+         d="M7.58,-1 C8.50,8.19 11.21,15.56 23.77,15.56"
+         fill="none"
+         stroke="#65cbff"
+         stroke-width="1.30"
+         id="path9" />
+      <rect
+         x="17.86"
+         y="14.91"
+         width="40.14"
+         height="2.07"
+         fill="#65cbff"
+         id="rect9" />
+    </g>
+  </g>
+  <path
+     d="M60,16 H68 V20 H72 V28 H68 V32 H60 V28 H56 V20 H60 Z"
+     fill="url(#p)"
+     id="path10" />
+</svg>
