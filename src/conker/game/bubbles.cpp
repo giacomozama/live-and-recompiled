@@ -642,25 +642,23 @@ void DrawBubble(X86Context& ctx, uint32_t rec) {
             band(axe, aye, bxe, bye, ca, cb, axo, ayo, bxo, byo, ca & 0x00FFFFFFu, cb & 0x00FFFFFFu);
         }
     };
-    // the shadow first, under the bubble's soft edge: the ellipse's alone (the tail casts none: its sides' came out a
-    // thin skewed sliver)
-    // It fades out under the tail, which is see-through too: over the shadow it came out darker than the bubble. Gone
-    // within its base's arc, back over as far again each side
+    // the shadow first, under the bubble's soft edge, out from the whole outline, the tail's sides too: the outline's
+    // miter normals, so where the tail leaves the ellipse the bands meet instead of overlapping, and none lies under
+    // the bubble, which is see-through (the shadow under the tail came out darker than the bubble). The ellipse's
+    // alone, faded out about the tail's base, left a diagonal gap beside it where the tail cast none. The tip casts
+    // none, its sides' shadow fading out toward it, and its normal is cut short: out along the tail by the blur, the
+    // two sides' bands met in a dark point past the tip
     // (a thought's, the cloud cast along the ellipse's normals: by its own, sharp in its dips, it threw spikes out)
-    const std::vector<Point> e = g_thought ? smooth_normals : Outline(hx, hy, false, 0, 0, 0, 0);
-    const float under = tail ? (gap_to - gap_from) * 0.5f : 0.0f;
-    auto clear_of_tail = [&](size_t i) {
-        if (!tail) return 1.0f;
-        const float t = kTurn * float(i % e.size()) / float(e.size());  // the ellipse's points by angle
-        const float d = std::fabs(std::remainder(t - t0, kTurn));
-        const float f = std::clamp((d - under) / std::max(under, 1e-3f), 0.0f, 1.0f);
-        return f * f * (3 - 2 * f);
-    };
+    std::vector<Point> e = g_thought ? smooth_normals : p;
+    for (Point& q : e) {
+        const float l = std::hypot(q.nx, q.ny);
+        if (q.tip && l > 0.25f) q.nx *= 0.25f / l, q.ny *= 0.25f / l;
+    }
+    auto cast_at = [&](const Point& q) { return q.tip ? 0.0f : cast(q.nx, q.ny); };
     for (size_t i = 0; i < e.size(); i++) {
         const Point& a = e[i];
         const Point& b = e[(i + 1) % e.size()];
-        shadow_band(a, b, 0, 0, clear_of_tail(i) * cast(a.nx, a.ny), clear_of_tail(i + 1) * cast(b.nx, b.ny), blur,
-                    1.0f);
+        shadow_band(a, b, 0, 0, cast_at(a), cast_at(b), blur, 1.0f);
     }
     // the fill: the whole ellipse fanned from its middle, and the tail fanned from its tip over the ellipse's arc
     // under its base, so no triangle reaches from the middle to the tip (its shading streaked across the bubble). Their
