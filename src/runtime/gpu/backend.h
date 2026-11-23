@@ -105,6 +105,13 @@ public:
     virtual void MotionPasses(bool /*on*/, const uint32_t* /*slots*/, uint32_t /*n*/) {}
     virtual void DrawMotionAt(uint32_t /*p*/, const State& /*s*/, const Before& /*before*/, uint32_t /*prim*/,
                               uint32_t /*start*/, uint32_t /*count*/, const uint8_t* /*indices*/) {}
+    // the HUD drawn at the output's size: set around Present while the frame's commands can be drawn again (null
+    // otherwise). Present, a picture upscaled, calls it for a slot (numbered as Keep and Between do) whose 2D it can
+    // take there: the frame's draws from draw from (0 its first) drawn again at that picture's time, the draws before
+    // only stepped over; total, the picture's draws as the backend counted them (a frame counted otherwise draws none:
+    // false)
+    using HudDraw = bool (*)(void* self, uint32_t slot, uint32_t from, uint32_t total);
+    virtual void SetHudDraw(HudDraw /*draw*/, void* /*self*/) {}
     // the CPU is about to touch this resource's memory: write GPU results back first
     virtual void Sync(uint32_t data_va, uint32_t size) = 0;
     // a lock that does not wait for the GPU (NOOVERWRITE): a result a frame or two old is what the console gives too

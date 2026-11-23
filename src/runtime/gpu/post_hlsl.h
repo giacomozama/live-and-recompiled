@@ -85,7 +85,7 @@ float4 mask(O i) : SV_Target {
 // laid back over it. Where the mask (t2, kHdrHlsl's, at the picture's size) says the finished picture (t1) is no
 // longer its 3D, the finished picture upscaled itself: Catmull-Rom from 9 bilinear taps, held to its nearest 4
 // pixels' range so the text's edges don't ring. p.xy: one output pixel; p.zw: the picture's size; q.x: tint what came
-// from the picture (XBE_HUD_SPLIT_VIEW)
+// from the picture (XBE_HUD_SPLIT_VIEW); q.y: the upscaler's alone, the 2D to be drawn again over it (HudNative); q.z: the picture alone, scaled up
 inline const char* kHudApartHlsl = R"(
 cbuffer B : register(b1) { float4 p; float4 q; };
 Texture2D up : register(t0);
@@ -104,8 +104,8 @@ float3 Tap(float x, float y) { return img.SampleLevel(ls, float2(x, y), 0).rgb; 
 float4 hudmix(O i) : SV_Target {
     float4 u = up.Load(int3(int2(i.p.xy), 0));
     float2 uv = i.p.xy * p.xy;
-    float m = msk.SampleLevel(ls, uv, 0).r;
-    if (m >= 1) return u;
+    float m = q.z > 0 ? 0 : msk.SampleLevel(ls, uv, 0).r;
+    if (m >= 1 || q.y > 0) return u;
     float2 size = p.zw;
     float2 pos = uv * size - 0.5;
     float2 tc = floor(pos);

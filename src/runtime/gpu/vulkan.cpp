@@ -965,6 +965,7 @@ public:
             hud_.Roll(guest_w_);
             hud_.rolled = true;
         }
+        if (!on && replay_) replay_draws_ = pass_serial_;  // the picture's draws, for its FinishFront (HudAt::total)
         replay_ = on;
         pass_serial_ = skip_to_ = 0;
         kept_run_next_ = kept_draw_next_ = 0;
@@ -1110,6 +1111,25 @@ private:
     }
     // the 3D copy and the masks made: for the highlights or HudApart
     bool Keep3d() const { return HdrExpand() || HudApart(); }
+    // the HUD drawn at the output's size: a picture's draws after its first copy (2D, the title's 3D after it: menu
+    // text and models, markers, and its passes) drawn again over the upscaler's picture of the 3D before, at the
+    // output's size (the frame's target and the 3D's depth, scaled up from the copy's moment, standing in at it,
+    // BeginHud); a picture with no 3D, all its draws. Not after a surface copy or a CPU upload in the picture (then
+    // HudApart's). XBE_HUD_NATIVE=0 off
+    bool HudNativeWanted() const {
+        static const bool off = [] {
+            const char* e = diag::Env("XBE_HUD_NATIVE");
+            return e && *e == '0';
+        }();
+        return HudApart() && !off;
+    }
+    bool HudNative() const { return HudNativeWanted() && hud_draw_; }
+    void SetHudDraw(HudDraw draw, void* self) override {
+        hud_draw_ = draw;
+        hud_self_ = self;
+    }
+    void EndHud();
+    void HudLost(const char* why);
     void KeepHdr3d(Target& t);
     void MakeHdrMask(Target& t, ImageRef& mask, ImageRef* copy = nullptr);
     bool HdrCompare(Target& t, ImageRef& dst);
@@ -1144,9 +1164,10 @@ private:
     }
     bool Jittering() const;
     std::array<float, 2> Jitter(uint32_t slot) const;
-    // the frame's 3D, jittered for a temporal upscaler; never its 2D or the passes over it (bound_rt_ bound)
+    // the frame's 3D, jittered for a temporal upscaler; never its 2D or the passes over it (bound_rt_ bound), nor
+    // what is drawn again at the output's size after the upscaler (HudNative: the menus' 3D text shook)
     std::array<float, 2> DrawJitter(bool flat) const {
-        if (flat || !bound_rt_ || bound_rt_->gw != guest_w_ || bound_rt_->gh != guest_h_) return {};
+        if (flat || hud_replay_ || !bound_rt_ || bound_rt_->gw != guest_w_ || bound_rt_->gh != guest_h_) return {};
         return Jitter(pic_slot_);
     }
     void ShowMotion(std::vector<Image*>& shows, const std::vector<Image*>& sources,
@@ -1281,7 +1302,7 @@ private:
     void StartCapture();
     void ResizeSwap();
     void UploadGammaRamp();
-    void FinishFront(Target& t, ImageRef* mask = nullptr, ImageRef* copy = nullptr);
+    void FinishFront(Target& t, ImageRef* mask = nullptr, ImageRef* copy = nullptr, int slot = -1);
     void EndPicture();
     bool KeepPicture(const Surface& front, uint32_t slot);
     bool AcquireImage(uint32_t& bi, VkSemaphore acquired);
@@ -1425,6 +1446,46 @@ private:
     // HudApart: each picture's 3D copy, the front buffer's alone and frame generation's per slot, as gen_masks_
     ImageRef front_3d_;
     std::vector<ImageRef> gen_3d_;
+    // HudNative: the picture being drawn's copy (KeepHdr3d): the draw it came before (from, the end of the picture
+    // when it came after them all), its target, whether the draws after can be drawn again at the output's size, the
+    // picture's draws (total, at FinishFront); each picture slot's as its FinishFront left it
+    // zs: the 3D's depth surface, its depth kept at the copy (hud_z_pic_, per slot hud_z_); whole: no copy, the
+    // picture's draws all drawn again; first: the copy given the upscaler is the first (later ones were taken as 3D
+    // came after 2D), so the picture is right only with its draws after it drawn again
+    struct HudAt {
+        uint32_t from = 0, rt = 0, total = 0, zs = 0;
+        bool ok = false, whole = false, first = false;
+        const char* lost = nullptr;  // why not, for XBE_HUD_NATIVE_TRACE
+    };
+    HudAt hud_pic_;
+    std::array<HudAt, kMaxGen> hud_at_{};
+    ImageRef hud_first_;  // the picture's first copy, when more came after it
+    ImageRef hud_z_pic_;  // the picture's depth at its first copy
+    std::array<ImageRef, kMaxGen> hud_z_;
+    ImageRef hud_zout_;   // that depth at the output's size while the HUD is drawn again
+    bool hud_unsafe_ = false;  // a copy or CPU upload in the picture: no whole picture drawn again
+    void KeepHudDepth(Target& t);
+    uint32_t hud_copies_ = 0;     // the picture's copies so far
+    uint32_t replay_draws_ = 0;   // the draws of the picture drawn again last (Replaying(false) starts the count over)
+    static constexpr uint32_t kHudAtEnd = ~0u;  // HudAt::from: the copy came after the picture's draws
+    bool tracking_draw_ = false;  // TrackPost runs, for the draw pass_serial_ counts
+    bool hud_replay_ = false;     // the HUD being drawn again at the output's size (BeginHud)
+    HudDraw hud_draw_ = nullptr;  // Backend::SetHudDraw's
+    void* hud_self_ = nullptr;
+    struct HudSavedTarget {
+        ImageRef res, ms, fb, zb;
+        uint32_t w = 0, h = 0;
+        bool ms_ahead = false, res_ahead = false;
+        Target* t = nullptr;
+    };
+    struct HudSaved {
+        HudSavedTarget rt, zs;
+        FILE* cap = nullptr;
+    } hud_saved_;
+    static void HudStandIn(HudSavedTarget& sv, Target& t, ImageRef image);
+    void HudPutBack(HudSavedTarget& sv);
+    void HudTrace(uint32_t slot, bool split, bool native, const HudAt& at);
+    bool BeginHud(const HudAt& at, uint32_t slot, ImageRef& out);
     bool hdr_metadata_ = false;  // VK_EXT_hdr_metadata
     float hdr_meta_sent_ = 0;    // the peak it last told the swap chain, 0 none yet
     uint32_t swap_gen_ = 1;    // the frame generation it has images for
@@ -3376,7 +3437,7 @@ bool VulkanBackend::BindTargets(const State& s) {
     Target* ds = s.rs[kRsZEnable] || s.rs[kRsStencilEnable] ? EnsureTarget(s.zs, true) : nullptr;
     if (rt && ds && (rt->w != ds->w || rt->h != ds->h)) ds = nullptr;
     if (!rt && !ds) return false;
-    if (rt && LatchCpuWrite(*rt)) UploadTarget(*rt, s.rt);
+    if (rt && !hud_replay_ && LatchCpuWrite(*rt)) UploadTarget(*rt, s.rt);
     // multisampled when every target has samples, else into res
     bool ms = (!rt || rt->ms) && (!ds || ds->ms);
     for (Target* t : {rt, ds}) {
@@ -3509,6 +3570,8 @@ ImageRef VulkanBackend::CreatePixelTexture(const std::vector<uint8_t>& px, uint3
 
 // CPU pixels of a color surface into its host target, scaled
 void VulkanBackend::UploadTarget(Target& t, const Surface& s) {
+    if (hud_copies_) HudLost("the CPU wrote a target after the copy");
+    if (!hud_replay_) hud_unsafe_ = true;
     g_perf.rtups++;
     writes_++;
     TextureDesc d;
@@ -6010,6 +6073,12 @@ bool VulkanBackend::ReadsTarget(const State& s) {
 // a 3D draw onto the frame-sized target marks it; the first screen space one after that draws the effects under it.
 // The occlusion goes before: at the first screen space draw onto the frame or reading it, under the title's own passes
 void VulkanBackend::TrackPost(const State& s, bool flat, bool can_copy) {
+    if (hud_replay_) return;
+    struct Tracking {
+        bool& on;
+        explicit Tracking(bool& o) : on(o) { on = true; }
+        ~Tracking() { on = false; }
+    } tracking{tracking_draw_};
     // XBE_POST_TRACE: the outline marks' draws (stencil writing the top two bits a mark, d3d::OutlineMark)
     if (g_outlines.load(std::memory_order_relaxed)) {
         const bool marked = s.rs[kRsStencilEnable] && (SimpleState(s, kMStencilWriteMask) & 0xC0) == 0xC0 &&
@@ -7282,22 +7351,39 @@ void VulkanBackend::Upscale(std::vector<Image*>& shows, const std::vector<Image*
         Image& motion = moved ? *m.velocity : *dlss_still_motion_;
         Image* copy = i < copies.size() ? copies[i] : nullptr;
         Image* mask = i < masks.size() ? masks[i] : nullptr;
-        const bool split = HudApart() && copy && mask && copy->w == color.w && copy->h == color.h &&
-                           mask->w == color.w && mask->h == color.h;
+        const bool copied = HudApart() && copy && mask && copy->w == color.w && copy->h == color.h &&
+                            mask->w == color.w && mask->h == color.h;
+        // HudNative: what came after the picture's first copy (all of a picture without 3D) drawn again over the
+        // upscaled 3D, into an image of the frame target's format (the draws' pipelines are made for it)
+        const HudAt& hud = hud_at_[slots[i] % kMaxGen];
+        bool native = HudNative() && hud.ok && (hud.whole || copied);
+        VkFormat dst_fmt = VK_FORMAT_R8G8B8A8_UNORM;
+        if (native) {
+            auto it = targets_.find(SizedTargetKey(hud.rt, false, 0, 0));
+            native = it != targets_.end() && it->second.res && !it->second.depth;
+            if (native) dst_fmt = it->second.fmt;
+        }
+        // a first copy (what came after it left out) is the upscaler's only with that drawn again; else the picture
+        const bool split = copied && !hud.whole && (native || !hud.first);
+        const bool via_raw = split || native;  // the upscaler's into raw, then into dst
         Image& input = split ? *copy : color;
+        HudTrace(slots[i], split, native, hud);
         ImageRef& dst = dlss_out_[i % kMaxGen];
         ImageRef& raw = dlss_raw_[i % kMaxGen];
         for (ImageRef* r : {&dst, &raw}) {
-            if (r == &raw && !split) continue;
+            if (r == &raw && !via_raw) continue;
             ImageRef& im = *r;
-            if (im && im->w == out.width && im->h == out.height) continue;
+            // the upscaler writes RGBA8 as storage; HudNative's dst, of the frame's format, is only drawn into
+            const VkFormat fmt = r == &dst ? dst_fmt : VK_FORMAT_R8G8B8A8_UNORM;
+            const bool storage = fmt == VK_FORMAT_R8G8B8A8_UNORM;
+            if (im && im->w == out.width && im->h == out.height && im->format == fmt) continue;
             if (im) Retire(im);
-            im = NewImage({.fmt = VK_FORMAT_R8G8B8A8_UNORM, .w = out.width, .h = out.height,
-                           .usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+            im = NewImage({.fmt = fmt, .w = out.width, .h = out.height,
+                           .usage = (storage ? VK_IMAGE_USAGE_STORAGE_BIT : 0u) | VK_IMAGE_USAGE_SAMPLED_BIT |
                                     VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT});
             if (!im) return;
         }
-        Image& made = split ? *raw : *dst;  // what the upscaler writes
+        Image& made = via_raw ? *raw : *dst;  // what the upscaler writes
         for (Image* im : {&input, &depth, &motion}) Transition(*im, kRead);
         Transition(made, VK_IMAGE_LAYOUT_GENERAL);
         Barrier();
@@ -7343,20 +7429,153 @@ void VulkanBackend::Upscale(std::vector<Image*>& shows, const std::vector<Image*
         ForgetDrawCmd();  // NGX or FSR bound its own pipeline and descriptors
         if (!ok) continue;
         dlss_reset_ = false;
-        if (split) {
+        if (via_raw) {
             // XBE_HUD_SPLIT_VIEW=1 tints what came from the picture itself, the 2D and what it covers
             static const float view = diag::Env("XBE_HUD_SPLIT_VIEW") ? 1.0f : 0.0f;
-            for (Image* im : {&made, &color, mask}) Transition(*im, kRead);
-            const VkImageView views[3] = {made.view, color.Sampled(), mask->view};
-            const float p[8] = {1.0f / float(out.width), 1.0f / float(out.height), float(color.w), float(color.h),
-                                view};
+            for (Image* im : {&made, &color}) Transition(*im, kRead);
+            if (split) Transition(*mask, kRead);
+            const VkImageView views[3] = {made.view, color.Sampled(), split ? mask->view : made.view};
+            float p[8] = {1.0f / float(out.width), 1.0f / float(out.height), float(color.w), float(color.h),
+                          view, native ? 1.0f : 0.0f};
             Pass(kHudApartHlsl, "hudmix", dst->format, *dst, dst->w, dst->h, views, p, -1);
+            // what came after the copy drawn again at the output's size; when that drew nothing (the frame's draws
+            // counted otherwise), laid over as HudApart's, or the picture itself scaled up where the upscaler had
+            // only its first copy (what came after it isn't in it) or no copy
+            if (native) {
+                bool drawn = false;
+                if (BeginHud(hud, slots[i], dst)) {
+                    drawn = hud_draw_(hud_self_, slots[i], hud.from, hud.total);
+                    EndHud();
+                }
+                if (!drawn) {
+                    p[5] = 0;
+                    p[6] = split && !hud.first ? 0.0f : 1.0f;
+                    Transition(made, kRead);
+                    Pass(kHudApartHlsl, "hudmix", dst->format, *dst, dst->w, dst->h, views, p, -1);
+                }
+            }
         }
         Transition(*dst, kRead);
         shows[i] = dst.get();
         dlss_src_[i % kMaxGen] = &color;
         if (i + 1 == sources.size()) last = dst;
     }
+}
+
+// HudNative: a target standing in at the output's size, image in its place, while the picture's draws are drawn again;
+// sv keeps what it had, HudPutBack puts it back
+void VulkanBackend::HudStandIn(HudSavedTarget& sv, Target& t, ImageRef image) {
+    sv.t = &t;
+    sv.w = std::exchange(t.w, image->w);
+    sv.h = std::exchange(t.h, image->h);
+    sv.res = std::exchange(t.res, std::move(image));
+    sv.ms = std::exchange(t.ms, nullptr);
+    sv.fb = std::exchange(t.fb, nullptr);
+    sv.zb = std::exchange(t.zb, nullptr);
+    sv.ms_ahead = std::exchange(t.ms_ahead, false);
+    sv.res_ahead = std::exchange(t.res_ahead, false);
+}
+
+// what the draws made at the output's size (a copy read while drawing to it, a depth's bytes) retired, the GPU may
+// still read them
+void VulkanBackend::HudPutBack(HudSavedTarget& sv) {
+    if (!sv.t) return;
+    Target& t = *sv.t;
+    for (ImageRef* made : {&t.fb, &t.zb})
+        if (*made) Retire(std::exchange(*made, nullptr));
+    t.res = std::move(sv.res);
+    t.ms = std::move(sv.ms);
+    t.fb = std::move(sv.fb);
+    t.zb = std::move(sv.zb);
+    t.w = sv.w;
+    t.h = sv.h;
+    t.ms_ahead = sv.ms_ahead;
+    t.res_ahead = sv.res_ahead;
+    sv = {};
+}
+
+// HudNative: the frame's target (at.rt) standing in at the output's size, out its image, and the 3D's depth (at.zs)
+// with it, scaled up from the depth as the first copy was taken (hud_z_[slot]); false, nothing changed, when the
+// frame's target is gone or of another format than out. Without a depth kept, draws testing it go without
+bool VulkanBackend::BeginHud(const HudAt& at, uint32_t slot, ImageRef& out) {
+    auto it = targets_.find(SizedTargetKey(at.rt, false, 0, 0));
+    if (it == targets_.end() || !it->second.res || it->second.depth || it->second.fmt != out->format) return false;
+    Target& t = it->second;
+    FlushRun();
+    EndRendering();
+    HudSaved& sv = hud_saved_;
+    // the depth at the output's size: cleared, then the kept one drawn in, scaled up
+    const ImageRef& kept = hud_z_[slot % kMaxGen];
+    auto zit = at.zs ? targets_.find(SizedTargetKey(at.zs, true, guest_w_, guest_h_)) : targets_.end();
+    if (zit != targets_.end() && zit->second.res && kept && kept->format == zit->second.res->format) {
+        Image& zsrc = *zit->second.res;
+        if (!hud_zout_ || hud_zout_->w != out->w || hud_zout_->h != out->h || hud_zout_->format != zsrc.format) {
+            if (hud_zout_) Retire(std::exchange(hud_zout_, nullptr));
+            hud_zout_ = NewImage({.fmt = zsrc.format, .w = out->w, .h = out->h,
+                                  .usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+                                           VK_IMAGE_USAGE_TRANSFER_DST_BIT});
+        }
+        VkPipeline pso = EnsureDepthCopyPipeline();
+        if (hud_zout_ && pso) {
+            Transition(*kept, kRead);
+            SetTargets(nullptr, hud_zout_.get());
+            SetFullViewport(out->w, out->h);
+            EnsureRendering();
+            VkClearAttachment ca{hud_zout_->aspect};
+            ca.clearValue.depthStencil = {1, 0};
+            VkClearRect cr{{{0, 0}, {out->w, out->h}}, 0, 1};
+            vkCmdClearAttachments(cmd_, 1, &ca, 1, &cr);
+            DrawFullScreen(pso, Upload(kPassCbBytes), {kept->Sampled(), VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE});
+            EndRendering();
+            HudStandIn(sv.zs, zit->second, hud_zout_);
+        }
+    }
+    HudStandIn(sv.rt, t, out);
+    if (cap_) fprintf(cap_, "     note the HUD drawn again at %ux%u over the upscaled picture\n", out->w, out->h);
+    sv.cap = std::exchange(cap_, nullptr);  // the capture is the frame's own drawing
+    bound_rt_ = bound_ds_ = nullptr;
+    kept_.ok = false;
+    same_state_ = false;
+    post_done_ = true;  // the effects drawn: 2D takes the fast way as after them
+    hud_replay_ = true;
+    return true;
+}
+
+void VulkanBackend::EndHud() {
+    FlushRun();
+    EndRendering();
+    HudSaved& sv = hud_saved_;
+    HudPutBack(sv.rt);
+    HudPutBack(sv.zs);
+    cap_ = sv.cap;
+    sv.cap = nullptr;
+    bound_rt_ = bound_ds_ = nullptr;
+    kept_.ok = false;
+    same_state_ = false;
+    post_done_ = false;
+    hud_replay_ = false;
+}
+
+// the picture being drawn's 2D can't be drawn again at the output's size, why
+void VulkanBackend::HudLost(const char* why) {
+    if (!hud_pic_.ok) return;
+    hud_pic_.ok = false;
+    hud_pic_.lost = why;
+}
+
+// XBE_HUD_NATIVE_TRACE=1: each picture slot's way with the HUD (drawn again at the output's size, HudApart's, or
+// neither) and why, logged when it changes
+void VulkanBackend::HudTrace(uint32_t slot, bool split, bool native, const HudAt& at) {
+    static const bool on = diag::Env("XBE_HUD_NATIVE_TRACE") != nullptr;
+    if (!on) return;
+    static std::string last[kMaxGen];
+    char b[256];
+    snprintf(b, sizeof(b), "%s%s%s, copy before draw %u of %u", native ? "drawn again at the output's size" : split ? "laid over (HudApart)" : "upscaled whole",
+             !native && at.lost ? ": " : "", !native && at.lost ? at.lost : "", at.from, at.total);
+    std::string& l = last[slot % kMaxGen];
+    if (l == b) return;
+    l = b;
+    LOGR("hud native: picture %llu slot %u %s", (unsigned long long)presents_, slot, b);
 }
 
 // SMAA's lookups as BGRA textures, made the first time SMAA runs
@@ -7516,6 +7735,8 @@ void VulkanBackend::ApplyPost(Target& t) {
 // HDR's highlights: the 3D picture, effects and all, as the 2D comes to draw over it
 void VulkanBackend::KeepHdr3d(Target& t) {
     if (!Keep3d()) return;
+    // HudNative: the first copy kept for the upscaler, the ones after into another image
+    if (hud_copies_ == 1 && hud_pic_.ok && HudNativeWanted()) std::swap(hdr_3d_, hud_first_);
     if (!hdr_3d_ || hdr_3d_->w != t.w || hdr_3d_->h != t.h || hdr_3d_->format != t.fmt) {
         if (hdr_3d_) Retire(std::exchange(hdr_3d_, nullptr));
         hdr_3d_ = NewImage({.fmt = t.fmt, .w = t.w, .h = t.h,
@@ -7532,7 +7753,35 @@ void VulkanBackend::KeepHdr3d(Target& t) {
     r.extent = {t.w, t.h, 1};
     vkCmdCopyImage(cmd_, t.res->image, kSrc, hdr_3d_->image, kDst, 1, &r);
     hdr_3d_rt_ = t.data;
+    if (hud_copies_++ == 0) {
+        hud_pic_ = {.from = tracking_draw_ && pass_serial_ ? pass_serial_ - 1 : kHudAtEnd, .rt = t.data, .ok = true};
+        if (HudNativeWanted()) KeepHudDepth(t);
+    }
     if (cap_) fprintf(cap_, "     note HDR highlights' copy of the 3D picture of %08X\n", t.data);
+}
+
+// HudNative: the 3D's depth as the first copy is taken (hud_z_pic_), for what comes after to be hidden by it when
+// drawn again at the output's size; none (zs 0) without a depth of the frame's size
+void VulkanBackend::KeepHudDepth(Target& t) {
+    Target* z = FindTarget(post_zs_, true);
+    if (!z || !z->res || z->w != t.w || z->h != t.h) return;
+    Image& src = *z->res;
+    if (!hud_z_pic_ || hud_z_pic_->w != src.w || hud_z_pic_->h != src.h || hud_z_pic_->format != src.format) {
+        if (hud_z_pic_) Retire(std::exchange(hud_z_pic_, nullptr));
+        hud_z_pic_ = NewImage({.fmt = src.format, .w = src.w, .h = src.h,
+                               .usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT});
+        if (!hud_z_pic_) return;
+    }
+    ResolveSamples(*z);
+    Transition(src, kSrc);
+    Transition(*hud_z_pic_, kDst);
+    Barrier();
+    VkImageCopy r{};
+    r.srcSubresource = {src.aspect, 0, 0, 1};
+    r.dstSubresource = {src.aspect, 0, 0, 1};
+    r.extent = {src.w, src.h, 1};
+    vkCmdCopyImage(cmd_, src.image, kSrc, hud_z_pic_->image, kDst, 1, &r);
+    hud_pic_.zs = z->data;
 }
 
 // where the finished picture is still its 3D one, the highlights' mask; null when it has no 3D
@@ -7548,7 +7797,8 @@ void VulkanBackend::MakeHdrMask(Target& t, ImageRef& mask, ImageRef* copy) {
     hdr_stale_ = false;
     const bool made = HdrCompare(t, mask);
     if (!copy) return;
-    if (made && HudApart()) std::swap(*copy, hdr_3d_);  // the next picture's copy into the one this frame's had
+    // the next picture's copy into the one this frame's had; HudNative's first when there were more
+    if (made && HudApart()) std::swap(*copy, hud_copies_ >= 2 && hud_first_ && hud_pic_.ok ? hud_first_ : hdr_3d_);
     else if (*copy) Retire(std::exchange(*copy, nullptr));
 }
 
@@ -7624,7 +7874,7 @@ void VulkanBackend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t
         SpriteStage(sprite_);
         return Draw(sprite_, prim, start, count, indices);
     }
-    if (!replay_) WatchDraw(s, start, count, indices);
+    if (!replay_ && !hud_replay_) WatchDraw(s, start, count, indices);
     PerfScope perf_draw{g_perf.draw};
     // XBE_PERF: the draw's time and path under its program (g_perf_programs), the frame's own draws only
     struct ProgramScope {
@@ -7657,7 +7907,7 @@ void VulkanBackend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t
             d.counted = counted;
         }
     } prog_scope;
-    if (diag::Perf() && !replay_) {
+    if (diag::Perf() && !replay_ && !hud_replay_) {
         bool prog = (s.vs_handle & 1) && s.vs && !s.vs->program.empty();
         prog_scope.prog = prog ? s.vs->hash : s.vs_handle;
         prog_scope.pp = &g_perf_programs[prog_scope.prog];
@@ -7711,7 +7961,7 @@ void VulkanBackend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t
     if (!BindTargets(s)) return CountedSkip(s, "targets");
     // a 2D draw g_hud_split places isn't kept: a draw in the same state may lie in another group
     const bool hud = bound_rt_ && hud_.Place(s, a, start, count, indices, PosW(s), bound_rt_->gw, bound_rt_->gh,
-                                             guest_w_, guest_h_, replay_);
+                                             guest_w_, guest_h_, replay_ || hud_replay_);
     jitter_ = DrawJitter(flat);
     g_perf.d_setup += PerfLap(lap);
 
@@ -7962,7 +8212,7 @@ void VulkanBackend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t
         kept_.jitter = jitter_;
         // for the frame's drawing again (ReuseDraw): a draw kept (a plain shading's too: per-pixel lighting, the
         // bloodbath's soldiers), its geometry bound as DrawGeometry left it
-        if (!replay_ && !bound && !cap_ && Pictures() > 1) {
+        if (!replay_ && !hud_replay_ && !bound && !cap_ && Pictures() > 1) {
             KeptOne& one = kept_draws_.emplace_back();
             one.serial = pass_serial_;
             one.flat = flat;
@@ -7972,7 +8222,7 @@ void VulkanBackend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t
             one.sh = sh;
             one.g = geom_;
         }
-    } else if (&s != &sprite_ && !hud && !replay_ && !cap_ && Pictures() > 1 && FurReuse()) {
+    } else if (&s != &sprite_ && !hud && !replay_ && !hud_replay_ && !cap_ && Pictures() > 1 && FurReuse()) {
         // drawn again whole (ReuseDraw), its shells and depth pass with it
         KeptOne& one = kept_draws_.emplace_back();
         one.serial = pass_serial_;
@@ -8144,7 +8394,7 @@ void VulkanBackend::ClearTarget(Target& t, const State& s, const ClearArgs& c, s
         PushScaledRect(t, int(v.x), int(v.y), int(v.x + v.w), int(v.y + v.h), rs);
     }
     // pixels the CPU wrote before this clear go in first, a later upload would paint over the clear
-    if (!t.depth && LatchCpuWrite(t)) UploadTarget(t, s.rt);
+    if (!t.depth && !hud_replay_ && LatchCpuWrite(t)) UploadTarget(t, s.rt);
     // a multisampled target clears its samples, as a draw would
     if (t.ms) {
         SpreadSamples(t);
@@ -8276,6 +8526,8 @@ void VulkanBackend::Copy(const Surface& src, const Surface& dst, uint32_t count,
                          uint32_t dst_points) {
     FlushRun();
     PerfScope perf_copy{g_perf.copy};
+    if (hud_copies_) HudLost("a surface copy after the copy");
+    hud_unsafe_ = true;
     Target* src_t = FindTarget(src, false);
     if (cap_) {
         const char* from = "memory";
@@ -8647,7 +8899,7 @@ void VulkanBackend::DrawFrame(Image* picture, uint32_t bi, bool fsr, Image* mask
 
 // the front buffer's picture done: the effects under the 2D, when no 2D came to draw them, samples resolved, readable;
 // the next picture's effects start afresh
-void VulkanBackend::FinishFront(Target& t, ImageRef* mask, ImageRef* copy) {
+void VulkanBackend::FinishFront(Target& t, ImageRef* mask, ImageRef* copy, int slot) {
     if (!post_done_ && post_rt_ == t.data && PostWanted()) {
         post_trace_.applied = "at the front buffer";
         ApplyPost(t);
@@ -8655,7 +8907,25 @@ void VulkanBackend::FinishFront(Target& t, ImageRef* mask, ImageRef* copy) {
     PostTraceEnd(t);
     ResolveSamples(t);
     Transition(*t.res, kRead);
+    const bool firsts = hud_copies_ >= 2 && hud_pic_.ok && hud_first_;  // MakeHdrMask hands over the first
     if (mask) MakeHdrMask(t, *mask, copy);
+    if (slot >= 0) {
+        const size_t i = size_t(slot) % kMaxGen;
+        HudAt& at = hud_at_[i];
+        at = hud_pic_;
+        // a picture drawn again comes here after Replaying(false), its count started over
+        at.total = replay_ || pass_serial_ ? pass_serial_ : replay_draws_;
+        if (hud_copies_ == 0) {
+            // no 3D: all its draws drawn again, unless it copied surfaces or the CPU wrote one
+            at = {.rt = t.data, .total = at.total, .ok = HudNativeWanted() && !hud_unsafe_, .whole = true,
+                  .lost = hud_unsafe_ ? "no 3D, a surface copy or CPU upload" : nullptr};
+        } else {
+            if (at.from == kHudAtEnd) at.from = at.total;
+            at.first = firsts;
+            if (!copy || !*copy) at.ok = false, at.lost = at.lost ? at.lost : "no 3D copy kept";
+            if (at.zs) std::swap(hud_z_[i], hud_z_pic_);
+        }
+    }
     EndPicture();
 }
 
@@ -8672,6 +8942,9 @@ void VulkanBackend::EndPicture() {
     hdr_3d_rt_ = 0;
     hdr_part_n_ = -1;
     hdr_stale_ = false;
+    hud_pic_ = {};
+    hud_copies_ = 0;
+    hud_unsafe_ = false;
 }
 
 // XBE_POST_TRACE: the picture's effects, where they were drawn or why not, logged when that changes from the picture
@@ -8714,7 +8987,7 @@ bool VulkanBackend::KeepPicture(const Surface& front, uint32_t slot) {
     if (!t || slot >= gen_pics_.size()) return false;
     ResizeRetiring(gen_masks_, gen_pics_.size());
     ResizeRetiring(gen_3d_, gen_pics_.size());
-    FinishFront(*t, &gen_masks_[slot], &gen_3d_[slot]);
+    FinishFront(*t, &gen_masks_[slot], &gen_3d_[slot], int(slot));
     uint32_t w = t->res->w, h = t->res->h;
     ImageRef& keep = gen_pics_[slot];
     if (!keep || keep->w != w || keep->h != h) {
@@ -9496,7 +9769,7 @@ void VulkanBackend::Present(const Surface& front) {
     Target* t = EnsureTarget(front, false);
     if (pictures.empty() && t) {
         if (LatchCpuWrite(*t)) UploadTarget(*t, front);
-        FinishFront(*t, &front_mask_, &front_3d_);
+        FinishFront(*t, &front_mask_, &front_3d_, int(pic_slot_));
         pictures.push_back(t->res->view);
         sources.push_back(t->res.get());
         masks.push_back(front_mask_.get());

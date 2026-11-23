@@ -894,6 +894,72 @@ private:
         if (last) run(*last);
     }
 
+    // the HUD at the output's size (Backend::SetHudDraw): the frame's draws from from on, and the clears after, drawn
+    // again at the time of the picture in slot (hud_t_), the draws before stepped over, the state between them all
+    // applied; no copies (the backend takes no picture with one after from). Nothing when the frame's draws number
+    // other than the backend counted
+    static bool HudDrawThunk(void* self, uint32_t slot, uint32_t from, uint32_t total) {
+        return static_cast<Threaded*>(self)->ReplayHud(slot, from, total);
+    }
+    bool ReplayHud(uint32_t slot, uint32_t from, uint32_t total) {
+        if (!hud_last_) return false;
+        uint32_t draws = 0;
+        for (const Batch* b : frame_)
+            for (const Cmd& c : b->cmds) draws += c.op == Op::Draw;
+        for (const Cmd& c : hud_last_->cmds) draws += c.op == Op::Draw;
+        if (draws != total) {
+            static uint32_t told = 0;
+            if (told++ < 8) LOGR("hud native: picture slot %u laid over instead: %u draws recorded, the backend counted %u", slot, draws, total);
+            return false;
+        }
+        const float t = slot < std::size(hud_t_) ? hud_t_[slot] : 1.0f;
+        const bool blend = t < 1.0f;
+        State& rs = replay_state_;
+        rs = frame_start_;
+        uint32_t n = 0;
+        bool changed = true;
+        interp::Undo undo;
+        if (blend) interp::BeginPass(t);  // the followers' kept blends are this pass's
+        auto run = [&](const Batch& b) {
+            ShowDue();
+            for (const Cmd& c : b.cmds) {
+                const uint8_t* data = b.bytes.data() + c.data;
+                if (c.op == Op::State) {
+                    Apply(rs, b, c, &changed);
+                    continue;
+                }
+                // a clear after the copy (taken as draw from began; from 0: the whole picture, its first clears too)
+                if (c.op == Op::Clear) {
+                    if (n > from || from == 0) {
+                        changed = true;
+                        inner_->Clear(rs, c.a, c.size ? data : nullptr, c.b, c.c, c.f, c.d);
+                    }
+                    continue;
+                }
+                if (c.op != Op::Draw) continue;
+                const uint32_t at = n++;
+                if (at < from) continue;
+                interp::g_run_tag = c.tag;  // the HUD's placement reads it (gpu::g_hud_split)
+                uint32_t start = c.b;
+                bool shown = true;
+                if (blend) {
+                    const interp::Blended how = interp::Blend(at, t, rs, undo);
+                    if (interp::MoveVertices(at, t, how, rs, start, undo)) changed = true;
+                    shown = !interp::Hidden(how);
+                }
+                if (shown) {
+                    inner_->Changed(changed);
+                    changed = false;
+                    inner_->Draw(rs, c.a, start, c.c, c.d ? data : nullptr);
+                }
+                undo.Restore(rs);
+            }
+        };
+        for (const Batch* b : frame_) run(*b);
+        run(*hud_last_);
+        return true;
+    }
+
     // the frozen frame drawn again and presented, the settings read as they are now; without one kept, the picture
     // shown last again
     void DrawFrozen() {
@@ -1070,6 +1136,9 @@ private:
                        was_textures = g_perf.redraw_textures, was_mslow = g_perf.motion_slow,
                        was_mreused = g_perf.motion_reused, was_mskipped = g_perf.motion_skipped;
         const double was_mslow_ms = g_perf.motion_slow_ms, was_mreused_ms = g_perf.motion_reused_ms;
+        // the pictures' times by slot for the HUD drawn again at the output's size (ReplayHud): 1, the frame's own,
+        // but for those drawn again
+        for (float& h : hud_t_) h = 1.0f;
         if (gen) {
             // the frame's own picture takes the last slot, those drawn again the first ones in turn
             const uint32_t own_slot = std::max(inner_->Pictures(), 1u) - 1;
@@ -1090,6 +1159,7 @@ private:
             const uint32_t again = own ? pictures - 1 : pictures;
             for (uint32_t i = 1; i <= again; i++) {
                 float t = times[i - 1];
+                if (i - 1 < std::size(hud_t_)) hud_t_[i - 1] = t;
                 inner_->Replaying(true);
                 ShadingReplay(true, t);
                 interp::BeginPass(t);
@@ -1172,7 +1242,12 @@ private:
             gen_motion_ns_ = gen_mslow_ = gen_mreused_ = gen_mskipped_ = gen_motion_at_ns_ = 0;
             gen_mslow_ms_ = gen_mreused_ms_ = 0;
         }
+        // the frame's commands kept: the HUD can be drawn again over the upscaled pictures
+        hud_last_ = keeping_ && frame_draws_ ? &b : nullptr;
+        inner_->SetHudDraw(hud_last_ ? &HudDrawThunk : nullptr, this);
         inner_->Present(c.s1);
+        inner_->SetHudDraw(nullptr, nullptr);
+        hud_last_ = nullptr;
         interp::EndFrame();  // a frame not tracked leaves none to find draws in
         frame_over_ = true;
     }
@@ -1244,6 +1319,9 @@ private:
     State frame_start_, replay_state_;
     bool keeping_ = false, frame_over_ = false;
     bool motion_ = false;  // the backend wants motion vectors for the frame's pictures (Backend::Motion)
+    // ReplayHud: the Present's batch while the backend presents, and each picture slot's time
+    const Batch* hud_last_ = nullptr;
+    float hud_t_[Backend::kMostPictures + 1] = {};
     // the freeze: holding_, the frame is kept whole (frame generation's or g_freeze at its start); the last frame kept
     // past its Present while frozen, the state it started with and its front buffer; DrawFrozen drew it
     bool holding_ = false;
