@@ -211,6 +211,7 @@ struct Snap {
     // for a reason not worth a watch line
     const char* still = "";
     int32_t from = -1;  // the draw of the frame before its kept vertices move part way from (Settle); -1 none
+    int32_t paired = -1;  // the draw of the frame before it was paired with, before Nearest looked about (watch lines)
     // a large tagged draw's indices as it drew them (Frame::indices, from idx_at; idx_count 0 for none kept), its
     // primitive, base vertex and vertex buffers (geo), for drawing the frame before's again (Extra)
     uint32_t idx_at = 0, idx_count = 0, prim = 0, base = 0;
@@ -858,13 +859,20 @@ std::pair<float, float> StepOf(const Frame& prev, const Frame& cur, const Snap& 
 // were paired with their neighbours: those of the same glyph (the dashes, the two s's of a scrolling 'ass') judged
 // carried along whole and went half way to each other (capture 023908 pics 54, 60, 80). So of the draws near the one
 // it was paired with, of its program, the one it moved least from, of the same glyph and carried whole; another than
-// the paired one only within the sprite's own size
+// the paired one only within the sprite's own size. A paired draw judged another sprite yet within half its size of
+// where it was is the same letter with other values: a thought bubble's letters each bob and change a frame on, and
+// one of 'AHH!' took the other H, byte for byte its own a frame before, the two drawn swapped half way (capture
+// 182652 pic 70). It is kept as the frame has it
 void Nearest(const Frame& prev, Frame& cur, uint32_t n, SpriteBox& box) {
     constexpr int32_t kNear = 3;
+    constexpr float kSame = 0.5f;  // of the sprite's size
     Snap& sn = cur.snaps[n];
     int32_t base = sn.from;
     uint64_t program = ProgramOf(cur, n);
-    float best = sn.still && *sn.still ? INFINITY : StepOf(prev, cur, sn, prev.snaps[size_t(base)]).first;
+    auto [paired, paired_side] = StepOf(prev, cur, sn, prev.snaps[size_t(base)]);
+    bool other = sn.still && *sn.still;
+    if (other && paired <= kSame * kSame * paired_side * paired_side) return;
+    float best = other ? INFINITY : paired;
     for (int32_t d = -kNear; d <= kNear; d++) {
         int32_t q = base + d;
         if (!d || q < 0 || size_t(q) >= prev.snaps.size()) continue;
@@ -890,12 +898,12 @@ void Settle(const Frame& prev, Frame& cur) {
     boxes.clear();
     for (uint32_t n = 0; n < cur.snaps.size(); n++) {
         Snap& sn = cur.snaps[n];
-        sn.from = -1;
+        sn.from = sn.paired = -1;
         if (!sn.verts) continue;
         const Snap* was = MovedFrom(prev, cur, n);
         SpriteBox box;
         sn.still = was ? Judge(prev, cur, sn, *was, box) : "";
-        if (was) sn.from = int32_t(was - prev.snaps.data());
+        if (was) sn.from = sn.paired = int32_t(was - prev.snaps.data());
         if (was) Nearest(prev, cur, n, box);
         if (sn.still && !box.shaped) continue;
         box.n = n;
@@ -2514,12 +2522,13 @@ bool MoveVertices(uint32_t n, float t, Blended how, State& s, uint32_t& start, U
     if (g_pass.on) {
         g_pass.moved++;
         if (watch) {
-            char line[256];
+            char line[320];
+            int32_t lead = sn.leader < 0 ? int32_t(n) : sn.leader;
             snprintf(line, sizeof(line),
-                     "\n    draw %u program %016llX: %u vertices moved part way, from the frame before's draw %u, by "
-                     "(%g %g), at (%g %g)-(%g %g) in the frame",
-                     n, (unsigned long long)ProgramOf(s), sn.verts, uint32_t(was - prev.snaps.data()), step[0],
-                     step[1], lo[0], lo[1], hi[0], hi[1]);
+                     "\n    draw %u program %016llX: %u vertices moved part way, from the frame before's draw %u "
+                     "(paired with %d; leader %d found %d), by (%g %g), at (%g %g)-(%g %g) in the frame",
+                     n, (unsigned long long)ProgramOf(s), sn.verts, uint32_t(was - prev.snaps.data()), sn.paired,
+                     lead, cur.snaps[size_t(lead)].found, step[0], step[1], lo[0], lo[1], hi[0], hi[1]);
             g_pass.watched += line;
         }
     }
