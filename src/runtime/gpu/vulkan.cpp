@@ -1334,7 +1334,7 @@ private:
     // the display's), for adaptive fur shading: frame generation's pictures missing the screen are frames missed too
     uint64_t pics_drawn_ = 0, pics_seen_ = 0;
     void ApplySettings();
-    void RemakeTargets(app::Scale scale, uint32_t samples);
+    void RemakeTargets(app::Scale scale, app::Scale aside, uint32_t samples);
     ImageRef Shrink(Image& src, VkImageView view, uint32_t w, uint32_t h, const ShrinkOptions& o = {});
     bool ReadBack(Image& im, uint32_t w, uint32_t h, std::vector<uint8_t>& out);
     void CapStep(const Surface& rt);
@@ -1704,6 +1704,16 @@ private:
     uint32_t bb_w_ = 0;
     uint32_t bb_h_ = 0;
     app::Scale scale_{1, 1};  // host pixels per console pixel across and down (app::RenderScale)
+    // a target not of the frame's size (a menu's text panel, glow buffers, shadow silhouettes, lighting maps): under an
+    // upscaler, the output's scale, as without one (AsideScale). The upscaler rebuilds the frame from its jitter and
+    // history; a target drawn smaller is a texture with its detail gone (the MP character select's text, drawn into a
+    // 256x256 target textured onto 3D panels, came out at 205x154 at 20%)
+    app::Scale aside_{1, 1};
+    app::Scale AsideScale(app::Scale frame) {
+        if (!upscale_ || !guest_w_ || !guest_h_) return frame;
+        const VkExtent2D out = PictureExtent();
+        return {float(out.width) / float(guest_w_), float(out.height) / float(guest_h_)};
+    }
     // surfaces locked without a wait: copies in flight, the newest finished one goes to guest memory
     struct Late {
         BufferRef rb[kFrames];
@@ -2972,6 +2982,7 @@ void VulkanBackend::LoadSettings() {
     UpdateUpscaler();
     const app::Scale upscaled = UpscaleScale();
     scale_ = upscaled.x > 0 ? upscaled : app::RenderScale(guest_w_, guest_h_);
+    aside_ = AsideScale(scale_);
     msaa_ = WantSamples();
 }
 
@@ -3301,8 +3312,9 @@ void VulkanBackend::ReleaseTarget(std::unordered_map<uint64_t, Target>::iterator
 
 // the image of a new target at render scale, cleared
 bool VulkanBackend::CreateTargetResource(Target& t) {
-    t.w = std::max(1u, uint32_t(std::lround(t.gw * scale_.x)));
-    t.h = std::max(1u, uint32_t(std::lround(t.gh * scale_.y)));
+    const app::Scale& sc = t.gw == guest_w_ && t.gh == guest_h_ ? scale_ : aside_;
+    t.w = std::max(1u, uint32_t(std::lround(t.gw * sc.x)));
+    t.h = std::max(1u, uint32_t(std::lround(t.gh * sc.y)));
     ImageSpec sp;
     sp.fmt = t.depth ? depth_fmt_ : t.fmt;
     sp.w = t.w;
@@ -9977,12 +9989,13 @@ void VulkanBackend::Redisplay(bool blur) {
 
 // every target made again at the scale and samples, keeping its picture: a texture the title drew once (an
 // environment map) is read from its target for the rest of the level, and guest memory never had it
-void VulkanBackend::RemakeTargets(app::Scale scale, uint32_t samples) {
+void VulkanBackend::RemakeTargets(app::Scale scale, app::Scale aside, uint32_t samples) {
     std::unordered_map<uint64_t, Target> old;
     old.swap(targets_);
     bound_rt_ = bound_ds_ = nullptr;
     for (auto& [key, o] : old) ResolveSamples(o);
     scale_ = scale;
+    aside_ = aside;
     msaa_ = samples;
     VkPipeline depth_pso = EnsureDepthCopyPipeline();
     for (auto& [key, o] : old) {
@@ -10015,18 +10028,20 @@ void VulkanBackend::RemakeTargets(app::Scale scale, uint32_t samples) {
         targets_[key] = std::move(t);
     }
     bound_rt_ = bound_ds_ = nullptr;
-    LOGI("vulkan: %zu targets made again at render scale %.3f x %.3f, %ux msaa", targets_.size(), scale_.x, scale_.y,
-         msaa_);
+    LOGI("vulkan: %zu targets made again at render scale %.3f x %.3f (others %.3f x %.3f), %ux msaa", targets_.size(),
+         scale_.x, scale_.y, aside_.x, aside_.y, msaa_);
 }
 
 void VulkanBackend::ApplySettings() {
     UpdateUpscaler();
     const app::Scale upscaled = UpscaleScale();
     const app::Scale want = upscaled.x > 0 ? upscaled : app::RenderScale(guest_w_, guest_h_);
+    const app::Scale aside = AsideScale(want);
     uint32_t samples = WantSamples();
-    if (std::fabs(want.x - scale_.x) > 1e-4f || std::fabs(want.y - scale_.y) > 1e-4f || samples != msaa_) {
+    if (std::fabs(want.x - scale_.x) > 1e-4f || std::fabs(want.y - scale_.y) > 1e-4f ||
+        std::fabs(aside.x - aside_.x) > 1e-4f || std::fabs(aside.y - aside_.y) > 1e-4f || samples != msaa_) {
         Flush();
-        RemakeTargets(want, samples);
+        RemakeTargets(want, aside, samples);
     }
 }
 
