@@ -21,16 +21,22 @@ void RenderSize(uint32_t out_w, uint32_t out_h, uint32_t quality, uint32_t& w, u
 // a picture to upscale: color, depth and motion at the render size and read only (SHADER_READ_ONLY_OPTIMAL), output
 // at the output size (GENERAL, a storage image, RGBA8). jitter: the render pixels the picture's 3D was moved by, x
 // right and y down; motion_scale: render pixels per unit of motion (motion is where a pixel was less where it is);
-// reset: no history. The camera's near and far planes and vertical field of view (radians) turn depth into distance,
-// which FSR weighs disocclusions by; frame_ms the time since the picture before
+// reset: no history. depth_to_view turns depth into the view (AMD's fDeviceToViewDepth), which FSR weighs
+// disocclusions by: distance = [1] / (depth - [0]), and across, ndc x and y (y up) times [2] and [3] times distance;
+// meters_per_unit its units' size; frame_ms the time since the picture before
 struct Evaluate {
     XbeDlssImage color, depth, motion, output;
     float jitter[2] = {};
     float motion_scale[2] = {};
     bool reset = false;
-    float near_plane = 1, far_plane = 10000, fov_y = 1.0f;
+    float depth_to_view[4] = {};
+    float meters_per_unit = 1;
     float frame_ms = 16.7f;
 };
+
+// depth_to_view for a projection by its planes and vertical field of view (radians), depth 0 at the near plane
+// (AMD's setupDeviceDepthToViewSpaceDepthParams)
+void DepthToView(float near_plane, float far_plane, float fov_y, float aspect, float out[4]);
 
 class Upscaler {
 public:

@@ -1137,7 +1137,8 @@ private:
     VkExtent2D PictureExtent() const;
     app::Scale UpscaleScale();
     bool EnsureDlss(uint32_t w, uint32_t h, uint32_t out_w, uint32_t out_h);
-    void Fsr3Camera(fsr3::Evaluate& e) const;
+    // FSR 3.1's camera for the picture in slot (view_cam_)
+    void Fsr3Camera(fsr3::Evaluate& e, uint32_t slot) const;
     void Upscale(std::vector<Image*>& shows, const std::vector<Image*>& sources,
                  const std::vector<uint32_t>& slots, ImageRef& last);
     bool EnsureSmaaTextures();
@@ -1649,6 +1650,14 @@ private:
     Surface post_surf_{}, post_zs_{};
     float post_zscale_ = 0;
     std::array<float, 4> view_vp_[2]{}, view_pr_[4]{};
+    // the same view as FSR 3.1 takes it (fsr3::Evaluate::depth_to_view) by picture slot, the frame it was seen in
+    // (presents_ + 1 while drawing), and the latest of any slot
+    struct ViewCamera {
+        float depth_to_view[4] = {};
+        uint64_t frame = 0;
+    };
+    std::array<ViewCamera, kMaxGen> view_cam_{};
+    ViewCamera view_cam_last_{};
     ImageRef occlusion_tmp_[3];
     // XBE_POST_TRACE: what the picture's draws did to the effects, logged in FinishFront when it changes
     struct PostTrace {
@@ -5995,6 +6004,17 @@ void VulkanBackend::TrackView(const State& s) {
     }
     std::copy(vp, vp + 2, view_vp_);
     std::copy(pr, pr + 4, view_pr_);
+    // for FSR 3.1: depth = A + B / distance (as the occlusion takes it), across: ndc = x row . p / distance, so view
+    // x / distance = ndc / x[0] (the rows' offsets left out)
+    if (s.zscale != 0) {
+        ViewCamera& cam = view_cam_[pic_slot_ % kMaxGen];
+        cam.depth_to_view[0] = (vp[1][2] - vp[0][2] * pr[2][2]) / s.zscale;
+        cam.depth_to_view[1] = vp[0][2] * pr[2][3] / s.zscale;
+        cam.depth_to_view[2] = 1.0f / std::fabs(pr[0][0]);
+        cam.depth_to_view[3] = 1.0f / std::fabs(pr[1][1]);
+        cam.frame = presents_ + 1;
+        view_cam_last_ = cam;
+    }
     post_surf_ = s.rt;
     post_zs_ = s.zs;
     post_zscale_ = s.zscale;
@@ -7013,22 +7033,43 @@ bool VulkanBackend::EnsureDlss(uint32_t w, uint32_t h, uint32_t out_w, uint32_t 
     return true;
 }
 
-// FSR 3.1's camera, which turns depth into distance for weighing disocclusions: the guest's own projection isn't
-// read yet, so a stand-in field of view and planes, XBE_FSR_NEAR, XBE_FSR_FAR and XBE_FSR_FOV (degrees) for trying
-// others
-void VulkanBackend::Fsr3Camera(fsr3::Evaluate& e) const {
-    static const std::array<float, 3> cam = [] {
-        auto get = [](const char* name, float fallback) {
-            const char* v = diag::Env(name);
-            const float f = v ? float(std::atof(v)) : 0.0f;
-            return f > 0 ? f : fallback;
-        };
-        return std::array<float, 3>{get("XBE_FSR_NEAR", 1.0f), get("XBE_FSR_FAR", 10000.0f),
-                                    get("XBE_FSR_FOV", 60.0f) * 3.14159265f / 180.0f};
+// FSR 3.1's camera, which turns depth into the view for weighing disocclusions: the picture's own, as its 3D draws'
+// programs had it (TrackView), else the latest any picture had, else a stand-in (planes 1 and 10000, 60 degrees
+// high). The game's units are centimetres (g_view_constants' games: 600 units are 6 m). XBE_FSR_CAMERA=0 keeps the
+// stand-in, for finding what the game's brings out
+void VulkanBackend::Fsr3Camera(fsr3::Evaluate& e, uint32_t slot) const {
+    static const bool stand_in = [] {
+        const char* v = diag::Env("XBE_FSR_CAMERA");
+        return v && *v == '0';
     }();
-    e.near_plane = cam[0];
-    e.far_plane = cam[1];
-    e.fov_y = cam[2];
+    const ViewCamera* cam = nullptr;
+    const ViewCamera& own = view_cam_[slot % kMaxGen];
+    if (own.frame == presents_ + 1) cam = &own;
+    else if (view_cam_last_.frame) cam = &view_cam_last_;
+    // XBE_FSR_TRACE=1: the camera every 2 s, with where depths 0.5 and 0.99 lie (m) and the view's width at 1 m
+    static const bool trace = [] {
+        const char* v = diag::Env("XBE_FSR_TRACE");
+        return v && *v == '1';
+    }();
+    static auto last = std::chrono::steady_clock::now();
+    if (trace && std::chrono::steady_clock::now() - last > std::chrono::seconds(2)) {
+        last = std::chrono::steady_clock::now();
+        const float* d = cam ? cam->depth_to_view : nullptr;
+        if (d)
+            LOGR("fsr3 camera: %s, A %.6f B %.6f, x %.4f y %.4f; depth 0.5 at %.2f m, 0.99 at %.2f m, 1 m is %.2f m wide",
+                 cam == &own ? "the picture's" : "an earlier picture's", d[0], d[1], d[2], d[3],
+                 0.01f * d[1] / (0.5f - d[0]), 0.01f * d[1] / (0.99f - d[0]), 2 * d[2]);
+        else
+            LOGR("fsr3 camera: none seen, the stand-in");
+    }
+    if (cam && !stand_in) {
+        std::copy_n(cam->depth_to_view, 4, e.depth_to_view);
+        e.meters_per_unit = 0.01f;
+        return;
+    }
+    fsr3::DepthToView(1.0f, 10000.0f, 60.0f * 3.14159265f / 180.0f, float(e.color.width) / float(e.color.height),
+                      e.depth_to_view);
+    e.meters_per_unit = 0.01f;
 }
 
 // each picture through DLSS or FSR 3.1 at the picture's size, in the order they are shown: its own depth and motion
@@ -7105,7 +7146,7 @@ void VulkanBackend::Upscale(std::vector<Image*>& shows, const std::vector<Image*
             std::copy_n(e.motion_scale, 2, f.motion_scale);
             f.reset = e.reset;
             f.frame_ms = picture_ms;
-            Fsr3Camera(f);
+            Fsr3Camera(f, slots[i]);
             EndRendering();
             ok = fsr3_->Run(cmd_, f);
         } else {

@@ -487,6 +487,16 @@ struct Upscaler::State {
     }
 };
 
+void DepthToView(float near_plane, float far_plane, float fov_y, float aspect, float out[4]) {
+    const float n = std::min(near_plane, far_plane), f = std::max(near_plane, far_plane);
+    const float q = f / (n - f);
+    out[0] = -q;
+    out[1] = q * n;
+    const float b = 1.0f / std::tan(0.5f * fov_y), a = b / aspect;
+    out[2] = 1.0f / a;
+    out[3] = 1.0f / b;
+}
+
 float Ratio(uint32_t quality) {
     constexpr float kRatios[] = {1.0f, 1.5f, 1.7f, 2.0f, 3.0f};
     return kRatios[std::min<uint32_t>(quality, 4)];
@@ -674,20 +684,9 @@ bool Upscaler::Run(VkCommandBuffer cmd, const Evaluate& e) {
     c.render_size[1] = int32_t(e.color.height);
     c.max_render_size[0] = int32_t(s.w);
     c.max_render_size[1] = int32_t(s.h);
-    const float aspect = rw / rh;
-    const float tan_half_v = std::tan(0.5f * e.fov_y);
-    c.tan_half_fov = tan_half_v * aspect;  // the horizontal's, from the vertical
-    c.view_space_to_meters = 1.0f;
-    // setupDeviceDepthToViewSpaceDepthParams: depth 0 near, the far plane finite
-    {
-        const float n = std::min(e.near_plane, e.far_plane), f = std::max(e.near_plane, e.far_plane);
-        const float q = f / (n - f);
-        c.device_to_view_depth[0] = -q;
-        c.device_to_view_depth[1] = q * n;
-        const float b = 1.0f / tan_half_v, a = b / aspect;
-        c.device_to_view_depth[2] = 1.0f / a;
-        c.device_to_view_depth[3] = 1.0f / b;
-    }
+    std::copy_n(e.depth_to_view, 4, c.device_to_view_depth);
+    c.tan_half_fov = e.depth_to_view[2];  // the horizontal's: ndc x 1 across the distance
+    c.view_space_to_meters = e.meters_per_unit > 0 ? e.meters_per_unit : 1.0f;
     c.previous_upscale_size[0] = c.upscale_size[0];
     c.previous_upscale_size[1] = c.upscale_size[1];
     c.upscale_size[0] = int32_t(e.output.width);
