@@ -15,12 +15,12 @@
    xmlns:svg="http://www.w3.org/2000/svg">
   <sodipodi:namedview
      id="namedview66"
-     pagecolor="#ffffff"
+     pagecolor="#343434"
      bordercolor="#666666"
      borderopacity="1.0"
      inkscape:showpageshadow="2"
      inkscape:pageopacity="0.0"
-     inkscape:pagecheckerboard="0"
+     inkscape:pagecheckerboard="true"
      inkscape:deskcolor="#d1d1d1"
      inkscape:zoom="3.5664062"
      inkscape:cx="135.43045"
@@ -451,7 +451,7 @@
      stroke="url(#g1)"
      id="g56"
      style="fill:url(#radialGradient67);stroke:url(#radialGradient68)"
-     transform="translate(7.51,3.524)">
+     transform="matrix(0.97053608,0,0,0.97053608,10.933852,7.3555814)">
     <path
        d="M 169.746,256.954 A 136,136 0 0 1 -1.77,169.185 l 22.471,-7.215 a 112.4,112.4 0 0 0 141.753,72.539 z"
        stroke="none"
@@ -463,7 +463,7 @@
      stroke="url(#g2)"
      id="g57"
      style="fill:url(#radialGradient70);stroke:url(#radialGradient71)"
-     transform="translate(7.51,3.524)">
+     transform="matrix(0.97053608,0,0,0.97053608,10.933852,7.3555814)">
     <path
        d="M -7.51,91.375 A 140,140 0 0 1 78.691,-3.524 L 88.847,23.639 A 111,111 0 0 0 20.502,98.881 Z"
        stroke="none"
@@ -475,7 +475,7 @@
      stroke="url(#g3)"
      id="g58"
      style="fill:url(#radialGradient73);stroke:url(#radialGradient74)"
-     transform="translate(7.51,3.524)">
+     transform="matrix(0.97053608,0,0,0.97053608,10.933852,7.3555814)">
     <path
        d="m 192.408,-3.277 a 146,146 0 0 1 47.318,37.235 L 212.875,56.409 A 111,111 0 0 0 176.901,28.1 Z"
        stroke="none"
@@ -487,7 +487,7 @@
      stroke="url(#g4)"
      id="g60"
      style="fill:url(#radialGradient77);stroke:url(#radialGradient78)"
-     transform="translate(7.51,3.524)">
+     transform="matrix(0.97053608,0,0,0.97053608,10.933852,7.3555814)">
     <path
        d="m 88.427,22.515 a 112.2,112.2 0 0 1 144.86,67.089 l -13.361,4.81 A 98,98 0 0 0 93.4,35.816 Z"
        stroke="none"
@@ -500,32 +500,32 @@
        style="fill:url(#radialGradient76)" />
   </g>
   <path
-     d="M 96.69,28.053 A 110.05,110.05 0 0 1 238.774,93.856"
+     d="M 97.48626,31.161861 A 106.8075,106.8075 0 0 1 235.38391,95.026047"
      fill="none"
-     stroke-width="1.3"
+     stroke-width="1.2617"
      stroke-linecap="butt"
      stroke="#6bff00"
      stroke-opacity="0.62"
      id="path61" />
   <path
-     d="M 244.636,119.249 A 110.05,110.05 0 1 1 25.311,136.51"
+     d="M 241.07319,119.67087 A 106.8075,106.8075 0 1 1 28.210365,136.42329"
      fill="none"
-     stroke-width="1.3"
+     stroke-width="1.2617"
      stroke-linecap="butt"
      stroke="#6bff00"
      stroke-opacity="0.62"
      id="path62" />
   <path
-     d="M 169.5,236.606 A 110.9,110.9 0 0 1 29.758,165.404"
+     d="M 168.15099,233.57007 A 107.63245,107.63245 0 0 1 32.526339,164.46596"
      fill="none"
-     stroke-width="3"
+     stroke-width="2.91161"
      stroke-linecap="butt"
      stroke="#d0ff00"
      id="path63" />
   <g
      fill="#9dff00"
      id="g66"
-     transform="translate(7.51,3.524)">
+     transform="matrix(0.97053608,0,0,0.97053608,10.933852,7.3555814)">
     <circle
        cx="188.64999"
        cy="219.67"
