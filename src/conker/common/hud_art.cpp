@@ -257,29 +257,49 @@ void hud_art::QuadDraw(X86Context& ctx, int uv_offset) {
     constexpr uint32_t kMaxVertices = 16, kMaxStride = 64;
     if (count < 3 || count > kMaxVertices || stride < 24 || stride > kMaxStride || stride % 4 || !data) return;
     if (!mem::IsCommitted(data) || !mem::IsCommitted(data + count * stride - 1)) return;
-    const uint32_t uv = uv_offset < 0 ? stride - 8 : uint32_t(uv_offset);
-    if (uv < 8 || uv + 8 > stride) return;
     auto F = [&](uint32_t i, uint32_t off) { return kernel::G<float>(data + i * stride + off); };
-    // the affine map from the texture coordinates to the screen, from three vertices that span the square
-    int k[3] = {-1, -1, -1};
-    float det = 0;
-    for (uint32_t a = 0; a < count && k[0] < 0; a++)
-        for (uint32_t b = a + 1; b < count && k[0] < 0; b++)
-            for (uint32_t c = b + 1; c < count && k[0] < 0; c++) {
-                const float d = (F(b, uv) - F(a, uv)) * (F(c, uv + 4) - F(a, uv + 4)) -
-                                (F(c, uv) - F(a, uv)) * (F(b, uv + 4) - F(a, uv + 4));
-                if (std::fabs(d) > 1e-4f) k[0] = int(a), k[1] = int(b), k[2] = int(c), det = d;
-            }
-    if (k[0] < 0) return;
-    const float u0 = F(k[0], uv), v0 = F(k[0], uv + 4);
-    const float du1 = F(k[1], uv) - u0, dv1 = F(k[1], uv + 4) - v0, du2 = F(k[2], uv) - u0, dv2 = F(k[2], uv + 4) - v0;
     float m[2][3];  // screen = m * (u, v, 1)
-    for (int c = 0; c < 2; c++) {
-        const float p0 = F(k[0], c * 4), p1 = F(k[1], c * 4) - p0, p2 = F(k[2], c * 4) - p0;
-        m[c][0] = (p1 * dv2 - p2 * dv1) / det;
-        m[c][1] = (p2 * du1 - p1 * du2) / det;
-        m[c][2] = p0 - m[c][0] * u0 - m[c][1] * v0;
-    }
+    // the affine map from the texture coordinates at uv to the screen, from three vertices that span the square; true
+    // only when it puts every vertex where it is, so a wrong guess at where the coordinates lie is caught
+    auto fit = [&](uint32_t uv) {
+        if (uv < 8 || uv + 8 > stride) return false;
+        // only a quad of the whole texture: one of a piece (the on-screen keyboard's keys are profileKey cut in nine,
+        // the corners kept and the edges stretched) would be narrowed about the middle of its own extrapolated square,
+        // each piece about another, and the pieces' seams torn apart
+        float umin = F(0, uv), umax = umin, vmin = F(0, uv + 4), vmax = vmin;
+        for (uint32_t i = 1; i < count; i++) {
+            umin = std::min(umin, F(i, uv)), umax = std::max(umax, F(i, uv));
+            vmin = std::min(vmin, F(i, uv + 4)), vmax = std::max(vmax, F(i, uv + 4));
+        }
+        if (!(umax - umin >= 0.9f && umax - umin <= 1.1f && vmax - vmin >= 0.9f && vmax - vmin <= 1.1f)) return false;
+        int k[3] = {-1, -1, -1};
+        float det = 0;
+        for (uint32_t a = 0; a < count && k[0] < 0; a++)
+            for (uint32_t b = a + 1; b < count && k[0] < 0; b++)
+                for (uint32_t c = b + 1; c < count && k[0] < 0; c++) {
+                    const float d = (F(b, uv) - F(a, uv)) * (F(c, uv + 4) - F(a, uv + 4)) -
+                                    (F(c, uv) - F(a, uv)) * (F(b, uv + 4) - F(a, uv + 4));
+                    if (std::fabs(d) > 1e-4f) k[0] = int(a), k[1] = int(b), k[2] = int(c), det = d;
+                }
+        if (k[0] < 0) return false;
+        const float u0 = F(k[0], uv), v0 = F(k[0], uv + 4);
+        const float du1 = F(k[1], uv) - u0, dv1 = F(k[1], uv + 4) - v0;
+        const float du2 = F(k[2], uv) - u0, dv2 = F(k[2], uv + 4) - v0;
+        for (int c = 0; c < 2; c++) {
+            const float p0 = F(k[0], c * 4), p1 = F(k[1], c * 4) - p0, p2 = F(k[2], c * 4) - p0;
+            m[c][0] = (p1 * dv2 - p2 * dv1) / det;
+            m[c][1] = (p2 * du1 - p1 * du2) / det;
+            m[c][2] = p0 - m[c][0] * u0 - m[c][1] * v0;
+        }
+        for (uint32_t i = 0; i < count; i++)
+            for (int c = 0; c < 2; c++)
+                if (!(std::fabs(m[c][0] * F(i, uv) + m[c][1] * F(i, uv + 4) + m[c][2] - F(i, c * 4)) < 0.5f))
+                    return false;
+        return true;
+    };
+    // the sprite routines' 28-byte vertices (x y z, colour, u v, 4 bytes more) have them at 16; else the last 8 bytes
+    uint32_t uv = uv_offset >= 0 ? uint32_t(uv_offset) : 16;
+    if (!fit(uv) && (uv_offset >= 0 || !fit(uv = stride - 8))) return;
     // the full picture over texture coordinates 0..1 is the square over -l..1+r and -t..1+b
     const float l = float(art.pad[0]) / float(art.pw), t = float(art.pad[1]) / float(art.ph);
     const float r = float(art.pad[2]) / float(art.pw), b = float(art.pad[3]) / float(art.ph);
@@ -287,7 +307,9 @@ void hud_art::QuadDraw(X86Context& ctx, int uv_offset) {
     // about the square's middle by as much, unless the multiplayer HUD's split places it unstretched already
     const auto [scope, mode] = d3d::HudScopeNow();
     const bool split = gpu::g_hud_split.load(std::memory_order_relaxed) && scope && mode != gpu::kHudStretched;
-    const float narrow = split ? 1.0f : std::min(1.0f, (4.0f / 3.0f) / app::FrameAspect());
+    // ... and the on-screen keyboard's keys stay stretched with the grid they sit in, the rest of it profileKey in pieces
+    const bool in_grid = std::string_view(art.name).starts_with("frontend\\profileKey");
+    const float narrow = split || in_grid ? 1.0f : std::min(1.0f, (4.0f / 3.0f) / app::FrameAspect());
     const float mid = m[0][0] * 0.5f + m[0][1] * 0.5f + m[0][2];
     if (!art.full_png && narrow == 1.0f) return;
     static uint32_t copy = 0;
