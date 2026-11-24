@@ -3,9 +3,10 @@
 that name, e.g. globaleffects/sights/vertexSight) for the game to draw in place of its own (src/conker/common/hud_art.cpp,
 settings.toml redrawn_hud).
 
-    tools/hud_art.py
+    tools/hud_art.py [OUT_DIR]
 
-Each SVG becomes src/conker/common/hud_art/<name>.png, at least 1024 texels on its long side and 8 times the texture's
+The build runs it (CMakeLists.txt) into generated/hud_art/ of its build folder, which is where OUT_DIR defaults to
+(out/hud_art); the rasters are never committed, only the SVGs. Each SVG becomes <OUT_DIR>/<name>.png, at least 512 texels on its long side and twice the texture's
 size, and art.inc there embeds them with the texture's name and size, which the game finds it by.
 
 The picture covers what the texture does. An SVG whose canvas no longer matches its texture (widened or moved in
@@ -32,9 +33,10 @@ TOOLS = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, TOOLS)
 import sight_glow  # noqa: E402
 
-OUT = os.path.join(TOOLS, "..", "src", "conker", "common", "hud_art")
-MIN_LONG = 1024  # texels on the picture's long side, at least
-MIN_SCALE = 8  # times the texture's size, at least
+SRC = os.path.join(TOOLS, "..", "src", "conker", "common", "hud_art")
+OUT = os.path.join(TOOLS, "..", "out", "hud_art")
+MIN_LONG = 512  # texels on the picture's long side, at least
+MIN_SCALE = 2  # times the texture's size, at least
 
 
 def rects(text):
@@ -88,8 +90,12 @@ def bleed(pm):
 
 
 def main():
+    global OUT
+    if len(sys.argv) > 1:
+        OUT = sys.argv[1]
     rows, embeds = [], []
-    svg_root = os.path.join(OUT, "svg")
+    svg_root = os.path.join(SRC, "svg")
+    os.makedirs(OUT, exist_ok=True)
     for old in glob.glob(os.path.join(OUT, "**", "*.png"), recursive=True):
         os.remove(old)  # pictures of art since removed go too
     for i, path in enumerate(sorted(glob.glob(os.path.join(svg_root, "**", "*.svg"), recursive=True))):

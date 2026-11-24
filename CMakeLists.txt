@@ -20,6 +20,20 @@ list(FILTER XBE_HOST_SOURCES EXCLUDE REGEX "/src/conker/game/")
 set_source_files_properties(${XBE_GAME_SRC}/common/prompts.cpp ${XBE_GAME_SRC}/common/hud_art.cpp PROPERTIES
     INCLUDE_DIRECTORIES "${sdl3_SOURCE_DIR}/include")
 
+# the redrawn HUD art's pictures: rasterized from the SVGs under src/conker/common/hud_art/svg by tools/hud_art.py
+# (resvg, numpy and Pillow) into the build folder, never committed; hud_art.cpp embeds them through the art.inc there.
+# A player kit carries them in its prebuilt host library
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+find_program(RESVG resvg REQUIRED)
+set(HUD_ART_DIR ${CMAKE_BINARY_DIR}/generated/hud_art)
+file(GLOB_RECURSE HUD_ART_SVGS CONFIGURE_DEPENDS ${XBE_GAME_SRC}/common/hud_art/svg/*.svg)
+add_custom_command(OUTPUT ${HUD_ART_DIR}/art.inc
+    COMMAND ${CMAKE_COMMAND} -E env "PATH=$ENV{PATH}" ${Python3_EXECUTABLE} -I ${CMAKE_CURRENT_SOURCE_DIR}/tools/hud_art.py ${HUD_ART_DIR}
+    DEPENDS ${HUD_ART_SVGS} ${CMAKE_CURRENT_SOURCE_DIR}/tools/hud_art.py ${CMAKE_CURRENT_SOURCE_DIR}/tools/sight_glow.py
+    COMMENT "Rasterizing the redrawn HUD art"
+    VERBATIM)
+add_custom_target(hud_art_pictures DEPENDS ${HUD_ART_DIR}/art.inc)
+
 # partitions as xbe_symbols wrote them into src/conker/game.toml
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${XBE_GAME_SRC}/game.toml)
 if(EXISTS ${XBE_GAME_SRC}/game.toml)
@@ -41,7 +55,7 @@ add_xbe_image(Game default.xbe game.toml ${GAME_PARTITIONS} game)
 # the version the settings menu shows (generated/version.h, version_header in cmake/XbeRecomp.cmake)
 foreach(host Game_host Game_host_debug)
     if(TARGET ${host})
-        add_dependencies(${host} version_header)
+        add_dependencies(${host} version_header hud_art_pictures)
         target_include_directories(${host} PRIVATE ${CMAKE_BINARY_DIR}/generated)
     endif()
 endforeach()

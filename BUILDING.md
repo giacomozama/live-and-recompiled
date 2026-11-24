@@ -28,6 +28,8 @@ How to build the port from a checkout and how to package a release. For playing,
   to build from a disc image, and Wine or Proton to run `Game.exe`. The native port (`--linux`) also needs the X11 and
   Wayland development headers SDL builds against (SDL loads the libraries themselves at run time), and a Vulkan 1.3
   driver to run. `ndisasm` is only for `tools/xbe_disasm.py`.
+- **Python 3** with `numpy` and `Pillow`, and `resvg` on the PATH: the build rasterizes the redrawn HUD art from its
+  SVGs (`tools/hud_art.py`, into the build folder; only the SVGs are in the repository). A release has them built in.
 - **Windows:** CMake (3.25 or newer), Ninja and Git. `tools\build.bat` offers to install whichever is missing with
   `winget`. No Visual Studio: the compiler is the pinned Zig, as on Linux and in releases.
 

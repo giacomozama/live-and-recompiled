@@ -54,3 +54,6 @@ run-linux.sh
 /windows_store_pack/
 
 mods/
+# redrawn HUD art: rasters are built from the SVGs (tools/hud_art.py)
+/src/conker/common/hud_art/art.inc
+/src/conker/common/hud_art/**/*.png
