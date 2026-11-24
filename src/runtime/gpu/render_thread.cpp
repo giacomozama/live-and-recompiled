@@ -987,6 +987,7 @@ private:
                 if (c.op != Op::Draw) continue;
                 const uint32_t at = n++;
                 if (at < from) continue;
+                inner_->HudDrawAt(at);
                 interp::g_run_tag = c.tag;  // the HUD's placement reads it (gpu::g_hud_split)
                 uint32_t start = c.b;
                 bool shown = true;

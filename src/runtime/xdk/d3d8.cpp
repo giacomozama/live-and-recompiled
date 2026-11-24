@@ -1849,6 +1849,11 @@ void BackendDraw(uint32_t prim, uint32_t start, uint32_t count, const uint8_t* i
         c.draws++;
         c.verts += count;
     }
+    // XBE_SKIP_LABEL=NAME: the draws under that label (as the perf labelled line names it) left out, to weigh them
+    static const char* const skip_label = diag::Env("XBE_SKIP_LABEL");
+    if (skip_label && *skip_label && g_tag.label &&
+        strncmp(reinterpret_cast<const char*>(HostPtr(g_tag.label)), skip_label, 0x48) == 0)
+        return;
     struct Untag {
         ~Untag() { gpu::interp::g_draw_tag = {}; }
     } untag;

@@ -42,6 +42,7 @@
 #include <filesystem>
 #include <functional>
 #include <memory>
+#include <map>
 #include <condition_variable>
 #include <mutex>
 #include <thread>
@@ -1482,6 +1483,38 @@ private:
     ImageRef hud_zout_;   // that depth at the output's size while the HUD is drawn again
     bool hud_unsafe_ = false;  // a copy or CPU upload in the picture: no whole picture drawn again
     void KeepHudDepth(Target& t);
+    // HudNative: the HUD drawn again leaves out the draws into targets other than the frame's (the title's glow passes
+    // after a 2D draw that came before them: a grenade's flash took the glow's shrunk copies and their blurs into the
+    // HUD drawn again at the output's size, the GPU 3-4 ms more). The draws it keeps read those targets from copies
+    // taken as the picture's own draw read them: the glow reuses its targets, a level drawn over the frame, then the
+    // target drawn again for the next. Numbers: a draw 2 * its number in the frame + 1, a clear 2 * the draws before it
+    struct HudSnap {
+        Target* t = nullptr;  // compared, never followed
+        uint32_t idx = 0;     // the first draw that read it
+        uint32_t ver = 0;     // the target's last write then, ~0u none since the HUD's first draw
+        ImageRef image;
+    };
+    std::vector<HudSnap> hud_snaps_;                      // the picture's, so far
+    std::unordered_map<const Target*, uint32_t> hud_writes_;  // its last write to each target
+    uint32_t hud_rec_n_ = 0, hud_rec_first_ = 0, hud_rec_last_ = ~0u;
+    bool hud_snap_failed_ = false;
+    struct HudKeep {
+        std::vector<HudSnap> snaps;
+        uint32_t rt = 0;
+        bool ok = false;
+    };
+    std::array<HudKeep, kMaxGen> hud_keep_{};
+    std::vector<ImageRef> hud_pool_;     // copies free for the next pictures
+    const HudKeep* hud_skip_ = nullptr;  // BeginHud's slot's, while the HUD is drawn again
+    uint32_t hud_draw_at_ = 0;           // HudDrawAt's
+    void HudDrawAt(uint32_t draw) override { hud_draw_at_ = draw; }
+    uint32_t HudWrites(const State& s, Target** w);
+    void HudRecordDraw(const State& s);
+    void HudRecordClear(const State& s, uint32_t flags);
+    bool HudSkips(const State& s);
+    bool HudSkipsClear(const State& s, uint32_t flags);
+    Image* HudSnapFor(const Target& t);
+    void HudKeepSafe(const HudAt& at, size_t slot);
     uint32_t hud_copies_ = 0;     // the picture's copies so far
     uint32_t replay_draws_ = 0;   // the draws of the picture drawn again last (Replaying(false) starts the count over)
     static constexpr uint32_t kHudAtEnd = ~0u;  // HudAt::from: the copy came after the picture's draws
@@ -2089,6 +2122,27 @@ private:
     uint32_t gpu_stamps_[kFrames] = {};
     bool gpu_open_ = false, gpu_failed_ = false;
     double gpu_ns_per_tick_ = 0;
+    // XBE_PERF: each render pass's GPU time (PassStamp), by its attachments' size and format, logged once a second
+    // ('perf: gpu passes'). A pair of stamps a pass, its key and draws beside them, per frame in flight
+    static constexpr uint32_t kPassStamps = 4096;
+    struct PassKey {
+        uint32_t w, h, fmt, depth_only, samples;
+        uint64_t draws;
+        uint64_t prog = 0;  // the program of the pass's first draw, as 'perf: programs' names it
+        uint32_t kind = 0;  // 0 the frame's, 1 drawing again, 2 the HUD at the output's size, 3 motion
+        auto Tie() const { return std::tie(w, h, fmt, depth_only, samples, prog, kind); }
+        bool operator<(const PassKey& o) const { return Tie() < o.Tie(); }
+    };
+    bool pass_prog_set_ = false;
+    bool in_draw_ = false;     // inside Draw, past its count: a pass it begins counts it and takes its program
+    uint64_t draw_prog_ = 0;   // that draw's program
+    VkQueryPool pass_pool_[kFrames] = {};
+    std::vector<PassKey> pass_keys_[kFrames];
+    uint32_t pass_stamps_[kFrames] = {};
+    bool pass_open_ = false, pass_failed_ = false;
+    uint32_t pass_slot_ = 0;
+    void PassStamp(bool start);
+    void PassFrameDone(uint32_t slot);
     // Adaptive fur shading (dlss_fur_auto, AutoFurRate): the rate in use (0 full, 1 half, 2 quarter); the GPU's time
     // of the last frame measured, smoothed; frames over and under budget in a row; frames before it may try a finer
     // rate again (doubling after each try that fails, back to its least after one that holds); the frames since the
@@ -3320,6 +3374,7 @@ void VulkanBackend::EnsureRendering() {
     vkCmdBeginRendering(cmd_, &ri);
     rendering_ = true;
     active_ = desired_;
+    if (diag::Perf()) PassStamp(true);
 }
 
 void VulkanBackend::EndRendering() {
@@ -3327,6 +3382,101 @@ void VulkanBackend::EndRendering() {
     FlushRun();
     vkCmdEndRendering(cmd_);
     rendering_ = false;
+    if (pass_open_) PassStamp(false);
+}
+
+// XBE_PERF: a stamp after a render pass begins (true, its attachments taken as its key) or after it ends
+void VulkanBackend::PassStamp(bool start) {
+    if (pass_failed_ || gpu_failed_ || !gpu_pool_[0]) return;  // GpuStamp makes its pools first and finds the period
+    if (!pass_pool_[0]) {
+        VkQueryPoolCreateInfo qi{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
+        qi.queryType = VK_QUERY_TYPE_TIMESTAMP;
+        qi.queryCount = kPassStamps;
+        for (VkQueryPool& q : pass_pool_) {
+            if (vkCreateQueryPool(dev_, &qi, nullptr, &q) != VK_SUCCESS) {
+                pass_failed_ = true;
+                return;
+            }
+            vkResetQueryPool(dev_, q, 0, kPassStamps);
+        }
+    }
+    if (start) {
+        const uint32_t slot = uint32_t(frame_ % kFrames);
+        if (pass_stamps_[slot] + 2 > kPassStamps) return;
+        const Image* c = active_.color;
+        const Image* z = active_.depth;
+        const Image* a = c ? c : z;
+        vkCmdWriteTimestamp(cmd_, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, pass_pool_[slot], pass_stamps_[slot]);
+        pass_keys_[slot].push_back({a->w, a->h, uint32_t(a->format), c ? 0u : 1u, uint32_t(a->samples),
+                                    draw_serial_ - (in_draw_ ? 1 : 0), in_draw_ ? draw_prog_ : 0,
+                                    motion_pass_ ? 3u : hud_replay_ ? 2u : replay_ ? 1u : 0u});
+        pass_prog_set_ = in_draw_;
+        pass_slot_ = slot;
+        pass_open_ = true;
+    } else {
+        const uint32_t slot = pass_slot_;
+        vkCmdWriteTimestamp(cmd_, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, pass_pool_[slot], pass_stamps_[slot] + 1);
+        pass_stamps_[slot] += 2;
+        pass_keys_[slot].back().draws = draw_serial_ - pass_keys_[slot].back().draws;
+        pass_open_ = false;
+    }
+}
+
+// the frame in flight that last used this slot is done: its passes' times added up by key, logged once a second
+void VulkanBackend::PassFrameDone(uint32_t slot) {
+    if (!pass_pool_[slot]) return;
+    if (pass_open_ && pass_slot_ == slot) return;  // a pass still open in it: read next time round
+    const uint32_t n = pass_stamps_[slot];
+    std::vector<PassKey>& keys = pass_keys_[slot];
+    struct Sum {
+        double ms = 0;
+        double passes = 0, draws = 0;
+    };
+    static std::map<PassKey, Sum> sums;
+    static uint32_t frames = 0;
+    static double total = 0;
+    static auto since = std::chrono::steady_clock::now();
+    if (n >= 2) {
+        std::vector<uint64_t> t(n);
+        const VkResult r = vkGetQueryPoolResults(dev_, pass_pool_[slot], 0, n, n * sizeof(uint64_t), t.data(),
+                                                 sizeof(uint64_t), VK_QUERY_RESULT_64_BIT);
+        if (r == VK_SUCCESS) {
+            for (uint32_t i = 0; i + 1 < n && i / 2 < keys.size(); i += 2) {
+                const PassKey& k = keys[i / 2];
+                const double ms = t[i + 1] > t[i] ? double(t[i + 1] - t[i]) * gpu_ns_per_tick_ / 1e6 : 0.0;
+                PassKey key = k;
+                key.draws = 0;
+                Sum& s = sums[key];
+                s.ms += ms;
+                s.passes++;
+                s.draws += double(k.draws);
+                total += ms;
+            }
+            frames++;
+        }
+    }
+    vkResetQueryPool(dev_, pass_pool_[slot], 0, kPassStamps);
+    pass_stamps_[slot] = 0;
+    keys.clear();
+    const auto now = std::chrono::steady_clock::now();
+    if (now - since < std::chrono::seconds(1) || !frames) return;
+    std::vector<std::pair<PassKey, Sum>> list(sums.begin(), sums.end());
+    std::sort(list.begin(), list.end(), [](const auto& a, const auto& b) { return a.second.ms > b.second.ms; });
+    std::string line;
+    static const char* const kKinds[] = {"frame", "again", "hud", "motion"};
+    for (size_t i = 0; i < list.size() && i < 16; i++) {
+        const auto& [k, s] = list[i];
+        char part[200];
+        std::snprintf(part, sizeof(part), "%s%ux%u fmt %u%s x%u %s %llX %.2f ms (%.1f passes, %.0f draws)",
+                      i ? ", " : "", k.w, k.h, k.fmt, k.depth_only ? " depth" : "", k.samples, kKinds[k.kind & 3],
+                      (unsigned long long)k.prog, s.ms / frames, s.passes / frames, s.draws / frames);
+        line += part;
+    }
+    LOGR("perf: gpu passes %.2f ms a frame in %zu kinds: %s", total / frames, list.size(), line.c_str());
+    sums.clear();
+    frames = 0;
+    total = 0;
+    since = now;
 }
 
 void VulkanBackend::Push(const Bindings& b) {
@@ -4403,12 +4553,21 @@ Image* VulkanBackend::BindTargetTexture(const State& s, int stage, const Texture
     if (!t.depth && &t == fur_glow_rt_ && fur_glow_frame_ == frame_) info.flags |= kTexFurGlow;  // kept on stage 0 alone
     // left bound but never read (particles over a pass that read the frame): the same shader, no copy or resolve
     if (!((stages.sampled >> stage) & 1)) return nullptr;
+    // the HUD drawn again: another target as the picture's own draw read it (HudRecordDraw's copy)
+    if (hud_replay_ && hud_skip_ && !t.depth && t.data != hud_skip_->rt)
+        if (Image* snap = HudSnapFor(t)) {
+            stages.view[stage] = snap->view;
+            return snap;
+        }
     // the console reads the pixels it is about to overwrite: give the draw a copy, one for all its stages. A run of
     // draws of one pixel shader reading it, nothing else drawn or written between, shares the first one's: a jet's
     // exhaust ripples (CHAREFFECTS_TYPE_PERTURBATION, ~40 quads an aircraft) each read the frame's alpha, and a copy
     // of the whole upscaled frame apiece, the pass ended and the samples resolved, took the GPU 15-25 ms a frame
     // with two aircraft in view. Each misses only the ripples before it in the run, where they overlap
     if (feedback) {
+        // XBE_FB_NOCOPY=1: no copy, the stage left unbound (the draw reads black), to weigh the copies' GPU time
+        static const bool no_copy = diag::Env("XBE_FB_NOCOPY") != nullptr;
+        if (no_copy) return nullptr;
         uint32_t ps = s.ps ? s.ps->handle : 0;
         if (!t.fb || t.fb_draw != draw_serial_) {
             bool run = t.fb && t.fb_reader + 1 == draw_serial_ && t.fb_writes == writes_ && t.fb_ps == ps;
@@ -7893,6 +8052,9 @@ bool VulkanBackend::BeginHud(const HudAt& at, uint32_t slot, ImageRef& out) {
         }
     }
     HudStandIn(sv.rt, t, out);
+    // the draws into targets other than the frame's left out, those kept reading the picture's copies (HudKeepSafe)
+    hud_skip_ = hud_keep_[slot % kMaxGen].ok ? &hud_keep_[slot % kMaxGen] : nullptr;
+    hud_draw_at_ = at.from;
     if (cap_) fprintf(cap_, "     note the HUD drawn again at %ux%u over the upscaled picture\n", out->w, out->h);
     sv.cap = std::exchange(cap_, nullptr);  // the capture is the frame's own drawing
     bound_rt_ = bound_ds_ = nullptr;
@@ -7909,6 +8071,7 @@ void VulkanBackend::EndHud() {
     HudSaved& sv = hud_saved_;
     HudPutBack(sv.rt);
     HudPutBack(sv.zs);
+    hud_skip_ = nullptr;
     cap_ = sv.cap;
     sv.cap = nullptr;
     bound_rt_ = bound_ds_ = nullptr;
@@ -7916,6 +8079,151 @@ void VulkanBackend::EndHud() {
     same_state_ = false;
     post_done_ = false;
     hud_replay_ = false;
+}
+
+// the targets a draw writes: its color target, and its depth when depth or stencil is written and of the color's size
+// (as BindTargets binds it); null for none
+uint32_t VulkanBackend::HudWrites(const State& s, Target** w) {
+    uint32_t n = 0;
+    Target* rt = s.rt.header ? FindTarget(s.rt, false) : nullptr;
+    if (rt) w[n++] = rt;
+    const bool zwrite = (s.rs[kRsZEnable] && SimpleState(s, kMZWriteEnable)) || s.rs[kRsStencilEnable];
+    Target* ds = zwrite && s.zs.header ? FindTarget(s.zs, true) : nullptr;
+    if (ds && (!rt || (rt->w == ds->w && rt->h == ds->h))) w[n++] = ds;
+    return n;
+}
+
+// a draw from the HUD's first on: what it writes; when the HUD drawn again keeps it (it writes the frame or a depth),
+// a copy of each other target it reads as it is now, unless one since that target's last write is kept already
+void VulkanBackend::HudRecordDraw(const State& s) {
+    const uint32_t idx = 2 * (pass_serial_ ? pass_serial_ - 1 : 0) + 1;
+    if (hud_rec_last_ == idx) return;
+    hud_rec_last_ = idx;
+    if (!hud_rec_n_++) hud_rec_first_ = idx;
+    Target* w[2];
+    const uint32_t nw = HudWrites(s, w);
+    bool kept = nw == 0;
+    for (uint32_t i = 0; i < nw; i++) kept |= w[i]->depth || w[i]->data == hud_pic_.rt;
+    if (kept && !hud_snap_failed_) {
+        for (uint32_t tex : s.textures) {
+            TextureDesc d;
+            if (!tex || !Describe(tex, d) || Format(d.format).depth) continue;
+            auto it = targets_.find(SizedTargetKey(d.data, false, d.width, d.height));
+            if (it == targets_.end() || !it->second.res) continue;
+            Target& t = it->second;
+            if (t.depth || t.data == hud_pic_.rt) continue;
+            auto wit = hud_writes_.find(&t);
+            const uint32_t ver = wit != hud_writes_.end() ? wit->second : ~0u;
+            bool have = false;
+            for (auto sit = hud_snaps_.rbegin(); sit != hud_snaps_.rend() && !have; ++sit)
+                have = sit->t == &t && sit->ver == ver;
+            if (have) continue;
+            ImageRef image;
+            for (auto pit = hud_pool_.begin(); pit != hud_pool_.end(); ++pit)
+                if ((*pit)->w == t.w && (*pit)->h == t.h && (*pit)->format == t.res->format) {
+                    image = std::move(*pit);
+                    hud_pool_.erase(pit);
+                    break;
+                }
+            if (!image) image = NewImage({.fmt = t.res->format, .w = t.w, .h = t.h});
+            if (!image) {
+                hud_snap_failed_ = true;
+                break;
+            }
+            ResolveSamples(t);
+            Transition(*t.res, kSrc);
+            Transition(*image, kDst);
+            Barrier();
+            VkImageCopy c{};
+            c.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+            c.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+            c.extent = {t.w, t.h, 1};
+            vkCmdCopyImage(cmd_, t.res->image, kSrc, image->image, kDst, 1, &c);
+            Transition(*image, kRead);
+            hud_snaps_.push_back({&t, idx, ver, std::move(image)});
+        }
+    }
+    for (uint32_t i = 0; i < nw; i++) hud_writes_[w[i]] = idx;
+}
+
+void VulkanBackend::HudRecordClear(const State& s, uint32_t flags) {
+    const uint32_t idx = 2 * pass_serial_;
+    if ((flags & kClearTarget) && s.rt.header)
+        if (Target* t = FindTarget(s.rt, false)) hud_writes_[t] = idx;
+    if ((flags & (kClearZ | kClearStencil)) && s.zs.header)
+        if (Target* t = FindTarget(s.zs, true)) hud_writes_[t] = idx;
+}
+
+// drawn again at the output's size: a draw writing only color targets other than the frame's is left out
+bool VulkanBackend::HudSkips(const State& s) {
+    Target* w[2];
+    const uint32_t n = HudWrites(s, w);
+    if (!n) return false;
+    for (uint32_t i = 0; i < n; i++)
+        if (w[i]->depth || w[i]->data == hud_skip_->rt) return false;
+    return true;
+}
+
+bool VulkanBackend::HudSkipsClear(const State& s, uint32_t flags) {
+    if (flags & (kClearZ | kClearStencil)) return false;  // a depth is never left out
+    Target* t = (flags & kClearTarget) && s.rt.header ? FindTarget(s.rt, false) : nullptr;
+    return t && !t->depth && t->data != hud_skip_->rt;
+}
+
+// drawn again at the output's size: the copy of t its picture's draw of this number read, null for none
+Image* VulkanBackend::HudSnapFor(const Target& t) {
+    const uint32_t idx = 2 * hud_draw_at_ + 1;
+    const HudSnap* best = nullptr;
+    for (const HudSnap& sn : hud_skip_->snaps)
+        if (sn.t == &t && sn.idx <= idx && (!best || sn.idx > best->idx)) best = &sn;
+    return best ? best->image.get() : nullptr;
+}
+
+// the picture done: its copies to its slot, the slot's last ones free again. The HUD leaves its draws out when the
+// draws from its first on were all seen (the first, the one the copy came in, among them) and every copy was made.
+// XBE_HUD_REUSE=0: all drawn again, as before
+void VulkanBackend::HudKeepSafe(const HudAt& at, size_t slot) {
+    static const bool on = [] {
+        const char* e = diag::Env("XBE_HUD_REUSE");
+        return !(e && *e == '0');
+    }();
+    HudKeep& keep = hud_keep_[slot % kMaxGen];
+    for (HudSnap& sn : keep.snaps) hud_pool_.push_back(std::move(sn.image));
+    keep.snaps = std::move(hud_snaps_);
+    hud_snaps_.clear();
+    keep.rt = at.rt;
+    const char* why = !on                                ? "off"
+                      : !at.ok                           ? "HUD not drawn again"
+                      : at.whole                         ? "whole picture"
+                      : !hud_rec_n_                      ? "no records"
+                      : hud_rec_first_ != 2 * at.from + 1 ? "first record isn't the copy's draw"
+                      : hud_snap_failed_                 ? "a copy failed"
+                                                         : nullptr;
+    keep.ok = !why;
+    if (!keep.ok) {
+        for (HudSnap& sn : keep.snaps) hud_pool_.push_back(std::move(sn.image));
+        keep.snaps.clear();
+    }
+    while (hud_pool_.size() > 32) {
+        Retire(std::move(hud_pool_.front()));
+        hud_pool_.erase(hud_pool_.begin());
+    }
+    // XBE_HUD_REUSE_TRACE=1: per picture slot, at most twice a second, the copies or why none
+    static const bool trace = diag::Env("XBE_HUD_REUSE_TRACE") != nullptr;
+    static std::chrono::steady_clock::time_point last_t[kMaxGen];
+    static uint32_t lines = 0;
+    const auto now = std::chrono::steady_clock::now();
+    if (!trace || lines >= 2000 || now - last_t[slot % kMaxGen] < std::chrono::milliseconds(500)) return;
+    last_t[slot % kMaxGen] = now;
+    lines++;
+    std::string l;
+    for (const HudSnap& sn : keep.snaps) {
+        char b[96];
+        snprintf(b, sizeof(b), " [%ux%u at draw %u]", sn.image->w, sn.image->h, sn.idx / 2);
+        l += b;
+    }
+    LOGR("hud reuse slot %zu: from %u of %u, %u draws seen: %s%s", slot % kMaxGen, at.from, at.total, hud_rec_n_,
+         why ? why : "others left out, copies", l.c_str());
 }
 
 // the picture being drawn's 2D can't be drawn again at the output's size, why
@@ -8229,6 +8537,12 @@ void VulkanBackend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t
     const bool uncounted = std::exchange(uncounted_, false);
     if (&s != &sprite_ && !uncounted) pass_serial_++;
     const bool as_drawn = std::exchange(as_drawn_, false) && !uncounted;
+    if (&s != &sprite_ && !uncounted && !hud_replay_ && hud_copies_ && HudNativeWanted()) HudRecordDraw(s);
+    if (hud_replay_ && hud_skip_ && &s != &sprite_ && HudSkips(s)) {
+        FlushRun();
+        kept_.ok = false;  // the next draw takes the whole way, not this one's state
+        return;
+    }
     if (replay_ && !uncounted && pass_serial_ <= skip_to_) return;  // drawn with the run it was in
     if (uncounted) same_state_ = false;  // the whole way: no run, no draw of the frame's kept
     hud_.Reset();
@@ -8283,6 +8597,19 @@ void VulkanBackend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t
     g_perf.draws++;
     frame_draws_++;
     draw_serial_++;
+    // XBE_PERF's 'gpu passes': the pass's first draw names it
+    struct InDraw {
+        bool& on;
+        ~InDraw() { on = false; }
+    } in_draw{in_draw_};
+    if (diag::Perf()) {
+        in_draw_ = true;
+        draw_prog_ = (s.vs_handle & 1) && s.vs && !s.vs->program.empty() ? s.vs->hash : s.vs_handle;
+        if (pass_open_ && !pass_prog_set_) {
+            pass_prog_set_ = true;
+            pass_keys_[pass_slot_].back().prog = draw_prog_;
+        }
+    }
     if (!s.simple[kMBlendEnable >> 2]) frame_opaque_++;
     if (cap_) {
         CapStep(s.rt);
@@ -8323,6 +8650,8 @@ void VulkanBackend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t
     bool flat = (cap_ || PostWanted()) && ScreenSpaceDraw(s, a);
     prog_scope.flat = flat;
     TrackPost(s, flat);
+    // the draw that took the first copy is the HUD's first: recorded too (its copy came during it)
+    if (&s != &sprite_ && !hud_replay_ && hud_copies_ && HudNativeWanted()) HudRecordDraw(s);
     // past the ring every upload is a buffer of its own: seconds lost on a frame that draws a whole level once
     if (CurrentFrame().used > kUploadSize - kUploadReserve) Submit(true);
     if (!BindTargets(s)) return CountedSkip(s, "targets");
@@ -8908,6 +9237,9 @@ void VulkanBackend::Clear(const State& s, uint32_t count, const uint8_t* rects, 
         fprintf(cap_, "%04u clear rt %08X ds %08X flags %X color %08X z %.3f stencil %02X\n", cap_i_++, s.rt.data,
                 s.zs.data, flags, color, z, stencil & 0xFF);
     }
+    // HudNative: a clear after the HUD's first draw recorded (HudRecordClear); one the HUD drawn again leaves out
+    if (!hud_replay_ && hud_copies_ && HudNativeWanted()) HudRecordClear(s, flags);
+    if (hud_replay_ && hud_skip_ && HudSkipsClear(s, flags)) return;
     Target* rt = (flags & kClearTarget) ? EnsureTarget(s.rt, false) : nullptr;
     Target* ds = (flags & (kClearZ | kClearStencil)) ? EnsureTarget(s.zs, true) : nullptr;
     // the motion pass's depth kept this picture, then cleared: what is drawn after is not the world's (KeepMotionDepth)
@@ -9404,6 +9736,7 @@ void VulkanBackend::FinishFront(Target& t, ImageRef* mask, ImageRef* copy, int s
             if (!copy || !*copy) at.ok = false, at.lost = at.lost ? at.lost : "no 3D copy kept";
             if (at.zs) std::swap(hud_z_[i], hud_z_pic_);
         }
+        HudKeepSafe(at, i);
     }
     EndPicture();
 }
@@ -9424,6 +9757,12 @@ void VulkanBackend::EndPicture() {
     hud_pic_ = {};
     hud_copies_ = 0;
     hud_unsafe_ = false;
+    for (HudSnap& sn : hud_snaps_) hud_pool_.push_back(std::move(sn.image));
+    hud_snaps_.clear();
+    hud_writes_.clear();
+    hud_rec_n_ = hud_rec_first_ = 0;
+    hud_rec_last_ = ~0u;
+    hud_snap_failed_ = false;
 }
 
 // XBE_POST_TRACE: the picture's effects, where they were drawn or why not, logged when that changes from the picture
@@ -9836,6 +10175,7 @@ void VulkanBackend::GpuFrameDone() {
         frame_ms_smooth_ = frame_ms_smooth_ > 0 ? frame_ms_smooth_ + (frame_ms_ - frame_ms_smooth_) * 0.2 : frame_ms_;
     }
     frame_done_t_ = now;
+    if (diag::Perf()) PassFrameDone(uint32_t(frame_ % kFrames));
     if (gpu_open_) return;  // the frame's command buffer began without its stamp being closed: none to read
     const uint32_t slot = uint32_t(frame_ % kFrames);
     uint32_t& n = gpu_stamps_[slot];

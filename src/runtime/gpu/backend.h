@@ -85,6 +85,8 @@ public:
     // drawing again, before a Draw: the draw is one the frame didn't have (interp::Extra: the frame before's indices
     // of the draw just drawn), counted in no pass or run of the frame's draws, drawn the whole way
     virtual void Uncounted() {}
+    // the HUD drawn again at the output's size (SetHudDraw's), before each of its draws: its number in the frame
+    virtual void HudDrawAt(uint32_t /*draw*/) {}
     // motion vectors, for a temporal upscaler: Motion says the backend wants them for each of the frame's pictures.
     // Between MotionPass(true, slot) and MotionPass(false, slot) the frame's draws come again through DrawMotion, at
     // the picture's own t, each with what its constants were in the picture shown before it (Before). slot numbers
