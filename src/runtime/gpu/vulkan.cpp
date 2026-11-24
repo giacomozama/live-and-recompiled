@@ -341,8 +341,10 @@ O vs(uint id : SV_VertexID) {
     o.p = float4(o.uv * float2(2, -2) + float2(-1, 1), 0, 1);
     return o;
 }
-float depth(O i) : SV_Depth { return depthat(int2(i.p.xy)); }
-void stencilbit(O i) { if (((stencilat(int2(i.p.xy)) >> opts.x) & 1) == 0) discard; }
+// opts.yz: source pixels per target pixel (as floats), nearest: 1 for a copy of the same size
+int2 at(O i) { return int2(i.p.xy * asfloat(opts.yz)); }
+float depth(O i) : SV_Depth { return depthat(at(i)); }
+void stencilbit(O i) { if (((stencilat(at(i)) >> opts.x) & 1) == 0) discard; }
 )";
 
 // a D24S8 depth buffer as the console's memory holds it, read through a 32 bit color format:
@@ -3595,13 +3597,22 @@ VkPipeline VulkanBackend::EnsureDepthStencilCopyPipeline(bool from_ms, uint32_t 
     return pso;
 }
 
-// src's depth and stencil drawn over the depth attachment dst of the same size; src readable by shaders. No stencil
-// export: the stencil is cleared, then each bit drawn on its own.
+// src's depth and stencil drawn over the depth attachment dst, each dst pixel the nearest src one (scaled when the
+// sizes differ); src readable by shaders. No stencil export: the stencil is cleared, then each bit drawn on its own.
 void VulkanBackend::CopyDepthStencil(Image& src, bool from_ms, Image& dst, uint32_t samples) {
     constexpr int kStencilBits = 8;
     VkPipeline depth = EnsureDepthStencilCopyPipeline(from_ms, samples, -1);
     if (!depth) return;
     std::array<VkImageView, 4> views = {src.depth_view, src.stencil_view, VK_NULL_HANDLE, VK_NULL_HANDLE};
+    const float sx = float(src.w) / float(dst.w), sy = float(src.h) / float(dst.h);
+    auto cbuf = [&](int bit) {
+        Alloc cb = Upload(kPassCbBytes);
+        uint32_t c[4] = {uint32_t(bit), 0, 0, 0};
+        std::memcpy(&c[1], &sx, 4);
+        std::memcpy(&c[2], &sy, 4);
+        std::memcpy(cb.cpu, c, sizeof(c));
+        return cb;
+    };
     SetTargets(nullptr, &dst);
     SetFullViewport(dst.w, dst.h);
     EnsureRendering();
@@ -3609,16 +3620,13 @@ void VulkanBackend::CopyDepthStencil(Image& src, bool from_ms, Image& dst, uint3
     ca.clearValue.depthStencil = {1, 0};
     VkClearRect cr{{{0, 0}, {dst.w, dst.h}}, 0, 1};
     vkCmdClearAttachments(cmd_, 1, &ca, 1, &cr);
-    DrawFullScreen(depth, Upload(kPassCbBytes), views);
+    DrawFullScreen(depth, cbuf(0), views);
     ForgetDrawCmd();
     vkCmdSetStencilReference(cmd_, VK_STENCIL_FACE_FRONT_AND_BACK, 0xFF);
     for (int bit = 0; bit < kStencilBits; bit++) {
         VkPipeline pso = EnsureDepthStencilCopyPipeline(from_ms, samples, bit);
         if (!pso) break;
-        Alloc cb = Upload(kPassCbBytes);
-        uint32_t c[4] = {uint32_t(bit), 0, 0, 0};
-        std::memcpy(cb.cpu, c, sizeof(c));
-        DrawFullScreen(pso, cb, views);
+        DrawFullScreen(pso, cbuf(bit), views);
     }
     bound_rt_ = bound_ds_ = nullptr;
 }
@@ -7862,8 +7870,15 @@ bool VulkanBackend::BeginHud(const HudAt& at, uint32_t slot, ImageRef& out) {
                                   .usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
                                            VK_IMAGE_USAGE_TRANSFER_DST_BIT});
         }
+        // the stencil too: the title's glow gather reads it in the depth's bytes (its glow levels), and the 2D's
+        // stencil tests read it; cleared, a player's marker drawn before the glow passes took the sky's glow away
         VkPipeline pso = EnsureDepthCopyPipeline();
-        if (hud_zout_ && pso) {
+        if (hud_zout_ && kept->stencil_view) {
+            Transition(*kept, kRead);
+            CopyDepthStencil(*kept, false, *hud_zout_, 1);
+            EndRendering();
+            HudStandIn(sv.zs, zit->second, hud_zout_);
+        } else if (hud_zout_ && pso) {
             Transition(*kept, kRead);
             SetTargets(nullptr, hud_zout_.get());
             SetFullViewport(out->w, out->h);
