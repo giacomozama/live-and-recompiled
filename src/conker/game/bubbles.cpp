@@ -50,6 +50,15 @@ bool Trace() {
     static const bool on = diag::Env("XBE_BUBBLE_TRACE") != nullptr;
     return on;
 }
+// XBE_BUBBLE_TRACE=2: a line every frame a bubble draws (its scale, turn, page, place and size), for opening, closing
+// and the move between lines
+bool TraceFrames() {
+    static const bool on = [] {
+        const char* e = diag::Env("XBE_BUBBLE_TRACE");
+        return e && *e == '2';
+    }();
+    return on;
+}
 
 constexpr uint32_t kThought = 2;
 // a thought's circles: 0x356750 from 0xE1C9D and 0xE1E4F, and from 0xE215C as a speech bubble's tail
@@ -101,6 +110,25 @@ struct Bubble {
     float width = 0, tall = 0;   // its size, eased (the display's pixels)
     float tip_x = 0, tip_y = 0;  // the tail's tip on the frame
     bool tip = false;
+    // its place, size, tail tip and the game's tail base as it started closing, kept while it closes (DrawBubble)
+    bool held = false, held_tail = false;
+    float held_x = 0, held_y = 0, held_w = 0, held_h = 0, held_tip_x = 0, held_tip_y = 0, held_base_x = 0,
+          held_base_y = 0;
+    // BubbleDrawing saw the page change: from one line to the next the game keeps the bubble open and changes the
+    // page, and the bubble takes the new page's size at once (DrawBubble)
+    bool new_page = false;
+    // From one line to the next the game changes the page, and the cutscene may move the anchor to the next speaker a
+    // few frames after. On a new page the bubble waits (pending) as it was, its words hidden, for the anchor's move up
+    // to kWait, then takes all of the new line at once. The last page's words have faded out by then (state 0x40), so
+    // it was empty already. An anchor moving first (a cut as the last words fade) is taken at once: waiting for the
+    // page, which came up to 7 frames later, left the empty bubble where the shot before had it. gone: the anchor moved
+    // as the last page's words faded out (a cut at the line's end), and the bubble isn't drawn until the next page,
+    // which takes its place at once: moved, it showed the last line fading over the next shot, then empty
+    int pending = 0;
+    bool gone = false;
+    bool anchored = false;
+    float last_ax = 0, last_ay = 0;
+    std::chrono::steady_clock::time_point pending_at{};
     float scale = 0;        // the scale drawn (DrawBubble)
     float game_last = 0;    // the game's the frame before
     int turn = 0;           // 1 opening, -1 closing, 0 neither
@@ -124,6 +152,9 @@ Box g_words_now;
 bool g_unseen = false;
 // the words are drawing unseen with their alpha (MeasureWords' sweep): the lines' draws (0x1F31B0, 0x1F3340) get alpha 0
 bool g_sweeping = false;
+// the words are drawing hidden: their glyphs measured but folded (BubbleGlyph), while the bubble waits for the line's
+// other change (Bubble::pending)
+bool g_hide_words = false;
 
 // the bubble is being placed alone (BubblePlacing): its sprites and words drawn not at all, the body's box at full
 // scale kept (on the 640 by 480 frame)
@@ -396,6 +427,9 @@ void DrawBubble(X86Context& ctx, uint32_t rec) {
     // the game's scale of the bubble [obj+0x50]: from 0 as each line's opens (0xE0CD0) to 1, and back as it closes.
     // The body's box is scaled by it; the ellipse is sized at full scale, eased, then scaled
     const float game_scale = std::clamp(F(g_obj + kScale), 0.0f, 1.0f);
+    if (TraceFrames() && !(game_scale > 0.01f))
+        LOGR("bubbles: frame %u %08X page %08X state %02X game scale %.3f: not drawn", g_frame, g_obj, R32(g_obj + kPage),
+             B(g_obj + kState), double(F(g_obj + kScale)));
     if (!(game_scale > 0.01f)) return;
     const float full = bh / game_scale;  // the body's height at full scale
     // The scale drawn: the game's moves a third a tick ([obj+0x54], 0xE0CD0), in steps, so it runs a curve of its own
@@ -420,11 +454,46 @@ void DrawBubble(X86Context& ctx, uint32_t rec) {
         };
         bub.scale = bub.turn == 1 ? curve(t / kTurnTime) : bub.turn == -1 ? 1 - curve(t / kTurnClose) : 1.0f;
     }
-    if (!(bub.scale > 0.01f)) return;
     const float scale = bub.scale;
-    // the bubble fades in and out with the scale drawn, always at its full size, its tail or trail out throughout
     const auto now = std::chrono::steady_clock::now();
+    // the bubble fades in and out with the scale drawn, always at its full size, its tail or trail out throughout
     const float shown = scale;
+    if (!(shown > 0.01f)) return;
+    // the line changing: the page and the anchor's move after it taken together (Bubble::pending)
+    bool snap = false;
+    const bool paged = bub.new_page;
+    bub.new_page = false;
+    {
+        constexpr float kJump = 40.0f;  // the frame's pixels the anchor moves in a frame to the next speaker
+        constexpr float kWait = 0.07f;  // seconds: the cutscene's move came 3 frames after the page
+        constexpr uint8_t kFading = 0x40;  // the page's words fading out, its last frames
+        const float ax = F(g_obj + kAnchor), ay = F(g_obj + kAnchor + 4);
+        const bool jumped = bub.anchored && std::hypot(ax - bub.last_ax, ay - bub.last_ay) > kJump;
+        bub.last_ax = ax, bub.last_ay = ay, bub.anchored = true;
+        const bool start = bub.at == std::chrono::steady_clock::time_point{} ||
+                           std::chrono::duration<float>(now - bub.at).count() > 0.5f;
+        if (start) {
+            bub.pending = 0, bub.gone = false;
+        } else if (bub.gone) {
+            if (paged) bub.gone = false, snap = true;
+        } else if (jumped && B(g_obj + kState) == kFading && bub.held && bub.turn != -1) {
+            bub.pending = 0, bub.gone = true;
+        } else if (bub.pending) {
+            if (jumped || paged || std::chrono::duration<float>(now - bub.pending_at).count() >= kWait)
+                bub.pending = 0, snap = true;
+        } else if (paged && !jumped && bub.held && bub.turn != -1) {
+            bub.pending = 1, bub.pending_at = now;
+        } else if (paged) {
+            snap = true;
+        }
+    }
+    if (bub.gone) {
+        if (TraceFrames())
+            LOGR("bubbles: frame %u %08X page %08X state %02X: gone at a cut as its words fade, until the next page",
+                 g_frame, g_obj, R32(g_obj + kPage), B(g_obj + kState));
+        bub.at = now;
+        return;
+    }
     // the ellipse about the words' box and a margin, its half axes kSnug times the box's half sides (the least ellipse
     // around a box has them root 2 times: a little less, as a page's last line is short), no taller than the body;
     // before the words have drawn, their size as measured unseen (MeasureWords), else the body narrowed
@@ -471,10 +540,12 @@ void DrawBubble(X86Context& ctx, uint32_t rec) {
         tip_x = F(g_obj + kAnchor), tip_y = F(g_obj + kAnchor + 4);
     }
     // its place and tip as the game's are, which jump where the game's do (a camera cut in a cutscene); its size eased
-    // by the time gone, most of the way in a tenth of a second (a page's words of another width), but a bubble just
-    // opening (as each line's does) or not drawn for a while starts at its size
+    // by the time gone, most of the way in a tenth of a second (a scrolling page's words of another width), but a
+    // bubble just opening or not drawn for a while starts at its size, and a new page takes its size at once: from
+    // one line to the next the game keeps the bubble open, and the cutscene cuts as the line changes (eased, the old
+    // bubble shrank to the new line over some frames, then the cut moved it)
     const float dt = std::chrono::duration<float>(now - bub.at).count();
-    const bool fresh = bub.at == std::chrono::steady_clock::time_point{} || dt > 0.5f || shown < 0.15f;
+    const bool fresh = bub.at == std::chrono::steady_clock::time_point{} || dt > 0.5f || shown < 0.15f || snap;
     const float k = fresh ? 1.0f : 1.0f - std::exp(-std::max(dt, 0.0f) / 0.05f);
     bub.at = now;
     auto ease = [&](float& was, float to) { was += (to - was) * k; };
@@ -487,10 +558,32 @@ void DrawBubble(X86Context& ctx, uint32_t rec) {
         const float ax = F(g_obj + kAnchor), ay = F(g_obj + kAnchor + 4);
         bub.x = ax + (bub.raw_x - ax) / game_scale, bub.y = ay + (bub.raw_y - ay) / game_scale;
     }
+    // A closing bubble stays where it started closing, its size and tail as they were: across a cut the game moved the
+    // one fading out to the next line's speaker, tail and all, while it still showed its words
+    const bool hold = (bub.turn == -1 || bub.pending) && bub.held;
+    float draw_w = bub.width, draw_h = bub.tall;
+    if (hold) {
+        bub.x = bub.held_x, bub.y = bub.held_y, tip_x = bub.held_tip_x, tip_y = bub.held_tip_y;
+        game_tail = bub.held_tail, game_base_x = bub.held_base_x, game_base_y = bub.held_base_y;
+        draw_w = bub.held_w, draw_h = bub.held_h;
+    } else {
+        bub.held = true, bub.held_tail = game_tail;
+        bub.held_x = bub.x, bub.held_y = bub.y, bub.held_tip_x = tip_x, bub.held_tip_y = tip_y;
+        bub.held_base_x = game_base_x, bub.held_base_y = game_base_y;
+        bub.held_w = bub.width, bub.held_h = bub.tall;
+    }
     bub.tip_x = tip_x, bub.tip_y = tip_y;
     bub.tip = g_tail || g_thought;
+    if (TraceFrames())
+        LOGR("bubbles: frame %u %08X page %08X state %02X game scale %.3f turn %d drawn %.3f, body %.1f %.1f %.1f x %.1f "
+             "anchor %.1f %.1f, at %.1f %.1f%s%s, size %.1f x %.1f to %.1f x %.1f, words %s, tip %.1f %.1f",
+             g_frame, g_obj, R32(g_obj + kPage), B(g_obj + kState), double(game_scale), bub.turn, double(shown),
+             double(bx), double(by), double(bw), double(bh), double(F(g_obj + kAnchor)),
+             double(F(g_obj + kAnchor + 4)), double(bub.x), double(bub.y), hold ? " (held)" : "",
+             paged ? " (new page)" : bub.pending ? " (waiting)" : snap ? " (taken)" : "", double(draw_w), double(draw_h), double(width), double(height),
+             !bub.words.Empty() ? "seen" : !bub.unseen.Empty() ? "unseen" : "none", double(tip_x), double(tip_y));
     const float cx = bub.x, cy = bub.y;
-    const float hx = std::max(bub.width * 0.5f, 1.0f), hy = std::max(bub.tall * 0.5f, 1.0f);
+    const float hx = std::max(draw_w * 0.5f, 1.0f), hy = std::max(draw_h * 0.5f, 1.0f);
     // the soft edge: a pixel as drawn (the frame's pixels times the render scale down), half in and half out
     const app::Scale render = app::RenderScale(640, 480);
     const float soft = render.y > 0.1f && std::isfinite(render.y) ? 1.0f / render.y : 1.0f;
@@ -926,6 +1019,7 @@ void subtitles::BubbleDrawing(uint32_t obj) {
         Bubble& b = g_bubbles[obj];
         const uint32_t page = R32(obj + kPage);
         if (b.page != page) {
+            b.new_page = b.page != 0;
             b.page = page;
             b.words = {}, b.unseen = {}, b.whole = {}, b.swept = false;
         }
@@ -966,7 +1060,7 @@ void subtitles::BubbleGlyph() {
     if (!menus::GlyphScreen(sx, sy)) return;
     g_words_now.Add(std::min({sx[0], sx[1], sx[2], sx[3]}), std::min({sy[0], sy[1], sy[2], sy[3]}),
                     std::max({sx[0], sx[1], sx[2], sx[3]}), std::max({sy[0], sy[1], sy[2], sy[3]}));
-    if (!g_unseen) return;
+    if (!g_unseen && !g_hide_words) return;
     constexpr uint32_t kQuad = 0x807230, kVertex = 0x1C;  // the glyph's four vertices (x, y, z first)
     for (uint32_t i = 1; i < 4; i++)
         for (uint32_t k = 0; k < 12; k += 4) kernel::W32(kQuad + i * kVertex + k, R32(kQuad + k));
@@ -1026,8 +1120,10 @@ X86_FUNC(sub_000E2940) {
     PutF(obj + kTextX, x + mx), PutF(obj + kTextY, y + my);
     g_words = true;
     g_words_now = {};
+    g_hide_words = b.pending != 0 || b.gone;  // the next page's in the bubble as it was; the last one's, gone
     __imp__sub_000E2940(ctx, base);
     g_words = false;
+    g_hide_words = false;
     PutF(obj + kTextX, x), PutF(obj + kTextY, y);
     if (g_words_now.Empty()) return;
     if (g_unseen) {
