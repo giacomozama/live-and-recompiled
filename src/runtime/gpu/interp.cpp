@@ -270,12 +270,13 @@ struct Frame {
     bool matched = false;     // its draws looked for in the frame before (Match)
     // a cut (Match's Cut): so many of its draws found jumped that the pictures before it draw it as it is
     bool cut = false;
-    uint32_t cut_found = 0, cut_jumped = 0;  // the found draws Cut weighed, those that jumped, for the notes
+    uint32_t cut_found = 0, cut_jumped = 0, cut_turned = 0;  // the found draws Cut weighed, those that jumped or
+                                                             // turned, for the notes
     const std::array<float, 4>* Values(const Snap& sn) const { return values.data() + sn.at; }
     void Clear() {
         matched = false;
         cut = false;
-        cut_found = cut_jumped = 0;
+        cut_found = cut_jumped = cut_turned = 0;
         loose.clear();
         Reuse(programs);
         Reuse(lod);
@@ -1212,6 +1213,38 @@ uint32_t g_at_frame = 0;  // the blend memo (Memoized): the frames matched, its 
 // turn jumps a few draws a picture (a translation crossing zero), none at all most pictures
 constexpr uint32_t kCutMin = 16;
 constexpr float kCutShare = 0.25f;
+// A cut to another shot from about the same place jumps nothing: a row's xyz jumps only past its own length, so a
+// rotation, however far, never does (capture 003549 pic 80: the gargoyle's shot to Conker's, Conker squished between
+// the two). So a draw also counts if a row of a matrix turned past kCutTurn (its cosine) in the frame; a camera turns
+// a few degrees a frame, a cut turns every draw's rows at once
+constexpr float kCutTurn = 0.8f;  // about 37 degrees
+bool RowTurned(const float* a, const float* b) {
+    const float la = std::hypot(a[0], a[1], a[2]), lb = std::hypot(b[0], b[1], b[2]);
+    if (!(la > 1e-4f) || !(lb > 1e-4f) || la > kPacked || lb > kPacked) return false;
+    return (a[0] * b[0] + a[1] * b[1] + a[2] * b[2]) < kCutTurn * la * lb;
+}
+bool LeaderTurned(const Frame& prev, const Frame& cur, const Snap& sn) {
+    const Snap& was = prev.snaps[size_t(sn.found)];
+    if (!sn.reads) {
+        for (size_t i = 0; i < kXf; i++)
+            for (size_t r = 0; r < 3; r++)  // its rotation's columns (row-vector matrices)
+                if (RowTurned(std::array<float, 3>{was.xf[i][r], was.xf[i][4 + r], was.xf[i][8 + r]}.data(),
+                              std::array<float, 3>{sn.xf[i][r], sn.xf[i][4 + r], sn.xf[i][8 + r]}.data()))
+                    return true;
+        return false;
+    }
+    if (was.reads != sn.reads) return false;
+    const std::array<float, 4>* a = prev.Values(was);
+    const std::array<float, 4>* c = cur.Values(sn);
+    for (size_t j = 0; j < sn.reads->regs.size(); j++) {
+        const uint8_t r = sn.reads->regs[j];
+        if (sn.stale[r] || std::memcmp(&a[j], &c[j], 16) == 0) continue;
+        bool packed = false;
+        for (size_t i = 0; i < 4; i++) packed |= Packed(a[j][i]) || Packed(c[j][i]);
+        if (!packed && RowTurned(a[j].data(), c[j].data())) return true;
+    }
+    return false;
+}
 bool LeaderJumped(const Frame& prev, const Frame& cur, const Snap& sn) {
     const Snap& was = prev.snaps[size_t(sn.found)];
     if (!sn.reads) {
@@ -1251,8 +1284,10 @@ void Cut(const Frame& prev, Frame& cur) {
         if (sn.leader >= 0 || sn.found < 0) continue;
         cur.cut_found++;
         if (LeaderJumped(prev, cur, sn)) cur.cut_jumped++;
+        else if (LeaderTurned(prev, cur, sn)) cur.cut_turned++;
     }
-    cur.cut = cur.cut_found >= kCutMin && float(cur.cut_jumped) > kCutShare * float(cur.cut_found);
+    cur.cut = cur.cut_found >= kCutMin &&
+              float(cur.cut_jumped + cur.cut_turned) > kCutShare * float(cur.cut_found);
 }
 
 void Match() {
@@ -2902,9 +2937,10 @@ void EndPass(uint32_t slot) {
              g_pass.second,
              g_pass.borrowed, g_pass.across, g_pass.jumped, g_pass.kept, g_loose);
     std::string note = b + suspects;
-    if (g_frames[g_cur].cut) {
-        snprintf(b, sizeof(b), "\n  a cut: %u of %u found draws jumped, every draw drawn as the frame has it",
-                 g_frames[g_cur].cut_jumped, g_frames[g_cur].cut_found);
+    {
+        const Frame& f = g_frames[g_cur];
+        snprintf(b, sizeof(b), "\n  %s: %u of %u found draws jumped, %u more turned%s", f.cut ? "a cut" : "no cut",
+                 f.cut_jumped, f.cut_found, f.cut_turned, f.cut ? ", every draw drawn as the frame has it" : "");
         note += b;
     }
     std::vector<std::pair<uint64_t, std::pair<uint32_t, std::string>>> top(g_pass.unfound_programs.begin(),
