@@ -886,6 +886,49 @@ std::string MotionInstancedHlsl(std::string s) {
     return s;
 }
 
+std::string RunConstantsHlsl(const std::string& s, const std::vector<uint16_t>& regs, uint32_t regs_binding,
+                             uint32_t draws_binding) {
+    const std::string vc = "cbuffer VC : register(b0) { float4 c[192]; };";
+    // the inputs as read, or decoded first (VsInputs)
+    std::string head = "VOut main(VIn i) {", input = "VIn i";
+    if (s.find(head) == std::string::npos) head = "VOut main(VRaw ri) {", input = "VRaw ri";
+    const size_t at_vc = s.find(vc), at_main = s.find(head);
+    if (at_vc == std::string::npos || at_main == std::string::npos || regs.empty()) return {};
+    int slot[192];
+    std::fill(std::begin(slot), std::end(slot), -1);
+    for (size_t k = 0; k < regs.size(); k++)
+        if (regs[k] < 192) slot[regs[k]] = int(k);
+    auto ident = [](char ch) { return std::isalnum(static_cast<unsigned char>(ch)) || ch == '_'; };
+    std::string out;
+    out.reserve(s.size() + s.size() / 4);
+    for (size_t i = 0; i < s.size(); i++) {
+        if (i == at_vc) {
+            out += vc;
+            out += F("\n[[vk::binding(%u)]] StructuredBuffer<float4> rc;\n[[vk::binding(%u)]] StructuredBuffer<uint> rv;\n"
+                     "static uint rb = 0;",
+                     regs_binding, draws_binding);
+            i += vc.size() - 1;
+            continue;
+        }
+        if (i > at_vc && !ident(s[i - 1]) && s.compare(i, 2, "c[") == 0) {
+            size_t q = i + 2, n = 0;
+            while (q < s.size() && std::isdigit(static_cast<unsigned char>(s[q])) && n < 192) n = n * 10 + size_t(s[q++] - '0');
+            if (q == i + 2 || q >= s.size() || s[q] != ']' || n >= 192 || slot[n] < 0) return {};
+            out += F("rc[rb + %d]", slot[n]);
+            i = q;
+            continue;
+        }
+        out += s[i];
+    }
+    const size_t at = out.find(head);
+    if (at == std::string::npos) return {};
+    out.replace(at, head.size(),
+                F("VOut main(%s, uint run_vid : SV_VertexID) {\n    uint run_n, run_stride;\n"
+                  "    rv.GetDimensions(run_n, run_stride);\n    rb = rv[min(run_vid, run_n - 1)] * %u;",
+                  input.c_str(), uint32_t(regs.size())));
+    return out;
+}
+
 std::string MotionLayeredHlsl(std::string s, bool instanced) {
     const size_t at_out = s.find(kMotionOut), at_ret = s.rfind("    return o;");
     if (at_out == std::string::npos || at_ret == std::string::npos) return {};

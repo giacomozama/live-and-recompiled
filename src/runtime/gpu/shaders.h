@@ -248,6 +248,13 @@ std::string MotionInstancedHlsl(std::string motion_vs);
 // a motion vertex shader drawing into a layer of an array target (SV_RenderTargetArrayIndex): MotionInstancedHlsl's
 // the instance's, others the layer after mwvp in b0 (mlayer_c.x); empty for one it can't make so
 std::string MotionLayeredHlsl(std::string motion_vs, bool instanced);
+// a vertex program's shader for a run of draws in one state but for the registers it reads (the renderer's
+// constants runs): vertex v reads its draw's registers from rc (binding regs_binding, the draw's regs.size() float4s
+// at rv[v] * regs.size(), in regs' order), rv (binding draws_binding) its draw by vertex index; empty for a shader that
+// indexes c by anything but a number or reads a register regs leaves out. The bindings are as declared: glslang takes
+// a StructuredBuffer for a texture, so CompileSpirv adds its texture shift
+std::string RunConstantsHlsl(const std::string& vs, const std::vector<uint16_t>& regs, uint32_t regs_binding,
+                             uint32_t draws_binding);
 // the g_program_shading entries a program matches, bit i for entry i + 1 (the first 64), whether they are on or not
 uint64_t MatchProgramShading(const std::vector<uint32_t>& program);
 // the g_program_watch entries a program matches, bit i for entry i (the first 64): each sees the draw

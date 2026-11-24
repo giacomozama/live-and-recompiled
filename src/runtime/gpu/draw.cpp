@@ -1194,9 +1194,10 @@ void LogPerf() {
              (p.p_end - p.wait) / n, p.swap / n,
              (p.present - p.p_held - p.p_dlss - p.p_submit - p.p_acquire - p.p_frame - p.p_ui - p.p_end - p.swap) / n);
         LOGR("perf: draw steps per frame: setup %.2f vs %.2f ps %.2f pso %.2f consts %.2f record %.2f | %.0f of %.0f "
-             "draws in the state before (%.0f with registers of their own), drawn as %.0f runs (%.0f reused)",
+             "draws in the state before (%.0f with registers of their own, %.0f of them run with them), drawn as %.0f runs "
+             "(%.0f reused)",
              p.d_setup / n, p.d_vs / n, p.d_ps / n, p.d_pso / n, p.d_consts / n, p.d_record / n, p.fast / n,
-             p.draws / n, p.own_constants / n, p.runs / n, p.reused / n);
+             p.draws / n, p.own_constants / n, p.run_constants / n, p.runs / n, p.reused / n);
         {
             uint64_t cyc[5], all = 0;
             for (int i = 0; i < 5; i++) all += cyc[i] = g_perf_rec_cycles[i].exchange(0);

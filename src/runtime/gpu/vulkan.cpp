@@ -125,6 +125,11 @@ constexpr uint32_t kBindTex = 2;
 constexpr uint32_t kBindSampler = 8;
 constexpr uint32_t kBindViews = kBindSampler - kBindTex;
 constexpr uint32_t kBindings = 14;
+// past them, for a constants run's vertex shader alone (RunConstantsHlsl): its draws' registers and each vertex's draw,
+// pushed as the run is drawn (FlushRun); the draws' pushes (PushRaw) leave them as they were
+constexpr uint32_t kBindRunRegs = 14;
+constexpr uint32_t kBindRunDraws = 15;
+constexpr uint32_t kLayoutBindings = 16;
 
 // layouts by use, a depth image's attachment layout aside
 constexpr VkImageLayout kRead = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
@@ -1249,7 +1254,8 @@ private:
     // a run of fast draws (FastDraw) in one state, drawn as one: whether a draw's geometry can join it, its joining,
     // and the run drawn (anything else that records ends it first)
     bool Mergeable(const Assembled& a) const;
-    void JoinRun(const Assembled& a);
+    struct RunPso;
+    void JoinRun(const Assembled& a, const RunPso* consts = nullptr, const State* s = nullptr);
     void FlushRun();
     // a frame drawn again: a run the frame drew starting at this draw, drawn from its geometry still in the ring
     bool ReuseRun(const State& s);
@@ -1597,8 +1603,22 @@ private:
         std::array<VertexElement, 16> elements{};
         bool plain = false;  // no shading program: its registers feed the vertex shader alone (KeptConstants)
         PsoKey k{};          // its whole key: the dynamic state it drew with (SetDynamic)
+        ShaderChoice choice;              // its shaders' choice: a constants run's vertex shader is made again of it
+        const Spirv* ps_code = nullptr;   // its pixel shader, for a constants run's pipeline
     };
     KeptDraw kept_;
+    // A constants run's pipeline for a kept draw's (by its pipeline): its vertex shader reading each draw's registers
+    // (RunConstantsHlsl) in regs' order, the pixel shader's reads (which stay the bound constants'); pso null when
+    // it can't be made, or XBE_RUN_CONSTANTS=0
+    struct RunPso {
+        VkPipeline pso = VK_NULL_HANDLE;
+        std::vector<uint16_t> regs;
+        ConstReads ps_reads;
+    };
+    std::unordered_map<VkPipeline, RunPso> run_psos_;
+    const RunPso* run_pick_ = nullptr;  // KeptConstants' choice for the draw FastDraw joins
+    const RunPso* EnsureRunPso(const State& s, const Assembled& a);
+    bool RunConstants(const State& s, const Assembled& a);
     bool same_state_ = false;  // Changed: nothing the kept draw drew with has changed since
     ProgramPerf::Why fast_why_ = ProgramPerf::kFast;  // XBE_PERF: why FastDraw turned the draw down
     std::unordered_map<uint64_t, VkPipeline> psos_;
@@ -1842,6 +1862,11 @@ private:
         bool direct = false;
         Alloc vb{};
         uint64_t bytes = 0;  // the vertices', without the slack after them
+        // a constants run: its draws differ in the registers the vertex shader reads, drawn with pso, each draw's
+        // registers (RunPso::regs) in regs and each vertex's draw in draw_of
+        const RunPso* consts = nullptr;
+        std::vector<std::array<float, 4>> regs;
+        std::vector<uint32_t> draw_of;
     };
     Run run_;
     bool GrowRun(const VertexBuffer& b);
@@ -2257,6 +2282,9 @@ VulkanBackend::~VulkanBackend() {
         for (auto& [key, p] : *m) {
             if (p) vkDestroyPipeline(dev_, p, nullptr);
         }
+    }
+    for (auto& [kept, r] : run_psos_) {
+        if (r.pso) vkDestroyPipeline(dev_, r.pso, nullptr);
     }
     SavePipelineCache();
     if (pcache_) vkDestroyPipelineCache(dev_, pcache_, nullptr);
@@ -2875,18 +2903,19 @@ bool VulkanBackend::CreateSwapChain() {
 
 // one push descriptor set for every pipeline: b0 b1, t0 to t5, s0 to s5
 bool VulkanBackend::CreateLayout() {
-    VkDescriptorSetLayoutBinding b[kBindings] = {};
-    for (uint32_t i = 0; i < kBindings; i++) {
+    VkDescriptorSetLayoutBinding b[kLayoutBindings] = {};
+    for (uint32_t i = 0; i < kLayoutBindings; i++) {
         b[i].binding = i;
         b[i].descriptorType = i < kBindTex       ? VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER
                               : i < kBindSampler ? VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE
-                                                 : VK_DESCRIPTOR_TYPE_SAMPLER;
+                              : i < kBindings    ? VK_DESCRIPTOR_TYPE_SAMPLER
+                                                 : VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
         b[i].descriptorCount = 1;
-        b[i].stageFlags = VK_SHADER_STAGE_ALL_GRAPHICS;
+        b[i].stageFlags = i < kBindings ? VK_SHADER_STAGE_ALL_GRAPHICS : VK_SHADER_STAGE_VERTEX_BIT;
     }
     VkDescriptorSetLayoutCreateInfo li{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
     li.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_PUSH_DESCRIPTOR_BIT_KHR;
-    li.bindingCount = kBindings;
+    li.bindingCount = kLayoutBindings;
     li.pBindings = b;
     if (vkCreateDescriptorSetLayout(dev_, &li, nullptr, &dsl_) != VK_SUCCESS) return false;
     VkPipelineLayoutCreateInfo pl{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
@@ -2896,7 +2925,8 @@ bool VulkanBackend::CreateLayout() {
 }
 
 constexpr VkBufferUsageFlags kUploadUsage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT |
-                                            VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+                                            VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT |
+                                            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
 
 bool VulkanBackend::CreateFrames() {
     for (auto& f : frames_) {
@@ -5624,7 +5654,8 @@ bool VulkanBackend::GrowRun(const VertexBuffer& b) {
     return true;
 }
 
-void VulkanBackend::JoinRun(const Assembled& a) {
+// consts: a constants run's pipeline, the draw's registers (s's) going with it
+void VulkanBackend::JoinRun(const Assembled& a, const RunPso* consts, const State* s) {
     constexpr uint32_t kRunVertices = 1u << 18;
     uint32_t v = a.buffers[0].bytes / a.buffers[0].stride;
     // a strip as its list (Mergeable): the pipeline's topology class is the same
@@ -5632,7 +5663,8 @@ void VulkanBackend::JoinRun(const Assembled& a) {
                : a.topology == Topology::Lines ? int(VK_PRIMITIVE_TOPOLOGY_LINE_LIST)
                                                : int(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
     bool direct = a.buffer_count == 1;
-    bool fits = run_.draws && run_.buffers == a.buffer_count && run_.topo == topo && run_.vertices + v <= kRunVertices;
+    bool fits = run_.draws && run_.buffers == a.buffer_count && run_.topo == topo && run_.vertices + v <= kRunVertices &&
+                run_.consts == consts;
     for (uint32_t i = 0; fits && i < a.buffer_count; i++) fits = run_.strides[i] == a.buffers[i].stride;
     // a direct run the ring moved on from starts again: the same draws, in one more
     if (fits && direct && !GrowRun(a.buffers[0])) fits = false;
@@ -5644,9 +5676,14 @@ void VulkanBackend::JoinRun(const Assembled& a) {
         for (uint32_t i = 0; i < a.buffer_count; i++) run_.strides[i] = a.buffers[i].stride;
         run_.direct = direct;
         run_.bytes = 0;
+        run_.consts = consts;
         if (direct) GrowRun(a.buffers[0]);
     }
     uint32_t base = run_.vertices;
+    if (consts) {
+        for (uint16_t r : consts->regs) run_.regs.push_back(s->vsc.v[r]);
+        run_.draw_of.insert(run_.draw_of.end(), v, run_.draws);
+    }
     for (uint32_t i = 0; !direct && i < a.buffer_count; i++) {
         const VertexBuffer& b = a.buffers[i];
         AppendBytes(run_.data[i], b.src, b.bytes);
@@ -5747,8 +5784,34 @@ void VulkanBackend::FlushRun() {
     Alloc ib = Upload(ibytes, 4);
     std::memcpy(ib.cpu, run_.indices.data(), ibytes);
     vkCmdBindIndexBuffer(cmd_, ib.buf, ib.off, VK_INDEX_TYPE_UINT32);
+    const RunPso* consts = std::exchange(run_.consts, nullptr);
+    if (consts) {
+        // the draws' registers and each vertex's draw for the run's vertex shader, then its pipeline: the draws after
+        // bind theirs again (drawn_.pso)
+        const uint64_t rbytes = run_.regs.size() * sizeof(run_.regs[0]), dbytes = run_.draw_of.size() * 4;
+        Alloc ra = Upload(std::max<uint64_t>(rbytes, 16), kCbAlign);
+        std::memcpy(ra.cpu, run_.regs.data(), rbytes);
+        Alloc da = Upload(std::max<uint64_t>(dbytes, 16), kCbAlign);
+        std::memcpy(da.cpu, run_.draw_of.data(), dbytes);
+        VkDescriptorBufferInfo bi[2] = {{ra.buf, ra.off, std::max<uint64_t>(rbytes, 16)},
+                                        {da.buf, da.off, std::max<uint64_t>(dbytes, 16)}};
+        VkWriteDescriptorSet w[2] = {};
+        for (uint32_t i = 0; i < 2; i++) {
+            w[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            w[i].dstBinding = i ? kBindRunDraws : kBindRunRegs;
+            w[i].descriptorCount = 1;
+            w[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            w[i].pBufferInfo = &bi[i];
+        }
+        vkCmdPushDescriptorSetKHR(cmd_, VK_PIPELINE_BIND_POINT_GRAPHICS, layout_, 0, 2, w);
+        vkCmdBindPipeline(cmd_, VK_PIPELINE_BIND_POINT_GRAPHICS, consts->pso);
+        drawn_.pso = consts->pso;
+        run_.regs.clear();
+        run_.draw_of.clear();
+    }
     vkCmdDrawIndexed(cmd_, uint32_t(run_.indices.size()), 1, 0, 0, 0);
-    if (!replay_) {
+    // a constants run is not drawn again whole (ReuseRun): its draws are no longer alike
+    if (!replay_ && !consts) {
         KeptRun& k = kept_runs_.emplace_back();
         k.first = run_.first;
         k.last = run_.last;
@@ -8536,6 +8599,8 @@ void VulkanBackend::FillKept(KeptDraw& k, const Assembled& a, const DrawShaders&
     k.pretransformed = a.pretransformed;
     k.elements = a.elements;
     k.plain = !sh.shading;
+    k.choice = sh;
+    k.ps_code = sh.ps_code;
 }
 
 // a draw whose state is the kept draw's but for its vertices and constants: false, nothing recorded, when anything it
@@ -8550,6 +8615,79 @@ static bool KeptConstantsOn() {
         return !(e && *e == '0');
     }();
     return on;
+}
+
+// XBE_RUN_CONSTANTS=0: draws differing in their registers alone each drawn on their own, as before
+static bool RunConstantsOn() {
+    static const bool on = [] {
+        const char* e = diag::Env("XBE_RUN_CONSTANTS");
+        return !(e && *e == '0');
+    }();
+    return on;
+}
+
+// the bindings a SPIR-V module's resources take (OpDecorate Binding)
+static std::vector<uint32_t> SpirvBindings(const Spirv& m) {
+    std::vector<uint32_t> out;
+    for (size_t i = 5; i < m.size();) {
+        const uint32_t op = m[i] & 0xFFFF, n = m[i] >> 16;
+        if (!n) break;
+        if (op == 71 && n >= 4 && m[i + 2] == 33) out.push_back(m[i + 3]);  // OpDecorate id Binding n
+        i += n;
+    }
+    return out;
+}
+
+// The kept draw's constants run pipeline, made the first time: the vertex shader made again of the kept draw's
+// choice (s and a are in its state), its reads of c from the run's registers (RunConstantsHlsl), the pixel shader
+// and the rest of the pipeline the kept draw's
+const VulkanBackend::RunPso* VulkanBackend::EnsureRunPso(const State& s, const Assembled& a) {
+    auto [it, made] = run_psos_.try_emplace(kept_.pso);
+    RunPso& r = it->second;
+    if (!made) return r.pso ? &r : nullptr;
+    if (!kept_.ps_code || !kept_.choice.prog) return nullptr;
+    auto pit = shader_src_.find(kept_.choice.pkey ^ kPixelKeySalt);
+    if (pit == shader_src_.end()) return nullptr;
+    const auto t = std::chrono::steady_clock::now();
+    const std::string vs = VertexHlsl(MakeVertexEntry(s, a, kept_.choice), DrawProgram(s, kept_.choice));
+    if (SourceHash(vs, "main", "vs_5_0") != kept_.choice.vh) return nullptr;  // not the kept draw's shader after all
+    const ConstReads reads = ReadsOf(vs);
+    for (size_t i = 0; i < kConstRegs; i++)
+        if (reads[i]) r.regs.push_back(uint16_t(i));
+    if (r.regs.empty() || r.regs.size() == kConstRegs) return nullptr;  // none to vary, or c indexed
+    const std::string run = RunConstantsHlsl(vs, r.regs, kBindRunRegs - kBindTex, kBindRunDraws - kBindTex);  // CompileSpirv's shift
+    if (run.empty()) return nullptr;
+    uint64_t h;
+    const Spirv* code = Compile(run, "main", "vs_5_0", h);
+    if (!code) return nullptr;
+    // the run's buffers where FlushRun pushes them, b0 and b1 where they are for every shader
+    for (uint32_t b : SpirvBindings(*code)) {
+        if (b != kBindCb && b != kBindCb + 1 && b != kBindRunRegs && b != kBindRunDraws) {
+            LOG_FIRST(4, "vulkan: constants run shader with binding %u, not drawn as runs", b);
+            return nullptr;
+        }
+    }
+    r.ps_reads = pit->second.reads;
+    r.pso = CreateDrawPipeline(PipelineKey(kept_.k), *code, *kept_.ps_code, nullptr);
+    if (diag::Perf())
+        LOGR("vulkan: constants run pipeline for vertex shader %016llX, %zu registers, %.1f ms%s",
+             (unsigned long long)kept_.choice.vh, r.regs.size(), SinceMs(t), r.pso ? "" : ", failed");
+    return r.pso ? &r : nullptr;
+}
+
+// a draw in the kept draw's state whose registers differ joins a constants run (FastDraw's JoinRun) instead of having
+// them bound: a list or strip in a run, 3D or 2D without points or patches, of a vertex program reading c only by
+// number, whose pixel shader reads the same registers as bound. The smoke a sonic grenade leaves (APD_FLOATSPRITE_
+// DRAWN_LAST, 2F4A85DC: 4 vertices, a draw's place and size in three registers) was some 500 draws a frame, each its
+// own run with its registers pushed: 13 ms of the render thread's draws and frame generation's 9 drawing them again
+bool VulkanBackend::RunConstants(const State& s, const Assembled& a) {
+    if (!RunConstantsOn() || a.topology == Topology::Points || a.topology == Topology::Patches || !Mergeable(a) ||
+        (s.simple[kMCountEnable >> 2] && !replay_))
+        return false;
+    const RunPso* r = EnsureRunPso(s, a);
+    if (!r || !r->ps_reads.Same(s.vsc.data(), last_vsc_.data())) return false;
+    run_pick_ = r;
+    return true;
 }
 
 // The constants for a draw in the kept draw's state (FastDraw, ReuseRun): the kept draw's, still in the ring, when the
@@ -8576,6 +8714,13 @@ bool VulkanBackend::KeptConstants(const State& s, const Assembled* a) {
     if (PostWanted() && !post_done_) {
         if (!a || !kept_.solid || ScreenSpaceDraw(s, *a)) return false;
         TrackPost(s, false, false);  // the draw before's state: no copy for FSR's reactive mask can fall due here
+    }
+    // its registers with it into a constants run; the bound ones stay as they are (last_vsc_)
+    if (a && RunConstants(s, *a)) {
+        g_perf.own_constants++;
+        g_perf.run_constants++;
+        fast_why_ = ProgramPerf::kConsts;
+        return true;
     }
     last_vc_ = Upload(sizeof(s.vsc.v));
     std::memcpy(last_vc_.cpu, s.vsc.data(), sizeof(s.vsc.v));
@@ -8619,7 +8764,14 @@ bool VulkanBackend::FastDraw(const State& s, uint32_t prim, uint32_t start, uint
         hud_.Reset();
         return false;
     }
+    run_pick_ = nullptr;
     if (!KeptConstants(s, &a)) return false;
+    // a constants run open in this state takes a draw with the bound registers too, its own copy of them
+    const RunPso* consts = std::exchange(run_pick_, nullptr);
+    if (!consts && run_.draws && run_.consts && fast_why_ == ProgramPerf::kFast && RunConstantsOn()) {
+        auto it = run_psos_.find(kept_.pso);
+        if (it != run_psos_.end() && &it->second == run_.consts) consts = run_.consts;
+    }
     const DrawTextures& stages = kept_.stages;
     g_perf.d_setup += PerfLap(lap);
 
@@ -8637,7 +8789,9 @@ bool VulkanBackend::FastDraw(const State& s, uint32_t prim, uint32_t start, uint
     SetBlendFactorStencilRef(s);
     // in the state the draws before it set: its geometry joins theirs, drawn with them later (a ground drawn a quad at
     // a time is thousands of these)
-    if (!(s.simple[kMCountEnable >> 2] && !replay_) && Mergeable(a)) {
+    if (consts) {
+        JoinRun(a, consts, &s);
+    } else if (!(s.simple[kMCountEnable >> 2] && !replay_) && Mergeable(a)) {
         JoinRun(a);
     } else {
         FlushRun();
