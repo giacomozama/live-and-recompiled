@@ -515,6 +515,23 @@ void ConkerCameraAspect(X86Context& ctx, uint8_t* base) {
     }
 }
 
+// [[hook]] before 0x202B6B in 0x202AC0, the camera the frontend's picture frame (pausePubPicFrameFrontend, around a
+// game's picture) is drawn with, 3D after the menu's 2D: it puts 4:3 in the view's aspect ([view+0x108], width over
+// height here, the projection's x scale its y over it) instead of building it through 0x64468, so the frame came out
+// 4:3 in the frame and stretched across a wide display with the 2D. Widened as the scene's camera is, the frame keeps
+// its shape and lands around the picture, which the scene's camera draws (capture 003345: x scale 1.299 against
+// 1.732, the corridor's 0.489 against 1.612 at 32:9). The pause menu in a level draws its scene (the cloth behind its
+// frame, made to fill a 4:3 view) with this camera too: widened, it shows the dark past the cloth's edge, so there it
+// stays 4:3 and stretched. XBE_FRAME_ASPECT=0 leaves it 4:3 in the frontend too, for an A/B.
+void ConkerFrontendFrameAspect(X86Context& ctx, uint8_t*) {
+    static const bool off = [] {
+        const char* e = diag::Env("XBE_FRAME_ASPECT");
+        return e && e[0] == '0';
+    }();
+    if (off || !warp::Frontend()) return;
+    ctx.xmm[0].f[0] *= app::FrameAspect() * 0.75f;
+}
+
 // 0x3D2A40, the text drawing's setup. Set up for the scene's perspective (its branch at 0x3D2B5B: [0x8086C6], a
 // current camera), the glyphs' horizontal scale [0x8076B4] comes from the camera's aspect, C / ([[0x84B868]+0x108] * K)
 // (0x3D2C43): the one ConkerCameraAspect widened. Most text set up so is drawn flat on the frame after (the end
