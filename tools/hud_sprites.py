@@ -3,7 +3,7 @@
 
     tools/hud_sprites.py OUT [FILTER ...]
 
-Every CAFF package under assets/dvddata/aid is read (caff.py); each package's "package" asset names its files
+Every CAFF package under assets/dvddata/aid is read (caff.py), one per worker process; each package's "package" asset names its files
 (aid\\texture\\...\\default.rba) and points at each one's first asset, so a texture asset gets the name of the file it
 starts. Textures go to OUT/<name>.png (aid\\texture\\ dropped) (frame 0, level 0; an animated texture's other frames as
 <name>.<frame>.png), and OUT/index.tsv lists name, package, format, size, frames. FILTER words (case-insensitive)
@@ -14,8 +14,11 @@ packages is written once.
 Texture asset layout (after the 32-byte type header): +0x00 format (XDK D3DFORMAT), +0x0C width, height (u16),
 +0x18 levels, +0x20 frames when +0x04 has bit 2; texels from the start of the asset's .gpu part, frames back to back.
 """
+import concurrent.futures
 import glob
+import io
 import os
+import re
 import struct
 import sys
 
@@ -176,7 +179,9 @@ HUD = ["globaleffects/sights/", "globaleffects/smallsight", "globaleffects/sight
        "frontend/multiplayer/mpradar", "frontend/multiplayer/icons", "frontend/multiplayer/fe_icons",
        "frontend/multiplayer/multi_numbers", "frontend/multiplayer/multi_grenades",
        "frontend/multiplayer/multi_weapons", "frontend/multiplayer/liveIcons/", "frontend/icons/",
-       "frontend/caUpDown", "frontend/controlS"]
+       "frontend/caUpDown", "frontend/controlS", "globaleffects/modeIcons/"]
+# the MP objective icons beside the score (each map's flag, crown, barrel...) among the weapon pickup icons
+HUD_RE = re.compile(r"globaleffects/icons/(\w+Obj|MP_\w*flag\w*)$")
 HUD_SKIP = ["blur", "Money", "Chocolate", "TailHook", "xbox_controller", "red_cross", "BeeScoreBoard", "Bee_icon"]
 
 
@@ -187,9 +192,60 @@ def short_name(name):
 def wanted(short, filters):
     if not filters:
         return True
-    if "hud" in filters and any(short.startswith(h) for h in HUD) and not any(k in short for k in HUD_SKIP):
+    if "hud" in filters and (any(short.startswith(h) for h in HUD) or HUD_RE.match(short)) \
+            and not any(k in short for k in HUD_SKIP):
         return True
     return any(f in short.lower() for f in filters if f != "hud")
+
+
+def package_textures(job):
+    """One package's wanted textures: (name, row, [(png path suffix, png bytes)], messages), in name order."""
+    path, filters = job
+    rel = os.path.relpath(path, ROOT)
+    try:
+        with open(path, "rb") as f:
+            if f.read(4) != b"CAFF":
+                return []
+        pkg = caff.Package(path)
+    except Exception as e:
+        return [(None, None, [], [f"{rel}: {e}"])]
+    named = names(pkg)
+    if not named and rel.startswith("texture"):
+        # a lone texture file: its own path is the name
+        named = {i: "aid\\" + os.path.dirname(rel).replace("/", "\\") + "\\default.rba"
+                 for i, a in pkg.assets.items() if a.type == "texture"}
+    out, done = [], set()
+    for idx, name in sorted(named.items()):
+        a = pkg.assets[idx]
+        if a.type != "texture" or name in done:
+            continue
+        short = short_name(name)
+        if not wanted(short, filters):
+            continue
+        done.add(name)
+        hdr = pkg.data(a)[0x20:]
+        fmt, flags = struct.unpack_from("<II", hdr, 0)
+        w, h = struct.unpack_from("<HH", hdr, 0x0C)
+        frames = struct.unpack_from("<I", hdr, 0x20)[0] if flags & 4 and len(hdr) >= 0x24 else 1
+        fname = FORMATS.get(fmt, (f"0x{fmt:X}",))[0]
+        row = f"{short}\t{rel}\t{fname}\t{w}x{h}\t{frames}"
+        if fmt not in FORMATS or not w or not h:
+            out.append((name, row, [], [f"{short}: format {fname} {w}x{h} skipped"]))
+            continue
+        gpu = pkg.gpu(a)
+        # frames are spaced by the whole frame (all levels); find it from the .gpu size
+        step = len(gpu) // frames if frames > 1 else 0
+        pngs, msgs = [], []
+        for fr in range(min(frames, 64)):
+            img = decode(gpu[fr * step:fr * step + level0_size(fmt, w, h)], fmt, w, h)
+            if img is None:
+                msgs.append(f"{short}: short data")
+                break
+            buf = io.BytesIO()
+            img.save(buf, "PNG")
+            pngs.append((short + (f".{fr}" if fr else "") + ".png", buf.getvalue()))
+        out.append((name, row, pngs, msgs))
+    return out
 
 
 def main():
@@ -197,53 +253,25 @@ def main():
         sys.exit(__doc__)
     out_dir, filters = sys.argv[1], [f.lower() for f in sys.argv[2:]]
     os.makedirs(out_dir, exist_ok=True)
+    paths = [p for p in sorted(glob.glob(os.path.join(ROOT, "**", "*"), recursive=True)) if os.path.isfile(p)]
     seen, rows = set(), []
-    for path in sorted(glob.glob(os.path.join(ROOT, "**", "*"), recursive=True)):
-        if not os.path.isfile(path):
-            continue
-        with open(path, "rb") as f:
-            if f.read(4) != b"CAFF":
-                continue
-        rel = os.path.relpath(path, ROOT)
-        try:
-            pkg = caff.Package(path)
-        except Exception as e:
-            print(f"{rel}: {e}", file=sys.stderr)
-            continue
-        named = names(pkg)
-        if not named and rel.startswith("texture"):
-            # a lone texture file: its own path is the name
-            named = {i: "aid\\" + os.path.dirname(rel).replace("/", "\\") + "\\default.rba"
-                     for i, a in pkg.assets.items() if a.type == "texture"}
-        for idx, name in sorted(named.items()):
-            a = pkg.assets[idx]
-            if a.type != "texture" or name in seen:
-                continue
-            short = short_name(name)
-            if not wanted(short, filters):
-                continue
-            seen.add(name)
-            hdr = pkg.data(a)[0x20:]
-            fmt, flags = struct.unpack_from("<II", hdr, 0)
-            w, h = struct.unpack_from("<HH", hdr, 0x0C)
-            frames = struct.unpack_from("<I", hdr, 0x20)[0] if flags & 4 and len(hdr) >= 0x24 else 1
-            gpu = pkg.gpu(a)
-            fname = FORMATS.get(fmt, (f"0x{fmt:X}",))[0]
-            rows.append(f"{short}\t{rel}\t{fname}\t{w}x{h}\t{frames}")
-            if fmt not in FORMATS or not w or not h:
-                print(f"{short}: format {fname} {w}x{h} skipped", file=sys.stderr)
-                continue
-            # frames are spaced by the whole frame (all levels); find it from the .gpu size
-            step = len(gpu) // frames if frames > 1 else 0
-            for fr in range(min(frames, 64)):
-                img = decode(gpu[fr * step:fr * step + level0_size(fmt, w, h)], fmt, w, h)
-                if img is None:
-                    print(f"{short}: short data", file=sys.stderr)
-                    break
-                dst = os.path.join(out_dir, short + (f".{fr}" if fr else "") + ".png")
-                os.makedirs(os.path.dirname(dst), exist_ok=True)
-                img.save(dst)
-            print(f"{short} {fname} {w}x{h} x{frames}")
+    # packages decode in parallel; results come back in path order, so the first package naming a texture wins
+    with concurrent.futures.ProcessPoolExecutor() as pool:
+        for result in pool.map(package_textures, [(p, filters) for p in paths], chunksize=4):
+            for name, row, pngs, msgs in result:
+                for m in msgs:
+                    print(m, file=sys.stderr)
+                if name is None or name in seen:
+                    continue
+                seen.add(name)
+                rows.append(row)
+                for rel_png, data in pngs:
+                    dst = os.path.join(out_dir, rel_png)
+                    os.makedirs(os.path.dirname(dst), exist_ok=True)
+                    with open(dst, "wb") as f:
+                        f.write(data)
+                if pngs:
+                    print(row.replace("\t", " "))
     with open(os.path.join(out_dir, "index.tsv"), "w") as f:
         f.write("name\tpackage\tformat\tsize\tframes\n" + "\n".join(rows) + "\n")
 
