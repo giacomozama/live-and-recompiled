@@ -4356,6 +4356,14 @@ Image* VulkanBackend::BindTargetTexture(const State& s, int stage, const Texture
         uint32_t ps = s.ps ? s.ps->handle : 0;
         if (!t.fb || t.fb_draw != draw_serial_) {
             bool run = t.fb && t.fb_reader + 1 == draw_serial_ && t.fb_writes == writes_ && t.fb_ps == ps;
+            if (diag::Perf()) {
+                if (run) g_perf.fb_shared++;
+                else if (!t.fb) g_perf.fb_first++;
+                else if (t.fb_reader + 1 != draw_serial_) g_perf.fb_gap++;
+                else if (t.fb_writes != writes_) g_perf.fb_writes++;
+                else g_perf.fb_ps++;
+                if (!run && hud_replay_) g_perf.fb_hud++;
+            }
             t.fb_draw = draw_serial_;
             if (!run && !Feedback(t)) return nullptr;
         }
@@ -5197,6 +5205,7 @@ bool VulkanBackend::BindStageTexturesAndTargets(const State& s, DrawTextures& st
         Target& t = *draw_rt_;
         bool fresh = t.fb && t.fb_draw == draw_serial_;
         if (!fresh) {
+            g_perf.fb_screen++;
             t.fb_draw = draw_serial_;
             fresh = Feedback(t) != nullptr;
         }
@@ -7988,6 +7997,7 @@ void VulkanBackend::KeepHdr3d(Target& t) {
                             .usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT});
         if (!hdr_3d_) return;
     }
+    g_perf.hdr_copies++;
     ResolveSamples(t);
     Transition(*t.res, kSrc);
     Transition(*hdr_3d_, kDst);
@@ -8178,6 +8188,10 @@ void VulkanBackend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t
         !(kept_.surface && SurfaceDepth(s, start, count, indices)) &&
         ((replay_ && ReuseRun(s)) || FastDraw(s, prim, start, count, indices, patches))) {
         g_perf.fast++;
+        // in the state of the draw before: when that one read its target's copy, this one read it too and keeps
+        // Feedback's run going, so the next ripple taking the whole way shares the copy (the ripples' runs of fast
+        // draws broke it, a copy of the whole frame for each ripple taking the whole way after them)
+        if (bound_rt_ && bound_rt_->fb_reader + 1 == draw_serial_) bound_rt_->fb_reader = draw_serial_;
         prog_scope.why = fast_why_ == ProgramPerf::kConsts ? ProgramPerf::kConsts : ProgramPerf::kFast;
         return;
     }

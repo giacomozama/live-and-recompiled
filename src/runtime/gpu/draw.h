@@ -83,6 +83,10 @@ struct Perf {
     uint64_t runs = 0;  // runs of fast draws drawn as one
     uint64_t reused = 0;  // runs a frame drawn again took from the frame's own
     uint64_t own_constants = 0;  // fast draws (or reused runs) with registers of their own uploaded (KeptConstants)
+    // copies of a target for draws reading it as they draw to it (Feedback): why each didn't share the copy before
+    // (none yet, draws between, a write between, another pixel shader), ProgramShading::screen's, in the HUD drawn
+    // again at the output's size, and the 3D picture's copies (KeepHdr3d)
+    uint64_t fb_first = 0, fb_gap = 0, fb_writes = 0, fb_ps = 0, fb_shared = 0, fb_screen = 0, fb_hud = 0, hdr_copies = 0;
     uint64_t redrawn = 0;  // draws a frame drawn again took from the frame's own whole-way draws (ReuseDraw)
     // drawn again the whole way instead: changed for the picture (moved vertices, a decal), the frame's draw not kept
     // (a FastDraw one, fur, a depth pass), or refused (ring, targets, textures)
