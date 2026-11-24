@@ -101,6 +101,11 @@ struct Perf {
     // pixel shader, pipeline, constants, the picture before's constants, recording), then taken from the first pass
     // (constants, the picture before's, recording)
     double ms_steps[11] = {};
+    // the frame's whole-way draws drawn again (ReuseDraw), logged as 'perf: frame's draws again': how many drew, and
+    // the time of its steps: finding the draw and binding its targets, its stage textures, its constants, recording,
+    // keeping its state for the fast draws after it
+    uint64_t reuse_n = 0;
+    double reuse_ms[5] = {};
 };
 inline Perf g_perf;
 // XBE_PERF: the frame's own draws (not frame generation's) per vertex program (its hash, or the fixed function's

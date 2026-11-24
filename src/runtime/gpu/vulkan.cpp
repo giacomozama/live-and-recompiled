@@ -1555,6 +1555,9 @@ private:
             uint32_t fail = 0, pass = 0, zfail = 0, sfunc = 0, smask = 0, swmask = 0;
         } dyn;
         bool dyn_set = false;  // dyn is what the command buffer has, since the last pipeline without it
+        // what the push descriptor set holds (PushRaw), which a shell's push between leaves drawn_.b behind on
+        bool pushed_ok = false;
+        Bindings pushed;
     };
     DrawCmd drawn_;
     // the lookups the draws before made, which a run of draws in one state repeats thousands of times a frame; the
@@ -3329,28 +3332,43 @@ void VulkanBackend::Push(const Bindings& b) {
     PushRaw(b);
 }
 
+// The bindings that differ from what the set holds pushed alone: push descriptors are updated incrementally, and a
+// draw's constants are at another place in the ring each time while its textures stay, so most pushes are of b0 and
+// b1 alone; all 14 each time were much of recording a draw. A command buffer begun or a set disturbed
+// (ForgetDrawCmd) pushes them all. XBE_PUSH_ALL=1: all 14 every push, as before
 void VulkanBackend::PushRaw(const Bindings& b) {
+    static const bool all = diag::Env("XBE_PUSH_ALL") != nullptr;
+    const bool part = drawn_.pushed_ok && !all;
+    const Bindings& was = drawn_.pushed;
     VkDescriptorImageInfo ii[kBindViews];
     VkDescriptorImageInfo si[kBindViews];
     VkWriteDescriptorSet w[kBindings] = {};
-    for (uint32_t i = 0; i < kBindings; i++) {
-        w[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        w[i].dstBinding = i;
-        w[i].descriptorCount = 1;
-    }
+    uint32_t n = 0;
+    auto write = [&](uint32_t binding, VkDescriptorType type) -> VkWriteDescriptorSet& {
+        VkWriteDescriptorSet& x = w[n++];
+        x.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        x.dstBinding = binding;
+        x.descriptorCount = 1;
+        x.descriptorType = type;
+        return x;
+    };
     for (uint32_t i = 0; i < 2; i++) {
-        w[kBindCb + i].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-        w[kBindCb + i].pBufferInfo = &b.cb[i];
+        if (part && SameBytes(b.cb[i], was.cb[i])) continue;
+        write(kBindCb + i, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER).pBufferInfo = &b.cb[i];
     }
     for (uint32_t i = 0; i < kBindViews; i++) {
-        ii[i] = {VK_NULL_HANDLE, b.view[i] ? b.view[i] : dummy_2d_->view, kRead};
-        w[kBindTex + i].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
-        w[kBindTex + i].pImageInfo = &ii[i];
-        si[i] = {b.smp[i] ? b.smp[i] : blit_[0], VK_NULL_HANDLE, VK_IMAGE_LAYOUT_UNDEFINED};
-        w[kBindSampler + i].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
-        w[kBindSampler + i].pImageInfo = &si[i];
+        if (!part || b.view[i] != was.view[i]) {
+            ii[i] = {VK_NULL_HANDLE, b.view[i] ? b.view[i] : dummy_2d_->view, kRead};
+            write(kBindTex + i, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE).pImageInfo = &ii[i];
+        }
+        if (!part || b.smp[i] != was.smp[i]) {
+            si[i] = {b.smp[i] ? b.smp[i] : blit_[0], VK_NULL_HANDLE, VK_IMAGE_LAYOUT_UNDEFINED};
+            write(kBindSampler + i, VK_DESCRIPTOR_TYPE_SAMPLER).pImageInfo = &si[i];
+        }
     }
-    vkCmdPushDescriptorSetKHR(cmd_, VK_PIPELINE_BIND_POINT_GRAPHICS, layout_, 0, kBindings, w);
+    if (n) vkCmdPushDescriptorSetKHR(cmd_, VK_PIPELINE_BIND_POINT_GRAPHICS, layout_, 0, n, w);
+    drawn_.pushed = b;
+    drawn_.pushed_ok = true;
 }
 
 // a resized target gives back its resources once the GPU is past them
@@ -5902,6 +5920,10 @@ void VulkanBackend::BindGeometry(const Assembled& a) {
 // stage textures bound again (barriers, a target drawn since). The bloodbath redrew 700 such draws a picture at 5 us
 // each, most of it assembling and uploading vertices it had already. False, nothing drawn, when it can't
 bool VulkanBackend::ReuseDraw(const State& s) {
+    auto lap = PerfClock::now();
+    auto step = [&](int i) {
+        if (diag::Perf()) g_perf.reuse_ms[i] += PerfLap(lap);
+    };
     while (kept_draw_next_ < kept_draws_.size() && kept_draws_[kept_draw_next_].serial < pass_serial_)
         kept_draw_next_++;
     if (kept_draw_next_ >= kept_draws_.size() || kept_draws_[kept_draw_next_].serial != pass_serial_) {
@@ -5920,6 +5942,7 @@ bool VulkanBackend::ReuseDraw(const State& s) {
         g_perf.redraw_refused++;
         return false;
     }
+    step(0);
     DrawTextures stages{};  // zeroed, compared whole
     stages.kept = ShadingStages(r.sh.shading);
     const bool screen = r.sh.shading && g_program_shading[r.sh.shading - 1].screen;
@@ -5945,9 +5968,11 @@ bool VulkanBackend::ReuseDraw(const State& s) {
         FillViewsAndSamplers(s, stages, r.kept.filled.clamp, r.kept.filled.aniso);
         views = &filled_;
     }
+    step(1);
     DrawConstants c{};
     Bindings b;
     UploadConstants(s, r.sh, r.k, stages, r.kept.size, c, b);
+    step(2);
     EnsureRendering();
     if (r.kept.pso != drawn_.pso) {
         vkCmdBindPipeline(cmd_, VK_PIPELINE_BIND_POINT_GRAPHICS, r.kept.pso);
@@ -5984,6 +6009,8 @@ bool VulkanBackend::ReuseDraw(const State& s) {
         kept_.ok = false;
         kept_draw_next_++;
         g_perf.redrawn++;
+        step(3);
+        g_perf.reuse_n++;
         return true;
     }
     const Geometry& g = r.g;
@@ -6000,6 +6027,7 @@ bool VulkanBackend::ReuseDraw(const State& s) {
         vkCmdDraw(cmd_, g.draw_count, 1, 0, 0);
     }
     EndCountedDraw(query);
+    step(3);
     // kept as the frame kept it, with this draw's constants: the draws after it in its state take it up (FastDraw)
     const ViewsAndSamplers filled = *views;  // views may be filled_ itself
     kept_ = r.kept;
@@ -6011,6 +6039,8 @@ bool VulkanBackend::ReuseDraw(const State& s) {
     filled_ = filled;
     kept_draw_next_++;
     g_perf.redrawn++;
+    step(4);
+    g_perf.reuse_n++;
     return true;
 }
 

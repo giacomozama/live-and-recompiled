@@ -1222,6 +1222,13 @@ void LogPerf() {
              p.sig_bytes / n / 1048576.0, p.texups / n, p.texup_bytes / n / 1048576.0, p.newtex / n,
              p.targets / n, p.rtups / n, p.shrinks / n, p.syncs / n, p.lates / n,
              (unsigned long long)p.shaders, (unsigned long long)p.psos);
+        LOGR("perf: frame's draws again (ReuseDraw) per frame: %.0f drawn, %.2f ms (%.2f us each): find and targets "
+             "%.2f, textures %.2f, constants %.2f, recording %.2f, keeping %.2f",
+             p.reuse_n / n, (p.reuse_ms[0] + p.reuse_ms[1] + p.reuse_ms[2] + p.reuse_ms[3] + p.reuse_ms[4]) / n,
+             p.reuse_n ? (p.reuse_ms[0] + p.reuse_ms[1] + p.reuse_ms[2] + p.reuse_ms[3] + p.reuse_ms[4]) * 1000.0 /
+                             double(p.reuse_n)
+                       : 0.0,
+             p.reuse_ms[0] / n, p.reuse_ms[1] / n, p.reuse_ms[2] / n, p.reuse_ms[3] / n, p.reuse_ms[4] / n);
         LOGR("perf: frame copies per frame: %.1f for draws reading their target (%.1f first, %.1f draws between, "
              "%.1f writes between, %.1f other shader; %.1f shared), %.1f screen, %.1f in the HUD redraw, %.1f 3D copies",
              (p.fb_first + p.fb_gap + p.fb_writes + p.fb_ps) / n, p.fb_first / n, p.fb_gap / n, p.fb_writes / n,

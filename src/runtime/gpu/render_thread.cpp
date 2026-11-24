@@ -847,12 +847,16 @@ private:
                         }
                         auto blend_start = perf ? PerfClock::now() : PerfClock::time_point{};
                         interp::Blended how = interp::Blend(n, t, rs, undo);
+                        if (perf) gen_blend_how_ns_ += Ns(blend_start);
                         uint32_t start = c.b;
                         // a 2D draw placed on the CPU reads a copy of its vertices moved part way instead
                         const bool moved = interp::MoveVertices(n, t, how, rs, start, undo);
                         if (moved) changed = true;
                         n++;
-                        if (perf) gen_blend_ns_ += Ns(blend_start);
+                        if (perf) {
+                            gen_blend_ns_ += Ns(blend_start);
+                            gen_blended_++;
+                        }
                         if (!interp::Hidden(how)) {
                             inner_->Changed(changed);
                             changed = false;
@@ -875,7 +879,9 @@ private:
                         } else {
                             inner_->Pass();  // the frame drew it: the backend's count of draws stays the frame's
                         }
+                        auto undo_start = perf ? PerfClock::now() : PerfClock::time_point{};
                         undo.Restore(rs);  // the draw's own constants and transforms, for the commands after
+                        if (perf) gen_undo_ns_ += Ns(undo_start);
                         break;
                     }
                     case Op::Clear:
@@ -1253,10 +1259,14 @@ private:
         }
         // XBE_PERF: what frame generation costs the render thread, a frame
         if (diag::Perf() && keeping_ && ++gen_frames_ >= 120) {
-            LOGR("perf: frame generation: matching %.2f ms, drawing again %.2f ms a frame (blending %.2f), %u draws, "
+            LOGR("perf: frame generation: matching %.2f ms, drawing again %.2f ms a frame (blending %.2f: %.0f draws "
+                 "blended, %.2f us each, %.2f picking how, %.2f moving vertices; putting back %.2f), %u draws, "
                  "%u pictures, %u of %u frames drawn light",
                  gen_match_ns_ / 1e6 / gen_frames_, gen_replay_ns_ / 1e6 / gen_frames_, gen_blend_ns_ / 1e6 / gen_frames_,
-                 frame_draws_, pictures, gen_light_, gen_frames_);
+                 double(gen_blended_) / gen_frames_, gen_blended_ ? gen_blend_ns_ / 1e3 / double(gen_blended_) : 0.0,
+                 gen_blend_how_ns_ / 1e6 / gen_frames_, (gen_blend_ns_ - gen_blend_how_ns_) / 1e6 / gen_frames_,
+                 gen_undo_ns_ / 1e6 / gen_frames_, frame_draws_, pictures, gen_light_, gen_frames_);
+            gen_blended_ = gen_blend_how_ns_ = gen_undo_ns_ = 0;
             // matching: the frame's draws recorded (interp::Draw) and their match to the frame before's; drawing
             // again: the backend's draws (slow: the whole way, fast: kept state, reused: a run's draws as one, the
             // rest skipped with it), the pictures handed out, and what's left: the commands' state, the loop (the motion
@@ -1391,6 +1401,8 @@ private:
     std::atomic<bool> refreshed_{false};
     uint32_t frame_draws_ = 0;
     uint64_t gen_match_ns_ = 0, gen_replay_ns_ = 0, gen_blend_ns_ = 0;  // XBE_PERF, over gen_frames_
+    // inside blending: the draws blended, interp::Blend's part; interp::Undo's putting back after each draw
+    uint64_t gen_blended_ = 0, gen_blend_how_ns_ = 0, gen_undo_ns_ = 0;
     uint64_t gen_matched_ns_ = 0, gen_draw_ns_ = 0, gen_between_ns_ = 0;  // Match alone, backend draws, Between
     uint64_t gen_draws_ = 0, gen_backend_draws_ = 0, gen_fast_ = 0, gen_reused_ = 0, gen_redrawn_ = 0;
     uint64_t gen_changed_ = 0, gen_unkept_ = 0, gen_refused_ = 0, gen_textures_ = 0;
