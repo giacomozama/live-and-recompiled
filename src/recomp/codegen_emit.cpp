@@ -179,6 +179,7 @@ void CodeGen::EmitHooks(uint32_t va, bool after) {
     for (auto [it, e] = an_.cfg.hooks.equal_range(va); it != e; ++it) {
         const Hook& h = it->second;
         if (h.after != after) continue;
+        part_hooks_.emplace(h.call, h.Returns());
         auto leave = [&](const Hook::Exit& x) {
             if (x.ret) return F("ctx.esp += %d; return;", 4 + ret_bytes_);  // return address plus the ret n bytes
             return (x.to <= va ? std::string("X86_BARRIER(); ") : std::string()) + Target(x.to);
@@ -230,9 +231,6 @@ bool CodeGen::Run() {
     std::string shared = "#pragma once\n#include \"cpu/x86_ops.h\"\n\n";
     for (uint32_t f : funcs) shared += F("X86_EXTERN_FUNC(%s);\n", FuncName(f).c_str());
     for (uint32_t f : absent) shared += F("X86_EXTERN_FUNC(%s);\n", FuncName(f).c_str());
-    std::map<std::string, bool> hooks;
-    for (auto& [va, h] : an_.cfg.hooks) hooks.emplace(h.call, h.Returns());
-    for (auto& [name, returns] : hooks) shared += F("%s %s(X86Context& ctx, uint8_t* base);\n", returns ? "bool" : "void", name.c_str());
     WriteIfChanged(out_ / "x86_recomp_shared.h", shared);
 
     // partition by instruction count so the files compile in similar time
@@ -246,13 +244,19 @@ bool CodeGen::Run() {
     size_t per = total / parts + 1;
     size_t fi = 0;
     for (uint32_t p = 0; p < parts; p++) {
-        std::string text = "#include \"x86_recomp_shared.h\"\n\n";
+        std::string code;
         size_t acc = 0;
+        part_hooks_.clear();
         while (fi < funcs.size() && (acc < per || p == parts - 1)) {
-            text += EmitFunction(funcs[fi]);
+            code += EmitFunction(funcs[fi]);
             acc += weight[fi];
             fi++;
         }
+        std::string text = "#include \"x86_recomp_shared.h\"\n\n";
+        for (auto& [name, returns] : part_hooks_)
+            text += F("%s %s(X86Context& ctx, uint8_t* base);\n", returns ? "bool" : "void", name.c_str());
+        if (!part_hooks_.empty()) text += "\n";
+        text += code;
         WriteIfChanged(out_ / F("x86_recomp.%u.cpp", p), text);
     }
 

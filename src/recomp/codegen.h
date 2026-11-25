@@ -62,4 +62,7 @@ private:
     std::map<std::string, size_t> unimpl_;
     size_t insn_count_ = 0;
     int ret_bytes_ = -1;
+    // hooks the partition being emitted calls (name -> returns bool): declared in that partition, not the shared
+    // header, so adding a hook recompiles only the partition holding its function
+    std::map<std::string, bool> part_hooks_;
 };
