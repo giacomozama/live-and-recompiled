@@ -65,6 +65,7 @@ struct HudSplit {
     // the target it is drawn on, guest_w by guest_h the frame's), and if so the remap it is drawn with, by its scope's
     // HudMode (interp::g_run_tag):
     // - kHudEdge: the element's edge (the one its box keeps nearest to, held kHudTurnFrames: Roll), the frame's shape there
+    // - kHudLeftEdge: kHudEdge, always the left edge
     // - kHudInPlace: the frame's shape about the middle of the element's box, its box of the frame before moved as its
     //   first draw moved since (a crosshair carried to a target); in its first frame, its first draw's box
     // - kHudInPlaceBars: kHudInPlace, and a draw covering the frame's width gets black down the sides it leaves

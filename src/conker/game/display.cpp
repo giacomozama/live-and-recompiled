@@ -824,6 +824,19 @@ CONKER_HUD_CALL(001CB0E0, kHudInPlace, kHudMeters)
 X86_EXTERN_FUNC(__imp__sub_001C9DF0);
 X86_FUNC(sub_001C9DF0) { menus::ActionPrompt(ctx, base, HudCall<__imp__sub_001C9DF0, gpu::kHudEdge, kHudPrompt>); }
 
+// 0x37A9F0, the radar's markers (up to two objects of kind '4', each a 0x1CAAA0 quad about the radar's middle): drawn by
+// 0x37C020 after the HUD's scene graph, so in no scope of the radar's node, and they stayed stretched off the radar,
+// kept to the left edge (capture 110448 draw 0265). Their own element, kept to the left edge as the radar is: by its
+// box a marker right of the radar's middle (x 200 of 640) is nearer the frame's middle
+X86_EXTERN_FUNC(__imp__sub_0037A9F0);
+X86_FUNC(sub_0037A9F0) {
+    if (!HudScopes() || g_hud_object) return __imp__sub_0037A9F0(ctx, base);
+    constexpr uint32_t kHudRadarMarkers = 0xFE000005u;
+    d3d::HudScope(kHudRadarMarkers, gpu::kHudLeftEdge);
+    __imp__sub_0037A9F0(ctx, base);
+    d3d::HudScopeEnd();
+}
+
 // 0x1F2BC0, the text list drawn: its entries in place are counted from the start (TextPlace)
 X86_EXTERN_FUNC(__imp__sub_001F2BC0);
 X86_FUNC(sub_001F2BC0) {

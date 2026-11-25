@@ -230,8 +230,11 @@ inline std::atomic<uint32_t> g_team_colors{0};
 inline std::atomic<uint32_t> g_frame_grab{0};
 // how the draws of a HUD scope (d3d::HudScope) are placed: by the edge the element's box keeps nearest to (held),
 // unstretched where it is (about the element's box, or each draw's own), or as the frame has them. kHudInPlaceBars is
-// kHudInPlace with black down the sides of a draw that covers the frame (a sniper's scope, no longer to the edges)
-enum HudMode : uint8_t { kHudNone, kHudEdge, kHudInPlace, kHudInPlaceEach, kHudStretched, kHudInPlaceBars, kHudCentred };
+// kHudInPlace with black down the sides of a draw that covers the frame (a sniper's scope, no longer to the edges);
+// kHudLeftEdge is kHudEdge kept to the left edge whatever its box (what is drawn over the radar)
+enum HudMode : uint8_t {
+    kHudNone, kHudEdge, kHudInPlace, kHudInPlaceEach, kHudStretched, kHudInPlaceBars, kHudCentred, kHudLeftEdge
+};
 
 uint64_t Hash(const void* p, size_t n, uint64_t h = 1469598103934665603ull);
 

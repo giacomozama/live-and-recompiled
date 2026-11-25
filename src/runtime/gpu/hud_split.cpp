@@ -105,6 +105,8 @@ bool HudSplit::Place(const State& s, const Assembled& a, uint32_t start, uint32_
             mid = e.last.Mid() + (replay ? 0 : first.Mid() - e.first_last.Mid());
         else if (!first.Empty()) mid = first.Mid();  // the first draw's, the same for each of the frame's draws
         else if (measured) mid = b.Mid();
+    } else if (mode == kHudLeftEdge) {
+        anchor = kHudLeft;
     } else {
         anchor = e.anchor;
         if (anchor == kHudNoEdge) {  // new: the third of its box so far
