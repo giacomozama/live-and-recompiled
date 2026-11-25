@@ -36,7 +36,7 @@ import sight_glow  # noqa: E402
 SRC = os.path.join(TOOLS, "..", "src", "conker", "common", "hud_art")
 OUT = os.path.join(TOOLS, "..", "out", "hud_art")
 MIN_LONG = 512  # texels on the picture's long side, at least
-MIN_SCALE = 2  # times the texture's size, at least
+MIN_SCALE = 4  # times the texture's size, at least
 
 
 def rects(text):
