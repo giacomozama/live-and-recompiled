@@ -61,7 +61,7 @@ constexpr uint32_t kMoveRing = 1u << 20, kMoveHeaders = 1u << 16;
 
 enum class WaitFor : uint8_t { ReadBack, Resource, Fence, Flush, Copy, Frame, Count };
 
-enum class Op : uint8_t { State, Draw, Clear, Copy, Present, Redisplay, Refresh, Sync, RecordLate, Flush, Gamma, ClearReport, GetReport, Note };
+enum class Op : uint8_t { State, Draw, Clear, Copy, Present, Redisplay, Refresh, Sync, RecordLate, Flush, Gamma, ClearReport, GetReport, Note, PausePicture };
 
 struct Cmd {
     Op op;
@@ -323,6 +323,14 @@ public:
         c.data = Put(text, uint32_t(std::strlen(text) + 1));
         cur_->cmds.push_back(c);
     }
+
+    void PausePicture(bool keep, const Surface& target) override {
+        Cmd c{Op::PausePicture};
+        c.a = keep;
+        c.s1 = target;
+        cur_->cmds.push_back(c);
+    }
+    bool PausePictures() const override { return inner_->PausePictures(); }
 
     void ClearReport() override { cur_->cmds.push_back(Cmd{Op::ClearReport}); }
     // the batches made so far, those waiting in the pool and the memory their vectors keep (the pool's are idle)
@@ -892,6 +900,10 @@ private:
                         changed = true;
                         inner_->Copy(c.s1, c.s2, c.a, c.b, c.c);
                         break;
+                    case Op::PausePicture:  // the kept picture back under the pause drawn again; no keeping twice
+                        changed = true;
+                        if (!c.a) inner_->PausePicture(false, c.s1);
+                        break;
                     default: changed = true; break;
                 }
             }
@@ -1346,6 +1358,7 @@ private:
             case Op::ClearReport: inner_->ClearReport(); break;
             case Op::GetReport: inner_->GetReport(c.a); break;
             case Op::Note: inner_->Note(reinterpret_cast<const char*>(data)); break;
+            case Op::PausePicture: inner_->PausePicture(c.a != 0, c.s1); break;
         }
     }
 

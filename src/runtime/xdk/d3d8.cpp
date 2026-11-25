@@ -740,6 +740,17 @@ void HudNote(const char* text) {
     if (g_backend) g_backend->Note(text);
 }
 
+void PausePicture(bool keep) {
+    std::lock_guard<std::recursive_mutex> lock(g_lock);
+    Walk(Dev(kDevPush));  // the commands pushed so far come before it
+    if (g_backend) g_backend->PausePicture(keep, SurfaceOf(Dev(kDevBackBuffer)));
+}
+
+bool PausePictures() {
+    std::lock_guard<std::recursive_mutex> lock(g_lock);
+    return g_backend && g_backend->PausePictures();
+}
+
 DrawTag SetDrawTag(DrawTag tag) {
     if (tag.piece && !tag.label) tag.label = g_tag.label;
     // called around each piece of every model drawn (a battle's 16000 a frame): no lock nor walk when nothing was

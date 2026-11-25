@@ -133,6 +133,13 @@ public:
     virtual void GetReport(uint32_t /*report*/) {}
     // a line for the frame capture, in order with the draws (state the draws alone don't show, e.g. who set it)
     virtual void Note(const char* /*text*/) {}
+    // A title's pause screen drawn from one picture of the game instead of the game drawn again under it each frame
+    // (d3d::PausePicture): keep, the frame target's picture as the 2D comes to draw over it in this frame (the 3D and
+    // the title's own passes, no HUD); !keep, that picture written back into the target it came from, in order with
+    // the draws, into target (the title's back buffer now: it changes with each Swap). PausePictures: whether the
+    // backend does it (the title draws its game under the pause when not)
+    virtual void PausePicture(bool /*keep*/, const Surface& /*target*/) {}
+    virtual bool PausePictures() const { return false; }
     // XBE_TRACE_MEM: log what the backend holds; the renderer's own lines come at its next present (g_mem_report)
     virtual void MemoryReport();
     // before a Draw: whether anything changed since the Draw before it besides vertex sources (streams, indices, the

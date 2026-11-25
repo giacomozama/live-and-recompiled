@@ -346,6 +346,11 @@ at = 0x64468   # camera projection: its aspect widened to the display's (Hor+)
 call = "ConkerCameraAspect"
 
 [[hook]]
+at = 0x2A3FFF  # the frame's drawing: paused, the picture kept before the pause instead of the game drawn again (pause_picture.cpp)
+call = "ConkerPauseFrame"
+on_true = 0x2A4497
+
+[[hook]]
 at = 0x202B6B  # the frontend picture frame's camera: its fixed 4:3 aspect widened to the display's
 call = "ConkerFrontendFrameAspect"
 

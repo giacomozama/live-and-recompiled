@@ -62,6 +62,12 @@ std::pair<uint32_t, uint8_t> HudScopeNow();
 // a line in the frame capture, in order with the draws (the HUD trace)
 void HudNote(const char* text);
 
+// A title's pause screen from one picture (gpu::Backend::PausePicture): keep, the frame being pushed keeps its
+// picture as the 2D comes to draw over it; !keep, that picture written back into the back buffer (the device's now),
+// in order with the commands pushed before. PausePictures: whether the renderer does it. Game thread
+void PausePicture(bool keep);
+bool PausePictures();
+
 // One vertex program constant (hardware order, D3D register + 96) for the draws the title pushes next, as
 // SetVertexShaderConstant would: the commands pushed before are read first. For a game's own data handed to its
 // shading hooks in a register no program of the title reads. Game thread

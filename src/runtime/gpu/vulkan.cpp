@@ -1017,6 +1017,8 @@ public:
     void Note(const char* text) override {
         if (cap_) fprintf(cap_, "     note %s\n", text);
     }
+    void PausePicture(bool keep, const Surface& target) override;
+    bool PausePictures() const override { return true; }
     // done once the commands being recorded, the next fence value, have run
     void GetReport(uint32_t report) override { reports_.push_back({report, counted_, fence_value_ + 1}); }
 
@@ -1139,6 +1141,10 @@ private:
     void EndHud();
     void HudLost(const char* why);
     void KeepHdr3d(Target& t);
+    // PausePicture: the picture kept, and a keep asked for this frame
+    ImageRef pause_pic_;
+    bool pause_keep_ = false;
+    void KeepPause(Target& t);
     void MakeHdrMask(Target& t, ImageRef& mask, ImageRef* copy = nullptr);
     bool HdrCompare(Target& t, ImageRef& dst);
     void HdrTrack(const State& s, bool flat);
@@ -6398,7 +6404,7 @@ bool VulkanBackend::PostWanted() const {
     return set.smaa || set.film_grain || set.chromatic_aberration ||
            (set.ambient_occlusion && g_view_constants.viewport >= 0) ||
            (set.motion_blur && g_view_constants.camera >= 0) || Keep3d() ||
-           g_outlines.load(std::memory_order_relaxed) || MotionOn();
+           g_outlines.load(std::memory_order_relaxed) || MotionOn() || pause_keep_;
 }
 
 // the draw's program's PositionWSource, kPosWUnknown without one
@@ -6491,6 +6497,7 @@ void VulkanBackend::TrackPost(const State& s, bool flat, bool can_copy) {
     }
     pt.applied = "at a 2D draw";
     ApplyPost(*rt);
+    KeepPause(*rt);
 }
 
 // a 3D draw on the frame that tests depth: its surfaces, and its program's view when g_view_constants' registers hold
@@ -8431,6 +8438,61 @@ void VulkanBackend::KeepHdr3d(Target& t) {
     if (cap_) fprintf(cap_, "     note HDR highlights' copy of the 3D picture of %08X\n", t.data);
 }
 
+// PausePicture(true): the frame target's picture as the 2D comes to draw over it, once, into pause_pic_
+void VulkanBackend::KeepPause(Target& t) {
+    if (!pause_keep_ || !t.res) return;
+    pause_keep_ = false;
+    if (!pause_pic_ || pause_pic_->w != t.w || pause_pic_->h != t.h || pause_pic_->format != t.fmt) {
+        if (pause_pic_) Retire(std::exchange(pause_pic_, nullptr));
+        pause_pic_ = NewImage({.fmt = t.fmt, .w = t.w, .h = t.h,
+                               .usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT});
+        if (!pause_pic_) return;
+    }
+    ResolveSamples(t);
+    Transition(*t.res, kSrc);
+    Transition(*pause_pic_, kDst);
+    Barrier();
+    VkImageCopy r{};
+    r.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    r.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    r.extent = {t.w, t.h, 1};
+    vkCmdCopyImage(cmd_, t.res->image, kSrc, pause_pic_->image, kDst, 1, &r);
+    if (cap_) fprintf(cap_, "     note pause picture kept from %08X (%ux%u)\n", t.data, t.w, t.h);
+}
+
+// keep: KeepPause at this frame's 2D (PostWanted holds till then); else the kept picture written over target, the
+// back buffer now, whole, as a surface copy would (the HUD drawn again at the output's size steps aside for the
+// frame). The title's buffers take turns as the back buffer: the one the picture came from is the front every
+// other frame, and writing there showed the pause screen one frame in two
+void VulkanBackend::PausePicture(bool keep, const Surface& target) {
+    if (keep) {
+        pause_keep_ = true;
+        if (pause_pic_) Retire(std::exchange(pause_pic_, nullptr));  // never the picture of an earlier pause
+        return;
+    }
+    FlushRun();
+    Target* t = pause_pic_ ? FindTarget(target, false) : nullptr;
+    if (!pause_pic_ || !t || !t->res || t->w != pause_pic_->w || t->h != pause_pic_->h || t->fmt != pause_pic_->format) {
+        LOG_FIRST(4, "vulkan: pause picture not written back (%s)", !pause_pic_ ? "none kept" : "its target changed");
+        return;
+    }
+    if (hud_copies_) HudLost("the pause picture after the copy");
+    hud_unsafe_ = true;
+    writes_++;
+    WriteRes(*t, true);
+    Transition(*pause_pic_, kSrc);
+    Transition(*t->res, kDst);
+    Barrier();
+    VkImageCopy r{};
+    r.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    r.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    r.extent = {t->w, t->h, 1};
+    vkCmdCopyImage(cmd_, pause_pic_->image, kSrc, t->res->image, kDst, 1, &r);
+    t->drawn = true;
+    bound_rt_ = bound_ds_ = nullptr;
+    if (cap_) fprintf(cap_, "%04u pause picture written back to %08X\n", cap_i_++, t->data);
+}
+
 // HudNative: the 3D's depth as the first copy is taken (hud_z_pic_), for what comes after to be hidden by it when
 // drawn again at the output's size; none (zs 0) without a depth of the frame's size
 void VulkanBackend::KeepHudDepth(Target& t) {
@@ -9714,6 +9776,11 @@ void VulkanBackend::FinishFront(Target& t, ImageRef* mask, ImageRef* copy, int s
     if (!post_done_ && post_rt_ == t.data && PostWanted()) {
         post_trace_.applied = "at the front buffer";
         ApplyPost(t);
+        KeepPause(t);
+    }
+    if (pause_keep_) {  // no 3D on the frame target this picture: nothing kept, the pause writes nothing back
+        pause_keep_ = false;
+        if (cap_) fprintf(cap_, "     note pause picture not kept: no 3D on the frame\n");
     }
     PostTraceEnd(t);
     ResolveSamples(t);
