@@ -10992,7 +10992,8 @@ void VulkanBackend::Present(const Surface& front) {
     occlusion_done_ = view_ok_ = many_views_ = false;
     fsr_copies_ = 0;
     fsr_solid_since_ = fsr_gave_up_ = false;
-    if (t && interp::Recording()) RecordPictures(sources, notes, t->gw, t->gh);
+    // what each picture showed: the upscaler's result with the HUD drawn again over it, else its source
+    if (t && interp::Recording()) RecordPictures(shows, notes, t->gw, t->gh);
     if (MotionView() && !sources.empty()) ShowMotion(shows, sources, slots);
     if (pictures.empty()) pictures.push_back(VK_NULL_HANDLE);
     // the frame's pictures share out the time to the next frame, the first shown now; the time between frames is
