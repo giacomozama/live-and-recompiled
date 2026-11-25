@@ -65,6 +65,7 @@ void Apply(int preset) {
             vignette::g_on = true;
             fur::g_distant = false;
             characters::g_max_lod = false;
+            characters::g_smooth_animation = false;
             characters::g_menu_models = false;
             grass::g_wind = false;
             grass::g_max_lod = false;
@@ -102,6 +103,7 @@ void Apply(int preset) {
             vignette::g_on = true;
             fur::g_distant = true;
             characters::g_max_lod = true;
+            characters::g_smooth_animation = true;
             characters::g_menu_models = false;
             grass::g_wind = true;
             grass::g_max_lod = true;
@@ -139,6 +141,7 @@ void Apply(int preset) {
             vignette::g_on = true;
             fur::g_distant = true;
             characters::g_max_lod = true;
+            characters::g_smooth_animation = true;
             characters::g_menu_models = false;
             grass::g_wind = true;
             grass::g_max_lod = true;

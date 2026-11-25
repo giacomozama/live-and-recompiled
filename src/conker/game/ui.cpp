@@ -2712,8 +2712,12 @@ void Draw(double fps) {
                 }
 
                 if (Section("detail")) {
-                    Check("force_max_character", &characters::g_max_lod);
-                    Hint("hint_characters_keep_their_full_model", true);
+                    // one choice for the two settings (each kept in settings.toml as its own; full models with
+                    // the console's animation, settable there, shows as the last)
+                    int distant = characters::g_max_lod ? 2 : characters::g_smooth_animation ? 1 : 0;
+                    if (Segmented("far_characters", &distant, {"original", "smooth_animation", "animation_and_model"}))
+                        characters::g_smooth_animation = distant >= 1, characters::g_max_lod = distant == 2;
+                    Hint("hint_far_characters", true);
                     Check("detailed_multiplayer_characters", &characters::g_menu_models);
                     Hint("hint_multiplayer_classes_use_their_more", true);
                     // one choice for the three grass settings (each still kept in settings.toml as its own)

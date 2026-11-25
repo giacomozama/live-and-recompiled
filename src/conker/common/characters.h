@@ -6,9 +6,13 @@
 // the classes' models).
 namespace characters {
 
-// settings.toml character_max_lod: players and bots keep their full model however far, and refresh every frame,
-// instead of dropping to a coarser model and a slower refresh with distance as on the console. Read each frame.
+// settings.toml character_max_lod: characters keep their full model however far, instead of dropping to a coarser
+// model with distance as on the console. Read each frame.
 extern bool g_max_lod;
+
+// settings.toml character_smooth_animation: players and bots refresh and animate every frame however far, instead of
+// a slower refresh and animation with distance as on the console. Read each frame.
+extern bool g_smooth_animation;
 
 // settings.toml character_menu_models: a class (a squirrel or a Tedi, WWII and Future) is drawn in a match with its
 // character select model instead of the match's: finer, and for the squirrels furred on the body and head, not only on

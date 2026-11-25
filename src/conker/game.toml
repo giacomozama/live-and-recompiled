@@ -468,7 +468,7 @@ at = 0x8643D   # a level change, its frontend packages released: those asked for
 call = "ConkerMenuReset"
 
 [[hook]]
-at = 0x1310EF  # a player's refresh pacing: a whole share each frame (characters::g_max_lod)
+at = 0x1310EF  # a player's refresh pacing: a whole share each frame (characters::g_smooth_animation)
 call = "ConkerCharacterPace"
 
 [[hook]]
