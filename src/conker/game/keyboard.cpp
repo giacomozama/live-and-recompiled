@@ -64,6 +64,9 @@
 #include "common/warp.h"
 #include "core/input.h"
 #include "core/log.h"
+#include "cpu/x86_ops.h"
+#include "kernel/kernel.h"
+#include "kernel/memory.h"
 
 namespace keyboard {
 
@@ -397,6 +400,54 @@ void SaveMouse(toml::table& t, int p) {
 
 std::string PlayerTable(int p) { return "player" + std::to_string(p + 1); }
 
+// A match's vehicle and special ordnance terminals. The terminal (0x3BF8D0) sets [[P+0x568]+0x508] while its player's
+// menu is up (P the game player, [[0x8470DC] + port * 0x770 + 0x3E0]) and clears it once the menu (0x250D80) returns
+// a pick or a back out (XBE_TERMINAL_WATCH, twelve marks over both kinds). The menu reads its presses from the
+// frontend's table at 0x77623C, never the player's actions, which the game goes on building from the pad: the hook on
+// 0x4D320 below hands that a neutral pad while the menu is up, so the player stands, aims and shoots at nothing.
+// The press that shuts the menu is still held the frame after, and would reach the actions then: what was first
+// pressed while it was up and is still held as it shuts stays off the pad until let go (TerminalHold). A button held
+// from before it opened is left alone.
+bool TerminalOpen(int port) {
+    constexpr uint32_t kPlayers = 0x8470DC, kPlayerSize = 0x770, kPlayerGame = 0x3E0, kObject = 0x568, kMenu = 0x508;
+    if (port < 0 || port >= input::kPorts || !warp::Multiplayer() || !mem::IsCommitted(kPlayers)) return false;
+    const uint32_t players = kernel::R32(kPlayers);
+    const uint32_t pc = players ? players + uint32_t(port) * kPlayerSize + kPlayerGame : 0;
+    if (!pc || !mem::IsCommitted(pc) || !mem::IsCommitted(pc + 3)) return false;
+    const uint32_t player = kernel::R32(pc);
+    if (!player || !mem::IsCommitted(player + kObject) || !mem::IsCommitted(player + kObject + 3)) return false;
+    const uint32_t object = kernel::R32(player + kObject);
+    return object && mem::IsCommitted(object + kMenu) && mem::Base()[object + kMenu] != 0;
+}
+
+uint32_t Held(const input::Pad& pad) {
+    uint32_t bits = pad.buttons;
+    for (int i = 0; i < 8; i++)
+        if (pad.analog[i] > 0x40) bits |= 1u << (16 + i);
+    return bits;
+}
+
+void TerminalHold(int port, input::Pad& pad) {
+    static uint32_t before[input::kPorts], fresh[input::kPorts], stuck[input::kPorts];
+    static bool was_open[input::kPorts];
+    const bool open = TerminalOpen(port);
+    const uint32_t held = Held(pad);
+    if (open) {
+        if (!was_open[port]) fresh[port] = 0, before[port] = held;
+        fresh[port] = (fresh[port] | (held & ~before[port])) & held;
+        before[port] &= held;
+        stuck[port] = 0;
+    } else if (was_open[port]) {
+        stuck[port] = fresh[port] & held;
+    }
+    was_open[port] = open;
+    stuck[port] &= held;
+    if (!stuck[port]) return;
+    pad.buttons &= uint16_t(~stuck[port]);
+    for (int i = 0; i < 8; i++)
+        if (stuck[port] & (1u << (16 + i))) pad.analog[i] = 0;
+}
+
 }  // namespace
 
 // the keys of actions this file does not know (the controller buttons' of before, a = 'Space') are left out, and those
@@ -471,6 +522,8 @@ static int64_t NowMs() {
 }
 
 void HoldSoakTest() { g_soak_until.store(NowMs() + 1500); }
+
+bool TerminalNeutral(int port) { return TerminalOpen(port); }
 
 void Pad(int port, input::Pad& pad) {
     if (port < 0 || port >= input::kPorts) return;
@@ -580,6 +633,7 @@ void Pad(int port, input::Pad& pad) {
     menus::Pad(port, pad);  // the mouse points and clicks on the game's menu lists and the pub's pictures
     gamepad::Pad(port, pad);  // A on the frontend's Options opens the settings menu, the mouse's too
     mouse::Pad(port, pad);  // the mouse, while it looks, takes the right stick
+    if (!input::t_presence) TerminalHold(port, pad);  // what shut a match's terminal menu stays off until let go
     if (port != 0) return;
     if (const int64_t until = g_soak_until.load(); until && !input::t_presence) {
         if (NowMs() < until) pad.analog[kButtonBlack] = pad.analog[kButtonLT] = pad.analog[kButtonRT] = 0xFF;
@@ -596,3 +650,39 @@ void Pad(int port, input::Pad& pad) {
 }
 
 }  // namespace keyboard
+
+// 0x4D320 (the port in ebx, one of 21 action slots): builds the port's actions (0x763260 + port * 0x1B0) from its pad,
+// [[0x8470FC + port * 4] + 8] for ports 0 and 1 (0x75A0B4, no pad, for the rest), through the controller scheme. While
+// the port's player has a terminal's menu up (keyboard::TerminalOpen) it builds them from a neutral pad: the buttons
+// at +4 and +8, the sticks and analog values to +0x34 zeroed, as 0x4E340 zeroes a pad that went away, then put back
+// for whatever reads the pad after. Bits 0x10 and 0x20 of both button words (Start and Back, which no scheme maps to
+// an action) stay, so the match still pauses.
+namespace keyboard {
+bool TerminalNeutral(int port);
+}
+X86_EXTERN_FUNC(__imp__sub_0004D320);
+X86_FUNC(sub_0004D320) {
+    constexpr uint32_t kPads = 0x8470FC, kFrom = 4, kTo = 0x34, kKeep = 0x30;
+    const uint32_t port = ctx.ebx;
+    uint32_t pad = 0;
+    if (port < 2 && keyboard::TerminalNeutral(int(port))) {
+        const uint32_t holder = kernel::R32(kPads + port * 4);
+        if (holder && mem::IsCommitted(holder + 8) && mem::IsCommitted(holder + 11)) pad = kernel::R32(holder + 8);
+        if (pad && !(mem::IsCommitted(pad) && mem::IsCommitted(pad + kTo - 1))) pad = 0;
+    }
+    if (!pad) {
+        __imp__sub_0004D320(ctx, base);
+        return;
+    }
+    uint8_t saved[kTo - kFrom];
+    std::memcpy(saved, base + pad + kFrom, sizeof saved);
+    uint32_t buttons4, buttons8;
+    std::memcpy(&buttons4, saved, 4);
+    std::memcpy(&buttons8, saved + 4, 4);
+    std::memset(base + pad + kFrom, 0, sizeof saved);
+    buttons4 &= kKeep, buttons8 &= kKeep;
+    std::memcpy(base + pad + 4, &buttons4, 4);
+    std::memcpy(base + pad + 8, &buttons8, 4);
+    __imp__sub_0004D320(ctx, base);
+    std::memcpy(base + pad + kFrom, saved, sizeof saved);
+}
