@@ -6190,6 +6190,9 @@ bool VulkanBackend::ReuseDraw(const State& s) {
         return false;
     }
     TrackPost(s, r.flat);
+    // the draw that took the first copy is the HUD's first, as in Draw: unrecorded, the picture's HUD drawn again
+    // ran the glow passes again at the output's size (HudKeepSafe: first record isn't the copy's draw), its dome brighter
+    if (&s != &sprite_ && !hud_replay_ && hud_copies_ && HudNativeWanted()) HudRecordDraw(s);
     if (!BindTargets(s) || bound_rt_ != r.kept.rt || bound_ds_ != r.kept.ds || bound_ms_ != r.kept.ms ||
         (!bound_rt_ && !bound_ds_)) {
         g_perf.redraw_refused++;
