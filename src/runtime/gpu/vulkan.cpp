@@ -3584,9 +3584,11 @@ bool VulkanBackend::FrameGrab(uint32_t data) {
     return grab_data_ && data == grab_data_;
 }
 
-// the size the frame grab is made at: the frame's, upscaled (the upscaler's output) or not
+// the size the frame grab is made at: the frame's as drawn, the render size under an upscaler too, so the shrink into
+// it copies pixel for pixel (into_grab). At the upscaler's output it was larger than the frame and the shrink read it
+// through the 3 console texel box: 0.54 ms a draw at 2560x1440, 8.6 ms of the GPU's frame in the drone view (log
+// 16:39). The HUD drawn again at the output's size makes its own at that size (HudGrab)
 VkExtent2D VulkanBackend::FrameGrabExtent() {
-    if (upscale_ && guest_w_ && guest_h_) return PictureExtent();
     return {std::max(1u, uint32_t(std::lround(guest_w_ * scale_.x))),
             std::max(1u, uint32_t(std::lround(guest_h_ * scale_.y)))};
 }
@@ -3728,7 +3730,9 @@ Target* VulkanBackend::EnsureTarget(const Surface& s, bool depth) {
         // the frame grab made before the game named it, or at another frame size, or made at the frame's size and
         // no longer the grab (sharp_drone_view turned off): made again (it is drawn whole each time it is read)
         Target& have = slot.it->second;
-        if (depth) return &have;
+        // standing in while the HUD is drawn again (HudGrab, at the output's size, not the grab's): kept, its saved
+        // image goes back after; made again, hud_saved_ held the freed target (a segfault launching the drone)
+        if (depth || HudGrabbed(have)) return &have;
         if (!FrameGrab(slot.data)) {
             if (!have.grab) return &have;
         } else {
@@ -8057,7 +8061,7 @@ void VulkanBackend::Upscale(std::vector<Image*>& shows, const std::vector<Image*
             if (native) {
                 bool drawn = false;
                 if (BeginHud(hud, slots[i], dst)) {
-                    drawn = hud_draw_(hud_self_, slots[i], hud.from, hud.total);
+                    drawn = hud_draw_(hud_self_, slots[i], hud.from, hud.total, hud.whole);
                     EndHud();
                 }
                 if (!drawn) {
@@ -8296,6 +8300,12 @@ bool VulkanBackend::HudGrabbed(const Target& t) const {
 // whole screen at the render size, stretched. False when the draw doesn't read the frame or no image came
 bool VulkanBackend::HudGrab(const State& s, Target& t) {
     if (t.depth || !t.res) return false;
+    // only the frame grab (the drone's, g_frame_grab): another target (the heat haze's 512x384, the glow's) keeps the
+    // picture's copy, shrunk from the render size frame. Shrunk again from the output's, its 3 console texel box reads
+    // 2560x1440 for each pixel: 0.25 ms a draw, and the passes after it into that target drawn again too (2.3 ms of
+    // the GPU's frame at 3 pictures, log 16:24). XBE_HUD_GRAB_ALL=1 shrinks them all again, as before
+    static const bool all = diag::Env("XBE_HUD_GRAB_ALL") != nullptr;
+    if (!all && !FrameGrab(t.data)) return false;
     // only for a target a draw kept reads after this one (its copy taken then): the glow's first pass shrinks the
     // frame too, into a target only its own left-out passes read
     const uint32_t idx = 2 * hud_draw_at_ + 1;

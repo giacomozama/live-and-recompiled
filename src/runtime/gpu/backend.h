@@ -115,7 +115,7 @@ public:
     // take there: the frame's draws from draw from (0 its first) drawn again at that picture's time, the draws before
     // only stepped over; total, the picture's draws as the backend counted them (a frame counted otherwise draws none:
     // false)
-    using HudDraw = bool (*)(void* self, uint32_t slot, uint32_t from, uint32_t total);
+    using HudDraw = bool (*)(void* self, uint32_t slot, uint32_t from, uint32_t total, bool whole);
     virtual void SetHudDraw(HudDraw /*draw*/, void* /*self*/) {}
     // the CPU is about to touch this resource's memory: write GPU results back first
     virtual void Sync(uint32_t data_va, uint32_t size) = 0;

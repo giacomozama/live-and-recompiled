@@ -380,6 +380,24 @@ void ConkerFarCameraCeiling(X86Context& ctx, uint8_t* base) {
     if (up && ctx.xmm[5].f[0] == -30.0f && ctx.xmm[0].f[0] == -5.0f + float(up)) ctx.xmm[0].f[0] = -5.0f;
 }
 
+// The 256x256 screen grab (0x3EB67B shrinks the frame into it; the MP Sneeker drone lays it over its whole view,
+// 0x1D6F80, water and heat refract it, the pause screen shows it): at the frame's size, its blur gone, with
+// sharp_drone_view (display::g_sharp_drone), only while a drone screen was in a view in the last two frames. Every view
+// grabs the frame through 0x64B60, some (glass, water) up to three times: at the frame's size (the upscaler's output
+// under DLSS, from a smaller picture) those cost 8 ms of the GPU's frame (capture 160439, a glass shell under the
+// player). XBE_FRAME_GRAB=0: at its own, as on the console, whatever the setting
+namespace {
+uint32_t g_drone_view = 0;  // d3d::Presents() + 1 as 0x2A3FD0 last grabbed a view with a drone screen in it, 0 never
+
+bool DroneGrabWanted() {
+    static const bool grab_off = [] {
+        const char* e = diag::Env("XBE_FRAME_GRAB");
+        return e && *e == '0';
+    }();
+    return !grab_off && display::g_sharp_drone && g_drone_view && d3d::Presents() + 1 - g_drone_view <= 2;
+}
+}  // namespace
+
 // 0x2A7B60: the frame timer, called once a frame by the frame loop before it renders and presents. Above 30 the game
 // paces itself: the runtime still paces Swap to the fps cap, and to 30 for the console's interval, so the render
 // state the runtime reads each Swap asks for no blank wait. The time this waits is the time the timer then measures,
@@ -393,15 +411,7 @@ X86_FUNC(sub_002A7B60) {
     gpu::g_outlines.store(display::g_player_outlines && warp::Multiplayer() && !warp::Frontend(),
                           std::memory_order_relaxed);
     gpu::g_team_colors.store(display::g_team_colors, std::memory_order_relaxed);
-    // the 256x256 screen grab (0x3EB67B shrinks the frame into it; the MP Sneeker drone lays it over its whole view,
-    // 0x1D6F80, water and heat refract it, the pause screen shows it): at the frame's size, its blur gone, with
-    // sharp_drone_view (display::g_sharp_drone). XBE_FRAME_GRAB=0: at its own, as on the console, whatever the setting
-    static const bool grab_off = [] {
-        const char* e = diag::Env("XBE_FRAME_GRAB");
-        return e && *e == '0';
-    }();
-    gpu::g_frame_grab.store(grab_off || !display::g_sharp_drone ? 0 : kernel::R32(display::kFrameGrab),
-                           std::memory_order_relaxed);
+    gpu::g_frame_grab.store(DroneGrabWanted() ? kernel::R32(display::kFrameGrab) : 0, std::memory_order_relaxed);
     gpu::g_grab_texture.store(kernel::R32(display::kFrameGrab), std::memory_order_relaxed);
     using clock = std::chrono::steady_clock;
     static bool owned = false;
@@ -979,6 +989,13 @@ bool g_in_grab = false;     // inside 0x64B60: 0x3EAFB0 shrinking the frame into
 X86_EXTERN_FUNC(__imp__sub_00064B60);
 X86_FUNC(sub_00064B60) {
     if (warp::Multiplayer()) g_drone_grab = d3d::Presents() + 1;
+    // 0x2A3FD0's call (returning to 0x2A41D6), made with a drone screen (objects 0x7B/0x7A) in the view: the grab at
+    // the frame's size from this one on, the first drone frame's too (set before the shrink is recorded)
+    if (kernel::R32(ctx.esp) == 0x2A41D6u) {
+        g_drone_view = d3d::Presents() + 1;
+        if (DroneGrabWanted())
+            gpu::g_frame_grab.store(kernel::R32(display::kFrameGrab), std::memory_order_relaxed);
+    }
     g_in_grab = true;
     __imp__sub_00064B60(ctx, base);
     g_in_grab = false;

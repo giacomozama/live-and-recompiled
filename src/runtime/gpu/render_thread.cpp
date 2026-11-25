@@ -917,10 +917,12 @@ private:
     // again at the time of the picture in slot (hud_t_), the draws before stepped over, the state between them all
     // applied; no copies (the backend takes no picture with one after from). Nothing when the frame's draws number
     // other than the backend counted
-    static bool HudDrawThunk(void* self, uint32_t slot, uint32_t from, uint32_t total) {
-        return static_cast<Threaded*>(self)->ReplayHud(slot, from, total);
+    // whole: no copy, the picture's first clears too (from 0 alone can be a copy taken before the first draw: a match's
+    // pause picture written back over the frame's clear, which drawn again blacked it out)
+    static bool HudDrawThunk(void* self, uint32_t slot, uint32_t from, uint32_t total, bool whole) {
+        return static_cast<Threaded*>(self)->ReplayHud(slot, from, total, whole);
     }
-    bool ReplayHud(uint32_t slot, uint32_t from, uint32_t total) {
+    bool ReplayHud(uint32_t slot, uint32_t from, uint32_t total, bool whole) {
         if (!hud_last_) return false;
         const size_t batches = frame_.size() + 1;
         auto batch = [&](size_t i) -> const Batch& { return i < frame_.size() ? *frame_[i] : *hud_last_; };
@@ -989,9 +991,9 @@ private:
                     Apply(rs, b, c, &changed);
                     continue;
                 }
-                // a clear after the copy (taken as draw from began; from 0: the whole picture, its first clears too)
+                // a clear after the copy (taken as draw from began; whole: the whole picture, its first clears too)
                 if (c.op == Op::Clear) {
-                    if (n > from || from == 0) {
+                    if (n > from || whole) {
                         changed = true;
                         inner_->Clear(rs, c.a, c.size ? data : nullptr, c.b, c.c, c.f, c.d);
                     }
