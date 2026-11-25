@@ -84,6 +84,7 @@ uint32_t g_frame_rate = 30;
 namespace {
 
 constexpr uint32_t kPresentInterval = 0x549BF4;    // D3DRS_PRESENTATIONINTERVAL in the render state shadow
+constexpr uint32_t kFrameGrab = 0x847194;          // the 256x256 screen grab texture (gpu::g_frame_grab)
 constexpr uint32_t kIntervalImmediate = 0x80000000u;
 
 constexpr uint32_t kGameMost = 60;     // the ticks are 60ths of a second: the game runs no faster
@@ -167,6 +168,7 @@ uint32_t Ticks() { return g_ticks.load(std::memory_order_relaxed); }
 uint32_t g_fov = kFov;
 uint32_t g_look_up = 0;
 bool g_hud_split = true;
+bool g_sharp_drone = true;
 
 std::atomic<float> g_camera_fov{50.0f};
 float CameraFov() { return g_camera_fov.load(std::memory_order_relaxed); }
@@ -360,6 +362,15 @@ X86_FUNC(sub_002A7B60) {
     gpu::g_outlines.store(display::g_player_outlines && warp::Multiplayer() && !warp::Frontend(),
                           std::memory_order_relaxed);
     gpu::g_team_colors.store(display::g_team_colors, std::memory_order_relaxed);
+    // the 256x256 screen grab (0x3EB67B shrinks the frame into it; the MP Sneeker drone lays it over its whole view,
+    // 0x1D6F80, water and heat refract it, the pause screen shows it): at the frame's size, its blur gone, with
+    // sharp_drone_view (display::g_sharp_drone). XBE_FRAME_GRAB=0: at its own, as on the console, whatever the setting
+    static const bool grab_off = [] {
+        const char* e = diag::Env("XBE_FRAME_GRAB");
+        return e && *e == '0';
+    }();
+    gpu::g_frame_grab.store(grab_off || !display::g_sharp_drone ? 0 : kernel::R32(display::kFrameGrab),
+                           std::memory_order_relaxed);
     using clock = std::chrono::steady_clock;
     static bool owned = false;
     static uint32_t shown = 0;
@@ -889,4 +900,57 @@ X86_FUNC(sub_00231050) {
     std::memcpy(base + at, &middle, 4);
     __imp__sub_00231050(ctx, base);
     std::memcpy(base + at, &x, 4);
+}
+
+// The MP Sneeker drone's view: 0x2A3FD0 shrinks each view with a drone screen up (objects 0x7B/0x7A found) into the
+// 256x256 grab (0x64B60, before the drone's overlay 0x1D6F80 lays it over the view), and before that, for all views,
+// 0x1D9790 hazes the frame on top: the frame shrunk into a 128x128 target and added back over it at alpha 50/255
+// (captures 042731 0457/0458), a loss of focus that pulses (a cosine of the time) while the drone flies. Skipped while
+// the drone's grab ran in the last two frames (0x1D9790 comes before 0x64B60 in the frame: the first drone frame keeps
+// it). Only with sharp_drone_view (display::g_sharp_drone); XBE_DRONE_HAZE=1: the haze kept, as on the console
+namespace {
+uint32_t g_drone_grab = 0;  // d3d::Presents() + 1 as 0x64B60 last ran, 0 never
+bool g_in_grab = false;     // inside 0x64B60: 0x3EAFB0 shrinking the frame into the grab
+}  // namespace
+
+X86_EXTERN_FUNC(__imp__sub_00064B60);
+X86_FUNC(sub_00064B60) {
+    if (warp::Multiplayer()) g_drone_grab = d3d::Presents() + 1;
+    g_in_grab = true;
+    __imp__sub_00064B60(ctx, base);
+    g_in_grab = false;
+}
+
+// The grab's shrink (0x3EAFB0 at 0x3EB67B) is a 4 tap filter: its vertex program (0x750070) puts the taps at v9 -c0,
+// -c1, +c0, +c1, c0 (2 0) and c1 (0 2) in its doubled texel units, a console texel left, up, right and down of each
+// pixel, averaged. Into the 256x256 grab that smoothed the shrink; with the grab at the frame's size (gpu::g_frame_grab)
+// the four taps land on pixels of their own, the view four times over a console texel apart (capture 110448 0255). The
+// two offsets are 0 then (sharp_drone_view on, the grab at the frame's size): each pixel copied. XBE_GRAB_TAPS=1 keeps
+// them
+// [[hook]] at 0x3EB365, c0 at [esp+0x44] and c1 at [esp+0x34] made, before they are set (0x536AA0, 0x60 and 0x61)
+void ConkerGrabTaps(X86Context& ctx, uint8_t*) {
+    static const bool keep = diag::Env("XBE_GRAB_TAPS") != nullptr;
+    if (keep || !g_in_grab || !gpu::g_frame_grab.load(std::memory_order_relaxed)) return;
+    for (uint32_t at : {0x34u, 0x44u})
+        for (uint32_t k = 0; k < 16; k += 4) kernel::W32(ctx.esp + at + k, 0);
+}
+
+X86_EXTERN_FUNC(__imp__sub_001D9790);
+X86_FUNC(sub_001D9790) {
+    static const bool keep = diag::Env("XBE_DRONE_HAZE") != nullptr;
+    if (!keep && display::g_sharp_drone && g_drone_grab && d3d::Presents() + 1 - g_drone_grab <= 2 &&
+        warp::Multiplayer()) {
+        ctx.esp += 4;  // its return address: no arguments
+        return;
+    }
+    __imp__sub_001D9790(ctx, base);
+}
+
+// The drone's overlay (0x1D6F80) lays the grab over the whole view after the effects, the player outlines under it,
+// and greys it (dot of the grab and its pixel shader constant 0): the outlines drawn again over it after
+// (d3d::OutlinesAgain, before the next draw), in their colours
+X86_EXTERN_FUNC(__imp__sub_001D6F80);
+X86_FUNC(sub_001D6F80) {
+    __imp__sub_001D6F80(ctx, base);
+    if (warp::Multiplayer()) d3d::OutlinesAgain();
 }

@@ -42,6 +42,8 @@ struct Tag {
     std::array<uint32_t, 4> hud{};
     uint32_t hud_depth = 0;
     uint8_t hud_mode = 0;
+    // d3d::OutlinesAgain: the player outlines drawn over the frame again before this draw (g_outlines)
+    bool outlines = false;
 };
 // the tag of the draw the title's thread hands the backend next (d3d::SetDrawTag), taken with it as it is recorded
 inline Tag g_draw_tag;

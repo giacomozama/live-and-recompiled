@@ -90,6 +90,11 @@ void OutlineMark(uint8_t mark);
 // the end. The commands pushed before are read first. Game thread
 uint8_t OutlineObject(uint8_t scope);
 
+// While gpu::g_outlines is on: the outlines drawn over the frame again, by the marks the stencil holds, before the
+// next draw the title pushes (the MP Sneeker drone's overlay covers the whole view, the outlines drawn under it). The
+// commands pushed before are read first. Game thread
+void OutlinesAgain();
+
 // Whether a title's loading screen, about to be drawn into the front buffer, should be drawn. Each one shown is a
 // Present the loader waits on, and those drawn unshown still cost the GPU their whole picture in the first frame
 // after, so none is: the first ask since the last Swap fades the picture to black, later ones keep the window black,

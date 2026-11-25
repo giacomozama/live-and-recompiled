@@ -673,6 +673,8 @@ void GuestStack(std::array<uint32_t, 10>& out) {
 
 std::vector<std::pair<uint32_t, uint8_t>> g_hud_scopes;  // d3d::HudScope's, outermost first
 
+bool g_outlines_again = false;  // d3d::OutlinesAgain, for the next draw's tag (TagOfDraw)
+
 gpu::interp::Tag TagOfDraw() {
     gpu::interp::Tag t;
     t.caller = g_lod_caller;
@@ -685,6 +687,7 @@ gpu::interp::Tag TagOfDraw() {
     for (size_t i = 0; i < t.hud.size() && i < g_hud_scopes.size(); i++)
         t.hud[i] = g_hud_scopes[g_hud_scopes.size() - 1 - i].first;
     if (!g_hud_scopes.empty()) t.hud_mode = g_hud_scopes.back().second;
+    t.outlines = std::exchange(g_outlines_again, false);
     if (!g_tag.piece) return t;
     uint64_t key = (uint64_t(g_tag.object) << 32 | g_tag.piece) * 0x9E3779B97F4A7C15ull;
     if (g_tag.group) {
@@ -1072,6 +1075,12 @@ void d3d::OpaqueDraws(bool on) {
     std::lock_guard<std::recursive_mutex> lock(g_lock);
     Walk(Dev(kDevPush));
     g_opaque = on;
+}
+
+void d3d::OutlinesAgain() {
+    std::lock_guard<std::recursive_mutex> lock(g_lock);
+    Walk(Dev(kDevPush));
+    g_outlines_again = true;
 }
 
 void d3d::OutlineMark(uint8_t mark) {

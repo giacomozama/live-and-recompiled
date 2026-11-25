@@ -67,6 +67,11 @@ extern uint32_t g_look_up;
 // each frame
 extern bool g_hud_split;
 
+// settings.toml sharp_drone_view: the screen grab (0x3EB67B, laid over the MP Sneeker drone's whole view, refracted by
+// water and heat) made at the frame's size and copied into pixel for pixel, and the drone's haze (0x1D9790) skipped;
+// off, the grab is 256x256 and filtered, the haze pulses as on the console (display.cpp). Read each frame
+extern bool g_sharp_drone;
+
 // settings.toml player_tags: what a match shows over the other players, the game's tag (0x347330): their names
 // (kTagNames, as on the console), a marker in place of the name (kTagMarkers: a triangle pointing down at them, green
 // for a teammate, red for an opponent, the game's own colours made solid), or no name (kTagOff). The tag's icons and a

@@ -557,6 +557,7 @@ struct Target {
     uint32_t data = 0, bytes = 0;
     uint64_t epoch = 0, sig = 0;  // last lock seen, guest memory as last matched
     bool drawn = false;           // the GPU wrote it since the last readback
+    bool grab = false;            // made at the frame's size as the frame grab (FrameGrab)
     std::vector<uint8_t> read;    // what Sync left in guest memory
     ImageRef fb;                  // copy read by draws that sample the target they render to
     uint64_t fb_draw = 0;         // the draw fb was copied for, which its other stages reading the target share
@@ -1159,6 +1160,8 @@ private:
     void Fsr3Opaque(const State& s, Target& rt, bool can_copy);
     void Fsr3Reactive();
     void ApplyPost(Target& t);
+    void OutlinesAgain();
+    ImageRef outline_tmp_;  // OutlinesAgain's copy of the frame
     // the ambient occlusion, first of the effects: the view and depth of the frame's 3D draws (g_view_constants), a
     // draw that reads the frame (the title's bloom and depth of field take their copies so), and the passes
     void TrackView(const State& s);
@@ -1381,6 +1384,9 @@ private:
     bool TargetStale(uint32_t data) const;
     void ReleaseTarget(std::unordered_map<uint64_t, Target>::iterator it);
     bool CreateTargetResource(Target& t);
+    bool FrameGrab(uint32_t data);
+    VkExtent2D FrameGrabExtent();
+    uint32_t grab_tex_ = 0, grab_data_ = 0;  // FrameGrab's: g_frame_grab's header as last read, its data
     // multisampling: a frame-sized target's samples, and the copies that keep them and res the same picture
     uint32_t WantSamples() const;
     bool SamplesSupported(VkFormat f, VkImageUsageFlags usage, uint32_t samples) const;
@@ -1534,12 +1540,17 @@ private:
         bool ms_ahead = false, res_ahead = false;
         Target* t = nullptr;
     };
+    // grabs: other targets the frame is shrunk into while the HUD is drawn again (HudGrab), standing in
     struct HudSaved {
         HudSavedTarget rt, zs;
+        std::vector<HudSavedTarget> grabs;
         FILE* cap = nullptr;
     } hud_saved_;
+    std::vector<ImageRef> hud_grab_pool_;  // HudGrab's images free again (render targets, unlike hud_pool_'s)
     static void HudStandIn(HudSavedTarget& sv, Target& t, ImageRef image);
     void HudPutBack(HudSavedTarget& sv);
+    bool HudGrabbed(const Target& t) const;
+    bool HudGrab(const State& s, Target& t);
     void HudTrace(uint32_t slot, bool split, bool native, const HudAt& at);
     bool BeginHud(const HudAt& at, uint32_t slot, ImageRef& out);
     bool hdr_metadata_ = false;  // VK_EXT_hdr_metadata
@@ -3538,11 +3549,58 @@ void VulkanBackend::ReleaseTarget(std::unordered_map<uint64_t, Target>::iterator
     targets_.erase(it);
 }
 
-// the image of a new target at render scale, cleared
+// XBE_GRAB_TRACE=1: the frame grab's target sizes and the HUD drawn again's way with it, each kind of line at most
+// every 2 s, 400 lines in all
+static void GrabTrace(int kind, const char* fmt, ...) {
+    static const bool on = diag::Env("XBE_GRAB_TRACE") != nullptr;
+    if (!on) return;
+    static std::chrono::steady_clock::time_point last[8];
+    static uint32_t lines = 0;
+    const auto now = std::chrono::steady_clock::now();
+    if (lines >= 400 || now - last[kind & 7] < std::chrono::seconds(2)) return;
+    last[kind & 7] = now;
+    lines++;
+    char b[320];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(b, sizeof(b), fmt, ap);
+    va_end(ap);
+    LOGR("grab: %s", b);
+}
+
+// the target the title shrinks its whole frame into (gpu::g_frame_grab), data its target's address
+bool VulkanBackend::FrameGrab(uint32_t data) {
+    const uint32_t tex = g_frame_grab.load(std::memory_order_relaxed);
+    if (!tex) return false;
+    if (tex != grab_tex_) {
+        TextureDesc d;
+        grab_tex_ = tex;
+        grab_data_ = Describe(tex, d) ? d.data : 0;
+        GrabTrace(0, "texture %08X, its target %08X (%ux%u fmt %X)", tex, grab_data_, d.width, d.height, d.format);
+    }
+    return grab_data_ && data == grab_data_;
+}
+
+// the size the frame grab is made at: the frame's, upscaled (the upscaler's output) or not
+VkExtent2D VulkanBackend::FrameGrabExtent() {
+    if (upscale_ && guest_w_ && guest_h_) return PictureExtent();
+    return {std::max(1u, uint32_t(std::lround(guest_w_ * scale_.x))),
+            std::max(1u, uint32_t(std::lround(guest_h_ * scale_.y)))};
+}
+
+// the image of a new target at render scale, cleared (t.data set: the frame grab's is the frame's size)
 bool VulkanBackend::CreateTargetResource(Target& t) {
     const app::Scale& sc = t.gw == guest_w_ && t.gh == guest_h_ ? scale_ : aside_;
     t.w = std::max(1u, uint32_t(std::lround(t.gw * sc.x)));
     t.h = std::max(1u, uint32_t(std::lround(t.gh * sc.y)));
+    t.grab = false;
+    if (!t.depth && FrameGrab(t.data)) {
+        const VkExtent2D e = FrameGrabExtent();
+        t.w = e.width;
+        t.h = e.height;
+        t.grab = true;
+        GrabTrace(1, "target %08X (%ux%u) made at %ux%u", t.data, t.gw, t.gh, t.w, t.h);
+    }
     ImageSpec sp;
     sp.fmt = t.depth ? depth_fmt_ : t.fmt;
     sp.w = t.w;
@@ -3663,12 +3721,24 @@ Target* VulkanBackend::EnsureTarget(const Surface& s, bool depth) {
     if (!s.header) return nullptr;
     TargetSlot slot = FindTargetSlot(s, depth);
     target_used_[slot.data] = frame_;
-    if (slot.sized) return &slot.it->second;
+    if (slot.sized) {
+        // the frame grab made before the game named it, or at another frame size, or made at the frame's size and
+        // no longer the grab (sharp_drone_view turned off): made again (it is drawn whole each time it is read)
+        Target& have = slot.it->second;
+        if (depth) return &have;
+        if (!FrameGrab(slot.data)) {
+            if (!have.grab) return &have;
+        } else {
+            const VkExtent2D e = FrameGrabExtent();
+            if (have.w == e.width && have.h == e.height) return &have;
+        }
+    }
     if (slot.it != targets_.end()) ReleaseTarget(slot.it);
     Target t;
     t.depth = depth;
     t.gw = slot.gw;
     t.gh = slot.gh;
+    t.data = slot.data;
     if (!CreateTargetResource(t)) return nullptr;
     g_perf.targets++;
     CreateSampledTarget(t);
@@ -4548,10 +4618,13 @@ Image* VulkanBackend::BindTargetTexture(const State& s, int stage, const Texture
     Target* rt = FindTarget(s.rt, false);
     // half a texel back only for a target read at its own size: a pass resizing it (Conker's depth of field shrinks
     // the frame twice and stretches it back) lines up as drawn, half a texel per pass leaving the blur pixels off
-    stages.exact[stage] = rt && (t.gw != rt->gw || t.gh != rt->gh);
+    // The frame grab (g_frame_grab) is made at the frame's size: the frame shrunk into it is read pixel for pixel, as at
+    // its own size, and not averaged (the glow's 3 console texel box per tap blurred it back to the console's 256x256)
+    const bool into_grab = rt && rt != &t && !rt->depth && rt->w == t.w && rt->h == t.h && FrameGrab(rt->data);
+    stages.exact[stage] = rt && (t.gw != rt->gw || t.gh != rt->gh) && !into_grab;
     // a pass shrinking it averages each tap over a console texel, else upscaled taps skip texels and ghost
     float k = std::max(float(t.w) / t.gw, float(t.h) / t.gh) / stages.k[stage];  // the denser axis
-    if (!t.depth && k > kUpscaledMin && rt && rt != &t && (t.gw > rt->gw || t.gh > rt->gh)) {
+    if (!t.depth && k > kUpscaledMin && rt && rt != &t && (t.gw > rt->gw || t.gh > rt->gh) && !into_grab) {
         stages.wide[stage] = k;
         info.flags |= kTexWide;
     }
@@ -6437,12 +6510,16 @@ bool VulkanBackend::ReadsTarget(const State& s) {
 // a 3D draw onto the frame-sized target marks it; the first screen space one after that draws the effects under it.
 // The occlusion goes before: at the first screen space draw onto the frame or reading it, under the title's own passes
 void VulkanBackend::TrackPost(const State& s, bool flat, bool can_copy) {
-    if (hud_replay_) return;
+    if (hud_replay_) {
+        if (interp::g_run_tag.outlines) OutlinesAgain();
+        return;
+    }
     struct Tracking {
         bool& on;
         explicit Tracking(bool& o) : on(o) { on = true; }
         ~Tracking() { on = false; }
     } tracking{tracking_draw_};
+    if (interp::g_run_tag.outlines && post_done_) OutlinesAgain();
     // XBE_POST_TRACE: the outline marks' draws (stencil writing the top two bits a mark, d3d::OutlineMark)
     if (g_outlines.load(std::memory_order_relaxed)) {
         const bool marked = s.rs[kRsStencilEnable] && (SimpleState(s, kMStencilWriteMask) & 0xC0) == 0xC0 &&
@@ -8062,6 +8139,9 @@ bool VulkanBackend::BeginHud(const HudAt& at, uint32_t slot, ImageRef& out) {
     // the draws into targets other than the frame's left out, those kept reading the picture's copies (HudKeepSafe)
     hud_skip_ = hud_keep_[slot % kMaxGen].ok ? &hud_keep_[slot % kMaxGen] : nullptr;
     hud_draw_at_ = at.from;
+    if (g_frame_grab.load(std::memory_order_relaxed))
+        GrabTrace(7, "HUD drawn again at %ux%u from draw %u of %u, %s", out->w, out->h, at.from, at.total,
+                  hud_skip_ ? "other targets left out" : "every draw");
     if (cap_) fprintf(cap_, "     note the HUD drawn again at %ux%u over the upscaled picture\n", out->w, out->h);
     sv.cap = std::exchange(cap_, nullptr);  // the capture is the frame's own drawing
     bound_rt_ = bound_ds_ = nullptr;
@@ -8078,6 +8158,16 @@ void VulkanBackend::EndHud() {
     HudSaved& sv = hud_saved_;
     HudPutBack(sv.rt);
     HudPutBack(sv.zs);
+    for (HudSavedTarget& g : sv.grabs) {
+        ImageRef made = g.t->res;  // the stand-in, back to the pool once the target has its own again
+        HudPutBack(g);
+        if (made) hud_grab_pool_.push_back(std::move(made));
+    }
+    sv.grabs.clear();
+    while (hud_grab_pool_.size() > 4) {
+        Retire(std::move(hud_grab_pool_.front()));
+        hud_grab_pool_.erase(hud_grab_pool_.begin());
+    }
     hud_skip_ = nullptr;
     cap_ = sv.cap;
     sv.cap = nullptr;
@@ -8161,24 +8251,122 @@ void VulkanBackend::HudRecordClear(const State& s, uint32_t flags) {
         if (Target* t = FindTarget(s.zs, true)) hud_writes_[t] = idx;
 }
 
-// drawn again at the output's size: a draw writing only color targets other than the frame's is left out
+// drawn again at the output's size: a draw writing only color targets other than the frame's is left out, unless it
+// writes one standing in (HudGrab) or reads the frame (HudGrab stands its target in)
 bool VulkanBackend::HudSkips(const State& s) {
     Target* w[2];
     const uint32_t n = HudWrites(s, w);
     if (!n) return false;
     for (uint32_t i = 0; i < n; i++)
-        if (w[i]->depth || w[i]->data == hud_skip_->rt) return false;
-    return true;
+        if (w[i]->depth || w[i]->data == hud_skip_->rt || HudGrabbed(*w[i])) return false;
+    return !(n == 1 && HudGrab(s, *w[0]));
 }
 
 bool VulkanBackend::HudSkipsClear(const State& s, uint32_t flags) {
     if (flags & (kClearZ | kClearStencil)) return false;  // a depth is never left out
     Target* t = (flags & kClearTarget) && s.rt.header ? FindTarget(s.rt, false) : nullptr;
-    return t && !t->depth && t->data != hud_skip_->rt;
+    return t && !t->depth && t->data != hud_skip_->rt && !HudGrabbed(*t);
 }
 
-// drawn again at the output's size: the copy of t its picture's draw of this number read, null for none
+bool VulkanBackend::HudGrabbed(const Target& t) const {
+    for (const HudSavedTarget& g : hud_saved_.grabs)
+        if (g.t == &t) return true;
+    return false;
+}
+
+// drawn again at the output's size: a draw shrinking the frame into another target (the MP Sneeker drone's screen,
+// the frame into the 256x256 grab 0x3EB67B draws, then laid over the whole frame wobbling by 0x1D732C) drawn again
+// from the upscaled frame, into an image standing in for that target, what it held as the draw read it first. Left
+// out, the draw laying the grab over read the picture's copy of it, shrunk from the frame before the upscaler: the
+// whole screen at the render size, stretched. False when the draw doesn't read the frame or no image came
+bool VulkanBackend::HudGrab(const State& s, Target& t) {
+    if (t.depth || !t.res) return false;
+    // only for a target a draw kept reads after this one (its copy taken then): the glow's first pass shrinks the
+    // frame too, into a target only its own left-out passes read
+    const uint32_t idx = 2 * hud_draw_at_ + 1;
+    bool later = false;
+    for (const HudSnap& sn : hud_skip_->snaps) later |= sn.t == &t && sn.idx > idx;
+    const bool grab = FrameGrab(t.data);
+    if (!later) {
+        if (grab) GrabTrace(2, "draw %u into the grab left out: no draw kept reads it after (%zu copies)", hud_draw_at_,
+                            hud_skip_->snaps.size());
+        return false;
+    }
+    bool reads = false;
+    uint32_t fw = 0, fh = 0;  // the frame's size as it stands in, the output's
+    for (uint32_t tex : s.textures) {
+        TextureDesc d;
+        if (!tex || !Describe(tex, d) || Format(d.format).depth) continue;
+        auto it = targets_.find(SizedTargetKey(d.data, false, d.width, d.height));
+        if (it == targets_.end() || it->second.data != hud_skip_->rt) continue;
+        reads = true;
+        fw = it->second.w;
+        fh = it->second.h;
+    }
+    if (!reads) {
+        if (grab) GrabTrace(2, "draw %u into the grab left out: it doesn't read the frame %08X", hud_draw_at_,
+                            hud_skip_->rt);
+        return false;
+    }
+    // the grab at the frame's size, the output's: at its own (the render size) the frame read from the output's was
+    // shrunk through the glow's 3 console texel box (into_grab wants the two the same), three copies of the view
+    // side by side a console texel apart. Other targets keep theirs
+    const uint32_t iw = grab && fw ? fw : t.w, ih = grab && fh ? fh : t.h;
+    ImageRef image;
+    for (auto pit = hud_grab_pool_.begin(); pit != hud_grab_pool_.end(); ++pit)
+        if ((*pit)->w == iw && (*pit)->h == ih && (*pit)->format == t.res->format) {
+            image = std::move(*pit);
+            hud_grab_pool_.erase(pit);
+            break;
+        }
+    if (!image)
+        image = NewImage({.fmt = t.res->format, .w = iw, .h = ih,
+                          .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+                                   VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT});
+    if (!image) return false;
+    FlushRun();
+    EndRendering();
+    Image* from = HudSnapFor(t);
+    if (!from) {
+        ResolveSamples(t);
+        from = t.res.get();
+    }
+    Transition(*from, kSrc);
+    Transition(*image, kDst);
+    Barrier();
+    if (from->w == iw && from->h == ih) {
+        VkImageCopy c{};
+        c.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+        c.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+        c.extent = {iw, ih, 1};
+        vkCmdCopyImage(cmd_, from->image, kSrc, image->image, kDst, 1, &c);
+    } else {  // what it held, stretched: the draw covers it all anyway
+        VkImageBlit b{};
+        b.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+        b.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+        b.srcOffsets[1] = {int32_t(from->w), int32_t(from->h), 1};
+        b.dstOffsets[1] = {int32_t(iw), int32_t(ih), 1};
+        vkCmdBlitImage(cmd_, from->image, kSrc, image->image, kDst, 1, &b, VK_FILTER_LINEAR);
+    }
+    Transition(*from, kRead);
+    hud_saved_.grabs.emplace_back();
+    HudStandIn(hud_saved_.grabs.back(), t, std::move(image));
+    GrabTrace(grab ? 3 : 4, "draw %u: the frame shrunk again into %08X%s, %ux%u", hud_draw_at_, t.data,
+              grab ? " (the grab)" : "", t.w, t.h);
+    bound_rt_ = bound_ds_ = nullptr;
+    kept_.ok = false;
+    same_state_ = false;
+    return true;
+}
+
+// drawn again at the output's size: the copy of t its picture's draw of this number read, null for none (or t
+// standing in, HudGrab: the draws read what was drawn into it again)
 Image* VulkanBackend::HudSnapFor(const Target& t) {
+    if (HudGrabbed(t)) {
+        if (FrameGrab(t.data)) GrabTrace(5, "draw %u reads the grab drawn again, %ux%u", hud_draw_at_, t.w, t.h);
+        return nullptr;
+    }
+    if (FrameGrab(t.data)) GrabTrace(6, "draw %u reads the picture's copy of the grab, %ux%u", hud_draw_at_, t.w, t.h);
     const uint32_t idx = 2 * hud_draw_at_ + 1;
     const HudSnap* best = nullptr;
     for (const HudSnap& sn : hud_skip_->snaps)
@@ -8436,6 +8624,56 @@ void VulkanBackend::KeepHdr3d(Target& t) {
         if (HudNativeWanted()) KeepHudDepth(t);
     }
     if (cap_) fprintf(cap_, "     note HDR highlights' copy of the 3D picture of %08X\n", t.data);
+}
+
+// d3d::OutlinesAgain (a draw's tag): the outlines drawn over the frame again by the marks its depth's stencil holds,
+// as ApplyPost draws them: the MP Sneeker drone's overlay lays its grey grab over the whole view after the effects,
+// the outlines under it. In the HUD drawn again at the output's size the frame and its depth stand in at that size,
+// the stencil scaled up with the depth (BeginHud), and the outlines are drawn at it
+void VulkanBackend::OutlinesAgain() {
+    if (!g_outlines.load(std::memory_order_relaxed) || !post_rt_) return;
+    Target* t = FindTarget(post_surf_, false);
+    Target* marks = FindTarget(post_zs_, true);
+    if (!t || !t->res || t->data != post_rt_ || !marks || !marks->res || !marks->res->stencil_view ||
+        marks->w != t->w || marks->h != t->h)
+        return;
+    if (!outline_tmp_ || outline_tmp_->w != t->w || outline_tmp_->h != t->h || outline_tmp_->format != t->fmt) {
+        if (outline_tmp_) Retire(std::exchange(outline_tmp_, nullptr));
+        outline_tmp_ = NewImage({.fmt = t->fmt, .w = t->w, .h = t->h,
+                                 .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+                                          VK_IMAGE_USAGE_TRANSFER_DST_BIT});
+        if (!outline_tmp_) return;
+    }
+    FlushRun();
+    EndRendering();
+    if (cap_) fprintf(cap_, "     note outlines over %08X again by the stencil of %08X\n", t->data, marks->data);
+    ResolveSamples(*t);
+    ResolveSamples(*marks);
+    Transition(*t->res, kSrc);
+    Transition(*outline_tmp_, kDst);
+    Barrier();
+    VkImageCopy r{};
+    r.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    r.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    r.extent = {t->w, t->h, 1};
+    vkCmdCopyImage(cmd_, t->res->image, kSrc, outline_tmp_->image, kDst, 1, &r);
+    WriteRes(*t, true);
+    t->drawn = true;
+    Transition(*outline_tmp_, kRead);
+    Transition(*marks->res, kRead);
+    const float width = std::max(1.0f, float(t->w) / float(std::max<uint32_t>(t->gw, 1)));
+    const auto &vs = view_vp_[0], &vo = view_vp_[1], &vz = view_pr_[2];
+    const bool known = view_ok_ && post_zscale_ != 0 && marks->res->depth_view;
+    const float op[8] = {1.0f / t->w, 1.0f / t->h, width, 600.0f,
+                         known ? (vo[2] - vs[2] * vz[2]) / post_zscale_ : 0.0f,
+                         known ? vs[2] * vz[3] / post_zscale_ : 0.0f, known ? 1.0f : 0.0f,
+                         float(g_team_colors.load(std::memory_order_relaxed))};
+    const VkImageView views[3] = {outline_tmp_->view, marks->res->stencil_view,
+                                  marks->res->depth_view ? marks->res->depth_view : outline_tmp_->view};
+    Pass(kOutlineHlsl, "outline", t->fmt, *t->res, t->w, t->h, views, op, -1);
+    bound_rt_ = bound_ds_ = nullptr;
+    kept_.ok = false;
+    same_state_ = false;
 }
 
 // PausePicture(true): the frame target's picture as the 2D comes to draw over it, once, into pause_pic_
@@ -10874,6 +11112,7 @@ void VulkanBackend::RemakeTargets(app::Scale scale, app::Scale aside, uint32_t s
         t.gw = o.gw;
         t.gh = o.gh;
         t.fmt = o.fmt;
+        t.data = o.data;
         if (!CreateTargetResource(t)) continue;
         CreateSampledTarget(t);
         if (t.depth) {

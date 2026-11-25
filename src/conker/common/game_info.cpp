@@ -87,6 +87,7 @@ const app::GameInfo app::kGame = {
                 {"health_bars", nullptr, &display::g_health_bars},  // other players' health bars: 0 the game's beside them, 1 instead of the name or marker, 2 none (player_tags.cpp)
                 {"player_outlines", &display::g_player_outlines, nullptr},  // other players outlined in a match (player_tags.cpp)
                 {"medgun_beam", &medbeam::g_enabled, nullptr},  // the medgun's heal beam in a match (medbeam.cpp)
+                {"sharp_drone_view", &display::g_sharp_drone, nullptr},  // the Sneeker drone's view sharp, no haze (display.cpp)
                 {"team_colors", nullptr, &display::g_team_colors},  // a match's team colours: 0 green/red, 1 blue/orange (player_tags.cpp)
                 {"no_friendly_fire", &syslink::g_no_friendly_fire, nullptr},  // a match's teammates don't hurt each other; online the host's (friendly_fire.cpp)
                 {"achievements", &achievements::g_enabled, nullptr},  // achievements are earned, locally (achievements.cpp)

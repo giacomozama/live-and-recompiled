@@ -799,3 +799,8 @@ call = "ConkerBotReverseFlameJeep"
 [[hook]]
 at = 0x2A52FA  # 0x0D9950 returned, [esp+4] the view
 call = "ConkerMedBeams"
+
+# the screen grab's shrink (0x3EAFB0): its 4 taps' offsets 0 with the grab at the frame's size (display.cpp ConkerGrabTaps)
+[[hook]]
+at = 0x3EB365  # c0 [esp+0x44] and c1 [esp+0x34] made, before 0x536AA0 sets them
+call = "ConkerGrabTaps"

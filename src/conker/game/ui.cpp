@@ -2969,6 +2969,8 @@ void Draw(double fps) {
                     Hint("hint_in_a_match_other_players", true);
                     Check("medgun_beam", &medbeam::g_enabled);
                     Hint("hint_a_beam_joins_a_medgun", true);
+                    Check("sharp_drone_view", &display::g_sharp_drone);
+                    Hint("hint_the_sneeker_drone_s_view", true);
                     int team = int(std::min<uint32_t>(display::g_team_colors, display::kTeamBlueOrange));
                     if (Segmented("team_colors", &team, {"green_red", "blue_orange"}))
                         display::g_team_colors = uint32_t(team);
