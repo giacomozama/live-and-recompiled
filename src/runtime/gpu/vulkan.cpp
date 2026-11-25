@@ -7026,6 +7026,7 @@ void VulkanBackend::DrawMotion(const State& s, const Before& before, uint32_t pr
     // and the fringe kept the motion of what lies behind. Drawn with their own depth test and alpha test instead, as
     // their color was
     bool shell = false;
+    uint32_t shell_coarse = 0;  // its coarse shading bits (kWmaskCoarseWide / Tall)
     VkPipeline pso_made = VK_NULL_HANDLE;
     GuestExtent size;
     DrawConstants c{};
@@ -7068,7 +7069,13 @@ void VulkanBackend::DrawMotion(const State& s, const Before& before, uint32_t pr
         if (sh.shading && k.blend && writes_depth) {
             const ProgramShading& ps = g_program_shading[sh.shading - 1];
             shell = ps.depth_alpha > 0 && (ps.top < 0 || s.vsc[size_t(ps.top)][0] > 0);
-            if (shell) plain = false;
+            if (shell) {
+                plain = false;
+                // shaded as its color is: at Adaptive fur shading's rate, and the strands' alpha alone (their light
+                // is no use to a pass that writes only motion), which the pass ran in full (5249569)
+                const uint32_t r = ps.coarse && shading_rate_ ? FurRate() : 0;
+                shell_coarse = r >= 2 ? kWmaskCoarseWide | kWmaskCoarseTall : r ? kWmaskCoarseWide : 0;
+            }
         }
         g_perf.motion_slow++;
         step(0);
@@ -7128,6 +7135,7 @@ void VulkanBackend::DrawMotion(const State& s, const Before& before, uint32_t pr
         step(2);
         PixelKey pk = MakePixelKey(s, stages.info);
         pk.shading = sh.shading;
+        if (shell) pk.depth_pass = kDepthPassAlphaOnly;
         uint64_t pkey = Hash(&pk, sizeof(pk)) ^ (plain ? kMotionPlainSalt : kMotionPixelSalt);
         auto pit = motion_shaders_.find(pkey);
         MotionPixelEntry mp;
@@ -7154,7 +7162,7 @@ void VulkanBackend::DrawMotion(const State& s, const Before& before, uint32_t pr
         k.rtfmt = DXGI_FORMAT_R16G16_FLOAT;
         k.samples = 1;
         k.blend = k.src = k.dst = k.op = 0;
-        k.wmask = 0x3;
+        k.wmask = 0x3 | shell_coarse;
         if (zwrite && !shell) k.zfunc = kCmpEqual;
         if (tess) {
             k.zen = 1;

@@ -35,6 +35,9 @@ enum : uint8_t {
 // and upscaled, made it a splat of light many times the beam's. Fur reads no higher than the sprites' strongest
 constexpr float kFurGlowAlpha = 0.3f;
 constexpr int kTexDepthLayoutShift = 5;
+// depth_pass's value for a pass that wants only the alpha (DEPTH_PASS 1: the shading's light left out) and no
+// threshold of its own: a fur shell's motion pass, which takes the draw's alpha test (-0.0f's bits)
+constexpr uint32_t kDepthPassAlphaOnly = 0x80000000u;
 
 struct PixelKey {
     uint32_t programmable = 0;

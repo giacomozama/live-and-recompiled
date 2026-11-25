@@ -1317,7 +1317,8 @@ std::string PixelHlsl(const PixelKey& k, bool motion, bool discards) {
     if (k.shading && *Shading(k.shading).post)
         body += std::string(Shading(k.shading).post) + "\n";
     body += soft ? "outc.a = softalphatest(outc.a);\n" : "alphatest(outc.a);\n";
-    if (k.depth_pass) body += F("if (outc.a < %g) discard;\n", std::bit_cast<float>(k.depth_pass));
+    if (k.depth_pass && k.depth_pass != kDepthPassAlphaOnly)
+        body += F("if (outc.a < %g) discard;\n", std::bit_cast<float>(k.depth_pass));
     body += Hooks().Output() + "return outc;\n}\n";
     s += body;
     // the motion pass: the draw's shading for its discards alone (none when the depth test does their work), then where
