@@ -1292,8 +1292,7 @@ struct Pointer {
     int jump = -1;  // the item a frontend list was sent to (g_jump), -1 none
     int64_t jump_us = 0;  // when
     float drag = 0;  // a frontend screen without a list: the mouse's motion up (-) or down not stepped yet, 480 high
-    float drag_y = -1;  // and the cursor's y in the frame when last seen there, -1 none (its x on the class carousel)
-    bool drag_x = false;  // drag_y holds the x
+    float drag_y = -1;  // and the cursor's y in the frame when last seen there, -1 none
 };
 Pointer g_pointer;  // game thread
 std::atomic<int> g_wheel{0};  // the wheel's turn not stepped yet, 120 a notch
@@ -1562,8 +1561,8 @@ void menus::Pad(int port, input::Pad& pad) {
     // steps it up or down as the d-pad does, and nothing else
     const bool wheel_only = !list && !pub && !pause && warp::Frontend();
     // ... except on the class carousel (the port's stage [0x862D32 + port] 1, 0x28EBD0), which steps left or right
-    // (its presses' bits 4 and 8) and takes A to pick the class: there the wheel and the mouse moved sideways step it
-    // left or right, and a left click presses A
+    // (its presses' bits 4 and 8) and takes A to pick the class: there the wheel steps it left or right, a left click
+    // presses A, and the mouse's motion does nothing
     constexpr uint32_t kCharStage = 0x862D32;
     const uint8_t char_stage = mem::Base()[kCharStage + uint32_t(port)];
     const bool carousel = wheel_only && char_stage == 1;
@@ -1677,13 +1676,15 @@ void menus::Pad(int port, input::Pad& pad) {
             pad.analog[0] = 0xFF;
             return;
         }
-        // (the carousel's sideways: drag_y keeps the cursor's x there, scaled as 480 high too)
-        const float at = carousel ? x * 480.0f / bh : y * 480.0f / bh;
-        if (p.drag_x != carousel) p.drag_x = carousel, p.drag_y = -1, p.drag = 0;
+        if (carousel) {
+            p.drag_y = -1, p.drag = 0;
+            return;
+        }
+        const float at = y * 480.0f / bh;
         if (p.drag_y >= 0) p.drag = std::clamp(p.drag + at - p.drag_y, -kDragStep * kDragKept, kDragStep * kDragKept);
         p.drag_y = at;
         if (std::abs(p.drag) < kDragStep) return;
-        p.press = carousel ? (p.drag > 0 ? kPadRight : kPadLeft) : p.drag > 0 ? kPadDown : kPadUp;
+        p.press = p.drag > 0 ? kPadDown : kPadUp;
         p.drag -= p.drag > 0 ? kDragStep : -kDragStep;
         p.target = -1, p.pick = false, p.from = -1;
         p.press_us = now;
