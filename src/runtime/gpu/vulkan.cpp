@@ -1166,6 +1166,9 @@ private:
     // draw that reads the frame (the title's bloom and depth of field take their copies so), and the passes
     void TrackView(const State& s);
     bool ReadsFrame(const State& s);
+    // a draw into the screen grab's target (g_grab_texture), whatever size it is made at
+    bool IntoGrab(uint32_t data);
+    uint32_t grab_any_tex_ = 0, grab_any_data_ = 0;
     void ApplyOcclusion();
     // motion vectors (Motion): the frame's depth kept for the motion pass of the picture being drawn, as the 3D left
     // it; the sub-pixel offset of a picture slot's 3D draws (Jittering), in host pixels; the debug views
@@ -6538,7 +6541,8 @@ void VulkanBackend::TrackPost(const State& s, bool flat, bool can_copy) {
     if (post_done_ || !PostWanted()) return;
     PostTrace& pt = post_trace_;
     Target* rt = FindTarget(s.rt, false);
-    if (flat && !occlusion_done_ && post_rt_ && ((rt && rt->data == post_rt_) || ReadsFrame(s))) ApplyOcclusion();
+    if (flat && !occlusion_done_ && post_rt_ && ((rt && rt->data == post_rt_) || (ReadsFrame(s) && !IntoGrab(s.rt.data))))
+        ApplyOcclusion();
     if (!rt) {
         pt.no_target++;
         return;
@@ -6624,6 +6628,17 @@ void VulkanBackend::TrackView(const State& s) {
     post_zs_ = s.zs;
     post_zscale_ = s.zscale;
     view_ok_ = true;
+}
+
+bool VulkanBackend::IntoGrab(uint32_t data) {
+    const uint32_t tex = g_grab_texture.load(std::memory_order_relaxed);
+    if (!tex) return false;
+    if (tex != grab_any_tex_) {
+        TextureDesc d;
+        grab_any_tex_ = tex;
+        grab_any_data_ = Describe(tex, d) ? d.data : 0;
+    }
+    return grab_any_data_ && data == grab_any_data_;
 }
 
 bool VulkanBackend::ReadsFrame(const State& s) {

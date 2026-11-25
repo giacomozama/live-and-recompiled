@@ -1521,6 +1521,12 @@ class OpenGLBackend final : public Backend {
                 TextureDesc texture;
                 uses_frame = header && Describe(header, texture) && ResourceKey(texture.data, false) == post_target_;
             }
+            // not the shrink into the screen grab (g_grab_texture): 3D is drawn after it
+            if (uses_frame && key != post_target_) {
+                TextureDesc grab;
+                const uint32_t tex = g_grab_texture.load(std::memory_order_relaxed);
+                if (tex && Describe(tex, grab) && ResourceKey(grab.data, false) == key) uses_frame = false;
+            }
             auto it = targets_.find(post_target_);
             if (uses_frame && it != targets_.end()) ApplyOcclusion(it->second);
         }

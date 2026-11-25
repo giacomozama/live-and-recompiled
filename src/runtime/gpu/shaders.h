@@ -230,6 +230,10 @@ inline std::atomic<uint32_t> g_team_colors{0};
 // grab): its target is made at the frame's size, not the texture's, so what reads it back has the frame's detail.
 // Its header's address, 0 none. The game sets it each frame, game thread
 inline std::atomic<uint32_t> g_frame_grab{0};
+// the same texture's header whatever its size (0 none): a draw into its target is the shrink into the grab, not one of
+// the title's passes over the finished 3D, so the ambient occlusion doesn't start there (3D is drawn after it: some 114
+// draws in capture 154207, the characters among them). The game sets it each frame, game thread
+inline std::atomic<uint32_t> g_grab_texture{0};
 // how the draws of a HUD scope (d3d::HudScope) are placed: by the edge the element's box keeps nearest to (held),
 // unstretched where it is (about the element's box, or each draw's own), or as the frame has them. kHudInPlaceBars is
 // kHudInPlace with black down the sides of a draw that covers the frame (a sniper's scope, no longer to the edges);

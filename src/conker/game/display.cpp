@@ -402,6 +402,7 @@ X86_FUNC(sub_002A7B60) {
     }();
     gpu::g_frame_grab.store(grab_off || !display::g_sharp_drone ? 0 : kernel::R32(display::kFrameGrab),
                            std::memory_order_relaxed);
+    gpu::g_grab_texture.store(kernel::R32(display::kFrameGrab), std::memory_order_relaxed);
     using clock = std::chrono::steady_clock;
     static bool owned = false;
     static uint32_t shown = 0;
