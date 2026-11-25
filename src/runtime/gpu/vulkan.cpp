@@ -6996,6 +6996,7 @@ void VulkanBackend::DrawMotion(const State& s, const Before& before, uint32_t pr
     if (tess && !zen) return skip();
     why = kMwBlended;
     if (!tess && k.blend && !zwrite && !(zen && SurfaceDepth(s, start, count, indices))) return skip();
+    const bool writes_depth = zwrite;  // the title's own z write, before a blended surface's is taken for one
     if (k.blend) zwrite = true;
     Target* rt = FindTarget(s.rt, false);
     why = kMwOtherTarget;
@@ -7017,8 +7018,14 @@ void VulkanBackend::DrawMotion(const State& s, const Before& before, uint32_t pr
     bool inst = false;
     DrawTextures stages{};
     // a draw tested equal to the depth it wrote needs no discards of its own: the test passes only where it wrote. Its
-    // shading (super fur's strands, worked out a shell at a time) left out, the test can run before the pixel shader
-    const bool plain = zwrite || tess;
+    // shading (super fur's strands, worked out a shell at a time) left out, the test can run before the pixel shader.
+    // Not a fur shell's (shell, below): its depth pass wrote only where it is nearly opaque
+    bool plain = zwrite || tess;
+    // ProgramShading::depth_alpha's shells (top's x above 0, as the frame's depth pass takes them): their depth went in
+    // only where a strand is at least depth_alpha opaque, so tested equal they drew motion on the strands' cores alone
+    // and the fringe kept the motion of what lies behind. Drawn with their own depth test and alpha test instead, as
+    // their color was
+    bool shell = false;
     VkPipeline pso_made = VK_NULL_HANDLE;
     GuestExtent size;
     DrawConstants c{};
@@ -7058,6 +7065,11 @@ void VulkanBackend::DrawMotion(const State& s, const Before& before, uint32_t pr
         if (sh.quad || (!sh.prog && a.pretransformed)) return skip();
         if (sh.prog) EnsureProgramHash(s);
         sh.shading = DrawShading(s, sh);
+        if (sh.shading && k.blend && writes_depth) {
+            const ProgramShading& ps = g_program_shading[sh.shading - 1];
+            shell = ps.depth_alpha > 0 && (ps.top < 0 || s.vsc[size_t(ps.top)][0] > 0);
+            if (shell) plain = false;
+        }
         g_perf.motion_slow++;
         step(0);
 
@@ -7143,7 +7155,7 @@ void VulkanBackend::DrawMotion(const State& s, const Before& before, uint32_t pr
         k.samples = 1;
         k.blend = k.src = k.dst = k.op = 0;
         k.wmask = 0x3;
-        if (zwrite) k.zfunc = kCmpEqual;
+        if (zwrite && !shell) k.zfunc = kCmpEqual;
         if (tess) {
             k.zen = 1;
             k.zfunc = kCmpLessEqual;
