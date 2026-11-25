@@ -348,7 +348,11 @@ call = "ConkerCameraAspect"
 [[hook]]
 at = 0x2A3FFF  # the frame's drawing: paused, the picture kept before the pause instead of the game drawn again (pause_picture.cpp)
 call = "ConkerPauseFrame"
-on_true = 0x2A4497
+on_true = 0x2A435C
+
+[[hook]]
+at = 0x2A4497  # its call to the pause menu: the kept picture into the back buffer first (pause_picture.cpp)
+call = "ConkerPausePicture"
 
 [[hook]]
 at = 0x202B6B  # the frontend picture frame's camera: its fixed 4:3 aspect widened to the display's
