@@ -2,10 +2,7 @@
 
 <p align="center">
   <img src=".github/logo.svg" alt="Live &amp; Recompiled" width="400">
-  <br/>
-  <em>I assume pareidolia qualifies as fair use.</em>
 </p>
-<br/>
 
 An unofficial *Conker: Live & Reloaded* native recompilation and enhancement project for Linux and Windows.
 
