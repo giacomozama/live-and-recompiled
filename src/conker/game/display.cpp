@@ -170,11 +170,34 @@ uint32_t g_look_up = 0;
 bool g_hud_split = true;
 bool MatchPauseCentred() {
     constexpr uint32_t kMatchPauseUp = 0x862D90;  // set while a match's pause menu is up (0x1F77C0)
+    // the match's cylinder menu (the pause menu's, the spawn point choice's, the results'): 0x204770 draws it while
+    // all three are set, from the frontend's state 0 in a match (0x204970) and from its state 14 for the results
+    // after one (0x207B70, the cylinder alone)
+    constexpr uint32_t kCylinderOn = 0x849AC0, kCylinder = 0x849AA4, kCylinderPage = 0x849ACC;
+    constexpr uint32_t kFrontendState = 0x776574, kResultsState = 14;
     static const bool off = [] {
         const char* e = diag::Env("XBE_HUD_SPLIT");
         return e && *e == '0';
     }();
-    return !off && g_hud_split && warp::Multiplayer() && !warp::Frontend() && kernel::g_base[kMatchPauseUp];
+    if (off || !g_hud_split) return false;
+    const uint8_t* b = kernel::g_base;
+    const bool match = warp::Multiplayer() && !warp::Frontend();
+    const bool results = b[kFrontendState] == kResultsState;
+    const bool cylinder = b[kCylinderOn] && kernel::R32(kCylinder) && kernel::R32(kCylinderPage);
+    const bool on = (match && (b[kMatchPauseUp] || cylinder)) || (results && cylinder);
+    // XBE_HUD_TRACE=1: what it found, each time it changes
+    static const bool trace = diag::Env("XBE_HUD_TRACE") != nullptr;
+    if (trace) {
+        static uint64_t last = ~0ull;
+        const uint64_t key = uint64_t(uint32_t(warp::CurrentLevel())) << 32 | uint32_t(b[kFrontendState]) << 16 |
+                             uint32_t(b[kMatchPauseUp]) << 8 | uint32_t(b[kCylinderOn]) << 4 |
+                             uint32_t(kernel::R32(kCylinderPage) & 0xF) << 1 | (kernel::R32(kCylinder) != 0);
+        if (key != std::exchange(last, key))
+            LOGR("hud: menu centred %d, level %d, frontend state %u, pause %u, cylinder %u model %08X page %u", on,
+                 warp::CurrentLevel(), b[kFrontendState], b[kMatchPauseUp], b[kCylinderOn], kernel::R32(kCylinder),
+                 kernel::R32(kCylinderPage));
+    }
+    return on;
 }
 bool g_sharp_drone = true;
 
@@ -713,7 +736,9 @@ void HudNoteF(const char* fmt, ...) {
 }  // namespace
 
 // 0x2A60B0, the frame's menus drawn over the game (0x201E20 and the text list's first pass): with a match's pause menu
-// up, all of it (the scoreboard, the cylinder's models, the words) in one scope, 4:3 in the middle of the display
+// or its cylinder up (the spawn point choice, the results after it: 0x204770 from 0x204970 or 0x207B70, the cylinder
+// and its pages by 0x216DB0), all of
+// it (the scoreboard, the cylinder's models, the words) in one scope, 4:3 in the middle of the display
 // (gpu::kHudCentred). Its menus' camera is a fixed 4:3 one, so it stretched with the frame
 X86_EXTERN_FUNC(__imp__sub_002A60B0);
 X86_FUNC(sub_002A60B0) {
