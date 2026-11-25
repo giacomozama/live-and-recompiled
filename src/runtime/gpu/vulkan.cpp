@@ -9598,9 +9598,24 @@ void VulkanBackend::Clear(const State& s, uint32_t count, const uint8_t* rects, 
     Target* rt = (flags & kClearTarget) ? EnsureTarget(s.rt, false) : nullptr;
     Target* ds = (flags & (kClearZ | kClearStencil)) ? EnsureTarget(s.zs, true) : nullptr;
     // the motion pass's depth kept this picture, then cleared: what is drawn after is not the world's (KeepMotionDepth)
+    // Unless it clears the frame's color with it, the whole of it: the picture starts over, the depth kept before it
+    // (and the occlusion worked out by it) were a pass's that's gone. The multiplayer menu draws a lone 3D quad, 2D
+    // reading the frame into a small target (which kept the depth), then clears the frame and draws the menu's whole
+    // scene: blocked, every motion draw tested equal against the quad's cleared depth and none passed
     if ((flags & kClearZ) && motion_z_ && s.zs.data == motion_zs_.data &&
-        motion_[pic_slot_ % kMaxGen].taken == presents_ + 1)
-        motion_blocked_ = true;
+        motion_[pic_slot_ % kMaxGen].taken == presents_ + 1) {
+        const auto& v = s.viewport;
+        const bool whole = rt && (flags & kClearTarget) && s.rt.data == motion_rs_.data && !(count && rects) &&
+                           v.x == 0 && v.y == 0 && v.w >= rt->gw && v.h >= rt->gh;
+        if (whole) {
+            motion_[pic_slot_ % kMaxGen].taken = 0;
+            motion_late_ = motion_blocked_ = false;
+            occlusion_done_ = false;
+            if (cap_) fprintf(cap_, "     note the frame cleared whole: motion depth taken again\n");
+        } else {
+            motion_blocked_ = true;
+        }
+    }
     std::vector<VkClearRect> rs;
     ClearArgs c{.count = count, .rects = rects, .flags = flags, .color = color, .z = z, .stencil = stencil};
     for (Target* t : {rt, ds}) {
