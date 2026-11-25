@@ -324,9 +324,10 @@ public:
         cur_->cmds.push_back(c);
     }
 
-    void PausePicture(bool keep, const Surface& target) override {
+    void PausePicture(bool keep, const Surface& target, bool shown) override {
         Cmd c{Op::PausePicture};
         c.a = keep;
+        c.b = shown;
         c.s1 = target;
         cur_->cmds.push_back(c);
     }
@@ -902,7 +903,7 @@ private:
                         break;
                     case Op::PausePicture:  // the kept picture back under the pause drawn again; no keeping twice
                         changed = true;
-                        if (!c.a) inner_->PausePicture(false, c.s1);
+                        if (!c.a) inner_->PausePicture(false, c.s1, c.b != 0);
                         break;
                     default: changed = true; break;
                 }
@@ -1358,7 +1359,7 @@ private:
             case Op::ClearReport: inner_->ClearReport(); break;
             case Op::GetReport: inner_->GetReport(c.a); break;
             case Op::Note: inner_->Note(reinterpret_cast<const char*>(data)); break;
-            case Op::PausePicture: inner_->PausePicture(c.a != 0, c.s1); break;
+            case Op::PausePicture: inner_->PausePicture(c.a != 0, c.s1, c.b != 0); break;
         }
     }
 

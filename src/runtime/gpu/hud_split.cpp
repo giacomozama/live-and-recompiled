@@ -70,9 +70,9 @@ bool HudMeasure(const State& s, const Assembled& a, uint32_t start, uint32_t cou
 
 bool HudSplit::Place(const State& s, const Assembled& a, uint32_t start, uint32_t count, const uint8_t* indices,
                      int pos_w, uint32_t target_gw, uint32_t target_gh, uint32_t guest_w, uint32_t guest_h, bool replay) {
-    if (!g_hud_split.load(std::memory_order_relaxed)) return false;
     const interp::Tag& tag = interp::g_run_tag;
     const uint8_t mode = tag.hud_mode;
+    if (mode != kHudCentred && !g_hud_split.load(std::memory_order_relaxed)) return false;
     if (mode == kHudNone || !tag.hud[0]) return false;
     if (target_gw != guest_w || target_gh != guest_h) return false;
     const float gw = float(guest_w), gh = float(guest_h);
@@ -81,6 +81,12 @@ bool HudSplit::Place(const State& s, const Assembled& a, uint32_t start, uint32_
     took = 'S';
     box = {};
     if (mode == kHudStretched) return true;
+    if (mode == kHudCentred) {
+        scale = 1 / wider;
+        shift = gw * 0.5f * (1 - scale);
+        took = 'C';
+        return true;
+    }
     HudBox b;
     const bool measured = HudMeasure(s, a, start, count, indices, pos_w, gw, b);
     HudElement& e = elements[tag.hud[0]];

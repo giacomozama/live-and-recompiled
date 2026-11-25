@@ -137,8 +137,9 @@ public:
     // (d3d::PausePicture): keep, the frame target's picture as the 2D comes to draw over it in this frame (the 3D and
     // the title's own passes, no HUD); !keep, that picture written back into the target it came from, in order with
     // the draws, into target (the title's back buffer now: it changes with each Swap). PausePictures: whether the
-    // backend does it (the title draws its game under the pause when not)
-    virtual void PausePicture(bool /*keep*/, const Surface& /*target*/) {}
+    // backend does it (the title draws its game under the pause when not) shown: the picture written back is
+    // what the screen shows, the effects in it: none run over it again this frame
+    virtual void PausePicture(bool /*keep*/, const Surface& /*target*/, bool /*shown*/) {}
     virtual bool PausePictures() const { return false; }
     // XBE_TRACE_MEM: log what the backend holds; the renderer's own lines come at its next present (g_mem_report)
     virtual void MemoryReport();

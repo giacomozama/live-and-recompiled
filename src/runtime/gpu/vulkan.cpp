@@ -1018,7 +1018,7 @@ public:
     void Note(const char* text) override {
         if (cap_) fprintf(cap_, "     note %s\n", text);
     }
-    void PausePicture(bool keep, const Surface& target) override;
+    void PausePicture(bool keep, const Surface& target, bool shown) override;
     bool PausePictures() const override { return true; }
     // done once the commands being recorded, the next fence value, have run
     void GetReport(uint32_t report) override { reports_.push_back({report, counted_, fence_value_ + 1}); }
@@ -8700,9 +8700,9 @@ void VulkanBackend::KeepPause(Target& t) {
 
 // keep: KeepPause at this frame's 2D (PostWanted holds till then); else the kept picture written over target, the
 // back buffer now, whole, as a surface copy would (the HUD drawn again at the output's size steps aside for the
-// frame). The title's buffers take turns as the back buffer: the one the picture came from is the front every
+// frame). shown: it is the frame's 3D as it shows, the effects in it. The title's buffers take turns as the back buffer: the one the picture came from is the front every
 // other frame, and writing there showed the pause screen one frame in two
-void VulkanBackend::PausePicture(bool keep, const Surface& target) {
+void VulkanBackend::PausePicture(bool keep, const Surface& target, bool shown) {
     if (keep) {
         pause_keep_ = true;
         if (pause_pic_) Retire(std::exchange(pause_pic_, nullptr));  // never the picture of an earlier pause
@@ -8729,6 +8729,12 @@ void VulkanBackend::PausePicture(bool keep, const Surface& target) {
     t->drawn = true;
     bound_rt_ = bound_ds_ = nullptr;
     if (cap_) fprintf(cap_, "%04u pause picture written back to %08X\n", cap_i_++, t->data);
+    if (shown) {  // the picture is the frame's finished 3D: copied for HDR and the upscaler, no effects over it again
+        occlusion_done_ = post_done_ = true;
+        const bool first = !hud_copies_;
+        KeepHdr3d(*t);
+        if (first && hud_copies_) hud_pic_.from = pass_serial_;  // taken between draws: the next on is the HUD's
+    }
 }
 
 // HudNative: the 3D's depth as the first copy is taken (hud_z_pic_), for what comes after to be hidden by it when

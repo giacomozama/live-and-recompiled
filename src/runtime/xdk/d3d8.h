@@ -65,7 +65,7 @@ void HudNote(const char* text);
 // A title's pause screen from one picture (gpu::Backend::PausePicture): keep, the frame being pushed keeps its
 // picture as the 2D comes to draw over it; !keep, that picture written back into the back buffer (the device's now),
 // in order with the commands pushed before. PausePictures: whether the renderer does it. Game thread
-void PausePicture(bool keep);
+void PausePicture(bool keep, bool shown = false);
 bool PausePictures();
 
 // One vertex program constant (hardware order, D3D register + 96) for the draws the title pushes next, as

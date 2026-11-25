@@ -70,6 +70,8 @@ struct HudSplit {
     // - kHudInPlaceBars: kHudInPlace, and a draw covering the frame's width gets black down the sides it leaves
     // - kHudInPlaceEach: the frame's shape about the middle of each draw's own box
     // - kHudStretched: as the frame has it
+    // - kHudCentred: every draw (2D and models alike) in the frame's shape about the screen's middle, so a 4:3 frame's
+    //   screen of 2D sits unstretched there; with g_hud_split off too
     // A draw not in screen space (a model) is drawn with its element's place but adds nothing to its box. replay: the
     // frame drawn again (its own boxes are last already, Roll)
     bool Place(const State& s, const Assembled& a, uint32_t start, uint32_t count, const uint8_t* indices, int pos_w,

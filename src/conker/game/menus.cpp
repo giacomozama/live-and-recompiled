@@ -1418,7 +1418,11 @@ bool CursorInFrame(float& x, float& y, float& wx, float& wy, float& bw, float& b
     const float vw = std::min(ww, wh * aspect), vh = vw / aspect;
     x = (wx - (ww - vw) / 2) / vw * bw;
     y = (wy - (wh - vh) / 2) / vh * bh;
-    return x >= 0 && y >= 0 && x < bw && y < bh;
+    const bool in = x >= 0 && y >= 0 && x < bw && y < bh;
+    // a match's pause menu is drawn 4:3 in the middle: the point on the frame the title drew
+    if (const float wider = aspect * 0.75f; wider >= 1.01f && display::MatchPauseCentred())
+        x = (x - bw / 2) * wider + bw / 2;
+    return in;
 }
 
 // the point in the panel's texture, in its units around its middle with y down the screen: through the quad under it,

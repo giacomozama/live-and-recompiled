@@ -14,8 +14,13 @@
 // pause menu's call, which shrinks it as before. That loop stays: 0x2A5F30 sets up the camera the pause screen's
 // frame and cloth are drawn with (0x202AC0, 60 degrees, from the level camera's view); without it they took the
 // 55 degree camera 0x202250 left (capture 014612), larger against the picture's quad, the frame's dark glass showing
-// past the picture at its sides. Single player only (a match's pause is its own), and only with a renderer that
-// keeps pictures (Vulkan); otherwise the game draws as it did. XBE_PAUSE_PICTURE=0 leaves it drawing, for an A/B.
+// past the picture at its sides. Only with a renderer that keeps pictures (Vulkan); otherwise the game draws as it
+// did. XBE_PAUSE_PICTURE=0 leaves it drawing, for an A/B.
+//
+// A match that pauses (split screen, Dumbots) does so by the same flags, so it takes the same way; one over the
+// network never sets them (its menu opens over the game running on, 0x1F77C0). Its pause menu has no cloth or shrunk
+// picture: the kept picture is what shows behind it, so the effects on it are not run again over it (the shown
+// argument of PausePicture).
 #include <cstdint>
 #include <utility>
 
@@ -38,7 +43,7 @@ bool ConkerPauseFrame(X86Context& ctx, uint8_t* base) {
         const char* e = diag::Env("XBE_PAUSE_PICTURE");
         return e && e[0] == '0';
     }();
-    if (off || warp::Frontend() || warp::Multiplayer() || !d3d::PausePictures()) {
+    if (off || warp::Frontend() || !d3d::PausePictures()) {
         g_kept = false;
         return false;
     }
@@ -58,5 +63,6 @@ bool ConkerPauseFrame(X86Context& ctx, uint8_t* base) {
 void ConkerPausePicture(X86Context& ctx, uint8_t* base) {
     (void)ctx, (void)base;
     if (!std::exchange(g_put, false)) return;
-    d3d::PausePicture(false);
+    // in a match the picture stays on screen behind the menu, its effects in it already
+    d3d::PausePicture(false, warp::Multiplayer());
 }

@@ -66,6 +66,9 @@ extern uint32_t g_look_up;
 // to its edge of the display (display.cpp, HUD); off, it stretches with the frame as on a widescreen console. Read
 // each frame
 extern bool g_hud_split;
+// a match's pause menu is up and drawn 4:3 in the middle of the display (hud_split on; its draws are 0x2A60B0's), for
+// the mouse on it to be taken there too. Game thread
+bool MatchPauseCentred();
 
 // settings.toml sharp_drone_view: the screen grab (0x3EB67B, laid over the MP Sneeker drone's whole view, refracted by
 // water and heat) made at the frame's size and copied into pixel for pixel, and the drone's haze (0x1D9790) skipped;

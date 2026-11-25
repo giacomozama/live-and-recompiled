@@ -743,10 +743,10 @@ void HudNote(const char* text) {
     if (g_backend) g_backend->Note(text);
 }
 
-void PausePicture(bool keep) {
+void PausePicture(bool keep, bool shown) {
     std::lock_guard<std::recursive_mutex> lock(g_lock);
     Walk(Dev(kDevPush));  // the commands pushed so far come before it
-    if (g_backend) g_backend->PausePicture(keep, SurfaceOf(Dev(kDevBackBuffer)));
+    if (g_backend) g_backend->PausePicture(keep, SurfaceOf(Dev(kDevBackBuffer)), shown);
 }
 
 bool PausePictures() {

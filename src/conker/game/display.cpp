@@ -168,6 +168,14 @@ uint32_t Ticks() { return g_ticks.load(std::memory_order_relaxed); }
 uint32_t g_fov = kFov;
 uint32_t g_look_up = 0;
 bool g_hud_split = true;
+bool MatchPauseCentred() {
+    constexpr uint32_t kMatchPauseUp = 0x862D90;  // set while a match's pause menu is up (0x1F77C0)
+    static const bool off = [] {
+        const char* e = diag::Env("XBE_HUD_SPLIT");
+        return e && *e == '0';
+    }();
+    return !off && g_hud_split && warp::Multiplayer() && !warp::Frontend() && kernel::g_base[kMatchPauseUp];
+}
 bool g_sharp_drone = true;
 
 std::atomic<float> g_camera_fov{50.0f};
@@ -641,7 +649,9 @@ bool HudTrace() {
     return on;
 }
 
-bool HudScopes() { return gpu::g_hud_split.load(std::memory_order_relaxed); }
+bool g_pause_scoped = false;  // the match's pause menu's scope is open: none opens inside it
+
+bool HudScopes() { return !g_pause_scoped && gpu::g_hud_split.load(std::memory_order_relaxed); }
 
 float HudF(uint32_t va) {
     const uint32_t v = kernel::R32(va);
@@ -701,6 +711,20 @@ void HudNoteF(const char* fmt, ...) {
 }
 
 }  // namespace
+
+// 0x2A60B0, the frame's menus drawn over the game (0x201E20 and the text list's first pass): with a match's pause menu
+// up, all of it (the scoreboard, the cylinder's models, the words) in one scope, 4:3 in the middle of the display
+// (gpu::kHudCentred). Its menus' camera is a fixed 4:3 one, so it stretched with the frame
+X86_EXTERN_FUNC(__imp__sub_002A60B0);
+X86_FUNC(sub_002A60B0) {
+    if (!display::MatchPauseCentred()) return __imp__sub_002A60B0(ctx, base);
+    constexpr uint32_t kPauseElement = 0xFD000001u;
+    d3d::HudScope(kPauseElement, gpu::kHudCentred);
+    g_pause_scoped = true;
+    __imp__sub_002A60B0(ctx, base);
+    g_pause_scoped = false;
+    d3d::HudScopeEnd();
+}
 
 X86_EXTERN_FUNC(__imp__sub_0037E230);
 X86_FUNC(sub_0037E230) {
