@@ -2903,11 +2903,11 @@ void Draw(double fps) {
                 // whose controls: a card of its own above the sections, not a second row of tabs
                 if (Section("player", false)) {
                     {
+                        // players 3 and 4 are left out: the game doesn't use them
                         // Segmented takes names it can keep for the frame
-                        char names[input::kPorts][64];
-                        for (int p = 0; p < input::kPorts; p++) std::snprintf(names[p], sizeof names[p], T("player_d"), p + 1);
-                        static_assert(input::kPorts == 4, "the segments below are one per port");
-                        Segmented("player", &g_player_now, {names[0], names[1], names[2], names[3]});
+                        char names[2][64];
+                        for (int p = 0; p < 2; p++) std::snprintf(names[p], sizeof names[p], T("player_d"), p + 1);
+                        Segmented("player", &g_player_now, {names[0], names[1]});
                     }
                 }
                 const int p = g_player_now;
