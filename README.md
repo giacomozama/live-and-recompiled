@@ -21,10 +21,11 @@ trademarks of their respective owners.
 
 - **High frame rates** - 60, 120, 180 or 240 FPS instead of the original 30.
 - **Any aspect ratio** - Play the game at any aspect ratio.
-- **Better graphics** - Vulkan rendering at any resolution (with Direct3D 11 and OpenGL renderers as options for weaker machines), SMAA or MSAA anti-aliasing, AMD FSR 1.0 upscaling and sharpening, NVIDIA DLSS on RTX cards, per-pixel lighting, ambient occlusion, smooth baked shadows, dynamic water, motion blur, HDR10 output, and toggles for fog, vignette and more.
+- **Better graphics** - Vulkan rendering at any resolution (with Direct3D 11 and OpenGL renderers as options for weaker machines), SMAA or MSAA anti-aliasing, upscaling with AMD FSR 1.0, FSR 3.1 or NVIDIA DLSS (RTX cards), per-pixel lighting, ambient occlusion, smooth baked shadows, dynamic water, motion blur, HDR10 output, and toggles for fog, vignette and more.
 - **Redone fur** - Optional strand-based fur with hair lighting, tuned per character.
-- **Controls** - Full gamepad and keyboard + mouse support, with key prompts in place of button icons, mouse aim for scopes, aircraft and the Sneeker's drone, rebindable Walk and Creep keys, adjustable field of view and extra look up.
-- **Multiplayer** - Full multiplayer support, with local split-screen, LAN autodiscovery and direct IP over the internet. It adds text chat, a Friendly Fire match option, player names, outlines, health bars and rank emblems, netcode fixes, a visible medgun beam, high quality character models, and color-blind-friendly blue / orange team colors.
+- **Redrawn HUD and text** - Vector-drawn sights, menu and multiplayer HUD art, redrawn speech bubbles or subtitles, and custom fonts.
+- **Controls** - Full gamepad and keyboard + mouse support, with key prompts in place of button icons.
+- **Multiplayer** - Full multiplayer support, with local split-screen, LAN autodiscovery and direct IP over the internet. It adds text chat, a Friendly Fire match option, accessibility options, netcode fixes, a visible medgun beam, high quality character models.
 - **Achievements** - Local achievements, kept with your saves.
 - **Mods** - Convenient, plug-and-play modding layer to easily install mods, such as the [Decensor Patch/Mod](https://github.com/nastys/conker-live-and-reloaded-decensor) by nastys.
 - **Quality of life** - Bypass loading screens and skip any cutscene without having seen it once first, by holding any button. Optional English speech bubbles in the throne monologues.
