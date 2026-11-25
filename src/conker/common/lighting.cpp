@@ -7,6 +7,7 @@
 #include "gpu/shaders.h"
 
 bool lighting::g_per_pixel = true;
+uint32_t lighting::g_rim = 0;
 
 namespace {
 
@@ -66,6 +67,16 @@ float LightShadow(float b, bool soft) {
 float3 LightKey(float3 n, float3 p, bool soft) {
     return c[180].xyz * max(dot(n, -c[179].xyz), 0) * LightShadow(LightBlobs(p, soft), soft);
 }
+// rim light (lighting::g_rim, r its share): a Fresnel edge, (1 - N.E)^3, where the surface turns away from the eye e.
+// It takes the room's ambient a, so it glows in the room's own color, and the key light, on the edges turned toward
+// it and most when it lies behind the subject; the key's part is shadowed as the key is (sh)
+float3 LightRim(float3 n, float3 e, float3 a, float sh, float r) {
+    float f = 1 - saturate(dot(n, e));
+    f *= f * f;
+    float3 l = normalize(-c[179].xyz);
+    float side = saturate(0.5 + 0.5 * dot(n, l)), back = saturate(-dot(l, e));
+    return r * f * (0.6 * a + c[180].xyz * side * (0.4 + 0.6 * back) * sh);
+}
 // the scale the program put on the ambient a to make d
 float LightScale(float3 d, float3 a) { return clamp(dot(d, a) / max(dot(a, a), 1e-8), 0, 4); }
 )";
@@ -84,7 +95,10 @@ constexpr const char* kVs = R"(    {
 constexpr const char* kPs = R"({
     float nl = length(i.x0.xyz);
     if ((!PS_TWO_SIDED || front) && nl > 1e-6) {
-        float3 n = i.x0.xyz / nl, a = i.x0.w * LightAmbient(n), k = LightKey(n, i.x1.xyz, true);
+        float3 n = i.x0.xyz / nl, a = i.x0.w * LightAmbient(n);
+        float sh = LightShadow(LightBlobs(i.x1.xyz, true), true);
+        float3 k = c[180].xyz * max(dot(n, -c[179].xyz), 0) * sh;
+        if (xc.w > 0) a += LightRim(n, normalize(-i.x1.xyz), a, sh, xc.w);
 %s
     }
 })";
@@ -126,6 +140,7 @@ void lighting::Init() {
                 .also = {sh.key_in_d0 ? kKeyInD0 : kKeyInD1, sh.groups == 3 ? kThreeGroups : kOneGroup, kPlaced},
                 .pre = pre,
                 .plain = true,
+                .level = &g_rim,
             });
         }
     }

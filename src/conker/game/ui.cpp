@@ -2574,6 +2574,10 @@ void Draw(double fps) {
                 if (Section("lighting")) {
                     Check("per_pixel_lighting", &lighting::g_per_pixel);
                     Hint("hint_smoother_light_and_shadows_on", true);
+                    if (lighting::g_per_pixel) {
+                        Slider("rim_light", &lighting::g_rim, 0, 100, 0);
+                        Hint("hint_lights_the_edges_of_characters");
+                    }
                     const bool smoother = gpu::g_lightmap_smoothing.load(std::memory_order_relaxed);
                     ImGui::BeginDisabled(!smoother);
                     Check("smooth_baked_shadows", &s.smooth_lightmaps);

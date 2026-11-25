@@ -149,6 +149,8 @@ struct ProgramShading {
     // had the chip's fog on, this frame or the one before, zero once a frame had none (or the fog setting is off),
     // for its vs to fog by what the title's own fogged draws would have
     bool world_fog = false;
+    // when set, read on each draw: xc.w = *level / 100 (a setting's percent, for its shaders to scale by)
+    const uint32_t* level = nullptr;
 };
 inline std::vector<ProgramShading> g_program_shading;  // filled before the title boots, unchanged after
 

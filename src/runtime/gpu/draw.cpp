@@ -293,6 +293,7 @@ void FillShadingConstants(const State& s, uint32_t shading, DrawConstants& c) {
     const ProgramShading& ps = g_program_shading[shading - 1];
     c.xc[1] = g_shading_clock;
     c.xc[2] = s.ps && ((s.rs[kRsPsTextureModes] >> 15) & 0x1F) ? 1.0f : 0.0f;
+    c.xc[3] = ps.level ? float(*ps.level) / 100.0f : 0.0f;
     if (ps.fill) {
         const bool reg = ps.fill_register >= 0 && ps.fill_register < int(s.vsc.size());
         ps.fill(c.xs, reg ? s.vsc[size_t(ps.fill_register)].data() : nullptr);

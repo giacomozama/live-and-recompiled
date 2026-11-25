@@ -108,6 +108,7 @@ const app::GameInfo app::kGame = {
                 {"character_menu_models", &characters::g_menu_models, nullptr},  // the classes' character select models (hooks.cpp)
                 {"dynamic_water", &water::g_dynamic, nullptr},  // flowing, rippling water (src/conker/common/water.cpp)
                 {"per_pixel_lighting", &lighting::g_per_pixel, nullptr},  // lit per pixel (src/conker/common/lighting.cpp)
+                {"rim_light", nullptr, &lighting::g_rim},  // 0..100: edges lit against the background, per pixel lighting (lighting.cpp)
                 {"floor_depth", &reflection::g_floor_depth, nullptr},  // floors over reflections blur by their own depth (reflection.cpp)
                 {"vignette", &vignette::g_on, nullptr},  // the game's darkened screen edges (src/conker/game/vignette.cpp)
                 {"bright_menu_hints", &menus::g_bright_hints, nullptr},  // solid page hints (src/conker/game/menus.cpp)
