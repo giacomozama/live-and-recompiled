@@ -1565,7 +1565,11 @@ void menus::Pad(int port, input::Pad& pad) {
     // (its presses' bits 4 and 8) and takes A to pick the class: there the wheel and the mouse moved sideways step it
     // left or right, and a left click presses A
     constexpr uint32_t kCharStage = 0x862D32;
-    const bool carousel = wheel_only && mem::Base()[kCharStage + uint32_t(port)] == 1;
+    const uint8_t char_stage = mem::Base()[kCharStage + uint32_t(port)];
+    const bool carousel = wheel_only && char_stage == 1;
+    // ... and the team roster after it (stage 3, the class picked), whose Ready is A too (Space): a left click
+    // presses A there as well
+    const bool roster = wheel_only && char_stage == 3;
     // the on-screen keyboard over a list takes the mouse itself (sub_002563E0)
     if (ui::Open() || app::Background() || Typing() || (!list && !pub && !pause && !wheel_only)) {
         p = {};
@@ -1663,8 +1667,9 @@ void menus::Pad(int port, input::Pad& pad) {
             p.drag_y = -1, p.drag = 0;
             return;
         }
-        if (carousel && clicked) {
-            if (TraceMouse()) LOGR("menu mouse: class carousel click at %.1f,%.1f, A", x, y);
+        if (clicked && TraceMouse()) LOGR("menu mouse: frontend click at %.1f,%.1f, stage %u", x, y, char_stage);
+        if ((carousel || roster) && clicked) {
+            if (TraceMouse()) LOGR("menu mouse: %s click, A", carousel ? "class carousel" : "roster");
             p.drag_y = -1, p.drag = 0;
             p.target = -1, p.pick = false;
             p.face = 0;
