@@ -2507,9 +2507,13 @@ void Draw(double fps) {
                             Slider("render", &s.upscaler_percent, 10, 100, app::Settings{}.upscaler_percent);
                             Hint("hint_the_size_the_game_is", true);
                         }
-                        int model = int(std::min<uint32_t>(s.dlss_model, 3));
-                        if (Segmented("dlss_model", &model, {"K", "M", "L", "by_quality"})) s.dlss_model = uint32_t(model);
-                        Hint("hint_k_is_the_lightest_m", true);
+                        // Transformer or CNN, the one the GPU fits marked; left alone, the setting follows it
+                        const bool fits = gpu::g_dlss_transformer_fits.load();
+                        int model = gpu::DlssCnn(s.dlss_network) ? 1 : 0;
+                        if (Segmented("dlss_model", &model,
+                                      {fits ? "transformer_recommended" : "transformer", fits ? "cnn" : "cnn_recommended"}))
+                            s.dlss_network = uint32_t(model) + 1;
+                        Hint("hint_dlss_model", true);
                         Slider("dlss_sharpness", &s.dlss_sharpness, 0, 100, app::Settings{}.dlss_sharpness);
                         Hint("hint_rcas_sharpening_over_dlss_s", true);
                         if (s.dlss_sharpness > 0) {

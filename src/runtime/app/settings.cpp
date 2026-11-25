@@ -67,7 +67,7 @@ void Load() {
     s.upscaler = t["upscaler"].value_or(s.upscaler);
     s.upscaler_quality = std::min<uint32_t>(t["upscaler_quality"].value_or(s.upscaler_quality), 5);
     s.upscaler_percent = std::clamp<uint32_t>(t["upscaler_percent"].value_or(s.upscaler_percent), 10, 100);
-    s.dlss_model = std::min<uint32_t>(t["dlss_model"].value_or(s.dlss_model), 3);
+    s.dlss_network = std::min<uint32_t>(t["dlss_network"].value_or(s.dlss_network), 2);
     s.dlss_sharpness = std::min<uint32_t>(t["dlss_sharpness"].value_or(s.dlss_sharpness), 100);
     s.dlss_fur_auto = t["dlss_fur_auto"].value_or(s.dlss_fur_auto);
     s.fps_cap = t["fps_cap"].value_or(s.fps_cap);
@@ -166,7 +166,7 @@ toml::table Table() {
                   {"upscaler_quality", int64_t(s.upscaler_quality)},
                   {"upscaler_percent", int64_t(s.upscaler_percent)},
                   {"dlss_sharpness", int64_t(s.dlss_sharpness)},
-                  {"dlss_model", int64_t(s.dlss_model)},
+                  {"dlss_network", int64_t(s.dlss_network)},
                   {"dlss_fur_auto", s.dlss_fur_auto},
                   {"fps_cap", int64_t(s.fps_cap)},
                   {"vsync", s.vsync},

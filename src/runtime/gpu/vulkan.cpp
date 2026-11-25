@@ -7803,6 +7803,7 @@ void VulkanBackend::AddDlssInstanceExtensions(std::vector<const char*>& exts) {
 void VulkanBackend::AddDlssDeviceExtensions(std::vector<const char*>& exts) {
     // the module's absence only matters on an NVIDIA GPU: elsewhere DLSS isn't there either way
     g_dlss_state = dlss_missing_ && props_.vendorID == 0x10DE ? 3 : 0;
+    g_dlss_transformer_fits = props_.vendorID == 0x10DE && props_.deviceID >= 0x2680;
     if (!dlss_) return;
     uint32_t n = 0;
     const char* const* names = nullptr;
@@ -7881,7 +7882,7 @@ app::Scale VulkanBackend::UpscaleScale() {
 
 // the upscaler made for these sizes, made again (the device idle) when they change; false when it can't be
 bool VulkanBackend::EnsureDlss(uint32_t w, uint32_t h, uint32_t out_w, uint32_t out_h) {
-    const uint32_t quality = DlssQuality(), model = fsr3_on_ ? 0 : app::Get().dlss_model;
+    const uint32_t quality = DlssQuality(), model = fsr3_on_ || !DlssCnn(app::Get().dlss_network) ? 0u : uint32_t(XBE_DLSS_MODEL_CNN);
     std::array<uint32_t, 7> want{w, h, out_w, out_h, quality + 1, model, fsr3_on_ ? 2u : 1u};
     if (want == dlss_made_) return true;
     if (dlss_made_[4]) {

@@ -211,29 +211,28 @@ void Release() {
     g_feature = nullptr;
 }
 
-// The model every mode runs (XbeDlssModel), as a render preset hint. The SDK's defaults put Performance on M and Ultra
-// Performance on L, far dearer than K on cards without FP8 (an RTX 3060 Ti: Performance came out the slowest of the
-// four, and frame generation runs DLSS on each picture); the game's default is K for all
-unsigned Preset(int model) {
-    switch (model) {
-        case XBE_DLSS_MODEL_M: return NVSDK_NGX_DLSS_Hint_Render_Preset_M;
-        case XBE_DLSS_MODEL_L: return NVSDK_NGX_DLSS_Hint_Render_Preset_L;
-        case XBE_DLSS_MODEL_BY_MODE: return NVSDK_NGX_DLSS_Hint_Render_Preset_Default;
-        default: return NVSDK_NGX_DLSS_Hint_Render_Preset_K;
-    }
+// The preset a mode runs for the network (XbeDlssModel): NVIDIA's pick for the transformer; for the CNN, F (made for
+// the ends: the fewest pixels and the most) at DLAA and Ultra Performance, E at the rest
+unsigned Preset(int model, int quality) {
+    if (model != XBE_DLSS_MODEL_CNN) return NVSDK_NGX_DLSS_Hint_Render_Preset_Default;
+    return quality == XBE_DLSS_DLAA || quality == XBE_DLSS_ULTRA_PERFORMANCE ? NVSDK_NGX_DLSS_Hint_Render_Preset_F
+                                                                             : NVSDK_NGX_DLSS_Hint_Render_Preset_E;
 }
 
 int Create(VkCommandBuffer cmd, uint32_t w, uint32_t h, uint32_t out_w, uint32_t out_h, int quality, int model) {
     if (!g_params) return 0;
     Release();
-    const unsigned preset = Preset(model);
-    for (const char* mode : {NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_DLAA,
-                             NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_Quality,
-                             NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_Balanced,
-                             NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_Performance,
-                             NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_UltraPerformance,
-                             NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_UltraQuality})
-        NVSDK_NGX_Parameter_SetUI(g_params, mode, preset);
+    const unsigned preset = Preset(model, quality);
+    const struct {
+        const char* name;
+        int quality;
+    } modes[] = {{NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_DLAA, XBE_DLSS_DLAA},
+                 {NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_Quality, XBE_DLSS_QUALITY},
+                 {NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_Balanced, XBE_DLSS_BALANCED},
+                 {NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_Performance, XBE_DLSS_PERFORMANCE},
+                 {NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_UltraPerformance, XBE_DLSS_ULTRA_PERFORMANCE},
+                 {NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_UltraQuality, XBE_DLSS_QUALITY}};
+    for (const auto& m : modes) NVSDK_NGX_Parameter_SetUI(g_params, m.name, Preset(model, m.quality));
     NVSDK_NGX_DLSS_Create_Params p{};
     p.Feature.InWidth = w;
     p.Feature.InHeight = h;
@@ -249,7 +248,7 @@ int Create(VkCommandBuffer cmd, uint32_t w, uint32_t h, uint32_t out_w, uint32_t
         return 0;
     }
     Log("dlss: upscaling %ux%u to %ux%u (preset %c)", w, h, out_w, out_h,
-        preset ? char('A' + preset - 1) : '?');
+        preset ? char('A' + preset - 1) : model == XBE_DLSS_MODEL_CNN ? '?' : 'T');
     return 1;
 }
 

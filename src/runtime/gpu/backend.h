@@ -196,6 +196,13 @@ inline std::atomic<uint64_t> g_perf_rec_cycles[5];
 // but failed to start, 3 an NVIDIA GPU but no DLSS module beside the game (the log says why), 4 a renderer without
 // DLSS (D3D11, OpenGL)
 inline std::atomic<int> g_dlss_state{0};
+// the GPU runs DLSS's transformer well: an NVIDIA card from the RTX 40 series on (Ada's device IDs start at 0x2680),
+// whose FP8 the transformer is made for; on the RTX 20 and 30 series it costs several times the CNN
+inline std::atomic<bool> g_dlss_transformer_fits{false};
+// whether DLSS runs its CNN, by app::Settings::dlss_network (0: the one the GPU fits)
+inline bool DlssCnn(uint32_t network) {
+    return network == 2 || (network == 0 && !g_dlss_transformer_fits.load());
+}
 // FSR 3.1 as the Vulkan renderer found it, for the menu: 0 not there (another renderer, or a GPU without what it
 // needs), 1 there, 2 there but its shaders failed to compile (the log says why)
 inline std::atomic<int> g_fsr3_state{0};

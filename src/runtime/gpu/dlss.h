@@ -11,7 +11,7 @@
 extern "C" {
 #endif
 
-#define XBE_DLSS_API_VERSION 2
+#define XBE_DLSS_API_VERSION 3
 #define XBE_DLSS_API_EXPORT "xbe_dlss_api"
 
 // DLSS's quality modes, the render size's share of the output's from all to least
@@ -23,13 +23,12 @@ enum XbeDlssQuality {
     XBE_DLSS_ULTRA_PERFORMANCE,
 };
 
-// the model DLSS runs: K (transformer), M or L (the newer ones, dearer, more so on cards without FP8), or the SDK's
-// pick for the mode (K for DLAA, Quality and Balanced, M for Performance, L for Ultra Performance)
+// the network DLSS runs: the transformer (NVIDIA's pick for the mode: K for DLAA, Quality and Balanced, M for
+// Performance, L for Ultra Performance) or the CNN (the last convolutional presets, deprecated by the SDK but still in
+// 310.9.16: F for DLAA and Ultra Performance, E for the rest, as NVIDIA's defaults were before the transformer)
 enum XbeDlssModel {
-    XBE_DLSS_MODEL_K = 0,
-    XBE_DLSS_MODEL_M,
-    XBE_DLSS_MODEL_L,
-    XBE_DLSS_MODEL_BY_MODE,
+    XBE_DLSS_MODEL_TRANSFORMER = 0,
+    XBE_DLSS_MODEL_CNN,
 };
 
 // an image as NGX takes it: the whole of one level and layer, aspect the view's
