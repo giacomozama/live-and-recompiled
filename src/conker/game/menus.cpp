@@ -1292,7 +1292,8 @@ struct Pointer {
     int jump = -1;  // the item a frontend list was sent to (g_jump), -1 none
     int64_t jump_us = 0;  // when
     float drag = 0;  // a frontend screen without a list: the mouse's motion up (-) or down not stepped yet, 480 high
-    float drag_y = -1;  // and the cursor's y in the frame when last seen there, -1 none
+    float drag_y = -1;  // and the cursor's y in the frame when last seen there, -1 none (its x on the class carousel)
+    bool drag_x = false;  // drag_y holds the x
 };
 Pointer g_pointer;  // game thread
 std::atomic<int> g_wheel{0};  // the wheel's turn not stepped yet, 120 a notch
@@ -1560,6 +1561,11 @@ void menus::Pad(int port, input::Pad& pad) {
     // a frontend screen with none of those (the multiplayer character choice's army and class carousels): the wheel
     // steps it up or down as the d-pad does, and nothing else
     const bool wheel_only = !list && !pub && !pause && warp::Frontend();
+    // ... except on the class carousel (the port's stage [0x862D32 + port] 1, 0x28EBD0), which steps left or right
+    // (its presses' bits 4 and 8) and takes A to pick the class: there the wheel and the mouse moved sideways step it
+    // left or right, and a left click presses A
+    constexpr uint32_t kCharStage = 0x862D32;
+    const bool carousel = wheel_only && mem::Base()[kCharStage + uint32_t(port)] == 1;
     // the on-screen keyboard over a list takes the mouse itself (sub_002563E0)
     if (ui::Open() || app::Background() || Typing() || (!list && !pub && !pause && !wheel_only)) {
         p = {};
@@ -1638,7 +1644,7 @@ void menus::Pad(int port, input::Pad& pad) {
         g_wheel.fetch_sub(w > 0 ? kNotch : -kNotch);
         p.target = -1, p.pick = false;
         p.press = chapter_step > 0 ? uint16_t(chapter_step)
-                  : pub            ? (w > 0 ? kPadLeft : kPadRight)
+                  : pub || carousel ? (w > 0 ? kPadLeft : kPadRight)
                                    : w > 0 ? kPadUp : kPadDown;
         p.from = -1;  // a step past the end is no reason to stop anything
         p.press_us = now;
@@ -1650,17 +1656,29 @@ void menus::Pad(int port, input::Pad& pad) {
     if (!wheel_only) p.drag_y = -1, p.drag = 0;
     if (wheel_only) {
         constexpr float kDragStep = 40.0f, kDragKept = 2.0f;
-        p.button = app::KeyDown(1);
+        const bool button = app::KeyDown(1), clicked = button && !p.button;
+        p.button = button;
         float x, y, wx, wy, bw = 640, bh = 480;
-        if (!CursorInFrame(x, y, wx, wy, bw, bh) || bh <= 0) {
+        if (!CursorInFrame(x, y, wx, wy, bw, bh) || bh <= 0 || bw <= 0) {
             p.drag_y = -1, p.drag = 0;
             return;
         }
-        if (p.drag_y >= 0)
-            p.drag = std::clamp(p.drag + (y - p.drag_y) * 480.0f / bh, -kDragStep * kDragKept, kDragStep * kDragKept);
-        p.drag_y = y;
+        if (carousel && clicked) {
+            if (TraceMouse()) LOGR("menu mouse: class carousel click at %.1f,%.1f, A", x, y);
+            p.drag_y = -1, p.drag = 0;
+            p.target = -1, p.pick = false;
+            p.face = 0;
+            p.press_us = now;
+            pad.analog[0] = 0xFF;
+            return;
+        }
+        // (the carousel's sideways: drag_y keeps the cursor's x there, scaled as 480 high too)
+        const float at = carousel ? x * 480.0f / bh : y * 480.0f / bh;
+        if (p.drag_x != carousel) p.drag_x = carousel, p.drag_y = -1, p.drag = 0;
+        if (p.drag_y >= 0) p.drag = std::clamp(p.drag + at - p.drag_y, -kDragStep * kDragKept, kDragStep * kDragKept);
+        p.drag_y = at;
         if (std::abs(p.drag) < kDragStep) return;
-        p.press = p.drag > 0 ? kPadDown : kPadUp;
+        p.press = carousel ? (p.drag > 0 ? kPadRight : kPadLeft) : p.drag > 0 ? kPadDown : kPadUp;
         p.drag -= p.drag > 0 ? kDragStep : -kDragStep;
         p.target = -1, p.pick = false, p.from = -1;
         p.press_us = now;
