@@ -1,5 +1,45 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">
-<g transform="scale(0.125) translate(0.000000,128.000000) scale(0.050000,-0.050000)" fill="#fff" stroke="none">
-<path d="M955 2001 c-73 -69 -165 -150 -318 -280 -40 -34 -83 -90 -95 -124 -20 -58 -17 -66 58 -135 93 -85 99 -124 29 -215 -62 -81 -145 -127 -229 -127 -81 0 -127 -26 -212 -119 -37 -42 -95 -87 -128 -101 -33 -14 -60 -33 -60 -43 0 -35 362 -377 398 -377 55 0 86 49 98 155 8 78 28 115 112 210 55 63 109 115 118 115 10 0 44 19 76 41 78 56 119 44 149 -43 14 -40 68 -129 120 -198 l96 -125 111 15 c142 18 158 18 356 -1 210 -19 266 9 266 133 0 44 9 98 21 119 34 65 256 196 373 220 123 25 197 83 174 136 -43 99 -33 182 30 241 97 90 85 146 -48 222 -94 54 -122 61 -198 49 -131 -19 -166 0 -231 129 -88 175 -65 168 -557 171 l-434 2 -75 -70z"/>
-</g>
-</svg>
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<svg
+   width="16"
+   height="16"
+   viewBox="0 0 16 16"
+   version="1.1"
+   id="svg1"
+   sodipodi:docname="MPgrenade_launcher.svg"
+   xml:space="preserve"
+   inkscape:version="1.4.4 (dcaf3e7d9e, 2026-05-05)"
+   xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
+   xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
+   xmlns:xlink="http://www.w3.org/1999/xlink"
+   xmlns="http://www.w3.org/2000/svg"
+   xmlns:svg="http://www.w3.org/2000/svg"><defs
+     id="defs1" /><sodipodi:namedview
+     id="namedview1"
+     pagecolor="#1f1f1f"
+     bordercolor="#666666"
+     borderopacity="1.0"
+     inkscape:showpageshadow="2"
+     inkscape:pageopacity="0.0"
+     inkscape:pagecheckerboard="true"
+     inkscape:deskcolor="#d1d1d1"
+     inkscape:zoom="128"
+     inkscape:cx="3.8125"
+     inkscape:cy="8.5585937"
+     inkscape:window-width="2546"
+     inkscape:window-height="1266"
+     inkscape:window-x="0"
+     inkscape:window-y="0"
+     inkscape:window-maximized="1"
+     inkscape:current-layer="svg1" /><image
+     width="16"
+     height="16"
+     preserveAspectRatio="none"
+     xlink:href="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAA4UlEQVR4nNWTPWrCQRDFf4qmsg0S&#10;8BLaiXgGsbcIiI1n8AypvIcXSJEuKRIEL5BCsVBIZcCvzZM1+4dhlKQQCx88dpjdebNvls0piEuQ&#10;v6j6mgIVYJ74DLwAb0D02/lPoAFMgQfgC9gA30Ap7T8CBaB2XBVk2VOQDHcKWhnG3MLsP0Uli6qJ&#10;96mTP3P/l4U+MHIi57BMnHiBLtBOcSH5l2N2iyJQzrwPnfeBiX8cXxXUyuaGK16bgb6fEZi5oRMt&#10;jI2Fuonjc0V8JEZ8nkxDv0pNBW2det53U9Cdz+Vu/zMdAAQ9AB2ch7JSAAAAAElFTkSuQmCC&#10;"
+     id="image1"
+     x="0"
+     y="0"
+     style="display:none" /><path
+     id="path1"
+     style="fill:#ffffff;stroke:none;stroke-width:0.00625"
+     d="m 6.4375,3.0566406 -3.3496094,2.875 0.2753906,0.9199219 C 3.9445313,7.3828125 4.3691406,7.6382814 3.9316406,8.2070312 3.5441406,8.7132816 3.025,9 2.5,9 1.4825216,9.1671072 0.82917004,10.10651 0,10.644531 0,10.863281 2.2632813,13 2.4882812,13 c 0.34375,0 0.5363282,-0.30625 0.6113282,-0.96875 0.4375279,-1.359615 2.3662598,-3.0326077 2.84375,-2.019531 L 7.2929688,12.03125 H 8.109375 v -0.388672 c 0,-0.312853 0.2515998,-0.564453 0.5644531,-0.564453 h 1.7773439 c 0.312853,0 0.564453,0.2516 0.564453,0.564453 v 0.388672 h 1.003906 v -1.855469 h 0.869141 c 0.554,0 1,-0.3810993 1,-0.8554685 v -0.00195 -0.00195 -0.00195 -0.00195 h 0.002 v -0.00195 l 0.002,-0.00195 0.002,-0.00195 0.002,-0.00195 0.002,-0.00195 c 0.115966,-0.068653 1.13396,0.060425 1.271484,-0.8867188 l 0.464844,0.00195 c 0.203985,-0.4366221 -0.0015,-0.7142588 0,-0.7226563 H 15.113515 V 7.3789062 h 0.486003 c 0.36094,-0.030264 0.471507,-2.4539143 0,-2.5292968 l -0.710622,0.00391 v -0.65625 h -0.611643 v 0.6582032 l -0.636394,0.00391 c 0.05684,0.1916106 -0.348305,0.4802523 -0.441406,0 -0.519099,0.00661 -0.215958,0.094843 -0.56836,-0.7226562 -0.55,-1.0937499 -0.913575,-1.0800782 -3.4804684,-1.0800782 z M 7.328125,3.71875 h 3.6875 c 0.277,0 0.5,0.1916406 0.5,0.4296875 0,0.2380469 -0.223,0.4296875 -0.5,0.4296875 h -3.6875 c -0.277,0 -0.5,-0.1916406 -0.5,-0.4296875 0,-0.2380469 0.223,-0.4296875 0.5,-0.4296875 z"
+     sodipodi:nodetypes="ccccscsccccsssscccssccccccccccccccccccccccccscsssssss" /></svg>
