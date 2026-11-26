@@ -1707,7 +1707,10 @@ private:
     void MakeFontAtlas(Tex& tx, const TextureDesc& d, const FontAtlas& a, const uint8_t* p, const uint32_t* colors);
     void MakeReplacement(Tex& tx, const Replacement& r);
     // the lightmap smoother: compute shaders on a queue of their own that make a lightmap's larger picture and its
-    // levels in an image of its own, one lightmap at a time under its lock (the lightmap worker's)
+    // levels in an image of its own, one lightmap at a time under its lock (the lightmap worker's). With bc7 the
+    // picture and its levels are made in scratch, an RGBA8 image kept for every lightmap, encoded into BC7 blocks
+    // in blocks and copied into the lightmap's own image: a quarter of the video memory (a 2048 lightmap 5.6 MB
+    // with its levels, 22 MB uncompressed)
     struct LightmapSmoother {
         int family = -1;
         uint32_t index = 0;
@@ -1720,6 +1723,13 @@ private:
         VkPipelineLayout smooth_layout = VK_NULL_HANDLE, down_layout = VK_NULL_HANDLE;
         VkPipeline smooth = VK_NULL_HANDLE, down = VK_NULL_HANDLE;
         BufferRef img, tensor;
+        bool bc7 = false;
+        VkDescriptorSetLayout bc7_set = VK_NULL_HANDLE;
+        VkPipelineLayout bc7_layout = VK_NULL_HANDLE;
+        VkPipeline bc7_pipe = VK_NULL_HANDLE;
+        ImageRef scratch;                         // square, its side a power of two, every level
+        std::vector<VkImageView> scratch_views;  // one a level
+        BufferRef blocks;
         std::atomic<bool> ready{false};
     } lms_;
     bool InitLightmapSmoother();
@@ -5127,6 +5137,144 @@ void cs(uint3 id : SV_DispatchThreadID) {
 }
 )";
 
+// The lightmap's BC7 encoder, a thread per 4x4 block of a level: mode 6 (one subset, RGBA endpoints of 7 bits and a
+// p-bit each, 16 weights). The endpoints are the block's principal axis through its mean, cut at the texels'
+// furthest projections, then fitted again by least squares to the weights picked, each weight the nearest of the 16
+// to its texel. Texels past a level's edge repeat its last row and column
+constexpr const char* kLightmapBc7Hlsl = R"(
+struct Params { uint w, h, bw, base; };
+[[vk::push_constant]] ConstantBuffer<Params> p;
+[[vk::binding(0)]] [[spv::format_rgba8]] RWTexture2D<float4> src;
+[[vk::binding(1)]] RWStructuredBuffer<uint4> outp;
+static const float kW[16] = {0, 4, 9, 13, 17, 21, 26, 30, 34, 38, 43, 47, 51, 55, 60, 64};
+float Err(float4 d) { return dot(d, d); }
+// an endpoint to 7 bits and the p-bit that suits it best: the decoded value out
+float4 Quant(float4 e, out uint4 q, out uint pb) {
+    float best = 1e30;
+    float4 r = 0;
+    q = 0;
+    pb = 0;
+    for (uint b = 0; b < 2; b++) {
+        uint4 t = uint4(clamp(round((e - float(b)) * 0.5), 0, 127));
+        float4 v = float4(t * 2 + b);
+        float er = Err(v - e);
+        if (er < best) { best = er; r = v; q = t; pb = b; }
+    }
+    return r;
+}
+float4 Lerp(float4 a, float4 b, uint i) { return floor((a * (64 - kW[i]) + b * kW[i] + 32) / 64); }
+// each texel's nearest weight between two decoded endpoints, and the block's error
+float Pick(float4 c[16], float4 a, float4 b, out uint idx[16]) {
+    float total = 0;
+    for (uint t = 0; t < 16; t++) {
+        float best = 1e30;
+        uint bi = 0;
+        for (uint i = 0; i < 16; i++) {
+            float er = Err(c[t] - Lerp(a, b, i));
+            if (er < best) { best = er; bi = i; }
+        }
+        idx[t] = bi;
+        total += best;
+    }
+    return total;
+}
+void Put(inout uint4 o, inout uint pos, uint v, uint n) {
+    uint w = pos >> 5, s = pos & 31;
+    o[w] |= v << s;
+    if (s + n > 32) o[w + 1] |= v >> (32 - s);
+    pos += n;
+}
+[numthreads(8, 8, 1)]
+void cs(uint3 id : SV_DispatchThreadID) {
+    uint bh = (p.h + 3) / 4;
+    if (id.x >= p.bw || id.y >= bh) return;
+    float4 c[16];
+    float4 mean = 0, lo = 255, hi = 0;
+    for (uint t = 0; t < 16; t++) {
+        uint2 xy = min(id.xy * 4 + uint2(t & 3, t >> 2), uint2(p.w - 1, p.h - 1));
+        c[t] = round(saturate(src[xy]) * 255);
+        mean += c[t];
+        lo = min(lo, c[t]);
+        hi = max(hi, c[t]);
+    }
+    mean /= 16;
+    // the principal axis: power iteration on the covariance, from the bounding box's diagonal
+    float4x4 cov = 0;
+    for (uint t = 0; t < 16; t++) {
+        float4 d = c[t] - mean;
+        cov += float4x4(d * d.x, d * d.y, d * d.z, d * d.w);
+    }
+    float4 axis = hi - lo;
+    for (uint k = 0; k < 8; k++) {
+        float4 n = mul(cov, axis);
+        float len = length(n);
+        if (len < 1e-6) break;
+        axis = n / len;
+    }
+    float4 e0 = mean, e1 = mean;
+    float al = dot(axis, axis);
+    if (al > 1e-6) {
+        axis /= sqrt(al);
+        float tmin = 1e30, tmax = -1e30;
+        for (uint t = 0; t < 16; t++) {
+            float pr = dot(c[t] - mean, axis);
+            tmin = min(tmin, pr);
+            tmax = max(tmax, pr);
+        }
+        e0 = clamp(mean + axis * tmin, 0, 255);
+        e1 = clamp(mean + axis * tmax, 0, 255);
+    }
+    uint4 q0, q1;
+    uint p0, p1;
+    float4 a = Quant(e0, q0, p0), b = Quant(e1, q1, p1);
+    uint idx[16];
+    float err = Pick(c, a, b, idx);
+    // least squares endpoints for the weights picked, kept where they do better
+    for (uint it = 0; it < 2 && err > 0; it++) {
+        float A = 0, B = 0, C = 0;
+        float4 X = 0, Y = 0;
+        for (uint t = 0; t < 16; t++) {
+            float w = kW[idx[t]] / 64, v = 1 - w;
+            A += v * v;
+            B += v * w;
+            C += w * w;
+            X += c[t] * v;
+            Y += c[t] * w;
+        }
+        float det = A * C - B * B;
+        if (abs(det) < 1e-6) break;
+        float4 n0 = clamp((X * C - Y * B) / det, 0, 255), n1 = clamp((Y * A - X * B) / det, 0, 255);
+        uint4 r0, r1;
+        uint s0, s1;
+        float4 na = Quant(n0, r0, s0), nb = Quant(n1, r1, s1);
+        uint nidx[16];
+        float nerr = Pick(c, na, nb, nidx);
+        if (nerr >= err) break;
+        err = nerr;
+        q0 = r0; q1 = r1; p0 = s0; p1 = s1;
+        for (uint t = 0; t < 16; t++) idx[t] = nidx[t];
+    }
+    // the first texel's weight has its top bit implied 0: swap the ends where it is set
+    if (idx[0] >= 8) {
+        uint4 tq = q0; q0 = q1; q1 = tq;
+        uint tp = p0; p0 = p1; p1 = tp;
+        for (uint t = 0; t < 16; t++) idx[t] = 15 - idx[t];
+    }
+    uint4 o = 0;
+    uint pos = 0;
+    Put(o, pos, 0x40, 7);
+    for (uint ch = 0; ch < 4; ch++) {
+        Put(o, pos, q0[ch], 7);
+        Put(o, pos, q1[ch], 7);
+    }
+    Put(o, pos, p0, 1);
+    Put(o, pos, p1, 1);
+    Put(o, pos, idx[0], 3);
+    for (uint t = 1; t < 16; t++) Put(o, pos, idx[t], 4);
+    outp[p.base + id.y * p.bw + id.x] = o;
+}
+)";
+
 bool VulkanBackend::InitLightmapSmoother() {
     if (!lms_.queue) {
         LOGI("vulkan: no queue for the lightmap smoother, baked shadows aren't smoothed");
@@ -5187,8 +5335,23 @@ bool VulkanBackend::InitLightmapSmoother() {
     if (!make(kLightmapSmoothHlsl, {kBuf, kBuf, kImg}, 32, lms_.smooth_set, lms_.smooth_layout, lms_.smooth) ||
         !make(kLightmapDownHlsl, {kImg, kImg}, 16, lms_.down_set, lms_.down_layout, lms_.down))
         return false;
+    // BC7 unless XBE_LIGHTMAP_BC7=0 (uncompressed, for an A/B)
+    const char* bc7_env = diag::Env("XBE_LIGHTMAP_BC7");
+    lms_.bc7 = !(bc7_env && bc7_env[0] == '0');
+    if (lms_.bc7) {
+        VkFormatProperties fp{};
+        vkGetPhysicalDeviceFormatProperties(phys_, VK_FORMAT_BC7_UNORM_BLOCK, &fp);
+        constexpr VkFormatFeatureFlags kNeed = VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT |
+                                               VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT |
+                                               VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
+        if ((fp.optimalTilingFeatures & kNeed) != kNeed ||
+            !make(kLightmapBc7Hlsl, {kImg, kBuf}, 16, lms_.bc7_set, lms_.bc7_layout, lms_.bc7_pipe)) {
+            LOGI("vulkan: no BC7 for smoothed lightmaps, they stay uncompressed");
+            lms_.bc7 = false;
+        }
+    }
     lms_.ready = true;
-    LOGI("vulkan: lightmaps smoothed on the GPU (queue family %d)", lms_.family);
+    LOGI("vulkan: lightmaps smoothed on the GPU (queue family %d)%s", lms_.family, lms_.bc7 ? ", BC7" : "");
     return true;
 }
 
@@ -5199,12 +5362,20 @@ void VulkanBackend::DestroyLightmapSmoother() {
     if (lms_.queue) vkQueueWaitIdle(lms_.queue);
     lms_.img.reset();
     lms_.tensor.reset();
-    for (VkPipeline p : {lms_.smooth, lms_.down})
+    lms_.blocks.reset();
+    for (VkImageView v : lms_.scratch_views)
+        if (v) vkDestroyImageView(dev_, v, nullptr);
+    lms_.scratch_views.clear();
+    lms_.scratch.reset();
+    for (VkPipeline p : {lms_.smooth, lms_.down, lms_.bc7_pipe})
         if (p) vkDestroyPipeline(dev_, p, nullptr);
-    for (VkPipelineLayout l : {lms_.smooth_layout, lms_.down_layout})
+    for (VkPipelineLayout l : {lms_.smooth_layout, lms_.down_layout, lms_.bc7_layout})
         if (l) vkDestroyPipelineLayout(dev_, l, nullptr);
-    for (VkDescriptorSetLayout l : {lms_.smooth_set, lms_.down_set})
+    for (VkDescriptorSetLayout l : {lms_.smooth_set, lms_.down_set, lms_.bc7_set})
         if (l) vkDestroyDescriptorSetLayout(dev_, l, nullptr);
+    lms_.bc7_pipe = VK_NULL_HANDLE;
+    lms_.bc7_layout = VK_NULL_HANDLE;
+    lms_.bc7_set = VK_NULL_HANDLE;
     if (lms_.fence) vkDestroyFence(dev_, lms_.fence, nullptr);
     if (lms_.pool) vkDestroyCommandPool(dev_, lms_.pool, nullptr);
     lms_.smooth = lms_.down = VK_NULL_HANDLE;
@@ -5234,37 +5405,56 @@ ImageRef VulkanBackend::SmoothLightmapGpu(const LightmapField& f, uint32_t w, ui
     std::memcpy(lms_.img->map, f.img.data(), size_t(in_bytes));
     std::memcpy(lms_.tensor->map, f.tensor.data(), size_t(in_bytes));
 
-    // the image, read by the drawing queue and written by this one
-    auto im = std::make_shared<Image>();
-    VkImageCreateInfo ci{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
-    ci.imageType = VK_IMAGE_TYPE_2D;
-    ci.format = VK_FORMAT_R8G8B8A8_UNORM;
-    ci.extent = {ow, oh, 1};
-    ci.mipLevels = levels;
-    ci.arrayLayers = 1;
-    ci.samples = VK_SAMPLE_COUNT_1_BIT;
-    ci.tiling = VK_IMAGE_TILING_OPTIMAL;
-    ci.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    const bool bc7 = lms_.bc7;
     const uint32_t families[2] = {qfam_, uint32_t(lms_.family)};
-    if (qfam_ != uint32_t(lms_.family)) {
-        ci.sharingMode = VK_SHARING_MODE_CONCURRENT;
-        ci.queueFamilyIndexCount = 2;
-        ci.pQueueFamilyIndices = families;
-    }
-    ci.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    VmaAllocationCreateInfo ai{};
-    ai.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
-    if (vmaCreateImage(vma_, &ci, &ai, &im->image, &im->alloc, nullptr) != VK_SUCCESS) return nullptr;
-    im->format = ci.format;
-    im->w = ow;
-    im->h = oh;
-    VkImageViewCreateInfo vi{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
-    vi.image = im->image;
-    vi.viewType = VK_IMAGE_VIEW_TYPE_2D;
-    vi.format = ci.format;
-    vi.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, levels, 0, 1};
-    if (vkCreateImageView(dev_, &vi, nullptr, &im->view) != VK_SUCCESS) return nullptr;
-    std::vector<VkImageView> level_views(levels, VK_NULL_HANDLE);
+    // an image of the lightmap's size and levels, read by the drawing queue and written by this one
+    auto make_image = [&](VkFormat fmt, VkImageUsageFlags usage, uint32_t iw, uint32_t ih, uint32_t mips,
+                          bool shared) -> ImageRef {
+        auto im = std::make_shared<Image>();
+        VkImageCreateInfo ci{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+        ci.imageType = VK_IMAGE_TYPE_2D;
+        ci.format = fmt;
+        ci.extent = {iw, ih, 1};
+        ci.mipLevels = mips;
+        ci.arrayLayers = 1;
+        ci.samples = VK_SAMPLE_COUNT_1_BIT;
+        ci.tiling = VK_IMAGE_TILING_OPTIMAL;
+        ci.usage = usage;
+        if (shared && qfam_ != uint32_t(lms_.family)) {
+            ci.sharingMode = VK_SHARING_MODE_CONCURRENT;
+            ci.queueFamilyIndexCount = 2;
+            ci.pQueueFamilyIndices = families;
+        }
+        ci.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        VmaAllocationCreateInfo ai{};
+        ai.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
+        if (vmaCreateImage(vma_, &ci, &ai, &im->image, &im->alloc, nullptr) != VK_SUCCESS) return nullptr;
+        im->format = fmt;
+        im->w = iw;
+        im->h = ih;
+        VkImageViewCreateInfo vi{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+        vi.image = im->image;
+        vi.viewType = VK_IMAGE_VIEW_TYPE_2D;
+        vi.format = fmt;
+        vi.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, mips, 0, 1};
+        if (vkCreateImageView(dev_, &vi, nullptr, &im->view) != VK_SUCCESS) return nullptr;
+        return im;
+    };
+    // one view a level, for the compute shaders
+    auto level_view = [&](const Image& im, uint32_t l, VkImageView& v) {
+        VkImageViewCreateInfo vi{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+        vi.image = im.image;
+        vi.viewType = VK_IMAGE_VIEW_TYPE_2D;
+        vi.format = im.format;
+        vi.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, l, 1, 0, 1};
+        return vkCreateImageView(dev_, &vi, nullptr, &v) == VK_SUCCESS;
+    };
+
+    // where the picture and its levels are made: the lightmap's own image, or with BC7 the scratch image (square,
+    // a power of two, made again larger when a lightmap outgrows it), the picture in its top left corner
+    ImageRef im;
+    Image* work = nullptr;
+    std::vector<VkImageView> own_views;
     struct Views {  // destroyed past the fence
         VkDevice dev;
         std::vector<VkImageView>& v;
@@ -5272,31 +5462,74 @@ ImageRef VulkanBackend::SmoothLightmapGpu(const LightmapField& f, uint32_t w, ui
             for (VkImageView x : v)
                 if (x) vkDestroyImageView(dev, x, nullptr);
         }
-    } views_guard{dev_, level_views};
-    for (uint32_t l = 0; l < levels; l++) {
-        vi.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, l, 1, 0, 1};
-        if (vkCreateImageView(dev_, &vi, nullptr, &level_views[l]) != VK_SUCCESS) return nullptr;
+    } views_guard{dev_, own_views};
+    const std::vector<VkImageView>* views = nullptr;
+    VkDeviceSize block_bytes = 0;
+    if (bc7) {
+        const uint32_t side = std::bit_ceil(std::max(ow, oh));
+        if (!lms_.scratch || lms_.scratch->w < side) {
+            for (VkImageView v : lms_.scratch_views)
+                if (v) vkDestroyImageView(dev_, v, nullptr);
+            lms_.scratch_views.clear();
+            lms_.scratch.reset();
+            uint32_t sc_levels = 1;
+            while ((side >> sc_levels) > 0) sc_levels++;
+            ImageRef sc = make_image(VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_USAGE_STORAGE_BIT, side, side, sc_levels, false);
+            if (!sc) return nullptr;
+            std::vector<VkImageView> sv(sc_levels, VK_NULL_HANDLE);
+            for (uint32_t l = 0; l < sc_levels; l++)
+                if (!level_view(*sc, l, sv[l])) {
+                    for (VkImageView v : sv)
+                        if (v) vkDestroyImageView(dev_, v, nullptr);
+                    return nullptr;
+                }
+            lms_.scratch = std::move(sc);
+            lms_.scratch_views = std::move(sv);
+        }
+        work = lms_.scratch.get();
+        views = &lms_.scratch_views;
+        for (uint32_t l = 0; l < levels; l++)
+            block_bytes += VkDeviceSize((std::max(ow >> l, 1u) + 3) / 4) * ((std::max(oh >> l, 1u) + 3) / 4) * 16;
+        if (!lms_.blocks || lms_.blocks->size < block_bytes) {
+            lms_.blocks = NewBuffer(block_bytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                                    false);
+            if (!lms_.blocks) return nullptr;
+        }
+        im = make_image(VK_FORMAT_BC7_UNORM_BLOCK, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, ow, oh,
+                        levels, true);
+        if (!im) return nullptr;
+    } else {
+        im = make_image(VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, ow, oh, levels,
+                        true);
+        if (!im) return nullptr;
+        own_views.assign(levels, VK_NULL_HANDLE);
+        for (uint32_t l = 0; l < levels; l++)
+            if (!level_view(*im, l, own_views[l])) return nullptr;
+        work = im.get();
+        views = &own_views;
     }
+    const std::vector<VkImageView>& level_views = *views;
 
     VkCommandBuffer cmd = lms_.cmd;
     vkResetCommandBuffer(cmd, 0);
     VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
     bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     vkBeginCommandBuffer(cmd, &bi);
-    auto barrier = [&](uint32_t level, uint32_t count, VkImageLayout from, VkImageLayout to, VkAccessFlags src,
-                       VkAccessFlags dst, VkPipelineStageFlags src_stage, VkPipelineStageFlags dst_stage) {
+    auto barrier = [&](VkImage image, uint32_t level, uint32_t count, VkImageLayout from, VkImageLayout to,
+                       VkAccessFlags src, VkAccessFlags dst, VkPipelineStageFlags src_stage,
+                       VkPipelineStageFlags dst_stage) {
         VkImageMemoryBarrier b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
         b.srcAccessMask = src;
         b.dstAccessMask = dst;
         b.oldLayout = from;
         b.newLayout = to;
         b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        b.image = im->image;
+        b.image = image;
         b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, level, count, 0, 1};
         vkCmdPipelineBarrier(cmd, src_stage, dst_stage, 0, 0, nullptr, 0, nullptr, 1, &b);
     };
     constexpr VkPipelineStageFlags kCs = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
-    barrier(0, levels, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL, 0, VK_ACCESS_SHADER_WRITE_BIT,
+    barrier(work->image, 0, levels, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL, 0, VK_ACCESS_SHADER_WRITE_BIT,
             VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, kCs);
     // level 0: the larger picture
     {
@@ -5323,7 +5556,7 @@ ImageRef VulkanBackend::SmoothLightmapGpu(const LightmapField& f, uint32_t w, ui
     // each level from the one above
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, lms_.down);
     for (uint32_t l = 1; l < levels; l++) {
-        barrier(l - 1, 1, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL, VK_ACCESS_SHADER_WRITE_BIT,
+        barrier(work->image, l - 1, 1, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL, VK_ACCESS_SHADER_WRITE_BIT,
                 VK_ACCESS_SHADER_READ_BIT, kCs, kCs);
         VkDescriptorImageInfo io[2] = {{VK_NULL_HANDLE, level_views[l - 1], VK_IMAGE_LAYOUT_GENERAL},
                                        {VK_NULL_HANDLE, level_views[l], VK_IMAGE_LAYOUT_GENERAL}};
@@ -5341,9 +5574,56 @@ ImageRef VulkanBackend::SmoothLightmapGpu(const LightmapField& f, uint32_t w, ui
         vkCmdPushConstants(cmd, lms_.down_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof pc, pc);
         vkCmdDispatch(cmd, (pc[2] + 7) / 8, (pc[3] + 7) / 8, 1);
     }
-    // every level ready to sample
-    barrier(0, levels, VK_IMAGE_LAYOUT_GENERAL, kRead, VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT, 0, kCs,
-            VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
+    if (bc7) {
+        // every level read by the encoder, its blocks into the buffer level after level, then copied into the image
+        barrier(work->image, 0, levels, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL, VK_ACCESS_SHADER_WRITE_BIT,
+                VK_ACCESS_SHADER_READ_BIT, kCs, kCs);
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, lms_.bc7_pipe);
+        std::vector<VkBufferImageCopy> copies(levels);
+        uint32_t base = 0;  // in blocks
+        for (uint32_t l = 0; l < levels; l++) {
+            const uint32_t lw = std::max(ow >> l, 1u), lh = std::max(oh >> l, 1u);
+            const uint32_t bw = (lw + 3) / 4, bh = (lh + 3) / 4;
+            VkDescriptorImageInfo in{VK_NULL_HANDLE, level_views[l], VK_IMAGE_LAYOUT_GENERAL};
+            VkDescriptorBufferInfo out{lms_.blocks->buf, 0, block_bytes};
+            VkWriteDescriptorSet wr[2]{};
+            for (uint32_t i = 0; i < 2; i++) {
+                wr[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                wr[i].dstBinding = i;
+                wr[i].descriptorCount = 1;
+            }
+            wr[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+            wr[0].pImageInfo = &in;
+            wr[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            wr[1].pBufferInfo = &out;
+            vkCmdPushDescriptorSetKHR(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, lms_.bc7_layout, 0, 2, wr);
+            const uint32_t pc[4] = {lw, lh, bw, base};
+            vkCmdPushConstants(cmd, lms_.bc7_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof pc, pc);
+            vkCmdDispatch(cmd, (bw + 7) / 8, (bh + 7) / 8, 1);
+            VkBufferImageCopy& c = copies[l];
+            c.bufferOffset = VkDeviceSize(base) * 16;
+            c.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, l, 0, 1};
+            c.imageExtent = {lw, lh, 1};
+            base += bw * bh;
+        }
+        VkBufferMemoryBarrier bb{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
+        bb.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+        bb.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+        bb.srcQueueFamilyIndex = bb.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        bb.buffer = lms_.blocks->buf;
+        bb.size = VK_WHOLE_SIZE;
+        vkCmdPipelineBarrier(cmd, kCs, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 1, &bb, 0, nullptr);
+        barrier(im->image, 0, levels, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0,
+                VK_ACCESS_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+        vkCmdCopyBufferToImage(cmd, lms_.blocks->buf, im->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, levels,
+                               copies.data());
+        barrier(im->image, 0, levels, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, kRead, VK_ACCESS_TRANSFER_WRITE_BIT, 0,
+                VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
+    } else {
+        // every level ready to sample
+        barrier(im->image, 0, levels, VK_IMAGE_LAYOUT_GENERAL, kRead,
+                VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT, 0, kCs, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
+    }
     vkEndCommandBuffer(cmd);
     VkSubmitInfo si{VK_STRUCTURE_TYPE_SUBMIT_INFO};
     si.commandBufferCount = 1;
@@ -10413,8 +10693,18 @@ void VulkanBackend::ReleaseOldTextures() {
     constexpr uint64_t kSweepEvery = 60;    // presents between sweeps
     constexpr size_t kTexturesKept = 2048;  // no sweep below this many
     constexpr uint64_t kIdleFrames = 600;
+    if (presents_ % kSweepEvery != 0) return;
+    // smoothed lightmaps unused for ten seconds go whatever the count: up to 22 MB each, they piled up over a session
+    // until the card's memory ran out (Windows then pages them over the bus, under 1 FPS). One drawn again is made
+    // again on the worker, the title's lightmap drawn until it's ready
+    for (auto& [k, t] : textures_)
+        if ((t.lm || t.lm_job) && t.frame + kIdleFrames < presents_) {
+            if (t.lm) Retire(t.lm);
+            t.lm.reset();
+            t.lm_job.reset();
+        }
     // textures unused for ten seconds go, levels stream theirs in and out
-    if (presents_ % kSweepEvery != 0 || textures_.size() <= kTexturesKept) return;
+    if (textures_.size() <= kTexturesKept) return;
     for (auto it = textures_.begin(); it != textures_.end();) {
         if (it->second.frame + kIdleFrames < presents_) {
             Retire(it->second.res);
