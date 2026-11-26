@@ -2432,7 +2432,7 @@ void Draw(double fps) {
                         Hint(D3d11() ? NoVulkan() : "hint_above_the_refresh_rate_lighter", true);
                     }
                     // the pictures between frames fewer while they keep the game from its rate (VulkanBackend::AutoInterp)
-                    if (now.frame_generation > 1) {
+                    if (app::kAdaptiveInterp && now.frame_generation > 1) {
                         ImGui::BeginDisabled(D3d11());
                         Check("adaptive_frame_interpolation", &s.adaptive_interp);
                         ImGui::EndDisabled();

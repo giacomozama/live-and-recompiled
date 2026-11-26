@@ -23,6 +23,9 @@ enum class DisplayMode : uint32_t { Fullscreen, Borderless, Windowed };
 // tinted by the fog color's hue as far as the fog would reach (gpu::PixelKey::fog_tint)
 enum class Fog : uint32_t { Enabled, Disabled, TintOnly };
 
+// adaptive frame interpolation (Settings::adaptive_interp): false, never run and not in the settings menu
+inline constexpr bool kAdaptiveInterp = false;
+
 // a folder in ModsDir and whether it is in use
 struct ModEntry {
     std::string name;
@@ -56,7 +59,8 @@ struct Settings {
     // picture at its own time, most of them drawn again (dearer)
     bool picture_timing_exact{};
     // frame interpolation (frame_generation past 1) drawing fewer pictures a frame while the ones between keep the game
-    // from its rate (VulkanBackend::AutoInterp), back up as there's room again
+    // from its rate (VulkanBackend::AutoInterp), back up as there's room again. Off and out of the menu for now
+    // (kAdaptiveInterp), whatever the settings file says
     bool adaptive_interp{};
     bool vsync{};
     // HDR output (an HDR10 swap chain, where the display and compositor offer one): the SDR picture shown with its

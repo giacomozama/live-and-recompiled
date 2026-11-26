@@ -11046,7 +11046,7 @@ constexpr double kInterpRenderBound = 0.9;  // the render thread busy past this 
 }  // namespace
 
 bool VulkanBackend::InterpAdapting() const {
-    return app::Get().adaptive_interp && swap_gen_ > 1 && !cap_ && swap_ && !minimised_;
+    return app::kAdaptiveInterp && app::Get().adaptive_interp && swap_gen_ > 1 && !cap_ && swap_ && !minimised_;
 }
 
 // Adaptive frame interpolation (app::Settings::adaptive_interp). The pictures drawn between the game's frames cost
