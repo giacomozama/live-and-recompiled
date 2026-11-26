@@ -2440,7 +2440,7 @@ void Draw(double fps) {
                 int pick = s.upscaler == "dlss" ? 3 : s.upscaler == "fsr3" ? 2 : s.fsr ? 1 : 0;
                 bool dlss = pick == 3;
                 bool fsr3_runs = pick == 2 && fsr3_state != 0 && !D3d11();
-                if (Section("upscaling")) {
+                if (Section("upscaling_and_sharpening")) {
                     // Upscaling, one setting: none, FSR 1.0 (app::Settings::fsr, over the render size), or FSR 3.1 or
                     // DLSS (app::Settings::upscaler), which set the render size themselves. A choice the GPU or
                     // renderer can't run is greyed out unless it is the one chosen (so it can be left); a renderer

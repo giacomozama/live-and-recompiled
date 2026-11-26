@@ -285,6 +285,8 @@ constexpr Line kLines[] = {
      "Nitidezza adattiva al contrasto di AMD sull'immagine di DLSS. A **0** resta come l'ha prodotta DLSS.",
      "DLSSの画像にAMDのコントラスト適応型シャープネスをかけます。**0**ではDLSSの出力のままです。"},
     {"upscaling", "Upscaling", "Hochskalierung", "Mise à l'échelle", "Escalado", "Upscaling", "アップスケーリング"},
+    {"upscaling_and_sharpening", "Upscaling and sharpening", "Hochskalierung und Schärfen",
+     "Mise à l'échelle et netteté", "Escalado y enfoque", "Upscaling e nitidezza", "アップスケーリングとシャープネス"},
     {"upscaler_none", "None", "Keine", "Aucune", "Ninguno", "Nessuno", "なし"},
     {"upscaler_fsr1", "FSR 1.0", "FSR 1.0", "FSR 1.0", "FSR 1.0", "FSR 1.0", "FSR 1.0"},
     {"upscaler_dlss", "DLSS", "DLSS", "DLSS", "DLSS", "DLSS", "DLSS"},
