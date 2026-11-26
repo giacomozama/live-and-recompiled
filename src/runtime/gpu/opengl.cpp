@@ -38,6 +38,7 @@
 #include "gpu/opengl_glsl.h"
 #include "gpu/post_effects.h"
 #include "gpu/post_hlsl.h"
+#include "gpu/targets.h"
 #include "gpu/smaa_tex.h"
 #include "kernel/memory.h"
 
@@ -354,8 +355,10 @@ struct Ring {
 };
 constexpr size_t kRingStores = 6;  // stores a ring keeps behind the GPU before it waits for the oldest
 
-class OpenGLBackend final : public Backend, PostEffects<OpenGLBackend, Image, View> {
+class OpenGLBackend final : public Backend, Targets<OpenGLBackend, Image>, PostEffects<OpenGLBackend, Image, View> {
+    friend class Targets<OpenGLBackend, Image>;
     friend class PostEffects<OpenGLBackend, Image, View>;
+    static constexpr const char* kName = "opengl";
     SDL_Window* window_ = nullptr;
     SDL_GLContext context_ = nullptr;
     std::thread::id owner_{};
@@ -371,7 +374,7 @@ class OpenGLBackend final : public Backend, PostEffects<OpenGLBackend, Image, Vi
     double driver_timing_[9]{};
     uint32_t driver_frames_ = 0;
     PerfClock::time_point driver_start_ = PerfClock::now();
-    std::unordered_map<uint64_t, Image> targets_, textures_, feedback_, depth_bytes_;
+    std::unordered_map<uint64_t, Image> textures_;
     // stages by source hash, programs by their stages' hashes
     std::unordered_map<uint64_t, Stage> stages_;
     std::unordered_map<uint64_t, Stage*> vertex_stages_, pixel_stages_;
@@ -425,7 +428,6 @@ class OpenGLBackend final : public Backend, PostEffects<OpenGLBackend, Image, Vi
     std::chrono::steady_clock::time_point schedule_{};
     std::chrono::steady_clock::duration picture_interval_{};
     GLuint blit_sampler_ = 0, copy_sampler_ = 0;
-    Image native_color_;  // GPU transfer at the guest's size for CPU surface locks
     std::vector<Query> counted_;
     struct Recorded {
         Image im;
@@ -453,12 +455,8 @@ class OpenGLBackend final : public Backend, PostEffects<OpenGLBackend, Image, Vi
     uint32_t serial_ = 0;
     bool as_drawn_ = false, uncounted_ = false;  // AsDrawn and Uncounted, for the next Draw
     bool keep_geometry_ = false;
-    uint64_t frame_ = 0, shown_ = 0;
+    uint64_t shown_ = 0;
     uint32_t ww_ = 0, wh_ = 0;
-    GuestExtent guest_frame_{};
-    app::Scale render_scale_{1, 1};
-    GuestExtent requested_frame_{};
-    uint32_t samples_ = 1, requested_samples_ = 0, supported_samples_ = 1;
     int max_texture_ = 8192;
     bool ui_ = false;
     std::chrono::steady_clock::time_point last_{};
@@ -1022,45 +1020,6 @@ class OpenGLBackend final : public Backend, PostEffects<OpenGLBackend, Image, Vi
         }
         return true;
     }
-    bool CreateMultisample(Image& image, uint32_t samples) {
-        if (samples == 1 || image.guest.w != guest_frame_.w || image.guest.h != guest_frame_.h) return true;
-        auto ms = std::make_unique<Image>();
-        ms->w = image.w;
-        ms->h = image.h;
-        ms->guest = image.guest;
-        ms->depth = image.depth;
-        ms->data = image.data;
-        ms->samples = samples;
-        if (!CreateTargetImage(*ms)) return false;
-        image.ms = std::move(ms);
-        image.newest = Image::Newest::Single;
-        return true;
-    }
-    Image* Target(const Surface& surface, bool depth) {
-        if (!surface.header || !surface.data) return nullptr;
-        GuestExtent guest{};
-        SurfaceSize(surface, guest.w, guest.h);
-        if (!guest.w || !guest.h || guest.w > 8192 || guest.h > 8192) return nullptr;
-        const auto key = ResourceKey(surface.data, depth);
-        auto it = targets_.find(key);
-        if (it != targets_.end() && it->second.guest.w == guest.w && it->second.guest.h == guest.h) {
-            it->second.frame = frame_;
-            return &it->second;
-        }
-        Image im;
-        im.guest = guest;
-        im.w = RenderSize(guest.w * render_scale_.x);
-        im.h = RenderSize(guest.h * render_scale_.y);
-        im.data = mem::VirtualFromPhysical(surface.data);
-        im.depth = depth;
-        im.surface = surface;
-        im.frame = frame_;
-        if (!CreateTargetImage(im)) return nullptr;
-        if (!im.depth) UploadTarget(im);
-        CreateMultisample(im, samples_);
-        im.epoch = DirtyEpoch(im.data);
-        return &targets_.insert_or_assign(key, std::move(im)).first->second;
-    }
     // what a framebuffer's attachments are read as, copied so drawing into one while reading it is no feedback loop
     void Blit(const Image& source, const Rect& from, const Image& destination, const Rect& to, GLbitfield mask,
               GLenum filter) {
@@ -1115,7 +1074,6 @@ class OpenGLBackend final : public Backend, PostEffects<OpenGLBackend, Image, Vi
         }
         return {snapshot.stencil.get(), snapshot.target};
     }
-    Image* Snapshot(Image& source) { return Resolve(source) ? SnapshotResource(source) : nullptr; }
     Image* DepthBytes(Image& source, uint32_t format, Image* furred = nullptr) {
         const uint64_t key = uint64_t(source.data) << 32 | format;
         auto& out = depth_bytes_[key];
@@ -1194,24 +1152,6 @@ class OpenGLBackend final : public Backend, PostEffects<OpenGLBackend, Image, Vi
         gl::DrawArrays(GL_TRIANGLES, 0, 3);
         return true;
     }
-    bool CopyRect(const Image& source, Image& destination, GuestRect rect, GuestPoint point) {
-        // Clip in guest space so the source and destination move together.
-        const int64_t dx = int64_t(point.x) - rect.left;
-        const int64_t dy = int64_t(point.y) - rect.top;
-        const int64_t left = std::max({int64_t(rect.left), int64_t(0), -dx});
-        const int64_t top = std::max({int64_t(rect.top), int64_t(0), -dy});
-        const int64_t right =
-            std::min({int64_t(rect.right), int64_t(source.guest.w), int64_t(destination.guest.w) - dx});
-        const int64_t bottom =
-            std::min({int64_t(rect.bottom), int64_t(source.guest.h), int64_t(destination.guest.h) - dy});
-        if (left >= right || top >= bottom) return false;
-        const auto from = RenderRect(source, {int32_t(left), int32_t(top), int32_t(right), int32_t(bottom)});
-        const auto to = RenderRect(destination,
-                                   {int32_t(left + dx), int32_t(top + dy), int32_t(right + dx), int32_t(bottom + dy)});
-        if (Empty(from) || Empty(to)) return false;
-        Blit(source, from, destination, to, GL_COLOR_BUFFER_BIT, GL_NEAREST);
-        return true;
-    }
     // source's depth and stencil into destination: a blit (resolving, or scaled), or into a multisampled target from a
     // single sampled one, drawn (the stencil a bit a pass, kept only with stencil textures)
     bool PreserveDepth(Image& source, Image& destination) {
@@ -1253,47 +1193,11 @@ class OpenGLBackend final : public Backend, PostEffects<OpenGLBackend, Image, Vi
         }
         return true;
     }
-    bool Resolve(Image& image) {
-        if (!image.ms || image.newest != Image::Newest::Multisampled) return true;
-        if (image.depth) {
-            if (!PreserveDepth(*image.ms, image)) return false;
-        } else {
-            Blit(*image.ms, WholeImage(*image.ms), image, WholeImage(image), GL_COLOR_BUFFER_BIT, GL_NEAREST);
-        }
-        image.newest = Image::Newest::Both;
-        return true;
-    }
-    Image* Attachment(Image* image, bool multisampled) {
-        if (!image) return nullptr;
-        if (!multisampled || !image->ms) return Resolve(*image) ? image : nullptr;
-        if (image->newest == Image::Newest::Single) {
-            const bool copied = image->depth ? PreserveDepth(*image, *image->ms)
-                                             : BlitColor(*image, WholeImage(*image), *image->ms,
-                                                         WholeImage(*image->ms), copy_sampler_);
-            if (!copied) return nullptr;
-            image->newest = Image::Newest::Both;
-        }
-        return image->ms.get();
-    }
-    void MarkWritten(Image& image, bool multisampled = false) {
-        image.drawn = true;
-        image.frame = frame_;
-        if (image.ms) image.newest = multisampled ? Image::Newest::Multisampled : Image::Newest::Single;
-    }
     Viewport PictureViewport() const {
         const float aspect = app::FrameAspect();
         const float width = std::min(float(ww_), wh_ * aspect);
         const float height = width / aspect;
         return {(ww_ - width) / 2, (wh_ - height) / 2, width, height};
-    }
-    bool ScratchColor(Image& image, uint32_t width, uint32_t height) {
-        if (image.tex && image.w == width && image.h == height) return true;
-        Image next;
-        next.w = width;
-        next.h = height;
-        if (!CreateTargetImage(next)) return false;
-        image = std::move(next);
-        return true;
     }
     bool SmaaLookup(Image& image, GLenum internal, GLenum format, uint32_t width, uint32_t height,
                     const uint8_t* pixels) {
@@ -1303,6 +1207,23 @@ class OpenGLBackend final : public Backend, PostEffects<OpenGLBackend, Image, Vi
         gl::PixelStorei(GL_UNPACK_ALIGNMENT, 1);
         return ColorTexture(image, internal, format, GL_UNSIGNED_BYTE, pixels);
     }
+    // what Targets asks of a backend, beside the images' own making and copying
+    static bool HasTexture(const Image& image) { return bool(image.tex); }
+    bool BlitWhole(const Image& source, Image& destination, bool linear) {
+        return BlitColor(source, WholeImage(source), destination, WholeImage(destination),
+                         linear ? blit_sampler_ : copy_sampler_);
+    }
+    void ResolveColor(const Image& source, Image& destination) {
+        Blit(source, WholeImage(source), destination, WholeImage(destination), GL_COLOR_BUFFER_BIT, GL_NEAREST);
+    }
+    bool CopyPixels(const Image& source, GuestRect source_rect, Image& destination, GuestRect destination_rect) {
+        const auto from = RenderRect(source, source_rect);
+        const auto to = RenderRect(destination, destination_rect);
+        if (Empty(from) || Empty(to)) return false;
+        Blit(source, from, destination, to, GL_COLOR_BUFFER_BIT, GL_NEAREST);
+        return true;
+    }
+    void BeforeResize() {}
     // what PostEffects asks of a backend, beside FullScreenPass
     static Viewport ViewportOf(uint32_t width, uint32_t height) { return {0, 0, float(width), float(height)}; }
     static std::pair<float, float> ViewportSize(const Viewport& viewport) { return {viewport.w, viewport.h}; }
@@ -1328,100 +1249,12 @@ class OpenGLBackend final : public Backend, PostEffects<OpenGLBackend, Image, Vi
     // no HDR output here
     bool HdrHighlights() const { return false; }
     void KeepHdrWorld(Image&) {}
-    void ApplyRenderScale() {
-        const auto viewport = PictureViewport();
-        const float percent = app::Get().render_percent / 100.0f;
-        const GuestExtent requested{RenderSize(viewport.w * percent), RenderSize(viewport.h * percent)};
-        const auto& set = app::Get();
-        const uint32_t wanted = set.smaa ? 1 : set.msaa >= 8 ? 8 : set.msaa >= 4 ? 4 : set.msaa >= 2 ? 2 : 1;
-        if (requested.w == requested_frame_.w && requested.h == requested_frame_.h && wanted == requested_samples_)
-            return;
-        requested_frame_ = requested;
-        requested_samples_ = wanted;
-        uint32_t samples = wanted;
-        while (!(supported_samples_ & samples)) samples >>= 1;
-        if (wanted != samples) LOGR("opengl: MSAA %ux unsupported, using %ux", wanted, samples);
-        const app::Scale next{float(requested.w) / guest_frame_.w, float(requested.h) / guest_frame_.h};
-        if (next.x == render_scale_.x && next.y == render_scale_.y && samples == samples_) {
-            LOGR("opengl: render resolution %ux%u at %u%%, %ux MSAA", requested.w, requested.h, set.render_percent,
-                 samples_);
-            return;
-        }
-
-        // The title can draw a texture once and sample it much later. Keep that
-        // picture, the last presented frame, and the depth/stencil at the new size.
-        std::unordered_map<uint64_t, Image> resized;
-        for (auto& [key, old] : targets_) {
-            const uint32_t w = RenderSize(old.guest.w * next.x);
-            const uint32_t h = RenderSize(old.guest.h * next.y);
-            if (w == old.w && h == old.h && samples == samples_) continue;
-            if (!Resolve(old)) return;
-            Image im;
-            im.w = w;
-            im.h = h;
-            im.data = old.data;
-            im.guest = old.guest;
-            im.epoch = old.epoch;
-            im.signature = old.signature;
-            im.frame = old.frame;
-            im.depth = old.depth;
-            im.drawn = old.drawn;
-            im.surface = old.surface;
-            if (!CreateTargetImage(im)) return;
-            const bool copied = im.depth ? (!im.drawn || PreserveDepth(old, im))
-                                         : BlitColor(old, WholeImage(old), im, WholeImage(im), blit_sampler_);
-            if (!copied || !CreateMultisample(im, samples)) return;
-            resized.emplace(key, std::move(im));
-        }
-        for (auto& [key, image] : resized) targets_.at(key) = std::move(image);
-        feedback_.clear();
-        depth_bytes_.clear();
-        render_scale_ = next;
-        samples_ = samples;
-        LOGR("opengl: render resolution %ux%u at %u%%, %ux MSAA", requested.w, requested.h, set.render_percent,
-             samples_);
-    }
-    bool NativeColor(GuestExtent size) {
-        if (native_color_.tex && native_color_.w == size.w && native_color_.h == size.h) return true;
-        Image im;
-        im.w = size.w;
-        im.h = size.h;
-        if (!CreateTargetImage(im)) return false;
-        native_color_ = std::move(im);
-        return true;
-    }
     void Fill(const Image& im, const std::vector<uint8_t>& px, uint32_t pitch) {
         gl::ActiveTexture(kEditUnit);
         gl::BindTexture(GL_TEXTURE_2D, im.tex.get());
         gl::PixelStorei(GL_UNPACK_ROW_LENGTH, GLint(pitch / 4));
         gl::TexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, GLsizei(im.w), GLsizei(im.h), GL_BGRA, GL_UNSIGNED_BYTE, px.data());
         gl::PixelStorei(GL_UNPACK_ROW_LENGTH, 0);
-    }
-    bool UploadTarget(Image& im) {
-        TextureDesc d;
-        if (im.depth || !DescribeSurface(im.surface, d) || Format(d.format).host != Host::BGRA8) return false;
-        std::vector<uint8_t> px;
-        uint32_t pitch = 0;
-        DecodeLevel(d, 0, 0, static_cast<const uint8_t*>(kernel::HostPtr(d.data)), nullptr, px, pitch);
-        if (!pitch || px.empty() || px.size() < size_t(pitch) * d.height) return false;
-        if (im.w == d.width && im.h == d.height) {
-            Fill(im, px, pitch);
-        } else {
-            if (!NativeColor({d.width, d.height})) return false;
-            Fill(native_color_, px, pitch);
-            if (!BlitColor(native_color_, WholeImage(native_color_), im, WholeImage(im), copy_sampler_)) return false;
-        }
-        im.signature = MemSig(d.data, TotalSize(d));
-        if (im.ms) im.newest = Image::Newest::Single;
-        return true;
-    }
-    void CpuWrite(Image& im) {
-        const uint64_t e = DirtyEpoch(im.data);
-        if (!im.depth && e > im.epoch) {
-            TextureDesc d;
-            if (!DescribeSurface(im.surface, d) || MemSig(d.data, TotalSize(d)) == im.signature || UploadTarget(im))
-                im.epoch = e;
-        }
     }
     Image* Texture(const State& s, int stage, TexInfo& info, bool& target, bool sampled) {
         PerfScope timing{g_perf.bind};
@@ -2488,33 +2321,7 @@ public:
         PerfScope timing{g_perf.copy};
         if (!context_) return;
         Begin();
-        auto si = targets_.find(ResourceKey(src.data, false));
-        GuestExtent guest{};
-        SurfaceSize(src, guest.w, guest.h);
-        if (si == targets_.end() || !si->second.drawn || si->second.guest.w != guest.w ||
-            si->second.guest.h != guest.h) {
-            if (CopySurfaceMemory(src, dst, count, rects, points)) {
-                auto di = targets_.find(ResourceKey(dst.data, false));
-                if (di != targets_.end()) CpuWrite(di->second);
-            }
-            return;
-        }
-        Image& in = si->second;
-        if (!Resolve(in)) return;
-        if (ResourceKey(dst.data, false) == si->first) return;
-        Image* out = Target(dst, false);
-        if (!out) return;
-        CpuWrite(*out);
-        if (!Resolve(*out)) return;
-        const bool listed = count && rects;
-        bool copied = false;
-        for (uint32_t i = 0; i < (listed ? count : 1); ++i) {
-            const GuestRect rect =
-                listed ? ReadGuestRect(rects, i) : GuestRect{0, 0, int32_t(in.guest.w), int32_t(in.guest.h)};
-            const GuestPoint point = points ? ReadGuestPoint(points, i) : GuestPoint{rect.left, rect.top};
-            copied |= CopyRect(in, *out, rect, point);
-        }
-        if (copied) MarkWritten(*out);
+        CopySurfaces(src, dst, count, rects, points);
     }
     void Present(const Surface& front) override {
         if (!context_) return;

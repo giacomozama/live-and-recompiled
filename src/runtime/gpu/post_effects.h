@@ -2,8 +2,8 @@
 // The post effects the D3D11 and OpenGL renderers share (gpu/d3d11.cpp, gpu/opengl.cpp): which target and view they
 // are for, their order and their pass constants. Vulkan has its own.
 //
-// Self, the backend deriving from it (a friend of this), has targets_, frame_ and guest_frame_, and:
-//   Snapshot, ScratchColor, MarkWritten, PictureViewport and RenderSize
+// Self, the backend deriving from it (a friend of this) and from Targets (gpu/targets.h), has Targets' and:
+//   PictureViewport and RenderSize
 //   FullScreenPass(source, entry, destination, viewport, {Input...}, constants), into an Image or the screen
 //   In and StencilIn: an image's color or depth, and its stencil, as a pass reads them
 //   ViewportOf(width, height) and ViewportSize(viewport)
@@ -20,15 +20,9 @@
 #include "gpu/draw.h"
 #include "gpu/fsr_hlsl.h"
 #include "gpu/post_hlsl.h"
-#include "kernel/memory.h"
+#include "gpu/targets.h"
 
 namespace gpu {
-
-// XDK surface headers store physical addresses; texture descriptions and locks use virtual addresses. Every resource
-// lookup must use the same canonical form.
-inline uint64_t ResourceKey(uint32_t address, bool depth) {
-    return TargetMapKey(mem::VirtualFromPhysical(address), depth);
-}
 
 template <class Self, class Image, class Input>
 class PostEffects {
