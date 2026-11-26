@@ -98,7 +98,6 @@ std::span<const app::Setting> Registry() {
 
         // fur and detail
         {"fur_strands", &fur::g_strands, false, {false, false, true}},  // super fur: procedural strands; each model's look in [fur_models] (fur.cpp)
-        {"fur_shading", &fur::g_shading, false, {false, false, false}},  // lit, soft edged fur shells, never with strands (fur.cpp)
         {"fur_distant", &fur::g_distant, true, {false, true, true}},  // distant fur keeps all its shells (hooks.cpp)
         {"dlss_fur_auto", &s.dlss_fur_auto, true, kNo},
         {"character_max_lod", &characters::g_max_lod, true, {false, true, true}},  // characters keep their full model (hooks.cpp)

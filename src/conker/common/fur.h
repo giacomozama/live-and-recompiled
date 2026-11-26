@@ -5,13 +5,12 @@
 #include <vector>
 
 // Fur shells (src/conker/common/fur.cpp): the vertex programs that draw a character's fur as shells pushed out along the
-// normal, one draw per shell, get the renderer's gpu::ProgramShading; with fur_shading off too, for the depth only
-// their opaque strands write (a depth of field then blurs the backdrop seen through their faint edges).
+// normal, one draw per shell, get the renderer's gpu::ProgramShading; with the alternative shading off too, for the
+// depth only their opaque strands write (a depth of field then blurs the backdrop seen through their faint edges).
 namespace fur {
 
-// settings.toml fur_shading: the shells darken toward the roots and catch a highlight along the strands and a rim
-// of light, and their cut out strands blend in at the edges instead of stepping. Read on each draw, so the F1 menu
-// applies it live.
+// Alternative fur shading, off for now: not a setting and not in the menu. The shells darken toward the roots and catch
+// a highlight along the strands and a rim of light, and their cut out strands blend in at the edges instead of stepping.
 extern bool g_shading;
 
 // settings.toml fur_strands, shown as Super fur: the shells' strands drawn procedurally rather than from the game's

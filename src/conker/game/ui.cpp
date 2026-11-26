@@ -2540,19 +2540,12 @@ void Draw(double fps) {
                 }
 
                 if (Section("fur")) {
-                    // kept in settings.toml as fur_strands (Super) and fur_shading (the legacy shading, Vanilla only): super
-                    // fur lights its strands its own way (and takes the draws first anyway)
+                    // kept in settings.toml as fur_strands (Super)
                     int fur_tech = fur::g_strands ? 1 : 0;
                     if (Segmented("fur_tech", &fur_tech, {"vanilla", "super"})) {
                         fur::g_strands = fur_tech == 1;
-                        if (fur::g_strands) fur::g_shading = false;
                     }
-                    if (fur::g_strands) fur::g_shading = false;
                     Hint("hint_vanilla_keeps_the_game_s");
-                    if (!fur::g_strands) {
-                        Check("improved_fur_shading", &fur::g_shading);
-                        Hint("hint_makes_fur_look_more_voluminous", true);
-                    }
                     // the per-model presets stay out of sight until asked for (not saved: closed on each start)
                     static bool customize_fur = false;
                     if (fur::g_strands) {
