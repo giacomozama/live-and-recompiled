@@ -107,10 +107,20 @@ function(embed_kit os setup recomp)
         file(COPY ${DEST}/kit/files/${os} DESTINATION ${stage}/files)
         set(files files)
     endif()
+    # Linux has no Trebuchet MS of its own: Microsoft's installer of it, whole and with its licence, which allows
+    # passing it on that way and never for profit. It is not in the repository: downloaded into toolchain/archives/
+    # once, and checked
+    set(font)
+    if(os STREQUAL "linux")
+        include(${XBE_ROOT}/tools/trebuc.cmake)
+        # THIRD_PARTY.txt has the licence in full
+        file(COPY ${TREBUC_EXE} ${XBE_ROOT}/THIRD_PARTY.txt DESTINATION ${stage}/trebuc)
+        set(font trebuc)
+    endif()
     set(zip ${OUT}/.kit-${os}.zip)
     file(REMOVE ${zip})
     execute_process(COMMAND ${CMAKE_COMMAND} -E tar cf ${zip} --format=zip kit.toml ${os}.toml config xdk include lib bin toolchain
-            ${files}
+            ${files} ${font}
         WORKING_DIRECTORY ${stage} COMMAND_ERROR_IS_FATAL ANY)
     file(SIZE ${zip} size)
     string(LENGTH "${size}" digits)

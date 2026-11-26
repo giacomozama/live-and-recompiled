@@ -942,70 +942,6 @@ void Slider(const char* label, uint32_t* v, uint32_t min, uint32_t max, uint32_t
     ImGui::PopID();
 }
 
-// a custom font (game_fonts): the font's name on a button that opens the system's file dialog, Reset back to the
-// game's own; a file that isn't a font it can use says so under it
-void FontRow(const char* label, game_fonts::Kind kind, const char* hint) {
-    ImGui::PushID(label);
-    const float spacing = ImGui::GetStyle().ItemInnerSpacing.x;
-    const float reset = ImGui::CalcTextSize(T("reset")).x + ImGui::GetStyle().FramePadding.x * 2.0f;
-    Beside(label, reset + spacing);
-    const std::string path = game_fonts::Path(kind);
-    std::string shown = game_fonts::Name(kind);
-    if (shown.empty() && !path.empty()) shown = path.substr(path.find_last_of("/\\") + 1);  // npos + 1: all of it
-    if (shown.empty()) shown = T("the_game_s_own");
-    ImGui::BeginDisabled(D3d11());
-    if (ImGui::Button((shown + "###pick").c_str(), ImVec2(ImGui::CalcItemWidth(), 0.0f)))
-        app::PickFile(
-            T("fonts"), "ttf;otf;ttc",
-            [](void* k, const char* picked) {
-                if (picked) game_fonts::Choose(game_fonts::Kind(reinterpret_cast<intptr_t>(k)), picked);
-            },
-            reinterpret_cast<void*>(intptr_t(kind)));
-    ImGui::SameLine(0.0f, spacing);
-    ImGui::BeginDisabled(path.empty());
-    if (ImGui::Button((std::string(T("reset")) + "###reset_font").c_str())) game_fonts::Clear(kind);
-    ImGui::EndDisabled();
-    ImGui::EndDisabled();
-    Hint(D3d11() ? NoVulkan() : hint, true);
-    if (!path.empty() && !game_fonts::Error(kind).empty()) WarningCard("hint_this_file_isn_t_a_font");
-    ImGui::BeginDisabled(D3d11());
-    // a collection's faces or a variable font's named instances
-    const std::vector<std::string> styles = game_fonts::Styles(kind);
-    if (styles.size() > 1) {
-        const int current = std::clamp(game_fonts::StyleIndex(kind), 0, int(styles.size()) - 1);
-        if (ImGui::BeginCombo(Beside("font_style"), styles[size_t(current)].c_str())) {
-            for (int i = 0; i < int(styles.size()); i++) {
-                ImGui::PushID(i);
-                if (ImGui::Selectable(styles[size_t(i)].c_str(), i == current)) game_fonts::SetStyle(kind, i);
-                if (i == current) ImGui::SetItemDefaultFocus();
-                ImGui::PopID();
-            }
-            ImGui::EndCombo();
-        }
-        Hint("hint_the_styles_this_font_file", true);
-    }
-    // a weight axis: any weight along it, Reset back to the style's own
-    int min = 0, max = 0;
-    if (game_fonts::WeightRange(kind, min, max)) {
-        Beside("font_weight", reset + spacing);
-        // a mouse drag shows its weight as it goes and sets it on release: each one set draws the font's glyphs again
-        static int held[game_fonts::kKinds] = {};
-        static bool dragging[game_fonts::kKinds] = {};
-        int weight = dragging[kind] ? held[kind] : game_fonts::Weight(kind);
-        const bool moved = ImGui::SliderInt("##weight", &weight, min, max, "%d");
-        held[kind] = weight = std::clamp(weight, min, max);
-        dragging[kind] = ImGui::IsItemActive() && ImGui::IsMouseDown(ImGuiMouseButton_Left);
-        if ((moved && !dragging[kind]) || ImGui::IsItemDeactivatedAfterEdit()) game_fonts::SetWeight(kind, weight);
-        ImGui::SameLine(0.0f, spacing);
-        ImGui::BeginDisabled(!game_fonts::WeightSet(kind));
-        if (ImGui::Button((std::string(T("reset")) + "###reset_weight").c_str())) game_fonts::SetWeight(kind, 0);
-        ImGui::EndDisabled();
-        Hint("hint_how_bold_the_letters_are", true);
-    }
-    ImGui::EndDisabled();
-    ImGui::PopID();
-}
-
 // one whose default, 0, is a level the display reports: shown as `shown` until moved, Reset taking it back to 0
 void DisplaySlider(const char* label, uint32_t* v, uint32_t min, uint32_t max, uint32_t shown) {
     ImGui::PushID(label);
@@ -2767,8 +2703,17 @@ void Draw(double fps) {
                 }
 
                 if (Section("fonts")) {
-                    FontRow("title_font", game_fonts::kTitle, "hint_the_big_titles_of_the");
-                    FontRow("text_font", game_fonts::kText, "hint_the_text_of_the_menus");
+                    ImGui::BeginDisabled(D3d11());
+                    Check("hq_title_font", &game_fonts::g_title);
+                    ImGui::EndDisabled();
+                    Hint(D3d11() ? NoVulkan() : "hint_hq_title_font", true);
+                    // off and greyed out without Trebuchet, the setting kept
+                    const bool installed = game_fonts::TextInstalled();
+                    bool text = installed && game_fonts::g_text;
+                    ImGui::BeginDisabled(D3d11() || !installed);
+                    if (Check("hq_text_font", &text)) game_fonts::g_text = text;
+                    ImGui::EndDisabled();
+                    Hint(D3d11() ? NoVulkan() : installed ? "hint_hq_text_font" : "hint_trebuchet_missing", true);
                 }
 
                 if (Section("gameplay")) {

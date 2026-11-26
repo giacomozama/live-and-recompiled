@@ -9,6 +9,7 @@
 #include "common/cutscenes.h"
 #include "common/display.h"
 #include "common/fur.h"
+#include "common/game_fonts.h"
 #include "common/grass.h"
 #include "common/hud_art.h"
 #include "common/lighting.h"
@@ -117,6 +118,8 @@ std::span<const app::Setting> Registry() {
         {"skip_intro_fmvs", &menus::g_skip_intro, false, kNo},  // the launch movies skipped (menus.cpp, hooks.cpp)
         {"attract_video", &menus::g_attract, true, kNo},  // the idle menu's attract video (menus.cpp)
         {"keyboard_prompts", &prompts::g_on, true, kNo},  // button icons drawn as keys on kb+mouse (prompts.cpp)
+        {"hq_title_font", &game_fonts::g_title, true, kNo},  // the title font drawn from Reloaded Serif (game_fonts.cpp)
+        {"hq_text_font", &game_fonts::g_text, true, kNo},  // the text font drawn from Trebuchet MS Bold
         {"skippable_cutscenes", &cutscenes::g_skippable, true, kNo},  // LT skips any cutscene (hooks.cpp)
         {"english_bubbles", &cutscenes::g_english_bubbles, true, {false, true, true}},  // the throne monologues' bubbles in English (hooks.cpp)
         {"speech_subtitles", &subtitles::g_on, false, kNo},  // speech bubbles shown as subtitles instead (subtitles.cpp)

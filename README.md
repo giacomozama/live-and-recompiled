@@ -23,7 +23,7 @@ trademarks of their respective owners.
 - **Any aspect ratio** - Play the game at any aspect ratio.
 - **Better graphics** - Vulkan rendering at any resolution (with Direct3D 11 and OpenGL renderers as options for weaker machines), SMAA or MSAA anti-aliasing, upscaling with AMD FSR 1.0, FSR 3.1 or NVIDIA DLSS (RTX cards), per-pixel lighting, ambient occlusion, smooth baked shadows, dynamic water, motion blur, HDR10 output, and toggles for fog, vignette and more.
 - **Redone fur** - Optional strand-based fur with hair lighting, tuned per character.
-- **Redrawn HUD and text** - Vector-drawn sights, menu and multiplayer HUD art, redrawn speech bubbles or subtitles, and custom fonts.
+- **Redrawn HUD and text** - Vector-drawn sights, menu and multiplayer HUD art, redrawn speech bubbles or subtitles, and high-quality fonts.
 - **Controls** - Full gamepad and keyboard + mouse support, with key prompts in place of button icons.
 - **Multiplayer** - Full multiplayer support, with local split-screen, LAN autodiscovery and direct IP over the internet. It adds text chat, a Friendly Fire match option, accessibility options, netcode fixes, a visible medgun beam, high quality character models.
 - **Achievements** - Local achievements, kept with your saves.
@@ -109,6 +109,7 @@ See [BUILDING.md](BUILDING.md).
 - [toml++](https://github.com/marzer/tomlplusplus) for the configs.
 - [Dear ImGui](https://github.com/ocornut/imgui) for the settings overlay.
 - [FLTK](https://www.fltk.org) for the Setup UI.
+- [libmspack](https://github.com/kyz/libmspack) by Stuart Caie, for the Linux Setup's font installation (LGPL 2.1).
 - [SDL](https://github.com/libsdl-org/SDL) for the window, input and controllers.
 - [Zig](https://ziglang.org) (`zig c++`: Clang, LLD, mingw-w64 and glibc stubs, libc++), the compiler Setup builds the game with, on both systems.
 - [The ConkerXbox60FPSWidescreen patch](https://www.moddb.com/downloads/conkerxbox60fpswidescreen) for important information about game code.

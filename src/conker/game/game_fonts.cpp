@@ -1,4 +1,8 @@
-// Custom fonts: the game's title and text fonts drawn from TrueType or OpenType files of the player's (FreeType).
+// High-quality fonts: the game's title and text fonts drawn from TrueType files (stb_truetype,
+// the copy ImGui carries). The title font is Reloaded
+// Serif Italic (src/conker/ReloadedSerifItalic.ttf, the game's own title font retraced), carried in the game; the text
+// font is Trebuchet MS Bold, the system's on Windows (Fonts\trebucbd.ttf), elsewhere fonts/Trebucbd.ttf beside the
+// game, as Setup installs it.
 //
 // A font file (aid/font/<name>/default.bin) holds a font set, which 0x3D49A0 picks (its block the second argument,
 // [esp+8]: 0xCA dwords copied to 0x8072F4, the fonts' table from +4, 0x8072F8 on, and the character map last, +0x324
@@ -12,16 +16,13 @@
 // offset to x + width * scale - 1 and from baseline above the pen's y to height - baseline below it, the atlas's
 // texels between the coordinates stretched over it.
 //
-// With a font set for it, the first time the game picks the font each glyph is made again from the player's font:
+// With its setting on, the first time the game picks the font each glyph is made again from the TrueType font:
 // scaled so its H is as tall as the game's, its box from the shape's with a unit to spare round it, its advance the
 // font's, no kerning; the space's width the font's. Their shapes go into a picture of the atlas (gpu::FontAtlas)
 // larger than the title's, each in a box of its own, and the texture coordinates point there; the renderer samples
 // that picture in the atlas's place once the glyphs have drawn from it (GlyphQuad names the texture). A character
 // the font has no shape for keeps the game's glyph, its texels copied into the picture. The glyphs as the file had
-// them are kept, and put back with the setting cleared.
-//
-// A file's styles are its faces (a collection's) and a variable font's named instances; a style with a weight axis
-// (wght) takes any weight along it, the style's own until one is set.
+// them are kept, and put back with the setting off.
 #include "common/game_fonts.h"
 #include "core/diag.h"
 
@@ -29,24 +30,17 @@
 #include <atomic>
 #include <cmath>
 #include <cstdint>
-#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <memory>
 #include <mutex>
-#include <string>
+#include <span>
 #include <vector>
 
-#if __has_include(<toml++/toml.hpp>)
-#include <toml++/toml.hpp>
-#endif
-
-#include <ft2build.h>
-#include FT_FREETYPE_H
-#include FT_MULTIPLE_MASTERS_H
-#include FT_OUTLINE_H
-#include FT_TRUETYPE_TABLES_H
+#define STBTT_STATIC
+#define STB_TRUETYPE_IMPLEMENTATION
+#include <imstb_truetype.h>
 
 #include "app/app.h"
 #include "core/log.h"
@@ -55,6 +49,8 @@
 #include "kernel/kernel.h"
 #include "kernel/memory.h"
 #include "xdk/d3d8.h"
+
+bool game_fonts::g_title, game_fonts::g_text;
 
 namespace {
 
@@ -72,149 +68,44 @@ struct Known {
     uint32_t line;
     float cap;
 };
-constexpr Known kKnown[game_fonts::kKinds] = {{512, 203, 47, 28.0f}, {256, 240, 37, 21.8f}};
+enum Kind { kTitle, kText, kKinds };
+constexpr Known kKnown[kKinds] = {{512, 203, 47, 28.0f}, {256, 240, 37, 21.8f}};
 // the picture's texels for a unit of the font's, about (the title's labels in the pub are drawn several times the
 // atlas's size), and the most texels it may be on a side
 constexpr float kTexelsPerUnit = 8.0f;
 constexpr uint32_t kMaxSide = 4096;
-constexpr long kMaxFaces = 64, kMaxInstances = 256;
-constexpr FT_ULong kWght = FT_MAKE_TAG('w', 'g', 'h', 't');
 
-// FreeType's library, made once; it and every face are used under g_ft_lock (the menu opens files, the game thread
-// draws glyphs)
-std::mutex g_ft_lock;
-FT_Library g_ft = nullptr;
-FT_Library Ft() {
-    if (!g_ft && FT_Init_FreeType(&g_ft)) g_ft = nullptr;
-    return g_ft;
-}
-struct FaceRef {
-    FT_Face f = nullptr;
-    ~FaceRef() {
-        if (f) FT_Done_Face(f);
-    }
+const uint8_t kTitleFont[] = {
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wc23-extensions"
+#embed "../ReloadedSerifItalic.ttf"
+#pragma clang diagnostic pop
 };
-struct MmRef {
-    FT_MM_Var* mm = nullptr;
-    ~MmRef() {
-        if (mm) FT_Done_MM_Var(g_ft, mm);
-    }
-};
-// the weight axis's index among a variable face's axes, -1 without one
-int WeightAxis(const FT_MM_Var* mm) {
-    for (FT_UInt a = 0; mm && a < mm->num_axis; a++)
-        if (mm->axis[a].tag == kWght) return int(a);
-    return -1;
-}
-
-// a style the file holds: its FreeType face index (a collection's face, a named instance in the high 16 bits)
-struct Style {
-    FT_Long index = 0;
-    std::string name;
-    int weight = 0;               // its own, on the axis (0 without one)
-    int min = 0, max = 0;         // the weight axis's range, min == max without one
-};
-
-// a font file the settings name, read whole
-struct Face {
-    std::string path, family, error;
-    std::vector<uint8_t> data;
-    std::vector<Style> styles;
-    bool ok = false;
-};
-
-// what a kind is set to; a style or weight change makes a new one
-struct Setting {
-    std::shared_ptr<const Face> face;
-    size_t style = 0;  // in face->styles
-    int weight = 0;    // on the style's axis, 0 the style's own
-};
-
-std::mutex g_lock;
-Setting g_set[game_fonts::kKinds];
-bool g_cleared[game_fonts::kKinds];  // set back to the game's own from the menu (settings.toml *_font_cleared)
-std::atomic<uint64_t> g_gen[game_fonts::kKinds];  // changes with each setting
-std::atomic<uint64_t> g_atlas_id{0};
 
 namespace fs = std::filesystem;
-fs::path ToPath(const std::string& utf8) { return fs::path(std::u8string(reinterpret_cast<const char8_t*>(utf8.c_str()))); }
-std::string ToUtf8(const fs::path& p) {
-    const std::u8string s = p.u8string();
-    return std::string(reinterpret_cast<const char*>(s.data()), s.size());
+
+fs::path TextFontPath() {
+#ifdef _WIN32
+    const wchar_t* windir = _wgetenv(L"WINDIR");
+    return fs::path(windir && *windir ? windir : L"C:\\Windows") / L"Fonts" / L"trebucbd.ttf";
+#else
+    return app::ExeDir() / "fonts" / "Trebucbd.ttf";
+#endif
 }
 
-std::vector<uint8_t> ReadAll(const fs::path& p) {
-    std::ifstream in(p, std::ios::binary);
-    std::vector<uint8_t> data;
-    if (in) data.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
-    return data;
+// a kind's font file, empty if it can't be read. The text font's is read the first time. Game thread
+std::span<const uint8_t> FontFile(int kind) {
+    if (kind == kTitle) return kTitleFont;
+    static const std::vector<uint8_t> text = [] {
+        std::ifstream in(TextFontPath(), std::ios::binary);
+        std::vector<uint8_t> data;
+        if (in) data.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+        return data;
+    }();
+    return text;
 }
 
-// ConfigDir/fonts, where a picked font is copied so the setting outlives the file being moved or deleted
-fs::path FontsDir() { return app::ConfigDir() / "fonts"; }
-
-bool InFontsDir(const fs::path& p) {
-    std::error_code ec;
-    return fs::equivalent(p.parent_path(), FontsDir(), ec);
-}
-
-bool NewFace(const Face& face, FT_Long index, FaceRef& out) {
-    return !FT_New_Memory_Face(Ft(), face.data.data(), FT_Long(face.data.size()), index, &out.f);
-}
-
-std::shared_ptr<const Face> OpenFace(const std::string& path) {
-    auto face = std::make_shared<Face>();
-    face->path = path;
-    face->data = ReadAll(ToPath(path));
-    if (face->data.empty()) {
-        face->error = "read";
-        return face;
-    }
-    std::lock_guard ft(g_ft_lock);
-    FaceRef probe;
-    if (!Ft() || !NewFace(*face, -1, probe)) {
-        face->error = "font";
-        return face;
-    }
-    const long faces = std::min<long>(probe.f->num_faces, kMaxFaces);
-    for (long j = 0; j < faces; j++) {
-        FaceRef f;
-        if (!NewFace(*face, j, f) || !FT_IS_SCALABLE(f.f)) continue;
-        const std::string family = f.f->family_name ? f.f->family_name : "";
-        if (face->family.empty()) face->family = family;
-        // a collection's other families keep their name before the style's
-        const std::string prefix = family != face->family ? family + " " : "";
-        MmRef mm;
-        if (FT_HAS_MULTIPLE_MASTERS(f.f) && FT_Get_MM_Var(f.f, &mm.mm)) mm.mm = nullptr;
-        const int axis = WeightAxis(mm.mm);
-        Style base;
-        base.index = j;
-        base.name = prefix + (f.f->style_name ? f.f->style_name : "Regular");
-        if (axis >= 0) {
-            base.weight = int(mm.mm->axis[axis].def >> 16);
-            base.min = int(mm.mm->axis[axis].minimum >> 16), base.max = int(mm.mm->axis[axis].maximum >> 16);
-        }
-        face->styles.push_back(base);
-        // a variable font's named instances, past the default one's name
-        const long instances = std::min<long>(f.f->style_flags >> 16, kMaxInstances);
-        for (long i = 1; mm.mm && i <= instances && FT_UInt(i) <= mm.mm->num_namedstyles; i++) {
-            FaceRef n;
-            if (!NewFace(*face, i << 16 | j, n)) continue;
-            Style s = base;
-            s.index = i << 16 | j;
-            s.name = prefix + (n.f->style_name ? n.f->style_name : std::to_string(i));
-            if (axis >= 0) s.weight = int(mm.mm->namedstyle[i - 1].coords[axis] >> 16);
-            if (s.name != base.name) face->styles.push_back(s);
-        }
-    }
-    if (face->styles.empty()) {
-        face->error = "font";
-        return face;
-    }
-    if (face->family.empty()) face->family = path.substr(path.find_last_of("/\\") + 1);  // npos + 1: all of it
-    face->ok = true;
-    return face;
-}
+std::atomic<uint64_t> g_atlas_id{0};
 
 // a font the game picked, as the file had it and as made from the player's
 struct Font {
@@ -222,7 +113,7 @@ struct Font {
     int kind = -1;
     std::vector<uint8_t> original, mine;  // the glyphs' bytes
     uint32_t space = 0, my_space = 0;     // the space's width, [P+4]
-    uint64_t gen = ~0ull;                 // g_gen mine was made for
+    bool on = false;                      // the setting mine was made for
     std::shared_ptr<const gpu::FontAtlas> atlas;
     uint32_t texture = 0;  // the atlas's level 0 the glyphs were seen drawing from, given the atlas
 };
@@ -240,7 +131,7 @@ int Identify(uint32_t f) {
     if (!Readable(f, 12)) return -1;
     const uint32_t p = R32(f);
     if (!Readable(p, 12)) return -1;
-    for (int k = 0; k < game_fonts::kKinds; k++)
+    for (int k = 0; k < kKinds; k++)
         if (R16(p + 8) == kKnown[k].w && R16(p + 0xA) == kKnown[k].h && R32(p) == kKnown[k].line) return k;
     return -1;
 }
@@ -252,38 +143,24 @@ struct Rec {
 };
 static_assert(sizeof(Rec) == kRecord);
 
-constexpr FT_Int32 kLoad = FT_LOAD_NO_HINTING | FT_LOAD_NO_BITMAP;
-
-// the glyphs made again from the setting's face into mine, and the picture they draw from; false where nothing could
-// be made. Under g_ft_lock
-bool Make(Font& font, uint32_t map, const Setting& set) {
-    const Face& face = *set.face;
-    const Style& style = face.styles[set.style];
-    FaceRef ref;
-    if (!Ft() || !NewFace(face, style.index, ref) || !FT_IS_SCALABLE(ref.f)) return false;
-    FT_Face f = ref.f;
-    if (set.weight > 0 && style.max > style.min) {
-        MmRef mm;
-        if (!FT_Get_MM_Var(f, &mm.mm)) {
-            const int axis = WeightAxis(mm.mm);
-            std::vector<FT_Fixed> coords(mm.mm->num_axis);
-            if (axis >= 0 && !FT_Get_Var_Design_Coordinates(f, mm.mm->num_axis, coords.data())) {
-                coords[size_t(axis)] = FT_Fixed(std::clamp(set.weight, style.min, style.max)) << 16;
-                FT_Set_Var_Design_Coordinates(f, mm.mm->num_axis, coords.data());
-            }
-        }
-    }
-    // measured a pixel a font unit (26.6 values, so / 64 is font units)
-    const FT_UShort upem = f->units_per_EM;
-    if (!upem || FT_Set_Char_Size(f, 0, FT_F26Dot6(upem) * 64, 72, 72)) return false;
-    auto measure = [&](FT_UInt gi, FT_BBox& box, float& advance) {
+// the glyphs made again from the font file into mine, and the picture they draw from; false where nothing could be
+// made
+bool Make(Font& font, uint32_t map) {
+    const std::span<const uint8_t> file = FontFile(font.kind);
+    if (file.empty()) return false;
+    const int offset = stbtt_GetFontOffsetForIndex(file.data(), 0);
+    stbtt_fontinfo f;
+    if (offset < 0 || !stbtt_InitFont(&f, file.data(), offset)) return false;
+    // a glyph's box (y up, empty without an outline) and advance, in the font's units
+    struct Box {
+        int x0, y0, x1, y1;
+    };
+    auto measure = [&](int gi, Box& box, float& advance) {
         box = {};
-        advance = 0;
-        if (FT_Load_Glyph(f, gi, kLoad)) return false;
-        advance = float(f->glyph->advance.x) / 64.0f;
-        if (f->glyph->format == FT_GLYPH_FORMAT_OUTLINE && f->glyph->outline.n_points)
-            FT_Outline_Get_CBox(&f->glyph->outline, &box);
-        return true;
+        if (!stbtt_IsGlyphEmpty(&f, gi)) stbtt_GetGlyphBox(&f, gi, &box.x0, &box.y0, &box.x1, &box.y1);
+        int adv = 0, bearing = 0;
+        stbtt_GetGlyphHMetrics(&f, gi, &adv, &bearing);
+        advance = float(adv);
     };
 
     const Known& known = kKnown[font.kind];
@@ -300,21 +177,19 @@ bool Make(Font& font, uint32_t map, const Setting& set) {
     int ascent = rec[0].y + rec[0].base;
     for (uint32_t g = 0; g < font.count; g++)
         if (chars[g] == 'H') ascent = rec[g].y + rec[g].base;
-    // the font's capitals: its H, else what its OS/2 table says, else most of its ascent
-    FT_BBox box;
-    float adv, cap = 0;
-    if (const FT_UInt h = FT_Get_Char_Index(f, 'H'); h && measure(h, box, adv)) cap = float(box.yMax) / 64.0f;
-    if (cap <= 0)
-        if (const auto* os2 = static_cast<const TT_OS2*>(FT_Get_Sfnt_Table(f, FT_SFNT_OS2)); os2 && os2->version != 0xFFFF)
-            cap = float(os2->sCapHeight);
-    if (cap <= 0) cap = float(f->ascender) * 0.7f;
-    if (cap <= 0) return false;
-    const float sf = known.cap / cap;  // units a font unit
+    // the font's capitals: its H
+    Box box;
+    float adv;
+    const int h = stbtt_FindGlyphIndex(&f, 'H');
+    if (!h) return false;
+    measure(h, box, adv);
+    if (box.y1 <= 0) return false;
+    const float sf = known.cap / float(box.y1);  // units a font unit
 
     // each glyph's quad and its box in the picture: the font's shape, or the game's glyph copied
     struct Item {
         uint32_t g;
-        FT_UInt index;             // the font's glyph, 0 the game's copied
+        int index;                 // the font's glyph, 0 the game's copied
         bool empty;                // a shape with no outline (a space)
         float bw, bh;              // the box, in the atlas's texels at 1 a unit (scaled by p below)
         float sx0, sy0, sx1, sy1;  // a copy's texels in the title's atlas
@@ -322,14 +197,15 @@ bool Make(Font& font, uint32_t map, const Setting& set) {
     };
     std::vector<Item> items;
     for (uint32_t g = 0; g < font.count; g++) {
-        Item it{g, chars[g] ? FT_Get_Char_Index(f, chars[g]) : 0, false, 0, 0, 0, 0, 0, 0, 0, 0};
+        Item it{g, chars[g] ? stbtt_FindGlyphIndex(&f, int(chars[g])) : 0, false, 0, 0, 0, 0, 0, 0, 0, 0};
         Rec& r = rec[g];
-        if (it.index && measure(it.index, box, adv)) {
+        if (it.index) {
+            measure(it.index, box, adv);
             float left = 0, right = 0, top = float(ascent), bottom = float(ascent);
-            it.empty = box.xMax <= box.xMin || box.yMax <= box.yMin;
+            it.empty = box.x1 <= box.x0 || box.y1 <= box.y0;
             if (!it.empty) {
-                left = float(box.xMin) / 64.0f * sf, right = float(box.xMax) / 64.0f * sf;
-                top = float(ascent) - float(box.yMax) / 64.0f * sf, bottom = float(ascent) - float(box.yMin) / 64.0f * sf;
+                left = float(box.x0) * sf, right = float(box.x1) * sf;
+                top = float(ascent) - float(box.y1) * sf, bottom = float(ascent) - float(box.y0) * sf;
             }
             const int qx = int(std::floor(left)) - 1, qy = int(std::floor(top)) - 1;
             // width * scale - 1 across, height down: a unit spare round the shape
@@ -343,7 +219,6 @@ bool Make(Font& font, uint32_t map, const Setting& set) {
             r.kern = -1;
             it.bw = float(r.w - 1), it.bh = float(r.h);
         } else {
-            it.index = 0;
             it.sx0 = float(r.u0) / kUv * float(aw - 1), it.sx1 = float(r.u1) / kUv * (float(aw - 1) + kUvBias);
             it.sy0 = float(r.v0) / kUv * (float(ah - 1) - kUvBias), it.sy1 = float(r.v1) / kUv * (float(ah - 1) + kUvBias);
             it.bw = std::max(it.sx1 - it.sx0, 0.0f), it.bh = std::max(it.sy1 - it.sy0, 0.0f);
@@ -383,8 +258,7 @@ bool Make(Font& font, uint32_t map, const Setting& set) {
     atlas->coverage.assign(size_t(pw) * ph, 0);
     const float k = p * float(scale);  // picture texels a unit
     const float ps = sf * k;           // picture texels a font unit
-    if (FT_Set_Char_Size(f, 0, std::max<FT_F26Dot6>(1, FT_F26Dot6(std::lround(float(upem) * ps * 64.0f))), 72, 72))
-        return false;
+    std::vector<uint8_t> bitmap;
     for (Item& it : items) {
         Rec& r = rec[it.g];
         const float bw = it.bw * p, bh = it.bh * p;
@@ -400,21 +274,23 @@ bool Make(Font& font, uint32_t map, const Setting& set) {
                                      uint32_t(by1)});
             continue;
         }
-        if (it.empty || FT_Load_Glyph(f, it.index, kLoad) || f->glyph->format != FT_GLYPH_FORMAT_OUTLINE) continue;
-        // the pen at x 0 on the baseline, where the quad's corner (x, y) is the box's; the outline moved by the
-        // fraction of a texel the pen is past the grid (FreeType's y goes up)
+        if (it.empty) continue;
+        // the pen at x 0 on the baseline, where the quad's corner (x, y) is the box's; the outline drawn moved by the
+        // fraction of a texel the pen is past the grid
         const float ox = it.bx * float(scale) - float(r.x) * k, oy = it.by * float(scale) + float(ascent - r.y) * k;
         const float fx = ox - std::floor(ox), fy = oy - std::floor(oy);
-        FT_Outline_Translate(&f->glyph->outline, FT_Pos(std::lround(fx * 64.0f)), -FT_Pos(std::lround(fy * 64.0f)));
-        if (FT_Render_Glyph(f->glyph, FT_RENDER_MODE_NORMAL)) continue;
-        const FT_Bitmap& bm = f->glyph->bitmap;
-        if (bm.pixel_mode != FT_PIXEL_MODE_GRAY || !bm.buffer) continue;
-        const int left = int(std::floor(ox)) + f->glyph->bitmap_left, top = int(std::floor(oy)) - f->glyph->bitmap_top;
-        for (int y = 0; y < int(bm.rows); y++) {
+        int x0, y0, x1, y1;
+        stbtt_GetGlyphBitmapBoxSubpixel(&f, it.index, ps, ps, fx, fy, &x0, &y0, &x1, &y1);
+        const int gw = x1 - x0, gh = y1 - y0;
+        if (gw <= 0 || gh <= 0) continue;
+        bitmap.assign(size_t(gw) * size_t(gh), 0);
+        stbtt_MakeGlyphBitmapSubpixel(&f, bitmap.data(), gw, gh, gw, ps, ps, fx, fy, it.index);
+        const int left = int(std::floor(ox)) + x0, top = int(std::floor(oy)) + y0;
+        for (int y = 0; y < gh; y++) {
             const int py = top + y;
             if (py < by0 || py >= by1) continue;
-            const uint8_t* row = bm.buffer + ptrdiff_t(y) * bm.pitch;
-            for (int x = 0; x < int(bm.width); x++) {
+            const uint8_t* row = bitmap.data() + size_t(y) * size_t(gw);
+            for (int x = 0; x < gw; x++) {
                 const int px = left + x;
                 if (px < bx0 || px >= bx1) continue;
                 uint8_t& c = atlas->coverage[size_t(py) * pw + size_t(px)];
@@ -424,15 +300,15 @@ bool Make(Font& font, uint32_t map, const Setting& set) {
     }
     font.mine.resize(font.original.size());
     std::memcpy(font.mine.data(), rec.data(), font.mine.size());
-    // the space: its advance at the measuring size again
+    // the space: its advance
     font.my_space = font.space;
-    if (const FT_UInt sp = FT_Get_Char_Index(f, ' '); sp && !FT_Set_Char_Size(f, 0, FT_F26Dot6(upem) * 64, 72, 72) &&
-                                                      measure(sp, box, adv))
+    if (const int sp = stbtt_FindGlyphIndex(&f, ' ')) {
+        measure(sp, box, adv);
         font.my_space = uint32_t(std::max(1L, std::lround(adv * sf)));
+    }
     font.atlas = std::move(atlas);
-    LOGI("fonts: %s from %s %s (weight %d), %u glyphs (%zu the game's), atlas x%u (%.2f texels a unit)",
-         font.kind == game_fonts::kTitle ? "title" : "text", face.family.c_str(), style.name.c_str(),
-         set.weight ? set.weight : style.weight, font.count, font.atlas->copies.size(), scale, double(p));
+    LOGI("fonts: %s font, %u glyphs (%zu the game's), atlas x%u (%.2f texels a unit)",
+         font.kind == kTitle ? "title" : "text", font.count, font.atlas->copies.size(), scale, double(p));
     return true;
 }
 
@@ -451,7 +327,7 @@ void Pick(uint32_t f, uint32_t map) {
     for (uint32_t s = 0; s < kMapSlots; s++)
         if (R16(map + s * 4) != 0xFFFF) count = std::max<uint32_t>(count, R16(map + s * 4 + 2) + 1u);
     if (!count || count > kMaxGlyphs || !Readable(glyphs, count * kRecord)) return;
-    const uint64_t gen = g_gen[kind].load(std::memory_order_acquire);
+    const bool on = kind == kTitle ? game_fonts::g_title : game_fonts::g_text;
     const uint8_t* now = static_cast<const uint8_t*>(kernel::HostPtr(glyphs));
     const size_t bytes = size_t(count) * kRecord;
     const uint32_t space = R32(R32(f) + 4);
@@ -461,7 +337,7 @@ void Pick(uint32_t f, uint32_t map) {
     const bool same = font.glyphs == glyphs && font.count == count && font.kind == kind;
     const bool mine = same && font.mine.size() == bytes && !std::memcmp(now, font.mine.data(), bytes) &&
                       space == font.my_space;
-    if (mine && font.gen == gen) return;
+    if (mine && font.on == on) return;
     const bool original =
         same && font.original.size() == bytes && !std::memcmp(now, font.original.data(), bytes) && space == font.space;
     if (!mine && !original) {
@@ -472,18 +348,8 @@ void Pick(uint32_t f, uint32_t map) {
         font.original.assign(now, now + bytes);
         font.space = space;
     }
-    font.gen = gen;
-    Setting set;
-    {
-        std::lock_guard hold(g_lock);
-        set = g_set[kind];
-    }
-    bool made = false;
-    if (set.face && set.face->ok && set.style < set.face->styles.size()) {
-        std::lock_guard ft(g_ft_lock);
-        made = Make(font, map, set);
-    }
-    if (made) {
+    font.on = on;
+    if (on && Make(font, map)) {
         Write(font, font.mine, font.my_space);
         if (font.texture) gpu::SetFontAtlas(font.texture, font.atlas);
         return;
@@ -496,191 +362,15 @@ void Pick(uint32_t f, uint32_t map) {
     Unregister(font);
 }
 
-// a copy in FontsDir no setting names any more, deleted
-void Forget(const std::string& old) {
-    if (old.empty() || !InFontsDir(ToPath(old))) return;
-    for (int k = 0; k < game_fonts::kKinds; k++)
-        if (game_fonts::Path(game_fonts::Kind(k)) == old) return;
-    std::error_code ec;
-    fs::remove(ToPath(old), ec);
-}
-
-void Changed(game_fonts::Kind k) { g_gen[k].fetch_add(1, std::memory_order_release); }
-
 }  // namespace
 
-std::string game_fonts::Path(Kind k) {
-    std::lock_guard hold(g_lock);
-    return g_set[k].face ? g_set[k].face->path : std::string();
-}
-
-void game_fonts::SetPath(Kind k, const std::string& path) {
-    std::shared_ptr<const Face> face = path.empty() ? nullptr : OpenFace(path);
-    if (face && !face->ok) LOGW("fonts: %s isn't a font that can be used (%s)", path.c_str(), face->error.c_str());
-    {
-        std::lock_guard hold(g_lock);
-        g_set[k] = Setting{std::move(face), 0, 0};
-    }
-    Changed(k);
-}
-
-void game_fonts::Choose(Kind k, const std::string& picked) {
-    const fs::path src = ToPath(picked);
-    std::string use = picked;
-    if (!InFontsDir(src)) {
-        // the copy: the file's own name, numbered where another font already has it
+bool game_fonts::TextInstalled() {
+    static const bool installed = [] {
         std::error_code ec;
-        fs::create_directories(FontsDir(), ec);
-        const std::vector<uint8_t> data = ReadAll(src);
-        fs::path dst = FontsDir() / src.filename();
-        for (int n = 2; fs::exists(dst, ec) && ReadAll(dst) != data && n < 100; n++)
-            dst = FontsDir() / ToPath(ToUtf8(src.stem()) + " (" + std::to_string(n) + ")" + ToUtf8(src.extension()));
-        if (!data.empty() && (fs::exists(dst, ec) || fs::copy_file(src, dst, ec))) use = ToUtf8(dst);
-        else LOGW("fonts: couldn't copy %s into %s, using it where it is", picked.c_str(), ToUtf8(FontsDir()).c_str());
-    }
-    const std::string old = Path(k);
-    SetPath(k, use);
-    if (old != use) Forget(old);
-    std::lock_guard hold(g_lock);
-    g_cleared[k] = false;
+        return fs::is_regular_file(TextFontPath(), ec);
+    }();
+    return installed;
 }
-
-void game_fonts::Clear(Kind k) {
-    const std::string old = Path(k);
-    SetPath(k, "");
-    Forget(old);
-    std::lock_guard hold(g_lock);
-    g_cleared[k] = true;
-}
-
-void game_fonts::Init() {
-#ifdef _WIN32
-    // Windows: the text font Trebuchet MS Bold from the system's fonts unless one is set or the player set it back
-    // to the game's own
-    {
-        std::lock_guard hold(g_lock);
-        if (g_set[kText].face || g_cleared[kText]) return;
-    }
-    const wchar_t* windir = _wgetenv(L"WINDIR");
-    const fs::path file = fs::path(windir && *windir ? windir : L"C:\\Windows") / L"Fonts" / L"trebucbd.ttf";
-    std::error_code ec;
-    if (fs::is_regular_file(file, ec)) SetPath(kText, ToUtf8(file));
-#endif
-}
-
-std::string game_fonts::Name(Kind k) {
-    std::lock_guard hold(g_lock);
-    const Setting& s = g_set[k];
-    if (!s.face || !s.face->ok) return {};
-    const std::string& style = s.face->styles[s.style].name;
-    return style.rfind(s.face->family, 0) == 0 ? style : s.face->family + " " + style;
-}
-
-std::string game_fonts::Error(Kind k) {
-    std::lock_guard hold(g_lock);
-    return g_set[k].face ? g_set[k].face->error : std::string();
-}
-
-std::vector<std::string> game_fonts::Styles(Kind k) {
-    std::lock_guard hold(g_lock);
-    std::vector<std::string> out;
-    if (g_set[k].face)
-        for (const Style& s : g_set[k].face->styles) out.push_back(s.name);
-    return out;
-}
-
-int game_fonts::StyleIndex(Kind k) {
-    std::lock_guard hold(g_lock);
-    return int(g_set[k].style);
-}
-
-void game_fonts::SetStyle(Kind k, int style) {
-    {
-        std::lock_guard hold(g_lock);
-        Setting& s = g_set[k];
-        if (!s.face || style < 0 || size_t(style) >= s.face->styles.size() || size_t(style) == s.style) return;
-        s.style = size_t(style);
-        s.weight = 0;
-    }
-    Changed(k);
-}
-
-bool game_fonts::WeightRange(Kind k, int& min, int& max) {
-    std::lock_guard hold(g_lock);
-    const Setting& s = g_set[k];
-    if (!s.face || !s.face->ok) return false;
-    const Style& st = s.face->styles[s.style];
-    min = st.min, max = st.max;
-    return st.max > st.min;
-}
-
-int game_fonts::Weight(Kind k) {
-    std::lock_guard hold(g_lock);
-    const Setting& s = g_set[k];
-    if (!s.face || !s.face->ok) return 0;
-    return s.weight ? s.weight : s.face->styles[s.style].weight;
-}
-
-bool game_fonts::WeightSet(Kind k) {
-    std::lock_guard hold(g_lock);
-    return g_set[k].weight != 0;
-}
-
-void game_fonts::SetWeight(Kind k, int weight) {
-    {
-        std::lock_guard hold(g_lock);
-        Setting& s = g_set[k];
-        if (!s.face || !s.face->ok || s.weight == weight) return;
-        s.weight = weight;
-    }
-    Changed(k);
-}
-
-#if __has_include(<toml++/toml.hpp>)
-namespace {
-constexpr const char* kKeys[game_fonts::kKinds] = {"title_font", "text_font"};
-}
-
-void game_fonts::Load(const void* table) {
-    const toml::table& t = *static_cast<const toml::table*>(table);
-    for (int i = 0; i < kKinds; i++) {
-        const Kind k = Kind(i);
-        const std::string key = kKeys[i];
-        {
-            std::lock_guard hold(g_lock);
-            g_cleared[i] = t[key + "_cleared"].value_or(false);
-        }
-        const auto path = t[key].value<std::string>();
-        if (!path || path->empty()) continue;
-        SetPath(k, *path);
-        // the style by its face index, which stays as the file does
-        if (const auto index = t[key + "_style"].value<int64_t>()) {
-            std::lock_guard hold(g_lock);
-            if (const auto& face = g_set[k].face)
-                for (size_t s = 0; s < face->styles.size(); s++)
-                    if (face->styles[s].index == FT_Long(*index)) g_set[k].style = s;
-        }
-        SetWeight(k, int(std::max<int64_t>(t[key + "_weight"].value_or(int64_t(0)), 0)));
-        Changed(k);
-    }
-}
-
-void game_fonts::Save(void* table) {
-    toml::table& t = *static_cast<toml::table*>(table);
-    for (int i = 0; i < kKinds; i++) {
-        const std::string key = kKeys[i];
-        std::lock_guard hold(g_lock);
-        const Setting& s = g_set[i];
-        t.insert_or_assign(key, s.face ? s.face->path : std::string());
-        t.insert_or_assign(key + "_style", int64_t(s.face && s.face->ok ? s.face->styles[s.style].index : 0));
-        t.insert_or_assign(key + "_weight", int64_t(s.weight));
-        t.insert_or_assign(key + "_cleared", g_cleared[i]);
-    }
-}
-#else
-void game_fonts::Load(const void*) {}
-void game_fonts::Save(void*) {}
-#endif
 
 void game_fonts::StringStart() { g_string = !g_fonts.empty(); }
 

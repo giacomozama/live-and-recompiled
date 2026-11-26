@@ -25,6 +25,10 @@
 // when done); --launcher starts the game, building it first when it is missing or was made by another kit (on the
 // console); --root is the folder Setup would be in. --help lists them all with their defaults.
 #include <miniz.h>
+#ifndef _WIN32
+#include "mspack/mspack.h"
+#include <strings.h>
+#endif
 #include <toml++/toml.hpp>
 
 #include <algorithm>
@@ -228,7 +232,7 @@ bool UnpackKit(const fs::path& dir, std::string& error) {
     }
     if (ours && line == g_kit_stamp && fs::exists(dir / "kit.toml", ec)) return true;
     if (ours) {
-        for (const char* d : {"bin", "config", "xdk", "include", "lib", "files"}) fs::remove_all(dir / d, ec);
+        for (const char* d : {"bin", "config", "xdk", "include", "lib", "files", "trebuc"}) fs::remove_all(dir / d, ec);
         for (const char* f : {"kit.toml", "windows.toml", "linux.toml", ".payload"}) fs::remove(dir / f, ec);
     }
 
@@ -825,6 +829,35 @@ void FindDiscPrograms(const Source& src, const fs::path& assets, const fs::path&
     else Say("  none found; the game looks for them itself on its first run\n");
 }
 
+#ifndef _WIN32
+// the game's text font on Linux: Trebuchet MS Bold, out of the kit's trebuc32.exe (Microsoft's installer, a CAB
+// inside) into fonts/ beside the game, with THIRD_PARTY.txt for its licence. Without it the game draws its own font
+void InstallFont(const fs::path& kit_dir, const fs::path& game_dir) {
+    std::error_code ec;
+    const fs::path from = kit_dir / "trebuc", to = game_dir / "fonts";
+    if (!fs::exists(from / "trebuc32.exe", ec)) return;
+    fs::create_directories(to, ec);
+    // libmspack keeps the names' pointers while the cabinet is open
+    const std::string exe = (from / "trebuc32.exe").string(), font = (to / "Trebucbd.ttf").string();
+    bool ok = false;
+    if (mscab_decompressor* cab = mspack_create_cab_decompressor(nullptr)) {
+        if (mscabd_cabinet* found = cab->search(cab, exe.c_str())) {
+            for (mscabd_file* f = found->files; f && !ok; f = f->next)
+                if (strcasecmp(f->filename, "Trebucbd.ttf") == 0) ok = cab->extract(cab, f, font.c_str()) == MSPACK_ERR_OK;
+            cab->close(cab, found);
+        }
+        mspack_destroy_cab_decompressor(cab);
+    }
+    if (ok) ok = fs::copy_file(from / "THIRD_PARTY.txt", to / "THIRD_PARTY.txt", fs::copy_options::overwrite_existing, ec);
+    if (ok) {
+        Say("Installed the Trebuchet MS font, under Microsoft's licence in %s\n", (to / "THIRD_PARTY.txt").string().c_str());
+    } else {
+        fs::remove(font, ec);  // never without its licence, nor half written
+        Say("  (could not install the Trebuchet MS font; the game uses its own)\n");
+    }
+}
+#endif
+
 // double-clicked: the console would close before the player reads it
 void Pause() {
 #ifdef _WIN32
@@ -1043,7 +1076,7 @@ bool Build(const Options& opt) {
     auto finish = [&]() {
         if (!opt.keep) {
             clear();
-            for (const char* d : {"bin", "config", "xdk", "include", "lib", "files"}) fs::remove_all(work / d, ec);
+            for (const char* d : {"bin", "config", "xdk", "include", "lib", "files", "trebuc"}) fs::remove_all(work / d, ec);
             for (const char* f : {"kit.toml", "windows.toml", "linux.toml", ".payload", "unpack.log"})
                 fs::remove(work / f, ec);
         }
@@ -1185,6 +1218,10 @@ bool Build(const Options& opt) {
     // what goes beside the game; without it the game runs all the same, without what it brings (DLSS)
     for (auto& f : k.files)
         if (!Place(f, game_dir / f.filename())) Say("  (the game runs without %s)\n", f.filename().string().c_str());
+
+#ifndef _WIN32
+    InstallFont(work, game_dir);
+#endif
 
     // what the game was made from, for --launcher to tell it is current
     std::ofstream(game_dir / kStampName, std::ios::binary) << BuildStamp(opt.debug_features);
