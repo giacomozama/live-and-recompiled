@@ -271,8 +271,8 @@ extern const size_t kUiFontJaSize = sizeof(kUiFontJa);
 list(APPEND XBE_IMGUI_SOURCES ${XBE_UI_FONT_JA})
 
 # The host's window, events, display modes and audio come from SDL3 everywhere (app/main_sdl.cpp, audio/sdl_audio.cpp,
-# XBE_SDL). Vulkan and OpenGL draw on both, D3D11 on Windows too. Windows keeps its own crash dumps, system info, boot splash and
-# relaunch handover; each side's own sources are left out of the other's build.
+# XBE_SDL). Vulkan and OpenGL draw on both, D3D11 on Windows too. Windows keeps its own crash dumps, system info and relaunch
+# handover; each side's own sources are left out of the other's build.
 file(GLOB XBE_RUNTIME_SOURCES CONFIGURE_DEPENDS ${XBE_ROOT_DIR}/src/runtime/*/*.cpp)
 list(APPEND XBE_IMGUI_SOURCES ${imgui_SOURCE_DIR}/backends/imgui_impl_sdl3.cpp)
 if(WIN32)
@@ -282,7 +282,7 @@ if(WIN32)
         ${XBE_ROOT_DIR}/src/runtime/audio/sdl_audio.cpp ${imgui_SOURCE_DIR}/backends/imgui_impl_sdl3.cpp)
 else()
     list(FILTER XBE_RUNTIME_SOURCES EXCLUDE REGEX
-        "/(app/crash|app/splash|app/handover|app/system_info)\\.cpp$")
+        "/(app/crash|app/handover|app/system_info)\\.cpp$")
     set(XBE_SDL_SOURCES ${XBE_ROOT_DIR}/src/runtime/core/input.cpp ${XBE_ROOT_DIR}/src/runtime/app/main_sdl.cpp
         ${XBE_ROOT_DIR}/src/runtime/audio/sdl_audio.cpp ${imgui_SOURCE_DIR}/backends/imgui_impl_sdl3.cpp)
 endif()
@@ -354,7 +354,7 @@ set(XBE_GEN_COMPILE_OPTIONS -O2 -fno-strict-aliasing -Wno-unused-label -Wno-pare
 set(XBE_HOST_DEFINITIONS UNICODE _UNICODE _CRT_SECURE_NO_WARNINGS)
 # what the host links besides SDL
 if(WIN32)
-    set(XBE_HOST_SYSTEM_LIBS d3d11 dxgi d3dcompiler_47 dxguid ole32 shell32 windowscodecs dbghelp winmm dwmapi ws2_32)
+    set(XBE_HOST_SYSTEM_LIBS d3d11 dxgi d3dcompiler_47 dxguid ole32 shell32 dbghelp winmm dwmapi ws2_32)
 else()
     set(XBE_HOST_SYSTEM_LIBS ${CMAKE_DL_LIBS} pthread)
 endif()

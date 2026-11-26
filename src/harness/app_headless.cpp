@@ -56,9 +56,6 @@ const std::string& JoinArg() {
 }
 void* Window() { return nullptr; }
 
-bool OpenSplash() { return false; }
-void SplashFirstFrame() {}
-void CloseSplash() {}
 void OpenGameWindow(bool) {}
 bool StartHandover() { return false; }
 bool HandingOver() { return false; }

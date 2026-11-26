@@ -65,12 +65,11 @@ void SaveTables(void* table) {
 
 // what the runtime asks of the game; strings must be set, hooks may stay null
 const app::GameInfo app::kGame = {
-    .title = L"Live & Recompiled",        // window and splash
+    .title = L"Live & Recompiled",        // window
     .short_title = L"Live & Recompiled",  // message boxes
     .name = L"Conker",                    // window classes, crash dumps, handover event
     .log = "game",                        // log file prefix
     .settings = "settings.toml",          // settings file in app::ConfigDir
-    .splash = L"splash",                  // optional splash.png or splash.bmp beside the exe
     .missing = L"Put the game in the assets folder: its disc image (.iso), or default.xbe with its folders beside it.",
     .images = {{"default.xbe", "Game"}},  // each recompiled xbe and its exe, for title launches
     .options = {{"fps_overlay", &ui::g_fps_overlay, nullptr},  // ImGui settings menu options (src/conker/game/ui.cpp)

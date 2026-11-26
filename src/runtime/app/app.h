@@ -279,10 +279,6 @@ void UiNewFrame();
 // any thread, before handing the window over to a relaunched instance (kernel::Relaunch): losing the focus to it no
 // longer minimizes an exclusive fullscreen window, which would give the desktop's mode back for the new one's start
 void KeepFullscreenOnFocusLoss();
-// boot splash: GameInfo::splash .bmp or .png beside the exe, up before the game window
-bool OpenSplash();        // window thread, at launch; false without one, and the game window opens at once
-void SplashFirstFrame();  // the game's first Swap: waits out the splash's minimum, then opens the game window
-void CloseSplash();       // window thread
 void OpenGameWindow(bool apply = true);  // any thread but the window thread's; returns once the window is up
 // relaunched: the previous instance keeps its window up until this one has shown its first frames (handover.cpp)
 bool StartHandover();   // window thread, at launch; true: the game window starts hidden
@@ -312,12 +308,11 @@ struct Option {  // a setting in the settings file, flag or value
     uint32_t* value;
 };
 struct GameInfo {
-    const wchar_t* title;        // window and splash
+    const wchar_t* title;        // window
     const wchar_t* short_title;  // message boxes
     const wchar_t* name;         // window classes, crash dumps, handover event
     const char* log;             // log prefix
     const char* settings;        // settings file in ConfigDir
-    const wchar_t* splash;       // .bmp or .png beside the exe
     const wchar_t* missing;      // message when neither the game files nor a disc image are found
     std::vector<std::pair<const char*, const char*>> images;  // xbe file name, executable name
     std::vector<Option> options;

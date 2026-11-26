@@ -1,6 +1,6 @@
 // The host on SDL3, on every platform: window, events, display modes, the Vulkan surface; the game is described by
 // app::kGame. The window thread is the main thread, which SDL's video wants. Its events reach GameInfo::message as a
-// Win32 window's would (app.h). Windows adds its boot splash and relaunch handover (splash.cpp, handover.cpp), a
+// Win32 window's would (app.h). Windows adds its relaunch handover (handover.cpp), a
 // console when started from one, and raw keyboard input, so each keyboard is told apart as on Linux.
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
@@ -349,7 +349,6 @@ bool Handle(const SDL_Event& e) {
                 if (e.user.data1) SDL_StartTextInput(g_window);
                 else SDL_StopTextInput(g_window);
             } else if (e.user.code == kUserOpen) {
-                CloseSplash();
                 if (e.user.data1) ApplyNow();
                 SDL_ShowWindow(g_window);
                 SDL_RaiseWindow(g_window);
@@ -704,10 +703,7 @@ void PickFile(const char* kind, const char* patterns, void (*done)(void* user, c
 void OpenGameWindow(bool apply) { PushUser(kUserOpen, apply); }
 
 #ifndef _WIN32
-// no splash, and a relaunch execs in place: there is no window to hand over (kernel::Relaunch)
-bool OpenSplash() { return false; }
-void SplashFirstFrame() {}
-void CloseSplash() {}
+// a relaunch execs in place: there is no window to hand over (kernel::Relaunch)
 bool StartHandover() { return false; }
 bool HandingOver() { return false; }
 void FinishHandover() {}
@@ -948,9 +944,8 @@ int Run(int argc, char** argv) {
     if (!app::FindGame(game)) return 1;
     app::MountMods();
 
-    // the welcome screen (RunWelcome) shows in the game window from the start: no splash in front of it
     const bool welcome = app::FirstRun() && app::kGame.welcome;
-    const bool splash = !welcome && app::OpenSplash(), handover = app::StartHandover();
+    const bool handover = app::StartHandover();
 
     app::g_user = SDL_RegisterEvents(1);
     std::wstring title = app::kGame.title;
@@ -993,9 +988,8 @@ int Run(int argc, char** argv) {
     app::TagGameContent();
     app::StoreDesktop();
     app::ApplyNow();
-    // behind a splash the window stays hidden until the game's first frame, handed over until the new instance's
-    // (OpenGameWindow); Windows alone has either
-    if (!splash && !handover) SDL_ShowWindow(app::g_window);
+    // handed over, the window stays hidden until the new instance's first frames (OpenGameWindow); Windows alone
+    if (!handover) SDL_ShowWindow(app::g_window);
 
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();

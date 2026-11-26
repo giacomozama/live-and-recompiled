@@ -52,8 +52,8 @@ changed.
 
 `Game.exe` finds `assets/` by walking up from its own folder. It keeps `settings.toml`, its logs, shader records
 and saves beside itself, and so does the native `Game`. The native port is the same game in an SDL3 window, drawn
-with Vulkan and played through SDL3's audio; it has everything `Game.exe` has but the boot splash
-and the window kept up across a relaunch. Every build, the native one and the harness
+with Vulkan and played through SDL3's audio; it has everything `Game.exe` has but the window
+kept up across a relaunch. Every build, the native one and the harness
 included, uses the pinned Zig against glibc 2.31 with Zig's libc++, as a release's native `Game` does (see
 [Building a release](#building-a-release)), so what is measured in one holds for what players run. `tools/build.sh --harness` also
 builds `out/harness/conker`, a headless Linux build with no window or GPU, for testing.

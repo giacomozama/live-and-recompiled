@@ -249,12 +249,6 @@ extern std::string g_launch_file;
 void SavePersistedDisplay(uint32_t common, uint32_t format, uint32_t size, const void* pixels, uint32_t bytes);
 uint32_t SavedDataAddress();
 void SetSavedDataAddress(uint32_t surface);
-// one bit of note carried with the kept display to the next instance
-void MarkPersistedDisplay();
-bool KeptDisplayMarked();
-// the path of the picture the title last showed, raw guest string with its terminator, carried along too
-void SetShownPicture(std::string path);
-const std::string& KeptPicture();
 // A relaunch hands over without a gap: the new instance's window opens once it has presented, then it signals this
 // event and the old instance, waiting in Relaunch with its window still up, exits.
 std::wstring HandoverEvent(unsigned long process);

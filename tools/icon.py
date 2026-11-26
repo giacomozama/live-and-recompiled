@@ -2,7 +2,7 @@
 """Makes the executables' icon from tools/icon.svg, into src/runtime/app/icon/:
 
     icon.ico    Windows: every size as PNG, linked into Game.exe and setup-windows.exe by icon.rc (Explorer, the
-                taskbar, the splash's and SDL's window class)
+                taskbar, SDL's window class)
     icon.rgba   256x256 straight RGBA, the window icon where an executable carries none (Linux: the game's SDL window,
                 Setup's FLTK one), embedded by app/icon.h
 

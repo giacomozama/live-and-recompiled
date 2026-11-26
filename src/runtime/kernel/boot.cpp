@@ -37,8 +37,6 @@ std::string g_launch_file;
 
 namespace {
 uint32_t g_saved_data = 0;
-bool g_mark = false, g_kept_marked = false;
-std::string g_picture, g_kept_picture;  // the last picture the title showed, raw path string with its terminator
 constexpr uint32_t kPersistMagic = 0x50535044;  // "DPSP"
 
 std::string PersistFile() { return g_launch_file.substr(0, g_launch_file.find_last_of("/\\") + 1) + "display.bin"; }
@@ -46,39 +44,29 @@ std::string PersistFile() { return g_launch_file.substr(0, g_launch_file.find_la
 // surface header (Common, Data, Lock, Format, Size) then the pixels at +0x40, as the XDK lays out its persisted copy
 void LoadPersistedDisplay() {
     std::ifstream f(PersistFile(), std::ios::binary);
-    uint32_t head[7] = {};
-    if (!f.read(reinterpret_cast<char*>(head), sizeof head) || head[0] != kPersistMagic || !head[4] || head[4] > 0x800000 ||
-        head[6] > 1040)
+    uint32_t head[5] = {};
+    if (!f.read(reinterpret_cast<char*>(head), sizeof head) || head[0] != kPersistMagic || !head[4] || head[4] > 0x800000)
         return;
     uint32_t block = mem::AllocContiguous(0x40 + head[4], 0, 0xFFFFFFFF, 0x1000);
     if (!block || !f.read(static_cast<char*>(HostPtr(block + 0x40)), head[4])) return;
-    g_kept_picture.resize(head[6]);
-    if (!f.read(g_kept_picture.data(), head[6])) g_kept_picture.clear();
     W32(block, (head[1] & 0xFFFF0000) | 1);
     W32(block + 4, mem::PhysicalFromVirtual(block + 0x40));
     W32(block + 8, 0);
     W32(block + 0xC, head[2]);
     W32(block + 0x10, head[3]);
     g_saved_data = block;
-    g_kept_marked = head[5] != 0;
-    LOGI("boot: display kept from the previous run, %u bytes%s", head[4], g_kept_marked ? ", marked" : "");
+    LOGI("boot: display kept from the previous run, %u bytes", head[4]);
 }
 }  // namespace
 
 void SavePersistedDisplay(uint32_t common, uint32_t format, uint32_t size, const void* pixels, uint32_t bytes) {
     if (FILE* f = std::fopen(PersistFile().c_str(), "wb")) {
-        uint32_t head[7] = {kPersistMagic, common, format, size, bytes, g_mark, uint32_t(g_picture.size())};
+        uint32_t head[5] = {kPersistMagic, common, format, size, bytes};
         std::fwrite(head, sizeof head, 1, f);
         std::fwrite(pixels, 1, bytes, f);
-        std::fwrite(g_picture.data(), 1, g_picture.size(), f);
         std::fclose(f);
     }
 }
-
-void MarkPersistedDisplay() { g_mark = true; }
-bool KeptDisplayMarked() { return g_kept_marked; }
-void SetShownPicture(std::string path) { g_picture = std::move(path); }
-const std::string& KeptPicture() { return g_kept_picture; }
 
 uint32_t SavedDataAddress() { return g_saved_data; }
 void SetSavedDataAddress(uint32_t surface) { g_saved_data = surface; }
@@ -188,7 +176,7 @@ void Relaunch(const char* exe) {
     std::wstring line = GetCommandLineW();
     size_t args = line[0] == L'"' ? line.find(L'"', 1) + 1 : line.find(L' ');
     line = L"\"" + path + L"\"" + (args == std::wstring::npos ? L"" : line.substr(args));
-    if (line.find(L"--relaunched") == std::wstring::npos) line += L" --relaunched";  // no boot splash again
+    if (line.find(L"--relaunched") == std::wstring::npos) line += L" --relaunched";
     // this process lives on through the handover: the new one binds the same ports
     xnet::CloseSockets();
     STARTUPINFOW si{sizeof(si)};
@@ -214,7 +202,7 @@ void Relaunch(const char* exe) {
     ssize_t n = readlink("/proc/self/exe", self, sizeof(self) - 1);
     std::string path = std::string(self, n > 0 ? size_t(n) : 0);
     path = path.substr(0, path.find_last_of('/') + 1) + exe;
-    // as on Windows: the instance, system link port and join address kept, no boot splash again, the ports given back for the new
+    // as on Windows: the instance, system link port and join address kept, the ports given back for the new
     // process to bind
     xnet::CloseSockets();
     std::string instance = std::to_string(app::Instance()), port = std::to_string(app::PortArg());

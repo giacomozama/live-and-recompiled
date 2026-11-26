@@ -3,7 +3,7 @@
 Builds and runs one image of a game on Linux without a window, GPU, audio device or pad: the recompiled code and
 the runtime as they are, with these stand ins.
 
-- `app_headless.cpp` the app side: default settings, the run folder as the exe folder, no splash or handover
+- `app_headless.cpp` the app side: default settings, the run folder as the exe folder, no handover
 - `pad_script.cpp` port 0 from a script, then `GameInfo::pad` as on Windows
 - `null_audio.cpp` the mixer pulled every 10 ms, output dropped
 - `null_backend.cpp` counts frames, lists draws, draws chosen frames with `reference_renderer.cpp` (CPU, into guest memory)

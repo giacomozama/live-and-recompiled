@@ -1198,7 +1198,6 @@ HLE_STDCALL(D3DDevice_GetDepthStencilSurface2, 0) {
 
 HLE_STDCALL(D3DDevice_Swap, 1) {
     x86_profile_frame();
-    app::SplashFirstFrame();
     // handed over from the previous instance: the window opens on the second frame, the first picture with
     // anything drawn over it right after
     if (app::HandingOver() && g_presents >= 2) {
