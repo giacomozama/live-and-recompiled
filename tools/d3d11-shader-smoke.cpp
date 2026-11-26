@@ -7,6 +7,7 @@
 #include "app/app.h"
 #include "gpu/shaders.h"
 #include "gpu/d3d11_shaders.h"
+#include "gpu/post_hlsl.h"
 namespace app { Settings& Get() { static Settings settings; return settings; } }
 // Link fixture for the translator's depth-as-color code (the real mapping from draw.cpp).
 namespace gpu { void DepthLayoutOrder(int layout,float* order) {
@@ -55,15 +56,16 @@ bool TestPointCoordinates(ID3D11Device* device,ID3D11DeviceContext* context) {
 // Conker's glow extraction reads stencil as texture alpha. A zero here removes
 // the entire glow chain even though its shaders and color buffers are valid.
 bool TestDepthStencilBytes(ID3D11Device* device,ID3D11DeviceContext* context) {
-    auto compile=[](const char* text,const char* profile,TestCom<ID3DBlob>& code){
+    auto compile=[](const std::string& text,const char* entry,const char* profile,TestCom<ID3DBlob>& code){
         TestCom<ID3DBlob> errors;
-        HRESULT hr=D3DCompile(text,std::strlen(text),"depth bytes",nullptr,nullptr,"main",profile,D3DCOMPILE_OPTIMIZATION_LEVEL3,0,code.put(),errors.put());
+        HRESULT hr=D3DCompile(text.data(),text.size(),"depth bytes",nullptr,nullptr,entry,profile,D3DCOMPILE_OPTIMIZATION_LEVEL3,0,code.put(),errors.put());
         if(FAILED(hr)&&errors.p)std::printf("depth bytes: %s\n",static_cast<const char*>(errors->GetBufferPointer()));
         return SUCCEEDED(hr);
     };
     TestCom<ID3DBlob> vs_code,ps_code;
-    if(!compile("float4 main(uint id:SV_VertexID):SV_Position {float2 uv=float2((id<<1)&2,id&2);return float4(uv*float2(2,-2)+float2(-1,1),0,1);}","vs_5_0",vs_code) ||
-       !compile(gpu::d3d11::kDepthBytes,"ps_5_0",ps_code))return false;
+    // the renderer's own (D3D11Backend::DepthBytes), single sampled
+    const std::string source=std::string("#define DEPTH_STENCIL_GREEN\n")+gpu::kDepthBytesHlsl;
+    if(!compile(source,"vs","vs_5_0",vs_code) || !compile(source,"psmain","ps_5_0",ps_code))return false;
     TestCom<ID3D11VertexShader> vs;TestCom<ID3D11PixelShader> ps;
     if(FAILED(device->CreateVertexShader(vs_code->GetBufferPointer(),vs_code->GetBufferSize(),nullptr,vs.put())) ||
        FAILED(device->CreatePixelShader(ps_code->GetBufferPointer(),ps_code->GetBufferSize(),nullptr,ps.put())))return false;
@@ -85,17 +87,18 @@ bool TestDepthStencilBytes(ID3D11Device* device,ID3D11DeviceContext* context) {
     if(FAILED(device->CreateTexture2D(&td,nullptr,target.put())) || FAILED(device->CreateRenderTargetView(target.p,nullptr,rtv.put())))return false;
     td.BindFlags=0;td.Usage=D3D11_USAGE_STAGING;td.CPUAccessFlags=D3D11_CPU_ACCESS_READ;
     if(FAILED(device->CreateTexture2D(&td,nullptr,staging.put())))return false;
-    D3D11_BUFFER_DESC bd{};bd.ByteWidth=16;bd.Usage=D3D11_USAGE_DEFAULT;bd.BindFlags=D3D11_BIND_CONSTANT_BUFFER;
+    D3D11_BUFFER_DESC bd{};bd.ByteWidth=32;bd.Usage=D3D11_USAGE_DEFAULT;bd.BindFlags=D3D11_BIND_CONSTANT_BUFFER;
     TestCom<ID3D11Buffer> cb;if(FAILED(device->CreateBuffer(&bd,nullptr,cb.put())))return false;
     context->ClearState();context->VSSetShader(vs.p,nullptr,0);context->PSSetShader(ps.p,nullptr,0);
-    context->PSSetConstantBuffers(0,1,&cb.p);context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    context->PSSetConstantBuffers(1,1,&cb.p);context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     D3D11_VIEWPORT vp{0,0,4,4,0,1};context->RSSetViewports(1,&vp);
     bool passed=true;
     for(float z:{0.0f,0.25f,0.5f,1.0f})for(unsigned stencil:{0u,32u,176u,255u})for(int layout=0;layout<4;layout++) {
         context->ClearDepthStencilView(dsv.p,D3D11_CLEAR_DEPTH|D3D11_CLEAR_STENCIL,z,UINT8(stencil));
         context->CopyResource(depth_snapshot.p,depth.p);
-        float mapping[4];gpu::DepthLayoutOrder(layout,mapping);unsigned order[4];for(int i=0;i<4;i++)order[i]=unsigned(mapping[i]);
-        context->UpdateSubresource(cb.p,0,nullptr,order,0,0);
+        float constants[8]{};gpu::DepthLayoutOrder(layout,constants);  // order, then fur's all 0
+        unsigned order[4];for(int i=0;i<4;i++)order[i]=unsigned(constants[i]);
+        context->UpdateSubresource(cb.p,0,nullptr,constants,0,0);
         ID3D11ShaderResourceView* views[2]={depth_snapshot_view.p,stencil_snapshot.p};context->PSSetShaderResources(0,2,views);
         context->OMSetRenderTargets(1,&rtv.p,nullptr);context->Draw(3,0);context->OMSetRenderTargets(0,nullptr,nullptr);
         ID3D11ShaderResourceView* empty[2]{};context->PSSetShaderResources(0,2,empty);

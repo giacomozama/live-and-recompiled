@@ -252,6 +252,17 @@ protected:
                                 params))
             self.MarkWritten(target);
     }
+    // a picture about to be shown: the effects run over it, if no 2D drawn over the frame had them run
+    void FinishPost(Image& image) {
+        if (post_done_ || post_target_ != ResourceKey(image.data, false)) return;
+        if (PostWanted()) ApplyPost(image);
+        Backend().KeepHdrWorld(image);
+    }
+    // the next picture's view and effects start over
+    void ResetView() {
+        post_target_ = 0;
+        post_done_ = occlusion_done_ = view_ok_ = many_views_ = false;
+    }
     // each draw: the 3D's target and view noted, the effects applied before the first 2D drawn over it
     void TrackPost(const State& state, const Assembled& assembled, bool program, Image* target, Image* depth) {
         Self& self = Backend();

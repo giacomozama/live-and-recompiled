@@ -46,17 +46,4 @@ void copy_stencil(float4 position : SV_Position, float2 uv : TEXCOORD0) {
 #endif
 }
 )";
-inline constexpr char kDepthBytes[] = R"(
-Texture2D<float> depth : register(t0);
-// X24_TYPELESS_G8_UINT exposes stencil in green, not the scalar red channel.
-Texture2D<uint2> stencil : register(t1);
-cbuffer Order : register(b0) { uint4 order; };
-float4 main(float4 position:SV_Position):SV_Target {
-    int3 p=int3(int2(position.xy),0);
-    uint z=uint(round(saturate(depth.Load(p))*16777215.0));
-    uint packed=(z<<8)|(stencil.Load(p).y&255);
-    float4 b=float4(packed&255,(packed>>8)&255,(packed>>16)&255,(packed>>24)&255)/255.0;
-    return float4(b[order.x],b[order.y],b[order.z],b[order.w]);
-}
-)";
 }  // namespace gpu::d3d11

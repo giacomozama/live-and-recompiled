@@ -32,6 +32,7 @@
 #include "gpu/backend.h"
 #include "gpu/draw.h"
 #include "gpu/draw_steps.h"
+#include "gpu/frame_pictures.h"
 #include "gpu/dxgi_formats.h"
 #include "gpu/fsr_hlsl.h"
 #include "gpu/hud_split.h"
@@ -356,8 +357,9 @@ struct Ring {
 };
 constexpr size_t kRingStores = 6;  // stores a ring keeps behind the GPU before it waits for the oldest
 
-class OpenGLBackend final : public Backend, Targets<OpenGLBackend, Image>, DrawSteps<OpenGLBackend, Image>, PostEffects<OpenGLBackend, Image, View> {
+class OpenGLBackend final : public Backend, Targets<OpenGLBackend, Image>, FramePictures<OpenGLBackend, Image>, DrawSteps<OpenGLBackend, Image>, PostEffects<OpenGLBackend, Image, View> {
     friend class Targets<OpenGLBackend, Image>;
+    friend class FramePictures<OpenGLBackend, Image>;
     friend class DrawSteps<OpenGLBackend, Image>;
     friend class PostEffects<OpenGLBackend, Image, View>;
     static constexpr const char* kName = "opengl";
@@ -423,12 +425,6 @@ class OpenGLBackend final : public Backend, Targets<OpenGLBackend, Image>, DrawS
     Image screen_;  // the window's picture as drawn, upside down for the window (Display)
     HudSplit hud_;  // g_hud_split: the HUD's elements, and the draw's remap (its viewport and scissor)
     Image smaa_area_, smaa_search_;
-    std::array<Image, 4> generated_;
-    uint32_t taken_ = 0, generated_count_ = 0, next_picture_ = 0;
-    int last_picture_ = -1;
-    bool replaying_ = false, keeping_pictures_ = false;
-    std::chrono::steady_clock::time_point schedule_{};
-    std::chrono::steady_clock::duration picture_interval_{};
     GLuint blit_sampler_ = 0, copy_sampler_ = 0;
     std::vector<Query> counted_;
     struct Recorded {
@@ -457,14 +453,9 @@ class OpenGLBackend final : public Backend, Targets<OpenGLBackend, Image>, DrawS
     uint32_t serial_ = 0;
     bool as_drawn_ = false, uncounted_ = false;  // AsDrawn and Uncounted, for the next Draw
     bool keep_geometry_ = false;
-    uint64_t shown_ = 0;
     uint32_t ww_ = 0, wh_ = 0;
     int max_texture_ = 8192;
     bool ui_ = false;
-    std::chrono::steady_clock::time_point last_{};
-    std::chrono::steady_clock::time_point fps_since_{};
-    uint32_t fps_pictures_ = 0;
-    float fps_ = 0;
     State sprite_;
     Assembled assembled_;
     std::array<std::vector<uint8_t>, 16> color_buffers_;
@@ -1642,35 +1633,20 @@ class OpenGLBackend final : public Backend, Targets<OpenGLBackend, Image>, DrawS
             LOG_FIRST(4, "opengl: swap failed: %s", SDL_GetError());
             return;
         }
-        if (count) {
-            const auto now = std::chrono::steady_clock::now();
-            if (fps_since_ == decltype(fps_since_){} || now - fps_since_ > std::chrono::seconds(2)) {
-                fps_since_ = now;
-                fps_pictures_ = 0;
-            } else if (++fps_pictures_; now - fps_since_ >= std::chrono::milliseconds(500)) {
-                fps_ = fps_pictures_ / std::chrono::duration<float>(now - fps_since_).count();
-                fps_since_ = now;
-                fps_pictures_ = 0;
-            }
-        }
+        if (count) CountPicture();
     }
     void FinishPicture(Image& image) {
-        if (!post_done_ && post_target_ == ResourceKey(image.data, false) && PostWanted()) ApplyPost(image);
+        FinishPost(image);
         Resolve(image);
-        post_target_ = 0;
-        post_done_ = occlusion_done_ = view_ok_ = many_views_ = false;
+        ResetView();
     }
-    void KeepPicture(const Surface& front, uint32_t slot) {
-        Image* picture = Target(front, false);
-        if (!picture) return;
-        CpuWrite(*picture);
-        FinishPicture(*picture);
-        auto& copy = generated_[slot];
-        if (!ScratchColor(copy, picture->w, picture->h)) return;
-        Blit(*picture, WholeImage(*picture), copy, WholeImage(copy), GL_COLOR_BUFFER_BIT, GL_NEAREST);
-        copy.fur_frame = picture->fur_frame;
-        taken_ |= 1u << slot;
+    // what FramePictures asks of a backend
+    void FinishPicture(Image& image, uint32_t /*slot*/) { FinishPicture(image); }
+    void CopyPicture(const Image& source, Image& destination) {
+        Blit(source, WholeImage(source), destination, WholeImage(destination), GL_COLOR_BUFFER_BIT, GL_NEAREST);
     }
+    void DisplayKept(int slot, bool count) { Display(&generated_[slot], count); }
+    void DisplayAlone(Image* image, bool count) { Display(image, count); }
     // a vertex attribute at its register's location, set again only when it changed
     bool Attribute(int r, const VertexElement& e, uint32_t stride, uint32_t base) {
         const uint32_t offset = base + e.offset;
@@ -2165,17 +2141,7 @@ public:
     void Present(const Surface& front) override {
         if (!context_) return;
         Begin();
-        if (!std::exchange(hud_.rolled, false)) hud_.Roll(guest_frame_.w);
-        Image* image = Target(front, false);
-        if (image) {
-            CpuWrite(*image);
-            shown_ = ResourceKey(front.data, false);
-        }
-        if (!keeping_pictures_ && next_picture_ < generated_count_ && last_picture_ >= 0)
-            Display(&generated_[last_picture_]);
-        last_picture_ =
-            keeping_pictures_ && (taken_ & (1u << (generated_count_ - 1))) ? int(generated_count_ - 1) : -1;
-        keeping_pictures_ = false;
+        Image* image = FrontPicture(front);
         if (image && last_picture_ < 0) FinishPicture(*image);
         if (g_record_dump.exchange(false)) SaveRecorded();
         if (interp::Recording()) {
@@ -2188,24 +2154,10 @@ public:
                 Record(*image, "the frame's own, alone", 1, 1);
             }
         }
-        const auto now = std::chrono::steady_clock::now();
-        const auto pictures = last_picture_ < 0 ? 1 : std::popcount(taken_);
-        using Duration = std::chrono::steady_clock::duration;
-        const auto elapsed = last_ == decltype(last_){} ? Duration(std::chrono::milliseconds(16)) : now - last_;
-        picture_interval_ =
-            std::clamp(elapsed, Duration(std::chrono::milliseconds(4)), Duration(std::chrono::milliseconds(50))) /
-            pictures;
-        last_ = now;
+        PacePictures();
         {
             PerfScope timing{g_perf.present};
-            if (last_picture_ < 0) {
-                next_picture_ = generated_count_;
-                Display(image);
-            } else {
-                next_picture_ = 0;
-                schedule_ = now;
-                Show();
-            }
+            ShowFrame(image);
             EndShadingFrame();
             PollReports();
             ApplyRenderScale();
@@ -2249,8 +2201,7 @@ public:
     void Redisplay(bool = true) override {
         if (!context_) return;
         Begin();
-        next_picture_ = generated_count_;
-        Display(last_picture_ < 0 ? nullptr : &generated_[last_picture_], false);
+        ShowAgain();
         ApplyRenderScale();
         PollReports();
         // the welcome screen draws from the window's thread, the title from its own after it: handed over
@@ -2258,26 +2209,16 @@ public:
     }
     uint32_t Pictures() override {
         if (!context_ || g_capture.load() || (SDL_GetWindowFlags(window_) & SDL_WINDOW_MINIMIZED)) return 1;
-        const auto& set = app::Get();
-        const uint32_t wanted = std::clamp(set.frame_generation, 1u, 4u);
-        if (!set.vsync || wanted == 1) return wanted;
-        // A 60 Hz display with VSync can present one picture per 60 Hz game frame.
-        return std::min(wanted, std::max(1u, (app::MonitorRefresh() + 1) / 60));
+        return PicturesWanted();
     }
     // own is always true here: no frame is drawn light (Light) and the last picture time is the frame's own
     void Keep(const Surface& front, bool /*own*/) override {
         Current();
-        if (next_picture_ < generated_count_ && last_picture_ >= 0) Display(&generated_[last_picture_]);
-        generated_count_ = std::clamp(app::Get().frame_generation, 2u, 4u);
-        if (app::Get().vsync) generated_count_ = std::clamp((app::MonitorRefresh() + 1) / 60, 2u, generated_count_);
-        next_picture_ = generated_count_;
-        taken_ = 0;
-        keeping_pictures_ = true;
-        KeepPicture(front, generated_count_ - 1);
+        KeepFirst(front);
     }
     void Between(const Surface& front, uint32_t pass) override {
         Current();
-        if (pass < generated_count_) KeepPicture(front, pass - 1);
+        KeepBetween(front, pass);
     }
     void AsDrawn(bool same) override { as_drawn_ = same; }
     void Uncounted() override { uncounted_ = true; }
@@ -2288,28 +2229,12 @@ public:
         serial_ = 0;
         kept_next_ = 0;
         as_drawn_ = uncounted_ = false;
-        if (on && !hud_.rolled) {  // the frame's draws again take its own boxes
-            hud_.Roll(guest_frame_.w);
-            hud_.rolled = true;
-        }
-        replaying_ = on;
+        SetReplaying(on);
     }
-    bool Due(std::chrono::steady_clock::time_point& at) override {
-        if (next_picture_ >= generated_count_) return false;
-        at = schedule_;
-        return true;
-    }
+    bool Due(std::chrono::steady_clock::time_point& at) override { return PictureDue(at); }
     void Show() override {
         Current();
-        const auto now = std::chrono::steady_clock::now();
-        while (next_picture_ < generated_count_ && schedule_ <= now) {
-            const uint32_t slot = next_picture_++;
-            schedule_ += picture_interval_;
-            if ((taken_ & (1u << slot)) && (schedule_ > now || next_picture_ == generated_count_)) {
-                Display(&generated_[slot]);
-                break;
-            }
-        }
+        ShowDue();
     }
     void Sync(uint32_t data, uint32_t) override {
         PerfScope timing{g_perf.sync};

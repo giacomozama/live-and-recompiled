@@ -21,6 +21,7 @@
 #include "core/diag.h"
 #include "gpu/draw.h"
 #include "gpu/draw_steps.h"
+#include "gpu/frame_pictures.h"
 #include "gpu/d3d11_shaders.h"
 #include "gpu/fsr_hlsl.h"
 #include "gpu/hud_split.h"
@@ -221,8 +222,9 @@ static_assert(sizeof(ShaderRecord)==24);
 constexpr uint64_t kShaderCacheMagic=0x3145484341433344ull; // D3CACHE1, source/profile keyed FXC bytecode
 constexpr size_t kPassConstantFloats = 32;  // a full-screen pass's constant buffer: 8 float4, kMotionBlurHlsl's
 
-class D3D11Backend final : public Backend, Targets<D3D11Backend, Image>, DrawSteps<D3D11Backend, Image>, PostEffects<D3D11Backend, Image, ID3D11ShaderResourceView*> {
+class D3D11Backend final : public Backend, Targets<D3D11Backend, Image>, FramePictures<D3D11Backend, Image>, DrawSteps<D3D11Backend, Image>, PostEffects<D3D11Backend, Image, ID3D11ShaderResourceView*> {
     friend class Targets<D3D11Backend, Image>;
+    friend class FramePictures<D3D11Backend, Image>;
     friend class DrawSteps<D3D11Backend, Image>;
     friend class PostEffects<D3D11Backend, Image, ID3D11ShaderResourceView*>;
     static constexpr const char* kName = "d3d11";
@@ -292,12 +294,6 @@ class D3D11Backend final : public Backend, Targets<D3D11Backend, Image>, DrawSte
     std::map<std::pair<const char*, std::string_view>, Shader> pass_shaders_;  // PostEffects' passes
     HudSplit hud_;  // g_hud_split: the HUD's elements, and the draw's remap (its viewport and scissor)
     Com<ID3D11ShaderResourceView> smaa_area_, smaa_search_;
-    std::array<Image, 4> generated_;
-    uint32_t taken_ = 0, generated_count_ = 0, next_picture_ = 0;
-    int last_picture_ = -1;
-    bool replaying_ = false, keeping_pictures_ = false;
-    std::chrono::steady_clock::time_point schedule_{};
-    std::chrono::steady_clock::duration picture_interval_{};
     Com<ID3D11SamplerState> blit_sampler_, copy_sampler_;
     Com<ID3D11BlendState> blit_blend_;
     Com<ID3D11DepthStencilState> blit_depth_;
@@ -307,13 +303,8 @@ class D3D11Backend final : public Backend, Targets<D3D11Backend, Image>, DrawSte
     Com<ID3D11DepthStencilState> copy_depth_, copy_stencil_[8];
     std::vector<Query> counted_;
     std::vector<Report> reports_;
-    uint64_t shown_=0;
     uint32_t ww_=0, wh_=0;
     bool ui_=false;
-    std::chrono::steady_clock::time_point last_{};
-    std::chrono::steady_clock::time_point fps_since_{};
-    uint32_t fps_pictures_ = 0;
-    float fps_=0;
     State sprite_;
     Assembled assembled_;
     std::array<std::vector<uint8_t>,16> color_buffers_;
@@ -1231,41 +1222,23 @@ class D3D11Backend final : public Backend, Targets<D3D11Backend, Image>, DrawSte
         PerfScope timing{g_perf.swap};
         HRESULT hr=swap_->Present(app::Get().vsync?1:0,0);
         if(FAILED(hr)) { Check(hr,"present"); Check(dev_->GetDeviceRemovedReason(),"device removed reason"); }
-        if (hr == S_OK && count) {
-            const auto now = std::chrono::steady_clock::now();
-            if (fps_since_ == decltype(fps_since_){} || now - fps_since_ > std::chrono::seconds(2)) {
-                fps_since_ = now;
-                fps_pictures_ = 0;
-            } else if (++fps_pictures_; now - fps_since_ >= std::chrono::milliseconds(500)) {
-                fps_ = fps_pictures_ / std::chrono::duration<float>(now - fps_since_).count();
-                fps_since_ = now;
-                fps_pictures_ = 0;
-            }
-        }
+        if (hr == S_OK && count) CountPicture();
     }
     void FinishPicture(Image& image,Image& mask) {
-        if (!post_done_ && post_target_ == ResourceKey(image.data,false)) {
-            if (PostWanted()) ApplyPost(image);
-            KeepHdrWorld(image);
-        }
+        FinishPost(image);
         Resolve(image);
         if (!MakeHdrMask(image,mask)) mask = {};
         hdr_world_key_ = 0;
-        post_target_ = 0;
-        post_done_ = occlusion_done_ = view_ok_ = many_views_ = false;
+        ResetView();
     }
-    void KeepPicture(const Surface& front, uint32_t slot) {
-        Image* picture = Target(front,false);
-        if (!picture) return;
-        CpuWrite(*picture);
-        FinishPicture(*picture,generated_masks_[slot]);
-        auto& copy = generated_[slot];
-        if (!ScratchColor(copy,picture->w,picture->h)) return;
+    // what FramePictures asks of a backend
+    void FinishPicture(Image& image,uint32_t slot) { FinishPicture(image,generated_masks_[slot]); }
+    void CopyPicture(const Image& source,Image& destination) {
         Unbind();
-        ctx_->CopyResource(copy.resource.get(),picture->resource.get());
-        copy.fur_frame = picture->fur_frame;
-        taken_ |= 1u << slot;
+        ctx_->CopyResource(destination.resource.get(),source.resource.get());
     }
+    void DisplayKept(int slot,bool count) { Display(&generated_[slot],&generated_masks_[slot],count); }
+    void DisplayAlone(Image* image,bool count) { Display(image,&hdr_mask_,count); }
 public:
     ~D3D11Backend() override {
         if(ui_) {std::lock_guard lock(app::UiLock()); ImGui_ImplDX11_Shutdown();}
@@ -1626,33 +1599,16 @@ public:
     }
     void Present(const Surface& front) override {
         if(!ctx_)return;
-        if (!std::exchange(hud_.rolled, false)) hud_.Roll(guest_frame_.w); Image* image=Target(front,false);if(image) {CpuWrite(*image);shown_=ResourceKey(front.data,false);}
-        if (!keeping_pictures_ && next_picture_ < generated_count_ && last_picture_ >= 0)
-            Display(&generated_[last_picture_],&generated_masks_[last_picture_]);
-        last_picture_ = keeping_pictures_ && (taken_ & (1u << (generated_count_ - 1))) ? int(generated_count_ - 1) : -1;
-        keeping_pictures_ = false;
+        Image* image=FrontPicture(front);
         if (image && last_picture_ < 0) FinishPicture(*image,hdr_mask_);
         if(g_capture.exchange(false))BeginEffectCapture(last_picture_ < 0 ? image : &generated_[last_picture_]);
         else if(effect_trace_active_ && diag::Env("XBE_D3D11_TRACE_FRAME")) {
             LOGR("d3d11: captured one frame, %zu materials",traced_effects_.size());effect_trace_active_=false;
         }
-        const auto now = std::chrono::steady_clock::now();
-        const auto pictures = last_picture_ < 0 ? 1 : std::popcount(taken_);
-        using Duration = std::chrono::steady_clock::duration;
-        const auto elapsed = last_ == decltype(last_){} ? Duration(std::chrono::milliseconds(16)) : now - last_;
-        picture_interval_ = std::clamp(elapsed, Duration(std::chrono::milliseconds(4)),
-                                       Duration(std::chrono::milliseconds(50))) / pictures;
-        last_ = now;
+        PacePictures();
         {
             PerfScope timing{g_perf.present};
-            if (last_picture_ < 0) {
-                next_picture_ = generated_count_;
-                Display(image,&hdr_mask_);
-            } else {
-                next_picture_ = 0;
-                schedule_ = now;
-                Show();
-            }
+            ShowFrame(image);
             EndShadingFrame();
             PollReports();
             ApplyRenderScale();
@@ -1671,58 +1627,20 @@ public:
         if(frame_%120==0) {for(auto it=textures_.begin();it!=textures_.end();) if(it->second.frame+120<frame_) it=textures_.erase(it); else ++it;}
     }
     void Redisplay(bool=true) override {
-        next_picture_ = generated_count_;
-        Display(last_picture_ < 0 ? nullptr : &generated_[last_picture_],
-                last_picture_ < 0 ? &hdr_mask_ : &generated_masks_[last_picture_],false);
+        ShowAgain();
         ApplyRenderScale();
         PollReports();
     }
     uint32_t Pictures() override {
         if (!swap_ || effect_trace_active_ || g_capture.load() || IsIconic(static_cast<HWND>(app::NativeWindow()))) return 1;
-        const auto& set = app::Get();
-        const uint32_t wanted = std::clamp(set.frame_generation,1u,4u);
-        if (!set.vsync || wanted == 1) return wanted;
-        // A 60 Hz display with VSync can present one picture per 60 Hz game frame.
-        return std::min(wanted,std::max(1u,(app::MonitorRefresh()+1)/60));
+        return PicturesWanted();
     }
     // own is always true here: no frame is drawn light (Light) and the last picture time is the frame's own
-    void Keep(const Surface& front, bool /*own*/) override {
-        if (next_picture_ < generated_count_ && last_picture_ >= 0)
-            Display(&generated_[last_picture_],&generated_masks_[last_picture_]);
-        generated_count_ = std::clamp(app::Get().frame_generation,2u,4u);
-        if (app::Get().vsync)
-            generated_count_ = std::clamp((app::MonitorRefresh()+1)/60,2u,generated_count_);
-        next_picture_ = generated_count_;
-        taken_ = 0;
-        keeping_pictures_ = true;
-        KeepPicture(front,generated_count_ - 1);
-    }
-    void Between(const Surface& front, uint32_t pass) override {
-        if (pass < generated_count_) KeepPicture(front,pass - 1);
-    }
-    void Replaying(bool on) override {
-        if (on && !hud_.rolled) {  // the frame's draws again take its own boxes
-            hud_.Roll(guest_frame_.w);
-            hud_.rolled = true;
-        }
-        replaying_ = on;
-    }
-    bool Due(std::chrono::steady_clock::time_point& at) override {
-        if (next_picture_ >= generated_count_) return false;
-        at = schedule_;
-        return true;
-    }
-    void Show() override {
-        const auto now = std::chrono::steady_clock::now();
-        while (next_picture_ < generated_count_ && schedule_ <= now) {
-            const uint32_t slot = next_picture_++;
-            schedule_ += picture_interval_;
-            if ((taken_ & (1u << slot)) && (schedule_ > now || next_picture_ == generated_count_)) {
-                Display(&generated_[slot],&generated_masks_[slot]);
-                break;
-            }
-        }
-    }
+    void Keep(const Surface& front, bool /*own*/) override { KeepFirst(front); }
+    void Between(const Surface& front, uint32_t pass) override { KeepBetween(front,pass); }
+    void Replaying(bool on) override { SetReplaying(on); }
+    bool Due(std::chrono::steady_clock::time_point& at) override { return PictureDue(at); }
+    void Show() override { ShowDue(); }
     void Sync(uint32_t data,uint32_t) override {
         PerfScope timing{g_perf.sync};
         if(!ctx_)return;
