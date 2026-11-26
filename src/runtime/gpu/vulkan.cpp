@@ -1166,8 +1166,11 @@ private:
     // draw that reads the frame (the title's bloom and depth of field take their copies so), and the passes
     void TrackView(const State& s);
     bool ReadsFrame(const State& s);
-    // a draw into the screen grab's target (g_grab_texture), whatever size it is made at
+    // a draw into the screen grab's target (g_grab_texture), whatever size it is made at; data the surface's own
+    // (physical) address
     bool IntoGrab(uint32_t data);
+    // ProgramShading::depth_alpha's shells onto the frame start the occlusion if nothing has yet; true when it ran
+    bool FurOcclusion(const State& s, uint32_t shading);
     uint32_t grab_any_tex_ = 0, grab_any_data_ = 0;
     void ApplyOcclusion();
     // motion vectors (Motion): the frame's depth kept for the motion pass of the picture being drawn, as the 3D left
@@ -6535,6 +6538,7 @@ bool VulkanBackend::ReuseDraw(const State& s) {
         return false;
     }
     TrackPost(s, r.flat);
+    FurOcclusion(s, r.sh.shading);
     // the draw that took the first copy is the HUD's first, as in Draw: unrecorded, the picture's HUD drawn again
     // ran the glow passes again at the output's size (HudKeepSafe: first record isn't the copy's draw), its dome brighter
     if (&s != &sprite_ && !hud_replay_ && hud_copies_ && HudNativeWanted()) HudRecordDraw(s);
@@ -6990,7 +6994,21 @@ bool VulkanBackend::IntoGrab(uint32_t data) {
         grab_any_tex_ = tex;
         grab_any_data_ = Describe(tex, d) ? d.data : 0;
     }
-    return grab_any_data_ && data == grab_any_data_;
+    return grab_any_data_ && mem::VirtualFromPhysical(data) == grab_any_data_;
+}
+
+// the occlusion after all the 3D (f4718cb) came after the fur too, and read the depth its shells leave: in only where
+// a strand is opaque enough (depth_alpha's pass), near and far speckled, dark dots over the coat. Until IntoGrab took
+// the surface's virtual address the occlusion ran at the shrink into the screen grab, before the fur, by chance
+bool VulkanBackend::FurOcclusion(const State& s, uint32_t shading) {
+    if (!shading || occlusion_done_ || post_done_ || hud_replay_ || !post_rt_ || !app::Get().ambient_occlusion)
+        return false;
+    const ProgramShading& ps = g_program_shading[shading - 1];
+    if (ps.depth_alpha <= 0 || (ps.top >= 0 && !(s.vsc[size_t(ps.top)][0] > 0))) return false;
+    Target* rt = FindTarget(s.rt, false);
+    if (!rt || rt->data != post_rt_) return false;
+    ApplyOcclusion();
+    return true;
 }
 
 bool VulkanBackend::ReadsFrame(const State& s) {
@@ -9367,6 +9385,7 @@ void VulkanBackend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t
     if (sh.prog) EnsureProgramHash(s);
     sh.shading = DrawShading(s, sh);
     prog_scope.shading = sh.shading;
+    if (FurOcclusion(s, sh.shading) && !BindTargets(s)) return CountedSkip(s, "targets");  // its passes unbound them
     sh.vkey = VertexKey(s, a, sh);
     EnsureVertexShader(s, a, sh);
     g_perf.d_vs += PerfLap(lap);

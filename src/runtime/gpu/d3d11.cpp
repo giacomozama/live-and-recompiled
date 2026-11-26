@@ -1894,6 +1894,12 @@ public:
         TrackPost(s, a, sh.prog, rt, ds);
         sh.shading=DrawShading(s,sh);
         const ProgramShading* shading = sh.shading ? &g_program_shading[sh.shading-1] : nullptr;
+        // fur's shells (depth_alpha's, top's x above 0) start the occlusion if nothing has yet: their depth, in only
+        // where a strand is opaque enough, read by it speckled the fur with shadow
+        if (rt && shading && shading->depth_alpha > 0 && !occlusion_done_ && !post_done_ &&
+            app::Get().ambient_occlusion && post_target_ == ResourceKey(rt->data, false) &&
+            (shading->top < 0 || s.vsc[size_t(shading->top)][0] > 0))
+            ApplyOcclusion(*rt);
         ID3D11HullShader* hull = nullptr;
         ID3D11DomainShader* domain = nullptr;
         if (a.topology == Topology::Patches && shading) {
