@@ -2026,16 +2026,9 @@ void Draw(double fps) {
     }
 
     // the shader warm-up at work (gpu::shader_record::g_work): a pill at the bottom left, a turning arc and how far
-    // it has come, so a first run's slower frames have a reason on screen. Compiling shows once it has run a second
-    // (a run with everything cached is through before then, and needs no word); finding the disc's shaders, only
-    // ever a first run's, at once
+    // it has come, so a first run's slower frames have a reason on screen
     const auto work = gpu::shader_record::g_work.load();
-    static double work_since = -1.0;
-    if (work == gpu::shader_record::Work::None) work_since = -1.0;
-    else if (work_since < 0.0) work_since = ImGui::GetTime();
-    const bool shown = work == gpu::shader_record::Work::Generating ||
-                       (work != gpu::shader_record::Work::None && ImGui::GetTime() - work_since >= 1.0);
-    if (shown && !quit) {
+    if (work != gpu::shader_record::Work::None && !quit) {
         ImDrawList* dl = ImGui::GetForegroundDrawList();
         const ImVec2 display = ImGui::GetIO().DisplaySize;
         const float font = ImGui::GetFontSize() * 1.1f;
