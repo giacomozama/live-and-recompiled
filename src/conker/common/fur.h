@@ -102,7 +102,7 @@ struct ModelDefault {
 };
 inline constexpr ModelDefault kModelDefaults[] = {
     {0, {55, 7, 60, 60, 75, 120, 0, 8, 50, 150, 100, 0}},     // Conker, all his models but Van Helsing's and the Heist's
-    {150, {20, 7, 100, 140, 75, 70, 0, 0, 50, 50, 100, 0, 110}},  // ConkerMatrix, the Heist's
+    {150, {35, 7, 70, 120, 75, 20, 0, 7, 50, 50, 100, 0, 110}},  // ConkerMatrix, the Heist's
     {276, {32, 7, 60, 90, 75, 150, 0, 0, 50, 50, 100, 0, 120}},  // ConkerHelsing (his hair its own, below)
     {59, {24, 5, 30, 120, 65, 35, 2, 2, 50, 50, 100, 40}},   // Weasel: every weasel model (fur.cpp kSharedLooks)
     {118, {20, 10, 100, 60, 75, 70, 5, 10, 50, 50, 100, 0}},  // a weasel of the weasels' program
@@ -115,7 +115,7 @@ inline constexpr ModelDefault kModelDefaults[] = {
     {441, {20, 16, 20, 60, 75, 70, 5, 0, 50, 50, 100, 0, 100, 0, 100, 8, 100}},  // a multiplayer class
     {461, {24, 15, 20, 200, 70, 90, 5, 20, 30, 70, 70, 0, 100, 0, 100, 30, 170}},  // a Sneeker (multiplayer)
     {13, {64, 1, 0, 200, 100, 150, 0, 0, 150, 150, 100, 50, 100, 0, 100, 15, 100}, 0},  // Haystack
-    {69, {12, 4, 20, 100, 100, 60, 0, 0, 200, 150, 100, 100, 100, 0, 100, 0, 100}, 0},  // TerminatorHaystack
+    {69, {8, 5, 40, 170, 100, 80, 0, 0, 150, 150, 100, 100, 120, 0, 100, 0, 100}, 0},  // TerminatorHaystack
     {7, {16, 16, 100, 100, 75, 110, 0, 0, 50, 80, 100, 0}},    // QueenBee
     {109, {16, 12, 80, 100, 75, 110, 0, 0, 100, 50, 100, 100, 120}},  // BeeKing
     {114, {24, 16, 100, 200, 100, 120, 0, 0, 30, 70, 100, 10, 150}},  // Berri: BeriMatrix's look, fill 10
