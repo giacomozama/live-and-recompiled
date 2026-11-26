@@ -111,6 +111,7 @@ inline constexpr ModelDefault kModelDefaults[] = {
     {91, {40, 12, 90, 130, 75, 85, 2, 0, 65, 50, 100, 0}},   // CombatSquirrelrodent
     {135, {12, 12, 70, 110, 75, 110, 2, 2, 70, 50, 100, 100, 100, 0, 100, 30, 110}},  // CombatGeneral
     {445, {36, 10, 60, 100, 70, 110, 2, 2, 70, 90, 100, 0}},     // multiplayer's WWII sharpshooter class
+    {433, {20, 7, 40, 190, 75, 30, 5, 5, 50, 50, 100, 0}},     // multiplayer's Future poisoner squirrel class
     {441, {20, 16, 20, 60, 75, 70, 5, 0, 50, 50, 100, 0, 100, 0, 100, 8, 100}},  // a multiplayer class
     {461, {24, 15, 20, 200, 70, 90, 5, 20, 30, 70, 70, 0, 100, 0, 100, 30, 170}},  // a Sneeker (multiplayer)
     {13, {64, 1, 0, 200, 100, 150, 0, 0, 150, 150, 100, 50, 100, 0, 100, 15, 100}, 0},  // Haystack
