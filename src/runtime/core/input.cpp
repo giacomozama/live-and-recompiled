@@ -277,11 +277,15 @@ bool KeyDown(int port, int vk) {
     if (vk == 0x12) codes[0] = 0xA4, codes[1] = 0xA5;
     const Kind kind = vk < 7 ? Kind::Mouse : Kind::Keyboard;
     std::lock_guard lock(g_lock);
-    // a button the system holds up is up: the click that brings the window back sends its press but not always its
-    // release, and the button stayed held until clicked again
-    if (kind == Kind::Mouse && !app::KeyDown(vk)) {
+    // a key or button the system holds up is up on every device. The click that brings the window back sends its press
+    // but not always its release. SDL keeps one state a key, whichever device: a release it makes itself
+    // (SDL_ResetKeyboard, Windows' move and resize loop), or one Windows reports through the other of its two keyboard
+    // paths, names another device than the press did, and the key stayed held (Conker running on by himself)
+    if (!app::KeyDown(vk)) {
         for (Dev& d : g_devices)
-            if (d.kind == Kind::Mouse) d.down[size_t(vk)] = false;
+            if (d.kind == kind)
+                for (int code : codes)
+                    if (code) d.down[size_t(code)] = false;
         return false;
     }
     for (const Dev& d : g_devices)
@@ -311,6 +315,15 @@ void Key(uint64_t keyboard, int vk, bool down) {
     {
         std::lock_guard lock(g_lock);
         Dev& d = Add(Kind::Keyboard, keyboard, "");
+        // a release under another device than its press (KeyDown lets that one go): said a few times a run
+        if (!down && !d.down[size_t(vk)]) {
+            static int said = 0;
+            for (const Dev& other : g_devices)
+                if (other.kind == Kind::Keyboard && other.down[size_t(vk)] && said < 8) {
+                    said++;
+                    LOGR("input: key %02X pressed on %s, released on %s", vk, other.key.c_str(), d.key.c_str());
+                }
+        }
         d.down[size_t(vk)] = down;
         port = OwnerOf(d);
     }
