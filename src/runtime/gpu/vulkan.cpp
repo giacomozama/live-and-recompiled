@@ -1395,7 +1395,11 @@ private:
     bool SamplesSupported(VkFormat f, VkImageUsageFlags usage, uint32_t samples) const;
     void CreateSampledTarget(Target& t);
     void ResolveSamples(Target& t);
+    bool ResolveDepthPass(Target& t);
     void SpreadSamples(Target& t);
+    // XBE_PERF: a resolve or spread timed as a pass of its own (kind 4 or 5) on these attachments, inner passes in it
+    void StampBegin(Image* c, Image* z, uint32_t kind);
+    void StampEnd();
     void WriteRes(Target& t, bool whole);
     // UploadTarget, then its step
     void UploadTarget(Target& t, const Surface& s);
@@ -2159,7 +2163,8 @@ private:
         uint32_t w, h, fmt, depth_only, samples;
         uint64_t draws;
         uint64_t prog = 0;  // the program of the pass's first draw, as 'perf: programs' names it
-        uint32_t kind = 0;  // 0 the frame's, 1 drawing again, 2 the HUD at the output's size, 3 motion
+        uint32_t kind = 0;  // 0 the frame's, 1 drawing again, 2 the HUD at the output's size, 3 motion, 4 msaa resolve,
+                            // 5 msaa spread
         auto Tie() const { return std::tie(w, h, fmt, depth_only, samples, prog, kind); }
         bool operator<(const PassKey& o) const { return Tie() < o.Tie(); }
     };
@@ -2170,6 +2175,7 @@ private:
     std::vector<PassKey> pass_keys_[kFrames];
     uint32_t pass_stamps_[kFrames] = {};
     bool pass_open_ = false, pass_failed_ = false;
+    uint32_t stamp_kind_ = 0;  // StampBegin's kind while its stamp is open
     uint32_t pass_slot_ = 0;
     void PassStamp(bool start);
     void PassFrameDone(uint32_t slot);
@@ -3404,7 +3410,7 @@ void VulkanBackend::EnsureRendering() {
     vkCmdBeginRendering(cmd_, &ri);
     rendering_ = true;
     active_ = desired_;
-    if (diag::Perf()) PassStamp(true);
+    if (diag::Perf() && !stamp_kind_) PassStamp(true);
 }
 
 void VulkanBackend::EndRendering() {
@@ -3412,6 +3418,22 @@ void VulkanBackend::EndRendering() {
     FlushRun();
     vkCmdEndRendering(cmd_);
     rendering_ = false;
+    if (pass_open_ && !stamp_kind_) PassStamp(false);
+}
+
+void VulkanBackend::StampBegin(Image* c, Image* z, uint32_t kind) {
+    if (!diag::Perf()) return;
+    EndRendering();
+    active_ = {c, z};  // only read by PassStamp: rendering_ is false, so the next pass sets it again
+    stamp_kind_ = kind;
+    PassStamp(true);
+    if (!pass_open_) stamp_kind_ = 0;
+}
+
+void VulkanBackend::StampEnd() {
+    if (!stamp_kind_) return;
+    EndRendering();
+    stamp_kind_ = 0;
     if (pass_open_) PassStamp(false);
 }
 
@@ -3439,7 +3461,11 @@ void VulkanBackend::PassStamp(bool start) {
         vkCmdWriteTimestamp(cmd_, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, pass_pool_[slot], pass_stamps_[slot]);
         pass_keys_[slot].push_back({a->w, a->h, uint32_t(a->format), c ? 0u : 1u, uint32_t(a->samples),
                                     draw_serial_ - (in_draw_ ? 1 : 0), in_draw_ ? draw_prog_ : 0,
-                                    motion_pass_ ? 3u : hud_replay_ ? 2u : replay_ ? 1u : 0u});
+                                    stamp_kind_    ? stamp_kind_
+                                    : motion_pass_ ? 3u
+                                    : hud_replay_  ? 2u
+                                    : replay_      ? 1u
+                                                   : 0u});
         pass_prog_set_ = in_draw_;
         pass_slot_ = slot;
         pass_open_ = true;
@@ -3493,12 +3519,12 @@ void VulkanBackend::PassFrameDone(uint32_t slot) {
     std::vector<std::pair<PassKey, Sum>> list(sums.begin(), sums.end());
     std::sort(list.begin(), list.end(), [](const auto& a, const auto& b) { return a.second.ms > b.second.ms; });
     std::string line;
-    static const char* const kKinds[] = {"frame", "again", "hud", "motion"};
+    static const char* const kKinds[] = {"frame", "again", "hud", "motion", "resolve", "spread", "?", "?"};
     for (size_t i = 0; i < list.size() && i < 16; i++) {
         const auto& [k, s] = list[i];
         char part[200];
         std::snprintf(part, sizeof(part), "%s%ux%u fmt %u%s x%u %s %llX %.2f ms (%.1f passes, %.0f draws)",
-                      i ? ", " : "", k.w, k.h, k.fmt, k.depth_only ? " depth" : "", k.samples, kKinds[k.kind & 3],
+                      i ? ", " : "", k.w, k.h, k.fmt, k.depth_only ? " depth" : "", k.samples, kKinds[k.kind & 7],
                       (unsigned long long)k.prog, s.ms / frames, s.passes / frames, s.draws / frames);
         line += part;
     }
@@ -3667,9 +3693,13 @@ void VulkanBackend::CreateSampledTarget(Target& t) {
 void VulkanBackend::ResolveSamples(Target& t) {
     if (!t.ms_ahead) return;
     t.ms_ahead = false;
+    StampBegin(t.depth ? nullptr : t.ms.get(), t.depth ? t.ms.get() : nullptr, 4);
     if (t.depth) {
-        Transition(*t.ms, kRead);
-        CopyDepthStencil(*t.ms, true, *t.res, 1);
+        if (!ResolveDepthPass(t)) {
+            Transition(*t.ms, kRead);
+            CopyDepthStencil(*t.ms, true, *t.res, 1);
+        }
+        StampEnd();
         return;
     }
     Transition(*t.ms, kSrc);
@@ -3680,20 +3710,55 @@ void VulkanBackend::ResolveSamples(Target& t) {
     r.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
     r.extent = {t.w, t.h, 1};
     vkCmdResolveImage(cmd_, t.ms->image, kSrc, t.res->image, kDst, 1, &r);
+    StampEnd();
+}
+
+// the samples' depth and stencil into res by the pass's own resolve (sample zero, which Vulkan 1.2's depth stencil
+// resolve always has for both): one empty pass in place of CopyDepthStencil's clear and nine full-screen draws.
+// XBE_DS_RESOLVE=0 draws them again, for an A/B
+bool VulkanBackend::ResolveDepthPass(Target& t) {
+    static const bool off = [] {
+        const char* e = diag::Env("XBE_DS_RESOLVE");
+        return e && e[0] == '0';
+    }();
+    if (off) return false;
+    constexpr VkImageLayout kAttach = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    Transition(*t.ms, kAttach);
+    Transition(*t.res, kAttach);
+    Barrier();
+    VkRenderingAttachmentInfo za{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
+    za.imageView = t.ms->view;
+    za.imageLayout = kAttach;
+    za.resolveMode = VK_RESOLVE_MODE_SAMPLE_ZERO_BIT;
+    za.resolveImageView = t.res->view;
+    za.resolveImageLayout = kAttach;
+    za.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+    za.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    VkRenderingInfo ri{VK_STRUCTURE_TYPE_RENDERING_INFO};
+    ri.renderArea = {{0, 0}, {t.w, t.h}};
+    ri.layerCount = 1;
+    ri.pDepthAttachment = &za;
+    if (t.ms->aspect & VK_IMAGE_ASPECT_STENCIL_BIT) ri.pStencilAttachment = &za;
+    vkCmdBeginRendering(cmd_, &ri);
+    vkCmdEndRendering(cmd_);
+    return true;
 }
 
 // the samples take what was written to res since, every sample of a pixel the same
 void VulkanBackend::SpreadSamples(Target& t) {
     if (!t.res_ahead) return;
     t.res_ahead = false;
+    StampBegin(t.depth ? nullptr : t.ms.get(), t.depth ? t.ms.get() : nullptr, 5);
     Transition(*t.res, kRead);
     if (t.depth) {
         CopyDepthStencil(*t.res, false, *t.ms, msaa_);
+        StampEnd();
         return;
     }
     SetBlitTarget(*t.ms, t.w, t.h);
     float uv[4] = {0, 0, 1, 1};
     Blit(t.res->view, uv, {.alpha = true, .rtv = t.fmt, .samples = msaa_});
+    StampEnd();
 }
 
 // before res is written other than by a draw: whole, nothing drawn to the samples stays; they take res before the next
