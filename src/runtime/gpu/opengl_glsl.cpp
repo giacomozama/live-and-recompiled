@@ -33,7 +33,7 @@ void GlslInit() {
 }
 
 bool HlslToGlsl(const std::string& src, const char* entry, const char* profile, uint32_t version, std::string& glsl,
-                std::vector<Bind>& binds, std::string& err) {
+                std::vector<Bind>& binds, std::string& err, bool flip) {
     const EShLanguage stage = LanguageOf(profile[0]);
     glslang::TShader sh(stage);
     const char* text = src.c_str();
@@ -73,8 +73,12 @@ bool HlslToGlsl(const std::string& src, const char* entry, const char* profile, 
         o.es = false;
         o.vulkan_semantics = false;
         o.enable_420pack_extension = true;
-        o.vertex.fixup_clipspace = false;  // depth 0 to 1 is glClipControl's
-        o.vertex.flip_vert_y = false;
+        // GLSL before 4.10 names stage inputs and outputs by location only with the extension
+        o.separate_shader_objects = version < 410;
+        // depth 0 to 1 and the rows are glClipControl's, without it the last vertex stage's (a geometry shader's
+        // below: SPIRV-Cross fixes up at the entry point's end only, past its vertices)
+        o.vertex.fixup_clipspace = flip && (stage == EShLangVertex || stage == EShLangTessEvaluation);
+        o.vertex.flip_vert_y = o.vertex.fixup_clipspace;
         c.set_common_options(o);
         const std::string suffix = std::string("_") + profile[0];
         const auto resources = c.get_shader_resources();
@@ -102,6 +106,13 @@ bool HlslToGlsl(const std::string& src, const char* entry, const char* profile, 
             binds.push_back({uint8_t(unit), uint8_t(t), uint8_t(s), 0, target});
         }
         glsl = c.compile();
+        if (flip && stage == EShLangGeometry) {
+            const std::string emit = "EmitVertex();";
+            const std::string fixup = "gl_Position.z = 2.0 * gl_Position.z - gl_Position.w; "
+                                      "gl_Position.y = -gl_Position.y; ";
+            for (size_t at = 0; (at = glsl.find(emit, at)) != std::string::npos; at += fixup.size() + emit.size())
+                glsl.insert(at, fixup);
+        }
     } catch (const std::exception& e) {
         err = std::string("SPIRV-Cross: ") + e.what();
         return false;

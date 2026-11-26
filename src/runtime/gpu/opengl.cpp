@@ -1,8 +1,10 @@
-// OpenGL backend: the D3D11 backend's structure (d3d11.cpp) on desktop OpenGL 4.1+ core, for GPUs whose Vulkan is
+// OpenGL backend: the D3D11 backend's structure (d3d11.cpp) on desktop OpenGL 4.0+ core, for GPUs whose Vulkan is
 // missing or incomplete (Ivy Bridge's HD 4000 on Mesa's crocus: GL 4.2). The same HLSL as the other renderers, made
 // SPIR-V by glslang and GLSL by SPIRV-Cross. glClipControl(GL_UPPER_LEFT, GL_ZERO_TO_ONE) makes every target hold
 // its rows as D3D does (row 0 the top, viewport and scissor rows D3D's, gl_FragCoord SV_Position's, facing kept), so
 // the shared shaders and rectangles carry over unchanged; the window alone is flipped, as the picture is put on it.
+// Without it (Intel's Windows driver for the HD 4000) the last vertex stage does the same (opengl_glsl.h's flip) and
+// the front face is swapped.
 #include <SDL3/SDL.h>
 #define GL_GLEXT_PROTOTYPES 1
 #include <SDL3/SDL_opengl.h>
@@ -67,7 +69,7 @@ bool Load() {
 #define XBE_GL_LOAD(name) name = reinterpret_cast<decltype(name)>(SDL_GL_GetProcAddress("gl" #name));
     XBE_GL_FUNCTIONS(XBE_GL_LOAD)
 #undef XBE_GL_LOAD
-    // those a 4.1 context may lack, used only where present: ClipControl (ARB_clip_control, checked at Init),
+    // those a 4.0 context may lack, used only where present: ClipControl (ARB_clip_control),
     // ViewportIndexedf (else integer viewports), DebugMessageCallback (XBE_GL_DEBUG), BufferStorage (else the rings
     // mapped a piece at a time)
     bool ok = true;
@@ -324,8 +326,10 @@ struct CacheRecord {
 };
 static_assert(sizeof(CacheRecord) == 24);
 constexpr uint64_t kShaderCacheMagic = 0x3145484341434C47ull;  // GLCACHE1: a stage's binds then its GLSL
+// a stage's or program's key apart when it does glClipControl's work
+constexpr uint64_t kFlipKey = 0x9E3779B97F4A7C15ull;
 // bump when HlslToGlsl makes other GLSL of the same source
-constexpr uint64_t kGlslRevision = 1;
+constexpr uint64_t kGlslRevision = 2;
 constexpr size_t kPassConstantFloats = 32;  // a full-screen pass's constant buffer: 8 float4, kMotionBlurHlsl's
 
 // a buffer written a piece at a time behind the GPU (D3D11's NO_OVERWRITE maps), started over, orphaned, when full
@@ -355,6 +359,7 @@ class OpenGLBackend final : public Backend {
     SDL_GLContext context_ = nullptr;
     std::thread::id owner_{};
     uint32_t glsl_version_ = 420;
+    bool clip_control_ = true;
     bool stencil_texturing_ = false, s3tc_ = false, anisotropic_ = false;
     int ubo_align_ = 256;
     int vsync_ = -1;
@@ -552,10 +557,11 @@ class OpenGLBackend final : public Backend {
     }
 
     // ---- stages and programs
-    Stage Compile(const std::string& source, const char* entry, const char* profile) {
+    // flip: the stage does glClipControl's work (opengl_glsl.h)
+    Stage Compile(const std::string& source, const char* entry, const char* profile, bool flip) {
         PerfScope timing{g_perf.compile};
         Stage out;
-        out.hash = SourceHash(source, entry, profile);
+        out.hash = SourceHash(source, entry, profile) ^ (flip ? kFlipKey : 0);
         if (profile[0] == 'v') out.source = source;
         const uint64_t key = out.hash ^ (uint64_t(glsl_version_) << 48) ^ (kGlslRevision << 40);
         std::string glsl;
@@ -573,7 +579,7 @@ class OpenGLBackend final : public Backend {
             g_perf.shaders++;
             const auto start = std::chrono::steady_clock::now();
             std::string err;
-            if (!HlslToGlsl(source, entry, profile, glsl_version_, glsl, out.binds, err)) {
+            if (!HlslToGlsl(source, entry, profile, glsl_version_, glsl, out.binds, err, flip)) {
                 LOGE("opengl: shader %s/%s: %s", entry, profile, err.c_str());
                 return out;
             }
@@ -602,10 +608,12 @@ class OpenGLBackend final : public Backend {
         out.shader = shader;
         return out;
     }
-    Stage* CachedStage(const std::string& source, const char* entry, const char* profile) {
-        const uint64_t key = SourceHash(source, entry, profile);
+    // last: no tessellation or geometry stage follows this vertex stage
+    Stage* CachedStage(const std::string& source, const char* entry, const char* profile, bool last = true) {
+        const bool flip = !clip_control_ && last && (profile[0] == 'v' || profile[0] == 'd' || profile[0] == 'g');
+        const uint64_t key = SourceHash(source, entry, profile) ^ (flip ? kFlipKey : 0);
         auto [it, added] = stages_.try_emplace(key);
-        if (added) it->second = Compile(source, entry, profile);
+        if (added) it->second = Compile(source, entry, profile, flip);
         return it->second.shader ? &it->second : nullptr;
     }
     Program* Link(std::initializer_list<const Stage*> stages) {
@@ -738,7 +746,7 @@ class OpenGLBackend final : public Backend {
     void SetRaster(bool cull, GLenum front, bool wire, float zslope, float zbias) {
         SetEnable(GL_CULL_FACE, cull, bound_.cull);
         if (!bound_.valid || bound_.front != front) {
-            gl::FrontFace(front);
+            gl::FrontFace(clip_control_ ? front : front == GL_CW ? GL_CCW : GL_CW);  // mirrored by the vertex stage
             bound_.front = front;
         }
         const GLenum polygon = wire ? GL_LINE : GL_FILL;
@@ -2074,9 +2082,9 @@ class OpenGLBackend final : public Backend {
             if (app::Welcoming()) app::DrawWelcome();
             else if (app::kGame.ui) app::kGame.ui(fps_);
             ImGui::Render();
-            gl::ClipControl(GL_LOWER_LEFT, GL_ZERO_TO_ONE);  // ImGui draws the window's way up
+            if (clip_control_) gl::ClipControl(GL_LOWER_LEFT, GL_ZERO_TO_ONE);  // ImGui draws the window's way up
             ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
-            gl::ClipControl(GL_UPPER_LEFT, GL_ZERO_TO_ONE);
+            if (clip_control_) gl::ClipControl(GL_UPPER_LEFT, GL_ZERO_TO_ONE);
             Invalidate();
             gl::BindVertexArray(vao_);
             gl::BindBuffer(GL_ELEMENT_ARRAY_BUFFER, indices_.buffer);
@@ -2193,13 +2201,13 @@ public:
         const bool debug = diag::Env("XBE_GL_DEBUG") != nullptr;
         SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
         SDL_GL_SetAttribute(SDL_GL_CONTEXT_FLAGS, debug ? SDL_GL_CONTEXT_DEBUG_FLAG : 0);
-        for (int minor : {2, 1}) {
+        for (int minor : {2, 1, 0}) {
             SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 4);
             SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, minor);
             if ((context_ = SDL_GL_CreateContext(window_))) break;
         }
         if (!context_) {
-            LOGE("opengl: no OpenGL 4.1 context: %s", SDL_GetError());
+            LOGE("opengl: no OpenGL 4.0 context: %s", SDL_GetError());
             return false;
         }
         owner_ = std::this_thread::get_id();
@@ -2218,17 +2226,24 @@ public:
         for (GLint i = 0; i < count; i++)
             if (auto* e = reinterpret_cast<const char*>(gl::GetStringi(GL_EXTENSIONS, GLuint(i)))) extensions.insert(e);
         const auto has = [&](const char* e) { return extensions.count(e) != 0; };
-        const bool at_least = major > 4 || (major == 4 && minor >= 2);
-        if (!gl::ClipControl || (!(major > 4 || (major == 4 && minor >= 5)) && !has("GL_ARB_clip_control"))) {
-            LOGE("opengl: the driver lacks ARB_clip_control, which this renderer needs");
+        const auto since = [&](GLint v) { return major > 4 || (major == 4 && minor >= v); };
+        // GLSL 4.00 gets its binding and location layouts from these
+        if ((!since(2) && !has("GL_ARB_shading_language_420pack")) ||
+            (!since(1) && !has("GL_ARB_separate_shader_objects"))) {
+            LOGE("opengl: the driver lacks ARB_shading_language_420pack or ARB_separate_shader_objects");
             return false;
         }
+        {
+            const char* e = diag::Env("XBE_GL_CLIP_CONTROL");  // 0: as on a driver without it
+            clip_control_ = gl::ClipControl && (since(5) || has("GL_ARB_clip_control")) && !(e && *e == '0');
+        }
+        if (!since(1) && !has("GL_ARB_viewport_array")) gl::ViewportIndexedf = nullptr;
         stencil_texturing_ = has("GL_ARB_stencil_texturing") || major > 4 || (major == 4 && minor >= 3);
         s3tc_ = has("GL_EXT_texture_compression_s3tc");
         anisotropic_ = has("GL_EXT_texture_filter_anisotropic") || has("GL_ARB_texture_filter_anisotropic");
-        glsl_version_ = at_least ? 420 : 410;
-        LOGR("opengl: GLSL %u, stencil textures %s, S3TC %s", glsl_version_, stencil_texturing_ ? "yes" : "no",
-             s3tc_ ? "yes" : "no");
+        glsl_version_ = since(2) ? 420 : since(1) ? 410 : 400;
+        LOGR("opengl: GLSL %u, clip control %s, stencil textures %s, S3TC %s", glsl_version_,
+             clip_control_ ? "yes" : "no", stencil_texturing_ ? "yes" : "no", s3tc_ ? "yes" : "no");
         {
             const char* e = diag::Env("XBE_GL_PERSISTENT");
             persistent_ = gl::BufferStorage && (major > 4 || (major == 4 && minor >= 4) || has("GL_ARB_buffer_storage")) &&
@@ -2245,7 +2260,7 @@ public:
             gl::Enable(GL_DEBUG_OUTPUT_SYNCHRONOUS);
             gl::DebugMessageCallback(DebugMessage, nullptr);
         }
-        gl::ClipControl(GL_UPPER_LEFT, GL_ZERO_TO_ONE);
+        if (clip_control_) gl::ClipControl(GL_UPPER_LEFT, GL_ZERO_TO_ONE);
         gl::GetIntegerv(GL_UNIFORM_BUFFER_OFFSET_ALIGNMENT, &ubo_align_);
         ubo_align_ = std::max(ubo_align_, 16);
         gl::GetIntegerv(GL_MAX_TEXTURE_SIZE, &max_texture_);
@@ -2273,7 +2288,7 @@ public:
         if (!blit_vs_ || !blit_ps_ || !Link({blit_vs_, blit_ps_})) return false;
         {
             std::lock_guard lock(app::UiLock());
-            ui_ = ImGui_ImplOpenGL3_Init("#version 410 core");
+            ui_ = ImGui_ImplOpenGL3_Init("#version 400 core");
         }
         Invalidate();
         gl::BindVertexArray(vao_);
@@ -2464,10 +2479,13 @@ public:
             domain = it->second.second;
             if (!hull || !domain) hull = domain = nullptr;
         }
-        auto [vit, new_vs] = vertex_stages_.try_emplace(VertexKey(s, a, sh));
+        // without glClipControl a vertex stage differs when tessellation or the points' geometry stage follows it
+        const bool vs_last = !hull && a.topology != Topology::Points;
+        auto [vit, new_vs] =
+            vertex_stages_.try_emplace(VertexKey(s, a, sh) ^ (!clip_control_ && vs_last ? kFlipKey : 0));
         if (new_vs) {
             const auto ve = MakeVertexEntry(s, a, sh);
-            vit->second = CachedStage(VertexHlsl(ve, DrawProgram(s, sh)), "main", "vs_5_0");
+            vit->second = CachedStage(VertexHlsl(ve, DrawProgram(s, sh)), "main", "vs_5_0", vs_last);
         }
         Stage* vs = vit->second;
         if (!vs) return;

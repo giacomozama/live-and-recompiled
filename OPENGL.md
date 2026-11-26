@@ -5,9 +5,13 @@ Graphics, Display. In a build with the debug features, the `XBE_RENDERER=opengl`
 environment variable overrides the setting for one launch. Vulkan remains the default. OpenGL is for GPUs whose
 Vulkan driver is missing or incomplete, such as Ivy Bridge's HD 4000 on Mesa.
 
-The renderer needs an OpenGL 4.1 core context with `ARB_clip_control`, and it
-uses GLSL 4.20 when the context offers it. Mesa's crocus driver gives the HD 4000
-OpenGL 4.2. The window is made for the renderer at launch, so a change in the
+The renderer needs an OpenGL 4.0 core context. Below 4.2 it also needs
+`ARB_shading_language_420pack`, and below 4.1 `ARB_separate_shader_objects`. It
+uses GLSL 4.20 when the context offers it. Without `ARB_clip_control`, the last
+vertex stage of each program flips the picture and remaps its depth instead, at a
+slight cost in depth precision. Mesa's crocus driver gives the HD 4000 OpenGL
+4.2. Intel's Windows driver gives it 4.0 without clip control and needs version
+10.18.10.3316 or later. The window is made for the renderer at launch, so a change in the
 menu takes effect after a restart.
 
 The backend follows the D3D11 backend ([D3D11.md](D3D11.md)). It uses the same
@@ -21,7 +25,8 @@ DLSS or HDR output.
 
 The outlines and the depth texture's stencil bytes need `ARB_stencil_texturing`
 (OpenGL 4.3). On a driver without it, the log says so and both are left out.
-With the debug features, `XBE_GL_DEBUG=1` asks for a debug context and logs the
+With the debug features, `XBE_GL_CLIP_CONTROL=0` draws as on a driver without
+clip control, and `XBE_GL_DEBUG=1` asks for a debug context and logs the
 driver's errors and warnings, and `XBE_PERF=1` adds render timing to
 `logs/game.log`.
 

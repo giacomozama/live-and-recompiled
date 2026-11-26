@@ -10,7 +10,7 @@
 //     $X/spirv_cross.cpp $X/spirv_glsl.cpp $X/spirv_cfg.cpp $X/spirv_parser.cpp $X/spirv_cross_parsed_ir.cpp \
 //     $D/glslang-build/glslang/libglslang.a $D/glslang-build/glslang/libglslang-default-resource-limits.a \
 //     $D/sdl3-build/libSDL3.a -ldl -lpthread -lm -o opengl-shader-smoke
-//   ./opengl-shader-smoke        (Mesa as Ivy Bridge has it: MESA_GL_VERSION_OVERRIDE=4.2 MESA_GLSL_VERSION_OVERRIDE=420)
+//   ./opengl-shader-smoke        (SMOKE_NO_CLIP_CONTROL=1: without glClipControl; Mesa as Ivy Bridge has it: MESA_GL_VERSION_OVERRIDE=4.2 MESA_GLSL_VERSION_OVERRIDE=420)
 #include <SDL3/SDL.h>
 #define GL_GLEXT_PROTOTYPES 1
 #include <SDL3/SDL_opengl.h>
@@ -57,14 +57,15 @@ FUNCTIONS(DECLARE)
 
 static unsigned g_failures = 0, g_cases = 0;
 static uint32_t g_version = 420;
+static bool g_flip = false;  // as the renderer draws without glClipControl
 
 // a stage: HLSL to GLSL to a compiled shader, 0 when either fails (reported)
 static GLuint Stage(const char* name, const std::string& hlsl, const char* entry, const char* profile,
-                    std::vector<gpu::Bind>* binds = nullptr) {
+                    std::vector<gpu::Bind>* binds = nullptr, bool last = true) {
     g_cases++;
     std::string glsl, err;
     std::vector<gpu::Bind> b;
-    if (!gpu::HlslToGlsl(hlsl, entry, profile, g_version, glsl, b, err)) {
+    if (!gpu::HlslToGlsl(hlsl, entry, profile, g_version, glsl, b, err, g_flip && last)) {
         std::printf("FAIL %s: translation: %s\n", name, err.c_str());
         g_failures++;
         return 0;
@@ -181,7 +182,7 @@ static bool TestPointCoordinates() {
     const GLuint vs = Stage("point test vertex",
                             common + "VOut main(uint n:SV_VertexID){VOut o=(VOut)0;o.pos=float4(0,0,0.5,1);o.psize=32;"
                                      "return o;}",
-                            "main", "vs_5_0");
+                            "main", "vs_5_0", nullptr, false);
     const GLuint gs = Stage("point sprite geometry", geometry, "main", "gs_5_0");
     const GLuint ps = Stage("point test pixel", common + "float4 main(VOut i):SV_Target{return float4(i.tc0.xy/i.tc0.w,0,1);}",
                             "main", "ps_5_0");
@@ -286,11 +287,11 @@ int main() {
     }
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 4);
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 1);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 0);
     SDL_Window* window = SDL_CreateWindow("opengl-shader-smoke", 64, 64, SDL_WINDOW_OPENGL | SDL_WINDOW_HIDDEN);
     SDL_GLContext context = window ? SDL_GL_CreateContext(window) : nullptr;
     if (!context) {
-        std::printf("no GL 4.1 context: %s\n", SDL_GetError());
+        std::printf("no GL 4.0 context: %s\n", SDL_GetError());
         return 1;
     }
 #define LOAD(name) gl::name = reinterpret_cast<decltype(gl::name)>(SDL_GL_GetProcAddress("gl" #name));
@@ -298,14 +299,16 @@ int main() {
     GLint major = 0, minor = 0;
     gl::GetIntegerv(GL_MAJOR_VERSION, &major);
     gl::GetIntegerv(GL_MINOR_VERSION, &minor);
-    g_version = major > 4 || (major == 4 && minor >= 2) ? 420 : 410;
+    const char* flip = std::getenv("SMOKE_NO_CLIP_CONTROL");
+    g_flip = flip && *flip == '1';
+    g_version = major > 4 || (major == 4 && minor >= 2) ? 420 : minor == 1 ? 410 : 400;
     std::printf("%s, %s; GLSL %u\n", reinterpret_cast<const char*>(gl::GetString(GL_RENDERER)),
                 reinterpret_cast<const char*>(gl::GetString(GL_VERSION)), g_version);
-    if (!gl::ClipControl) {
-        std::printf("FAIL no glClipControl\n");
+    if (!g_flip && !gl::ClipControl) {
+        std::printf("FAIL no glClipControl (SMOKE_NO_CLIP_CONTROL=1 tests without)\n");
         return 1;
     }
-    gl::ClipControl(GL_UPPER_LEFT, GL_ZERO_TO_ONE);
+    if (!g_flip) gl::ClipControl(GL_UPPER_LEFT, GL_ZERO_TO_ONE);
     gl::PixelStorei(GL_UNPACK_ALIGNMENT, 1);
     gl::PixelStorei(GL_PACK_ALIGNMENT, 1);
     GLuint vao = 0;

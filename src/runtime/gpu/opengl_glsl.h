@@ -32,7 +32,9 @@ void GlslInit();
 // at its Unit (binds: what the stage reads); uniform blocks and samplers are named after the stage, so two stages'
 // views of one cbuffer needn't match to link. err: why not, on false
 bool HlslToGlsl(const std::string& src, const char* entry, const char* profile, uint32_t version, std::string& glsl,
-                std::vector<Bind>& binds, std::string& err);
+                std::vector<Bind>& binds, std::string& err, bool flip = false);
+// flip: for a context without glClipControl, the last vertex stage ('v', 'd' or 'g') mirrors the position's y and
+// takes depth 0 to 1 to GL's -1 to 1 itself (the front face to be swapped with it)
 // kDepthBytesHlsl multisampled as GL reads it: the stencil texture's value in red, and the depth's size from the pass
 // constants (float4 at 8: width, height), as a multisampled texture's GetDimensions asks its sample count too, which
 // GLSL before 4.50 asks only with ARB_texture_query_samples

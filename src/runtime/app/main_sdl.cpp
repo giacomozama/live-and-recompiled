@@ -956,12 +956,12 @@ int Run(int argc, char** argv) {
     std::wstring title = app::kGame.title;
     if (app::Instance()) title += L" [" + std::to_wstring(app::Instance()) + L"]";
     const SDL_WindowFlags flags = SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIDDEN | SDL_WINDOW_HIGH_PIXEL_DENSITY;
-    // the OpenGL renderer's window is an OpenGL one (a window is made for one API): a GL 4.1 core context's
+    // the OpenGL renderer's window is an OpenGL one (a window is made for one API): a GL 4.0 core context's
     // framebuffer, double buffered, no depth of its own (gpu/opengl.cpp draws into its own targets)
     if (gpu::RendererName() == "opengl") {
         SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
         SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 4);
-        SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 1);
+        SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 0);
         SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
         SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 0);
         SDL_GL_SetAttribute(SDL_GL_STENCIL_SIZE, 0);
