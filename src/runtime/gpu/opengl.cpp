@@ -36,6 +36,7 @@
 #include "gpu/hud_split.h"
 #include "gpu/interp.h"
 #include "gpu/opengl_glsl.h"
+#include "gpu/post_effects.h"
 #include "gpu/post_hlsl.h"
 #include "gpu/smaa_tex.h"
 #include "kernel/memory.h"
@@ -91,7 +92,6 @@ void APIENTRY DebugMessage(GLenum, GLenum type, GLuint, GLenum severity, GLsizei
     if (n++ < 1000) LOGW("opengl: %s%s", type == GL_DEBUG_TYPE_ERROR ? "error: " : "", message);
 }
 
-uint64_t ResourceKey(uint32_t address, bool depth) { return TargetMapKey(mem::VirtualFromPhysical(address), depth); }
 
 // a texture name, deleted with its owner; what referred to it (framebuffers, unit bindings) is dropped with it
 void (*g_forget)(GLuint) = nullptr;
@@ -354,7 +354,8 @@ struct Ring {
 };
 constexpr size_t kRingStores = 6;  // stores a ring keeps behind the GPU before it waits for the oldest
 
-class OpenGLBackend final : public Backend {
+class OpenGLBackend final : public Backend, PostEffects<OpenGLBackend, Image, View> {
+    friend class PostEffects<OpenGLBackend, Image, View>;
     SDL_Window* window_ = nullptr;
     SDL_GLContext context_ = nullptr;
     std::thread::id owner_{};
@@ -387,7 +388,6 @@ class OpenGLBackend final : public Backend {
     std::unordered_map<uint64_t, GLuint> framebuffers_;
     std::unordered_map<uint64_t, Raster> rasters_;
     std::unordered_map<uint64_t, GLuint> samplers_;
-    std::unordered_map<uint64_t, int> position_w_;
     // the GL state as last set (Set*): what is set again only when it differs
     struct Bound {
         bool valid = false;
@@ -415,19 +415,9 @@ class OpenGLBackend final : public Backend {
     Stage *blit_vs_ = nullptr, *blit_ps_ = nullptr, *copy_ps_ = nullptr, *copy_depth_ps_ = nullptr,
           *copy_stencil_ps_ = nullptr;
     std::unordered_map<std::string, Stage*> pass_stages_;  // full-screen passes by entry and source
-    Image post_edges_, post_weights_, post_blend_, fsr_easu_;
-    Image occlusion_, occlusion_blur_, motion_blur_, outline_;
     Image screen_;  // the window's picture as drawn, upside down for the window (Display)
     HudSplit hud_;  // g_hud_split: the HUD's elements, and the draw's remap (its viewport and scissor)
     Image smaa_area_, smaa_search_;
-    uint64_t post_target_ = 0;
-    uint64_t post_depth_ = 0;
-    bool post_done_ = false, occlusion_done_ = false, view_ok_ = false, many_views_ = false;
-    float post_zscale_ = 1;
-    std::array<float, 4> view_viewport_[2], view_projection_[4];
-    std::array<float, 4> camera_[3], previous_camera_[3];
-    uint32_t camera_frame_ = 0, previous_camera_frame_ = 0;
-    bool camera_seen_ = false, previous_camera_seen_ = false;
     std::array<Image, 4> generated_;
     uint32_t taken_ = 0, generated_count_ = 0, next_picture_ = 0;
     int last_picture_ = -1;
@@ -1313,282 +1303,31 @@ class OpenGLBackend final : public Backend {
         gl::PixelStorei(GL_UNPACK_ALIGNMENT, 1);
         return ColorTexture(image, internal, format, GL_UNSIGNED_BYTE, pixels);
     }
-    bool Smaa(Image& source, Image& destination) {
+    // what PostEffects asks of a backend, beside FullScreenPass
+    static Viewport ViewportOf(uint32_t width, uint32_t height) { return {0, 0, float(width), float(height)}; }
+    static std::pair<float, float> ViewportSize(const Viewport& viewport) { return {viewport.w, viewport.h}; }
+    static View In(const Image& image) { return image.view(); }
+    View StencilIn(Image& image) { return StencilView(image); }
+    bool SmaaLookups(View& area, View& search) {
         if (!SmaaLookup(smaa_area_, GL_RG8, GL_RG, kSmaaAreaW, kSmaaAreaH, kSmaaArea) ||
-            !SmaaLookup(smaa_search_, GL_R8, GL_RED, kSmaaSearchW, kSmaaSearchH, kSmaaSearch) ||
-            !ScratchColor(post_edges_, source.w, source.h) || !ScratchColor(post_weights_, source.w, source.h))
+            !SmaaLookup(smaa_search_, GL_R8, GL_RED, kSmaaSearchW, kSmaaSearchH, kSmaaSearch))
             return false;
-        const float params[8] = {1.0f / source.w, 1.0f / source.h, float(source.w), float(source.h)};
-        const Viewport viewport{0, 0, float(source.w), float(source.h)};
-        SetDrawFbo(FramebufferOf(post_edges_));
+        area = smaa_area_.view();
+        search = smaa_search_.view();
+        return true;
+    }
+    void ClearColor(Image& image) {
+        SetDrawFbo(FramebufferOf(image));
         Neutral();
         const float zero[4] = {};
         gl::ClearBufferfv(GL_COLOR, 0, zero);
-        return FullScreenPass(SmaaHlsl(0), "edges", post_edges_, viewport, {source.view()}, params) &&
-               FullScreenPass(SmaaHlsl(1), "weights", post_weights_, viewport,
-                              {post_edges_.view(), smaa_area_.view(), smaa_search_.view()}, params) &&
-               FullScreenPass(SmaaHlsl(2), "blend", destination, viewport, {source.view(), post_weights_.view()},
-                              params);
     }
-    bool PostWanted() const {
-        const auto& set = app::Get();
-        return set.smaa || set.film_grain || set.chromatic_aberration ||
-               (set.ambient_occlusion && g_view_constants.viewport >= 0) ||
-               (set.motion_blur && g_view_constants.camera >= 0) || g_outlines.load(std::memory_order_relaxed);
-    }
-    void TrackView(const State& s, const Image* depth) {
-        const auto& set = app::Get();
-        const auto& vc = g_view_constants;
-        if ((!set.ambient_occlusion && !set.motion_blur && !g_outlines.load(std::memory_order_relaxed)) || !depth ||
-            vc.viewport < 0 || vc.projection < 0 || !(s.vs_handle & 1) || !s.rs[kRsZEnable] || !s.zscale)
-            return;
-        const std::array<float, 4> vp[] = {s.vsc[size_t(vc.viewport)], s.vsc[size_t(vc.viewport + 1)]};
-        std::array<float, 4> pr[4];
-        for (int i = 0; i < 4; ++i) pr[i] = s.vsc[size_t(vc.projection + i)];
-        // the off-diagonal zeros too, as Vulkan's TrackView: a program keeping other things in the first row (Frankie's
-        // line draw in BarnInside) leaves the other three rows a projection's
-        const bool perspective = pr[0][0] && !pr[0][1] && !pr[1][0] && pr[1][1] && !pr[2][0] && !pr[2][1] &&
-                                 pr[2][3] && pr[3][0] == 0 && pr[3][1] == 0 && pr[3][2] == -1 && pr[3][3] == 0 &&
-                                 vp[0][0] && vp[0][1] && vp[0][2];
-        if (!perspective) return;
-        if (view_ok_ && (vp[0] != view_viewport_[0] || vp[1] != view_viewport_[1])) many_views_ = true;
-        std::copy(std::begin(vp), std::end(vp), view_viewport_);
-        std::copy(std::begin(pr), std::end(pr), view_projection_);
-        post_depth_ = ResourceKey(depth->data, true);
-        post_zscale_ = s.zscale;
-        view_ok_ = true;
-
-        if (vc.camera < 0) return;
-        const auto& tag = s.vsc[size_t(vc.camera + 3)];
-        if (tag[3] != 1 || tag[1] != 0 || tag[2] != 0) return;
-        const uint32_t frame = uint32_t(tag[0]);
-        if (!camera_seen_ || frame != camera_frame_) {
-            std::copy(std::begin(camera_), std::end(camera_), previous_camera_);
-            previous_camera_frame_ = camera_frame_;
-            previous_camera_seen_ = camera_seen_;
-        }
-        for (int i = 0; i < 3; ++i) camera_[i] = s.vsc[size_t(vc.camera + i)];
-        camera_frame_ = frame;
-        camera_seen_ = true;
-    }
-    Image* PostDepth(const Image& target) {
-        if (!view_ok_ || many_views_) return nullptr;
-        auto it = targets_.find(post_depth_);
-        if (it == targets_.end() || it->second.w != target.w || it->second.h != target.h) return nullptr;
-        return Snapshot(it->second);
-    }
-    std::array<float, 20> ViewParams(const Image& target, float strength, float reach) const {
-        const auto& s = view_viewport_[0];
-        const auto& o = view_viewport_[1];
-        const auto& x = view_projection_[0];
-        const auto& y = view_projection_[1];
-        const auto& z = view_projection_[2];
-        return {1.0f / target.w,
-                1.0f / target.h,
-                strength,
-                reach,
-                float(target.guest.w),
-                float(target.guest.h),
-                (o[2] - s[2] * z[2]) / post_zscale_,
-                s[2] * z[3] / post_zscale_,
-                s[0],
-                s[1],
-                o[0],
-                o[1],
-                x[0],
-                x[2],
-                x[3],
-                0,
-                y[1],
-                y[2],
-                y[3],
-                0};
-    }
-    void ApplyOcclusion(Image& target) {
-        occlusion_done_ = true;
-        const auto& set = app::Get();
-        if (!set.ambient_occlusion) return;
-        Image* depth = PostDepth(target);
-        if (!depth) return;
-        Image* source = Snapshot(target);
-        if (!source) return;
-        const uint32_t w = (target.w + 1) / 2, h = (target.h + 1) / 2;
-        if (!ScratchColor(occlusion_, w, h) || !ScratchColor(occlusion_blur_, w, h)) return;
-        const auto params = ViewParams(target, float(set.ambient_occlusion_radius), set.ambient_occlusion / 100.0f);
-        const Viewport small{0, 0, float(w), float(h)};
-        const Viewport full{0, 0, float(target.w), float(target.h)};
-        const View z = depth->view(), ao = occlusion_.view();
-        if (FullScreenPass(kOcclusionHlsl, "occlusion", occlusion_, small, {z, z}, params) &&
-            FullScreenPass(kOcclusionHlsl, "blurx", occlusion_blur_, small, {ao, z}, params) &&
-            FullScreenPass(kOcclusionHlsl, "blury", occlusion_, small, {occlusion_blur_.view(), z}, params) &&
-            FullScreenPass(kOcclusionHlsl, "apply", target, full, {source->view(), ao}, params))
-            MarkWritten(target);
-    }
-    bool ApplyMotion(Image& source, Image& destination, const Image& target) {
-        const auto& set = app::Get();
-        if (!set.motion_blur || !camera_seen_ || !previous_camera_seen_ ||
-            ((camera_frame_ - previous_camera_frame_) & 0xFFFFFF) != 1)
-            return false;
-        float path[12];
-        if (!CameraMotion(camera_, previous_camera_, path)) return false;
-        Image* depth = PostDepth(target);
-        if (!depth) return false;
-        const auto view = ViewParams(target, set.motion_blur / 100.0f, 0.06f);
-        float params[32];
-        std::copy(view.begin(), view.end(), params);
-        std::copy(std::begin(path), std::end(path), params + view.size());
-        const Viewport vp{0, 0, float(target.w), float(target.h)};
-        return FullScreenPass(kMotionBlurHlsl, "blur", destination, vp, {source.view(), depth->view()}, params);
-    }
-    // g_outlines: the stencil holding the marks (d3d::OutlineMark), the frame's depth buffer (TrackView) at the
-    // picture's size, as Vulkan's ApplyPost finds it; none without stencil textures
-    Image* OutlineMarks(const Image& target) {
-        if (!g_outlines.load(std::memory_order_relaxed) || !post_depth_ || !stencil_texturing_) return nullptr;
-        auto it = targets_.find(post_depth_);
-        if (it == targets_.end() || it->second.w != target.w || it->second.h != target.h) return nullptr;
-        return Snapshot(it->second);
-    }
-    // the outlines round the marked players (kOutlineHlsl): the line one of the console's pixels wide, at least one
-    // of the picture's, thinner past 600 units (6 m) where the frame's view is known
-    bool ApplyOutline(Image& source, Image& destination, Image& marks, const Image& target) {
-        const float width = std::max(1.0f, float(target.w) / float(std::max<uint32_t>(target.guest.w, 1)));
-        const auto &vs = view_viewport_[0], &vo = view_viewport_[1], &vz = view_projection_[2];
-        const bool known = view_ok_ && post_zscale_ != 0;
-        const float params[] = {1.0f / target.w,
-                                1.0f / target.h,
-                                width,
-                                600.0f,
-                                known ? (vo[2] - vs[2] * vz[2]) / post_zscale_ : 0.0f,
-                                known ? vs[2] * vz[3] / post_zscale_ : 0.0f,
-                                known ? 1.0f : 0.0f,
-                                float(g_team_colors.load(std::memory_order_relaxed))};
-        const Viewport vp{0, 0, float(target.w), float(target.h)};
-        const View stencil = StencilView(marks);
-        return FullScreenPass(kOutlineHlsl, "outline", destination, vp, {source.view(), stencil, marks.view()},
-                              params);
-    }
-    // the draw's program's PositionWSource, kPosWUnknown without one
-    int PosW(const State& s) {
-        if (!(s.vs_handle & 1) || !s.vs || s.vs->program.empty()) return kPosWUnknown;
-        EnsureProgramHash(s);
-        auto [it, inserted] = position_w_.try_emplace(s.vs->hash, kPosWUnknown);
-        if (inserted) it->second = PositionWSource(s.vs->program);
-        return it->second;
-    }
-    void ApplyPost(Image& target) {
-        post_done_ = true;
-        const auto& set = app::Get();
-        const bool grade = set.film_grain || set.chromatic_aberration;
-        if (!occlusion_done_) ApplyOcclusion(target);
-        Image* marks = OutlineMarks(target);
-        if (!set.smaa && !grade && !set.motion_blur && !marks) return;
-        Image* source = Snapshot(target);
-        if (!source) return;
-        // each effect reads what the one before wrote, the last writes the target
-        if (set.motion_blur) {
-            if (!set.smaa && !grade && !marks) {
-                if (ApplyMotion(*source, target, target)) MarkWritten(target);
-                return;
-            }
-            if (ScratchColor(motion_blur_, target.w, target.h) && ApplyMotion(*source, motion_blur_, target))
-                source = &motion_blur_;
-        }
-        if (marks) {
-            if (!set.smaa && !grade) {
-                if (ApplyOutline(*source, target, *marks, target)) MarkWritten(target);
-                return;
-            }
-            if (ScratchColor(outline_, target.w, target.h) && ApplyOutline(*source, outline_, *marks, target))
-                source = &outline_;
-        }
-        if (set.smaa) {
-            if (!grade) {
-                if (Smaa(*source, target)) MarkWritten(target);
-                return;
-            }
-            if (ScratchColor(post_blend_, target.w, target.h) && Smaa(*source, post_blend_)) source = &post_blend_;
-        }
-        if (!grade) return;
-        const float params[] = {1.0f / target.w,
-                                1.0f / target.h,
-                                float(target.w),
-                                float(target.h),
-                                set.chromatic_aberration / 100.0f,
-                                set.film_grain / 100.0f,
-                                float(frame_ % 1024),
-                                0.0f};
-        const Viewport viewport{0, 0, float(target.w), float(target.h)};
-        if (FullScreenPass(kPostHlsl, "grade", target, viewport, {source->view()}, params)) MarkWritten(target);
-    }
-    void TrackPost(const State& state, const Assembled& assembled, bool program, Image* target, Image* depth) {
-        if (!target || post_done_ || !PostWanted()) return;
-        const int w_source = program ? PosW(state) : kPosWUnknown;
-        const auto key = ResourceKey(target->data, false);
-        const bool flat = ScreenSpace(state, assembled, w_source);
-        if (flat && !occlusion_done_ && post_target_ && app::Get().ambient_occlusion) {
-            bool uses_frame = key == post_target_;
-            for (uint32_t header : state.textures) {
-                if (uses_frame) break;
-                TextureDesc texture;
-                uses_frame = header && Describe(header, texture) && ResourceKey(texture.data, false) == post_target_;
-            }
-            // not the shrink into the screen grab (g_grab_texture): 3D is drawn after it
-            if (uses_frame && key != post_target_) {
-                TextureDesc grab;
-                const uint32_t tex = g_grab_texture.load(std::memory_order_relaxed);
-                if (tex && Describe(tex, grab) && ResourceKey(grab.data, false) == key) uses_frame = false;
-            }
-            auto it = targets_.find(post_target_);
-            if (uses_frame && it != targets_.end()) ApplyOcclusion(it->second);
-        }
-        if (target->guest.w != guest_frame_.w || target->guest.h != guest_frame_.h) return;
-        if (!flat) {
-            post_target_ = key;
-            TrackView(state, depth);
-            return;
-        }
-        if (post_target_ != key) return;
-        TextureDesc texture;
-        if (state.textures[0] && Describe(state.textures[0], texture) &&
-            targets_.count(ResourceKey(texture.data, Format(texture.format).depth)))
-            return;
-        ApplyPost(*target);
-    }
-    bool DrawFsr(Image& picture, Image& screen, const Viewport& viewport) {
-        const auto& set = app::Get();
-        const uint32_t width = RenderSize(viewport.w), height = RenderSize(viewport.h);
-        const float fur_sharpening = picture.fur_frame != UINT64_MAX ? set.fur_sharpness / 100.0f : 1.0f;
-        Image* source = &picture;
-        if (picture.w < width || picture.h < height) {
-            const float ratio_x = float(picture.w) / width, ratio_y = float(picture.h) / height;
-            const float inv_w = 1.0f / picture.w, inv_h = 1.0f / picture.h;
-            const float constants[] = {ratio_x,       ratio_y,        0.5f * ratio_x - 0.5f, 0.5f * ratio_y - 0.5f,
-                                       inv_w,         inv_h,          inv_w,                 -inv_h,
-                                       -inv_w,        2 * inv_h,      inv_w,                 2 * inv_h,
-                                       0.0f,          4 * inv_h,      float(width),          float(height),
-                                       fur_sharpening, 0.0f,          0.0f,                  0.0f};
-            const Viewport scaled{0, 0, float(width), float(height)};
-            if (!ScratchColor(fsr_easu_, width, height) ||
-                !FullScreenPass(kFsrHlsl, "easu", fsr_easu_, scaled, {picture.view()}, constants))
-                return false;
-            source = &fsr_easu_;
-        }
-        // con1.w the colour vision simulation (none here); con2.x no separate fur mark, con2.y the fade
-        const float constants[] = {1.0f / width,
-                                   1.0f / height,
-                                   set.fsr_sharpness / 100.0f,
-                                   0.0f,
-                                   fur_sharpening,
-                                   float(set.gamma) / 220.0f,
-                                   float(set.brightness) / 100.0f,
-                                   0.0f,
-                                   0.0f,
-                                   g_fade.load(),
-                                   0.0f,
-                                   0.0f};
-        static const std::string rcas_source = std::string("#define FSR_PRESENTATION_FADE\n") + kFsrHlsl;
-        return FullScreenPass(rcas_source.c_str(), "rcas", screen, viewport, {source->view()}, constants);
-    }
+    // none without stencil textures
+    Image* StencilSnapshot(Image& depth) { return stencil_texturing_ ? Snapshot(depth) : nullptr; }
+    static const char* OutlineSource() { return kOutlineHlsl; }
+    // no HDR output here
+    bool HdrHighlights() const { return false; }
+    void KeepHdrWorld(Image&) {}
     void ApplyRenderScale() {
         const auto viewport = PictureViewport();
         const float percent = app::Get().render_percent / 100.0f;
