@@ -314,8 +314,8 @@ bool LoadKit(const fs::path& kit_dir, Kit& k, std::string& error) {
         error = "exe, xbe and sha1 must be set";
         return false;
     }
-    if (!k.toolchain_archive.empty() && k.toolchain_sha256.size() != 64) {
-        error = target + ".toml: [toolchain." + kHost + "] needs the sha256 of its archive";
+    if (k.toolchain_archive.empty() || k.toolchain_sha256.size() != 64) {
+        error = target + ".toml: [toolchain." + kHost + "] needs its archive and the archive's sha256";
         return false;
     }
 #ifdef _WIN32
@@ -726,18 +726,13 @@ bool EnsureToolchain(const fs::path& kit_dir, const Kit& k) {
     fs::path tc = k.toolchain, stamp = tc / "sha256.txt";
     std::error_code ec;
     std::vector<uint8_t> have;
-    if (fs::exists(k.cxx, ec) && (k.toolchain_archive.empty() || (ReadFile(stamp, have) &&
-                                                                  std::string(have.begin(), have.end()) == k.toolchain_sha256)))
+    if (fs::exists(k.cxx, ec) && ReadFile(stamp, have) && std::string(have.begin(), have.end()) == k.toolchain_sha256)
         return true;
-    if (k.toolchain_archive.empty()) {
-        Say("The tools for building the game are missing (%s) and this Setup carries none.\n", k.cxx.string().c_str());
-        return false;
-    }
     fs::path archive = tc.string() + ".archive", fresh = tc.string() + ".new";
     fs::create_directories(tc.parent_path(), ec);
     fs::remove(archive, ec);
     fs::remove_all(fresh, ec);
-    Say("Unpacking the tools needed to build the game (only the first time) ...\n");
+    Say("Unpacking the tools needed to build the game...\n");
     if (!ExtractToolchain(k.toolchain_archive, archive)) {
         fs::remove(archive, ec);
         return false;
@@ -774,7 +769,7 @@ bool Stage(const setup::Options& opt, const Kit& k, Source& src, fs::path& asset
     fs::create_directories(assets, ec);
     switch (src.kind) {
         case Kind::Package: {
-            Say("Unpacking the game's package into %s (about 5 GB, a few seconds) ...\n", assets.string().c_str());
+            Say("Unpacking the game's package into %s ...\n", assets.string().c_str());
             std::string error;
             if (!store::Unpack(src.path, assets, Say, error)) {
                 Say("\nCould not unpack %s: %s\n", src.path.string().c_str(), error.c_str());
