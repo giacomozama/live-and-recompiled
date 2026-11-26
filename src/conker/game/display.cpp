@@ -75,11 +75,7 @@
 
 namespace display {
 
-#if !defined(XBE_HEADLESS)
-uint32_t g_frame_rate = 60;
-#else
-uint32_t g_frame_rate = 30;
-#endif
+uint32_t g_frame_rate;
 
 namespace {
 
@@ -165,9 +161,9 @@ uint32_t GameRate() { return Rate(); }
 std::atomic<uint32_t> g_ticks{0};
 uint32_t Ticks() { return g_ticks.load(std::memory_order_relaxed); }
 
-uint32_t g_fov = kFov;
-uint32_t g_look_up = 0;
-bool g_hud_split = true;
+uint32_t g_fov;
+uint32_t g_look_up;
+bool g_hud_split;
 bool MatchPauseCentred() {
     constexpr uint32_t kMatchPauseUp = 0x862D90;  // set while a match's pause menu is up (0x1F77C0)
     // the match's cylinder menu (the pause menu's, the spawn point choice's, the results'): 0x204770 draws it while
@@ -199,7 +195,7 @@ bool MatchPauseCentred() {
     }
     return on;
 }
-bool g_sharp_drone = true;
+bool g_sharp_drone;
 
 std::atomic<float> g_camera_fov{50.0f};
 float CameraFov() { return g_camera_fov.load(std::memory_order_relaxed); }
@@ -462,7 +458,7 @@ X86_FUNC(sub_002A7B60) {
 // fade and cutscene clock from them step alike, as if the frame had taken that long, and the sound plays as fast
 // (audio::g_speed). Frames come as often as before; what steps once a frame keeps its pace. Not in a shared system
 // link session
-bool display::g_fast_forward_enabled = false;
+bool display::g_fast_forward_enabled;
 bool display::FastForwardEnabled() {
     static const bool env = diag::Env("XBE_FAST_FORWARD") != nullptr;
     return diag::kDebugFeatures && (g_fast_forward_enabled || env);

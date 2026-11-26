@@ -1005,7 +1005,7 @@ void SeeThrough(X86Context& ctx, uint8_t* base) {
 
 }  // namespace
 
-bool subtitles::g_redraw = true;
+bool subtitles::g_redraw;
 
 // [[hook]] 0xE1880 (subtitles.cpp) calls this around the bubble's drawing: obj the bubble, 0 at the end
 void subtitles::BubbleDrawing(uint32_t obj) {

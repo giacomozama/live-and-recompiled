@@ -50,7 +50,7 @@ void SwallowEsc();
 void Muzzle(int port);
 void Unmuzzle(int port, input::Pad& pad);
 
-// settings.toml options (app::Option): the fps overlay and the fps in the window title
+// settings.toml settings (common/settings_registry.cpp): the fps overlay and the fps in the window title
 extern bool g_fps_overlay;
 extern bool g_decorations;  // the settings menu's outlines round its sections and widgets
 extern bool g_menu_resizable;  // Debug: the settings menu moved and sized by the mouse

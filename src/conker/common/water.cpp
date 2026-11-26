@@ -14,7 +14,7 @@
 #include "core/log.h"
 #include "gpu/shaders.h"
 
-bool water::g_dynamic = false;
+bool water::g_dynamic;
 
 namespace {
 

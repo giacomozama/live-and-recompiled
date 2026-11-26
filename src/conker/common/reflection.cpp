@@ -4,7 +4,7 @@
 
 #include "gpu/shaders.h"
 
-bool reflection::g_floor_depth = true;
+bool reflection::g_floor_depth;
 
 namespace {
 

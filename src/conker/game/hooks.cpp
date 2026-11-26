@@ -134,7 +134,7 @@ X86_FUNC(sub_001F6C50) {
 // line flagged 0x100 shows no speech bubble in English, which the next instruction tests eax (XGetLanguage) for:
 // Conker's monologues on the throne, in the intro and the ending, whose text the English game has all the same.
 // cutscenes::g_english_bubbles: not English, so they get their bubbles as in the other languages.
-bool cutscenes::g_english_bubbles = true;
+bool cutscenes::g_english_bubbles;
 
 void ConkerEnglishBubble(X86Context& ctx, uint8_t* base) {
     (void)base;
@@ -148,7 +148,7 @@ void ConkerEnglishBubble(X86Context& ctx, uint8_t* base) {
 // and Back on a controller, all but Escape, F1 and the pause and quit keys on the keyboard) skips any cutscene, seen or
 // not, still not in the last half second. The widget the ImGui overlay draws (cutscenes::Hold) fills as it is held.
 // Mode 0x21 skips on a button of its own and keeps its test.
-bool cutscenes::g_skippable = true;
+bool cutscenes::g_skippable;
 
 namespace {
 
@@ -446,7 +446,7 @@ X86_FUNC(sub_0006AD30) {
 // declarations read the same stride 12 vertices, the texture coordinate as v7 or v2, and share their constants, so
 // grass::g_wind (or XBE_GRASS_WIND=0 off) hands the fading patches the wind program too: only the handle the
 // fading path reads changes, for this call, and the rest of its fade stays as it is.
-bool grass::g_wind = true;
+bool grass::g_wind;
 
 X86_EXTERN_FUNC(__imp__sub_001A9540);
 X86_FUNC(sub_001A9540) {
@@ -467,8 +467,8 @@ X86_FUNC(sub_001A9540) {
 // (alpha f * 255 at [patch+0x5C], with the plain program) and the share of its blades drawn ([patch+0x64], at least
 // 1). grass::g_max_lod draws them all; without grass::g_fade a patch is solid (alpha 255) and drawn however far,
 // its d held at the 2500 ([0x649234]) past which it would be culled; with both, every patch is drawn as a near one.
-bool grass::g_max_lod = true;
-bool grass::g_fade = false;
+bool grass::g_max_lod;
+bool grass::g_fade;
 
 // [[hook]] at 0x1A95DD, before d is weighed
 void ConkerGrassNear(X86Context& ctx, uint8_t* base) {
@@ -496,7 +496,7 @@ void ConkerGrassFull(X86Context& ctx, uint8_t* base) {
 // falls linearly from that to 1, all but the skin gone by R plus a share for the model's own count. Closer, the full
 // count, and the length scale grows from 0.5 at 100 to 1 at 0.4 R. A few types and levels return a fixed count first.
 // fur::g_distant (or XBE_FUR_DISTANT=0 off) weighs a farther object as at 0.4 R: every shell, at full length.
-bool fur::g_distant = true;
+bool fur::g_distant;
 
 // A player's fur shells (0x80322 in 0x7FB00, Rodent and the others drawn as players) leave the alpha test to whatever
 // drew before them: Rodent's material sets neither the compare nor the reference, so in the throne room's close-up of
@@ -560,10 +560,10 @@ void ConkerFurBeach(X86Context& ctx, uint8_t* base) {
 // (500 and 730 outside multiplayer), then a few cases that force the full one. At 0x7F452 the pick in ebx is clamped
 // to the list and stored at [player+0x3A8], which the draw (0x7FB00), its skeleton ([player+0x4EC]) and the effects
 // that skip coarse models ([0x7819D5], 0x822B0) read. characters::g_max_lod picks the full model always.
-bool characters::g_max_lod = true;
+bool characters::g_max_lod;
 
 // characters::g_smooth_animation: the refresh pacing and animation skips below run every player every frame
-bool characters::g_smooth_animation = true;
+bool characters::g_smooth_animation;
 
 // [[hook]] at 0x7F452, before the clamp
 void ConkerCharacterLod(X86Context& ctx, uint8_t* base) {
@@ -578,7 +578,7 @@ void ConkerCharacterLod(X86Context& ctx, uint8_t* base) {
 // body and head (the match's only on the tail or hair), and for some Tediz (the Future ones, the WWII grunt).
 // characters::g_menu_models draws a class's character select model in a match for its full one, either side's, the
 // WWII classes' and the Future ones'.
-bool characters::g_menu_models = false;
+bool characters::g_menu_models;
 
 // a model's name, "" without one
 static std::string ModelName(uint32_t id) {
@@ -2021,7 +2021,7 @@ X86_FUNC(sub_0001A510) {
 // load; drawn but unshown, the thousands of a load cost the GPU seconds in the first frame after. The loading is quick
 // here, so with loading::g_fade no screen is drawn: d3d::LoadingScreenWanted fades to black instead, the frames after
 // fading back in. Off: every screen drawn and shown, as on the console.
-bool loading::g_fade = true;
+bool loading::g_fade;
 
 X86_EXTERN_FUNC(__imp__sub_002ACB20);
 X86_FUNC(sub_002ACB20) {

@@ -22,8 +22,8 @@
 #include "kernel/kernel.h"
 #include "xdk/d3d8.h"
 
-bool fur::g_shading = false;
-bool fur::g_strands = false;
+bool fur::g_shading;
+bool fur::g_strands;
 fur::ModelLook fur::g_model_looks[fur::kModelLooks];
 
 namespace {

@@ -102,7 +102,7 @@ fs::path CacheDir() {
 
 void MoveOldData() {
     const fs::path exe = ExeDir();
-    Move(exe / kGame.settings, ConfigDir() / kGame.settings);
+    Move(exe / kGame.settings_file, ConfigDir() / kGame.settings_file);
     Move(exe / "hdd", DataDir() / "hdd");
     for (int i = 2; i <= 8; i++) Move(exe / ("hdd" + std::to_string(i)), DataDir() / ("hdd" + std::to_string(i)));
     Move(exe / "shaders.rec", CacheDir() / "shaders.rec");

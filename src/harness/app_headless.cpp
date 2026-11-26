@@ -13,7 +13,7 @@ Settings& Get() {
     static Settings s;
     return s;
 }
-void Load() {}
+void Load() { ResetSettings(); }
 void Save() {}
 bool SaveChanged() { return false; }
 void ApplyDisplay() {}

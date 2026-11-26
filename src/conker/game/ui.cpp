@@ -70,10 +70,10 @@ int PortError();
 
 namespace ui {
 
-bool g_fps_overlay = false;
-uint32_t g_accent = 4;  // orange
-bool g_menu_resizable = false;
-bool g_decorations = true;
+bool g_fps_overlay;
+uint32_t g_accent;  // orange
+bool g_menu_resizable;
+bool g_decorations;
 
 namespace {
 
@@ -1033,6 +1033,15 @@ void Slider(const char* label, int32_t* v, int32_t min, int32_t max, int32_t def
     ImGui::PopID();
 }
 
+// a registry setting's slider, its range and default the registry's
+template <class T>
+void SettingSlider(const char* label, T* v, uint32_t div = 1) {
+    const app::Setting& s = app::SettingAt(v);
+    const T def = T(std::get<int64_t>(s.def.v));
+    if constexpr (std::is_same_v<T, uint32_t>) Slider(label, v, T(s.min), T(s.max), def, div);
+    else Slider(label, v, T(s.min), T(s.max), def);
+}
+
 // Two percentages on one track, lo below hi and kept at least `gap` apart, with a Reset beside it. The handle nearest
 // the click takes the drag.
 void RangeSlider(const char* label, uint32_t* lo, uint32_t* hi, uint32_t min, uint32_t max, uint32_t gap,
@@ -1786,16 +1795,15 @@ void DrawCalibration(app::Settings& s) {
         ImGui::TextDisabled("%s", of);
         ImGui::Separator();
         g_first_row = true;
-        const app::Settings def{};
         const char* hint = "";
         const char* label = mode == 1 ? "brightness" : mode == 2 ? "gamma" : mode == 3 ? "paper_white_nits" : "peak_brightness_nits";
         switch (mode) {
             case 1:
-                Slider("brightness", &s.brightness, -20, 20, def.brightness);
+                SettingSlider("brightness", &s.brightness);
                 hint = "hint_calibrate_black";
                 break;
             case 2:
-                Slider("gamma", &s.gamma, 180, 260, def.gamma, 100);
+                SettingSlider("gamma", &s.gamma, 100);
                 hint = "hint_calibrate_gamma";
                 break;
             case 3:
@@ -2363,7 +2371,7 @@ void Draw(double fps) {
                             DisplaySlider("paper_white_nits", &s.hdr_paper_white, app::kPaperWhiteMin,
                                           app::kPaperWhiteMax, app::HdrPaperWhite());
                             Hint("hint_how_bright_white_is_shown", true);
-                            Slider("highlights", &s.hdr_highlights, 0, 100, app::Settings{}.hdr_highlights);
+                            SettingSlider("highlights", &s.hdr_highlights);
                             Hint("hint_makes_the_brightest_parts_of", true);
                             if (s.hdr_highlights) {
                                 DisplaySlider("peak_brightness_nits", &s.hdr_peak, app::kPeakMin, app::kPeakMax,
@@ -2372,9 +2380,9 @@ void Draw(double fps) {
                             }
                         }
                     }
-                    Slider("gamma", &s.gamma, 180, 260, app::Settings{}.gamma, 100);
+                    SettingSlider("gamma", &s.gamma, 100);
                     Hint("hint_higher_darkens_shadows_and_midtones", true);
-                    Slider("brightness", &s.brightness, -20, 20, app::Settings{}.brightness);
+                    SettingSlider("brightness", &s.brightness);
                     Hint("hint_raises_or_lowers_the_black", true);
                     Beside("display_calibration");
                     ImGui::BeginDisabled(D3d11());
@@ -2481,13 +2489,13 @@ void Draw(double fps) {
                             s.upscaler_quality = uint32_t(quality);
                         Hint("hint_how_many_pixels_fsr_3_renders", quality != 5);
                         if (quality == 5) {  // Custom: the render size's share, past the modes' too
-                            Slider("render", &s.upscaler_percent, 10, 100, app::Settings{}.upscaler_percent);
+                            SettingSlider("render", &s.upscaler_percent);
                             Hint("hint_the_size_the_game_is", true);
                         }
-                        Slider("dlss_sharpness", &s.dlss_sharpness, 0, 100, app::Settings{}.dlss_sharpness);
+                        SettingSlider("dlss_sharpness", &s.dlss_sharpness);
                         Hint("hint_rcas_sharpening_over_fsr_3", true);
                         if (s.dlss_sharpness > 0) {
-                            Slider("fur_sharpness", &s.fur_sharpness, 0, 100, app::Settings{}.fur_sharpness);
+                            SettingSlider("fur_sharpness", &s.fur_sharpness);
                             Hint("hint_how_much_of_fsr_s", true);
                         }
                     } else if (dlss && dlss_state != 4) {
@@ -2497,7 +2505,7 @@ void Draw(double fps) {
                             s.upscaler_quality = uint32_t(quality);
                         Hint("hint_how_many_pixels_dlss_renders", quality != 5);
                         if (quality == 5) {  // Custom: the render size's share, past the modes' too
-                            Slider("render", &s.upscaler_percent, 10, 100, app::Settings{}.upscaler_percent);
+                            SettingSlider("render", &s.upscaler_percent);
                             Hint("hint_the_size_the_game_is", true);
                         }
                         // Transformer or CNN, the one the GPU fits marked; left alone, the setting follows it
@@ -2507,19 +2515,19 @@ void Draw(double fps) {
                                       {fits ? "transformer_recommended" : "transformer", fits ? "cnn" : "cnn_recommended"}))
                             s.dlss_network = uint32_t(model) + 1;
                         Hint("hint_dlss_model", true);
-                        Slider("dlss_sharpness", &s.dlss_sharpness, 0, 100, app::Settings{}.dlss_sharpness);
+                        SettingSlider("dlss_sharpness", &s.dlss_sharpness);
                         Hint("hint_rcas_sharpening_over_dlss_s", true);
                         if (s.dlss_sharpness > 0) {
-                            Slider("fur_sharpness", &s.fur_sharpness, 0, 100, app::Settings{}.fur_sharpness);
+                            SettingSlider("fur_sharpness", &s.fur_sharpness);
                             Hint("hint_how_much_of_fsr_s", true);
                         }
                     } else {
-                        Slider("render", &s.render_percent, 25, 200, app::Settings{}.render_percent);
+                        SettingSlider("render", &s.render_percent);
                         Hint("hint_the_size_the_game_is", pick != 1);
                         if (pick == 1) {
-                            Slider("fsr_sharpness", &s.fsr_sharpness, 0, 100, app::Settings{}.fsr_sharpness);
+                            SettingSlider("fsr_sharpness", &s.fsr_sharpness);
                             Hint("hint_how_strongly_the_upscaled_picture");
-                            Slider("fur_sharpness", &s.fur_sharpness, 0, 100, app::Settings{}.fur_sharpness);
+                            SettingSlider("fur_sharpness", &s.fur_sharpness);
                             Hint("hint_how_much_of_fsr_s", true);
                         }
                     }
@@ -2553,18 +2561,17 @@ void Draw(double fps) {
                 if (Section("post_processing")) {
                     Check("vignette", &vignette::g_on);
                     Hint("hint_the_game_s_darkened_screen", true);
-                    Slider("film_grain", &s.film_grain, 0, 100, app::Settings{}.film_grain);
+                    SettingSlider("film_grain", &s.film_grain);
                     Hint("hint_adds_a_fine_noise_over");
-                    Slider("chromatic_aberration", &s.chromatic_aberration, 0, 100, app::Settings{}.chromatic_aberration);
+                    SettingSlider("chromatic_aberration", &s.chromatic_aberration);
                     Hint("hint_splits_colors_apart_toward_the");
-                    Slider("ambient_occlusion", &s.ambient_occlusion, 0, 100, app::Settings{}.ambient_occlusion);
+                    SettingSlider("ambient_occlusion", &s.ambient_occlusion);
                     Hint("hint_darkens_creases_and_corners_where");
                     if (s.ambient_occlusion) {
-                        Slider("ambient_occlusion_reach", &s.ambient_occlusion_radius, 5, 200,
-                               app::Settings{}.ambient_occlusion_radius);
+                        SettingSlider("ambient_occlusion_reach", &s.ambient_occlusion_radius);
                         Hint("hint_how_far_from_a_surface");
                     }
-                    Slider("motion_blur", &s.motion_blur, 0, 100, app::Settings{}.motion_blur);
+                    SettingSlider("motion_blur", &s.motion_blur);
                     Hint("hint_blurs_the_picture_as_the");
                 }
 
@@ -2572,7 +2579,7 @@ void Draw(double fps) {
                     Check("per_pixel_lighting", &lighting::g_per_pixel);
                     Hint("hint_smoother_light_and_shadows_on", true);
                     if (lighting::g_per_pixel) {
-                        Slider("rim_light", &lighting::g_rim, 0, 100, 0);
+                        SettingSlider("rim_light", &lighting::g_rim);
                         Hint("hint_lights_the_edges_of_characters");
                     }
                     const bool smoother = gpu::g_lightmap_smoothing.load(std::memory_order_relaxed);
@@ -2581,7 +2588,7 @@ void Draw(double fps) {
                     ImGui::EndDisabled();
                     Hint(D3d11() ? NoVulkan() : "hint_straightens_the_jagged_edges_of", true);
                     if (s.smooth_lightmaps && smoother) {
-                        Slider("baked_shadow_smoothing", &s.lightmap_smoothing, 1, 10, app::Settings{}.lightmap_smoothing);
+                        SettingSlider("baked_shadow_smoothing", &s.lightmap_smoothing);
                         Hint("hint_how_far_along_an_edge", true);
                         constexpr uint32_t kSizes[] = {256, 512, 1024, 2048};
                         int size = 1;
@@ -2740,9 +2747,9 @@ void Draw(double fps) {
 
             if (tab("tweaks")) {
                 if (Section("camera")) {
-                    Slider("field_of_view", &display::g_fov, display::kFovMin, display::kFovMax, display::kFov);
+                    SettingSlider("field_of_view", &display::g_fov);
                     Hint("hint_how_wide_the_view_is");
-                    Slider("extra_look_up", &display::g_look_up, 0, display::kLookUpMax, 0);
+                    SettingSlider("extra_look_up", &display::g_look_up);
                     Hint("hint_lets_the_third_person_camera");
                 }
 
@@ -2790,7 +2797,7 @@ void Draw(double fps) {
 
             if (tab("audio")) {
                 if (Section("general")) {
-                    Slider("volume", &s.volume, 0, 100, app::Settings{}.volume);
+                    SettingSlider("volume", &s.volume);
                     {
                         static std::vector<audio::Device> devices;
                         if (devices.empty() || ImGui::IsWindowAppearing()) devices = audio::Devices();
@@ -2830,7 +2837,6 @@ void Draw(double fps) {
                 // the mixer's choices, where how the console sounds isn't settled
                 if (Section("mix", true, false)) {
                     {
-                        const app::Settings def{};
                         // a warning card, not a dimmed hint: it is the first thing to read in this section
                         WarningCard("hint_if_the_game_already_sounds");
                         ImGui::BeginDisabled(s.surround);
@@ -2841,7 +2847,7 @@ void Draw(double fps) {
                         Check("subwoofer_in_stereo", &s.stereo_sub);
                         Hint("hint_folds_the_subwoofer_channel_into", true);
                         ImGui::EndDisabled();
-                        Slider("reverb", &s.reverb, 0, 200, def.reverb);
+                        SettingSlider("reverb", &s.reverb);
                         Hint("hint_the_room_echo_in_caves");
                         int resampler = int(std::min<uint32_t>(s.resampler, 2));
                         if (Segmented("resampling", &resampler, {"linear", "cubic", "sinc"}))
@@ -2864,28 +2870,14 @@ void Draw(double fps) {
                         Check("soft_clipping", &s.soft_clip);
                         Hint("hint_when_the_mix_gets_too", true);
                         // every Mix setting back to its default; greyed out while they already are
-                        const bool same = s.stereo_full_backs == def.stereo_full_backs && s.stereo_sub == def.stereo_sub &&
-                                          s.reverb == def.reverb && s.crosstalk == def.crosstalk &&
-                                          s.doppler == def.doppler && s.distance_filters == def.distance_filters &&
-                                          s.resampler == def.resampler && s.voice_headroom == def.voice_headroom &&
-                                          s.soft_clip == def.soft_clip && s.envelopes == def.envelopes &&
-                                          s.lfo == def.lfo && s.voice_filters == def.voice_filters;
+                        bool same = true;
+                        for (const app::Setting& setting : app::kGame.settings())
+                            if (setting.mix) same = same && setting.IsDefault();
                         ImGui::Dummy(ImVec2(0.0f, ImGui::GetStyle().ItemSpacing.y * 0.75f));
                         ImGui::BeginDisabled(same);
-                        if (ImGui::Button(T("reset_mix_to"))) {
-                            s.stereo_full_backs = def.stereo_full_backs;
-                            s.stereo_sub = def.stereo_sub;
-                            s.reverb = def.reverb;
-                            s.crosstalk = def.crosstalk;
-                            s.doppler = def.doppler;
-                            s.distance_filters = def.distance_filters;
-                            s.resampler = def.resampler;
-                            s.voice_headroom = def.voice_headroom;
-                            s.soft_clip = def.soft_clip;
-                            s.envelopes = def.envelopes;
-                            s.lfo = def.lfo;
-                            s.voice_filters = def.voice_filters;
-                        }
+                        if (ImGui::Button(T("reset_mix_to")))
+                            for (const app::Setting& setting : app::kGame.settings())
+                                if (setting.mix) setting.Set(setting.def);
                         ImGui::EndDisabled();
                     }
                 }
@@ -3405,10 +3397,10 @@ void SwallowEsc() { g_esc_swallow.store(true); }
 
 namespace ui {
 
-bool g_fps_overlay = false;
-uint32_t g_accent = 4;  // orange
-bool g_menu_resizable = false;
-bool g_decorations = true;
+bool g_fps_overlay;
+uint32_t g_accent;  // orange
+bool g_menu_resizable;
+bool g_decorations;
 
 void Draw(double) {}
 

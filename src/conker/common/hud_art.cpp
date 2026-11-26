@@ -230,7 +230,7 @@ uint32_t StandIn(int s) {
 
 }  // namespace
 
-bool hud_art::g_on = true;
+bool hud_art::g_on;
 
 void hud_art::Init() {
     for (size_t i = 0; i < kCount; i++) {
@@ -396,7 +396,7 @@ void hud_art::Poll() {
 
 #else
 
-bool hud_art::g_on = true;
+bool hud_art::g_on;
 void hud_art::Init() {}
 void hud_art::Poll() {}
 void hud_art::QuadDraw(X86Context&, int) {}

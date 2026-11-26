@@ -1,10 +1,14 @@
 #pragma once
 #include <atomic>
 #include <cstdint>
+#include <cstdlib>
 #include <filesystem>
 #include <mutex>
+#include <span>
 #include <string>
+#include <type_traits>
 #include <utility>
+#include <variant>
 #include <vector>
 
 namespace input {
@@ -26,105 +30,106 @@ struct ModEntry {
     bool operator==(const ModEntry&) const = default;
 };
 
+// their defaults are the game's (GameInfo::settings): nothing reads them before Load
 struct Settings {
-    DisplayMode display_mode = DisplayMode::Borderless;
-    uint32_t width = 0, height = 0;  // 0 is the desktop mode
-    uint32_t render_percent = 100;   // of the size the frame is shown at (RenderScale)
+    DisplayMode display_mode{};
+    uint32_t width{}, height{};      // 0 is the desktop mode
+    uint32_t render_percent{};       // of the size the frame is shown at (RenderScale)
     // a temporal upscaler over the frame's pictures, which then sets the render size itself: "off", "dlss" (an NVIDIA
     // RTX GPU, with the DLSS module beside the game) or "fsr3" (AMD FSR 3.1, any GPU the Vulkan renderer runs it on);
     // its quality, XbeDlssQuality (gpu/dlss.h), FSR 3.1's modes in the same order with native AA for DLAA, then 5
     // Custom: the render size upscaler_percent % of the output's each way
-    std::string upscaler = "off";
-    uint32_t upscaler_quality = 1;
-    uint32_t upscaler_percent = 33;
+    std::string upscaler{};
+    uint32_t upscaler_quality{};
+    uint32_t upscaler_percent{};
     // the network DLSS runs: 0 the one recommended for the GPU (gpu::DlssCnn), 1 the transformer, 2 the CNN
-    uint32_t dlss_network = 0;
+    uint32_t dlss_network{};
     // RCAS (FSR 1's sharpening) over DLSS's or FSR 3.1's picture, in % (0 off); fsr_sharpness is FSR 1's own
-    uint32_t dlss_sharpness = 0;
+    uint32_t dlss_sharpness{};
     // super fur's shells shaded once per 2x1 or 2x2 pixels as far as the frame rate needs it (VulkanBackend::AutoFurRate),
     // else once per pixel, with DLSS or without: under DLSS it rebuilds their strands from the jitter alike, at a
     // fraction of the cost in a close-up (gpu::ProgramShading::coarse). The name is from when it was DLSS's alone
-    bool dlss_fur_auto = true;
-    uint32_t fps_cap = 60;           // 0 unlimited
+    bool dlss_fur_auto{};
+    uint32_t fps_cap{};              // 0 unlimited
     // pictures past the monitor's refresh rate with vsync, one a refresh (VulkanBackend::InStep): false, each frame's
     // own picture shown at the refresh nearest it, up to half a refresh off, one scene drawn a picture; true, every
     // picture at its own time, most of them drawn again (dearer)
-    bool picture_timing_exact = false;
+    bool picture_timing_exact{};
     // frame interpolation (frame_generation past 1) drawing fewer pictures a frame while the ones between keep the game
     // from its rate (VulkanBackend::AutoInterp), back up as there's room again
-    bool adaptive_interp = true;
-    bool vsync = true;
+    bool adaptive_interp{};
+    bool vsync{};
     // HDR output (an HDR10 swap chain, where the display and compositor offer one): the SDR picture shown with its
     // white at hdr_paper_white nits, 0 the display's (HdrPaperWhite)
-    bool hdr = false;
-    uint32_t hdr_paper_white = 0;
+    bool hdr{};
+    uint32_t hdr_paper_white{};
     // the 3D picture's highlights taken above paper white, under the 2D: how far down they start in % (0 off), and
     // the nits white reaches, 0 the display's peak (HdrPeak)
-    uint32_t hdr_highlights = 50;
-    uint32_t hdr_peak = 0;
+    uint32_t hdr_highlights{};
+    uint32_t hdr_peak{};
     // the display gamma the picture is shown for, in hundredths: 220 as it was drawn, higher darker in the midtones
-    uint32_t gamma = 220;
+    uint32_t gamma{};
     // the black level in % of white, -20 to 20: raised above 0, shadows taken down to black below it; white kept
-    int32_t brightness = 0;
+    int32_t brightness{};
     // pictures shown per frame the title presents: 1 (off), or 2 to 4, the ones between made from the frames around
     // them; the title sets it (Conker from its frame rate), it isn't saved
     uint32_t frame_generation = 1;
-    uint32_t aniso = 0;              // 0 as the game asks
-    uint32_t msaa = 1;               // samples per pixel of the frame-sized targets: 1 (off), 2, 4 or 8
+    uint32_t aniso{};                // 0 as the game asks
+    uint32_t msaa{};                 // samples per pixel of the frame-sized targets: 1 (off), 2, 4 or 8
     // effects over the 3D picture, before the title's 2D draws: SMAA, then film grain and chromatic aberration in %
-    bool smaa = false;
-    uint32_t film_grain = 0;
-    uint32_t chromatic_aberration = 0;
+    bool smaa{};
+    uint32_t film_grain{};
+    uint32_t chromatic_aberration{};
     // ambient occlusion from the depth buffer, first: its strength in % (0 off) and its reach in the title's units
-    uint32_t ambient_occlusion = 0;
-    uint32_t ambient_occlusion_radius = 30;
+    uint32_t ambient_occlusion{};
+    uint32_t ambient_occlusion_radius{};
     // motion blur from the camera's turning and moving (the picture's depth through the camera's view now and a frame
     // before, gpu::ViewConstants::camera): the blur's length as a % of the camera's motion between two pictures, 0 off
-    uint32_t motion_blur = 0;
-    Fog fog = Fog::Enabled;
+    uint32_t motion_blur{};
+    Fog fog{};
     // the levels' baked lightmaps made larger, their aliased light and shadow edges smoothed along themselves
     // (the Vulkan renderer's lightmap smoother, gpu::PrepareLightmap)
-    bool smooth_lightmaps = true;
-    uint32_t lightmap_smoothing = 5;   // how far along an edge each texel averages, in lightmap texels (1 to 10)
-    uint32_t lightmap_size = 512;      // the largest a smoothed lightmap gets across: 256 to 2048, powers of two
+    bool smooth_lightmaps{};
+    uint32_t lightmap_smoothing{};     // how far along an edge each texel averages, in lightmap texels (1 to 10)
+    uint32_t lightmap_size{};          // the largest a smoothed lightmap gets across: 256 to 2048, powers of two
     // AMD FidelityFX Super Resolution 1.0 (EASU spatial upscaling + RCAS contrast-adaptive sharpening)
-    bool fsr = false;
-    uint32_t fsr_sharpness = 80;
-    uint32_t fur_sharpness = 0;  // the share of fsr_sharpness fur takes, in % (ProgramShading::unsharpened)
-    uint32_t volume = 100;           // the game's sound in %, the mixer's output scaled by its square
-    std::string audio_device;         // an audio::Device id, "" the system default
-    bool menu_sounds = true;          // the settings menu's sounds (audio::Play)
-    bool achievement_sound = true;    // the sound as an achievement's toast appears
-    bool mute_in_background = false;  // silent while the game window lacks the focus (Background)
+    bool fsr{};
+    uint32_t fsr_sharpness{};
+    uint32_t fur_sharpness{};    // the share of fsr_sharpness fur takes, in % (ProgramShading::unsharpened)
+    uint32_t volume{};               // the game's sound in %, the mixer's output scaled by its square
+    std::string audio_device{};       // an audio::Device id, "" the system default
+    bool menu_sounds{};               // the settings menu's sounds (audio::Play)
+    bool achievement_sound{};         // the sound as an achievement's toast appears
+    bool mute_in_background{};        // silent while the game window lacks the focus (Background)
     // the speakers the console reports and the mixer plays on: stereo, or 5.1 surround; read at launch (audio::Channels)
-    bool surround = false;
+    bool surround{};
     // the mixer's choices where no one agrees what the console sounds like; the defaults are what the console's own
     // code does (dsound.cpp, dsfx.cpp), read as the mix runs
-    bool stereo_full_backs = false;  // on two speakers the backs fold into their side at 0 dB, not the encoder's -3 dB
-    bool stereo_sub = false;         // on two speakers the sub folds into both sides at -3 dB, which the encoder drops
-    uint32_t reverb = 100;           // the room reverb's level in % (the DSP's reverb is approximated, not run)
-    bool crosstalk = true;           // the GP's crosstalk cancellers on 3D sounds; off passes their inputs through
-    bool doppler = true;             // 3D voices' Doppler pitch shift
-    bool distance_filters = true;    // 3D voices' I3DL2 direct and room low-pass filters
-    uint32_t resampler = 0;          // how voices are read between their samples: 0 linear, 1 cubic, 2 sinc
-    bool voice_headroom = true;      // voices keep the library's headroom (-6 dB on most 2D ones) and SetHeadroom's
-    bool soft_clip = false;          // the mix bends towards full scale instead of clipping at it
-    bool envelopes = true;           // XACT's volume, pitch and cutoff envelopes, release envelopes and release tails
-    bool lfo = true;                 // XACT's LFOs (vibrato, tremolo, filter sweeps); their rate and depth are a guess
-    bool voice_filters = true;       // XACT's per-sound DLS2 low-pass filters
-    bool shader_warmup = true;       // make the shaders shaders.rec lists while the title boots
-    std::string gpu;                  // the name of the graphics adapter to draw with, "" the best there is (read at launch)
-    std::string renderer = "vulkan";  // which gpu::Backend draws, read at launch (gpu/backend.cpp)
-    std::string aspect = "auto";     // "W:H" ("4:3", "16:9", "21:9", ...), or "auto": the output's own shape
-    std::string join_ip;              // host[:port]: a system link host past the LAN (or on this PC) the search also asks
-    uint32_t system_link_port = 3074;  // the UDP port system link binds, read as the network starts
+    bool stereo_full_backs{};        // on two speakers the backs fold into their side at 0 dB, not the encoder's -3 dB
+    bool stereo_sub{};               // on two speakers the sub folds into both sides at -3 dB, which the encoder drops
+    uint32_t reverb{};               // the room reverb's level in % (the DSP's reverb is approximated, not run)
+    bool crosstalk{};                // the GP's crosstalk cancellers on 3D sounds; off passes their inputs through
+    bool doppler{};                  // 3D voices' Doppler pitch shift
+    bool distance_filters{};         // 3D voices' I3DL2 direct and room low-pass filters
+    uint32_t resampler{};            // how voices are read between their samples: 0 linear, 1 cubic, 2 sinc
+    bool voice_headroom{};           // voices keep the library's headroom (-6 dB on most 2D ones) and SetHeadroom's
+    bool soft_clip{};                // the mix bends towards full scale instead of clipping at it
+    bool envelopes{};                // XACT's volume, pitch and cutoff envelopes, release envelopes and release tails
+    bool lfo{};                      // XACT's LFOs (vibrato, tremolo, filter sweeps); their rate and depth are a guess
+    bool voice_filters{};            // XACT's per-sound DLS2 low-pass filters
+    bool shader_warmup{};            // make the shaders shaders.rec lists while the title boots
+    std::string gpu{};                // the name of the graphics adapter to draw with, "" the best there is (read at launch)
+    std::string renderer{};           // which gpu::Backend draws, read at launch (gpu/backend.cpp)
+    std::string aspect{};            // "W:H" ("4:3", "16:9", "21:9", ...), or "auto": the output's own shape
+    std::string join_ip{};            // host[:port]: a system link host past the LAN (or on this PC) the search also asks
+    uint32_t system_link_port{};       // the UDP port system link binds, read as the network starts
     // the console's language (XC_LANGUAGE), by its name in kLanguages; the title reads it once at boot
-    std::string language = "english";
+    std::string language{};
     // the language of the settings menu and its prompts (by name in kLanguages, as far as it has text for), live; apart
     // from the game's; a file without it gets the game's
-    std::string ui_language = "english";
+    std::string ui_language{};
     // the mods in ModsDir, the first winning where two replace the same file; read at launch (MountMods)
-    std::vector<ModEntry> mods;
+    std::vector<ModEntry> mods{};
 };
 
 // the console's languages: the language setting's name for each and its XC_LANGUAGE number
@@ -301,22 +306,100 @@ void UiAccent(int index);  // the accent color, 0 to 6; UiLock held
 void UiAccentColor(int index, float rgb[3]);  // that accent, for the settings menu's swatches
 void UiFontResize();  // each frame before ImGui's, UiLock held
 
-// what the game repo defines once
-struct Option {  // a setting in the settings file, flag or value
-    const char* key;
-    bool* flag;
-    uint32_t* value;
+// The settings file's registry: every setting that is one value, the host's (Settings) and the game's alike, each
+// with its key, storage, default, what the welcome screen's presets make it and its range. The game defines it once
+// (GameInfo::settings); the file's loading and saving, the defaults, the menu's sliders and the presets go by it
+inline constexpr int kPresets = 3;
+// a setting's value, or none: a preset that leaves the setting as it is
+struct Value {
+    std::variant<std::monostate, bool, int64_t, const char*, DisplayMode, Fog> v;
+    Value() = default;
+    Value(bool b) : v(b) {}
+    Value(int n) : v(int64_t(n)) {}
+    Value(uint32_t n) : v(int64_t(n)) {}
+    Value(const char* s) : v(s) {}
+    Value(DisplayMode m) : v(m) {}
+    Value(Fog f) : v(f) {}
+    explicit operator bool() const { return v.index() != 0; }
 };
+struct Presets {
+    Value value[kPresets];
+    Presets(Value a, Value b, Value c) : value{a, b, c} {}
+    static Presets None() { return {{}, {}, {}}; }
+};
+struct Setting {
+    using Storage = std::variant<bool*, uint32_t*, int32_t*, std::string*, DisplayMode*, Fog*>;
+    const char* key;
+    Storage storage;
+    Value def;
+    Presets presets;
+    int64_t min = 0, max = 0;  // equal: no range
+    bool zero_ok = false;      // 0 stands outside the range
+    bool mix = false;          // one of the audio Mix section's, which its reset button takes back
+    void (*apply)(int64_t) = nullptr;  // how a preset sets it, else written to its storage
+
+    Setting Range(int64_t lo, int64_t hi) const {
+        Setting s = *this;
+        s.min = lo, s.max = hi;
+        return s;
+    }
+    Setting OrZero() const {
+        Setting s = *this;
+        s.zero_ok = true;
+        return s;
+    }
+    Setting Mix() const {
+        Setting s = *this;
+        s.mix = true;
+        return s;
+    }
+    Setting ApplyBy(void (*f)(int64_t)) const {
+        Setting s = *this;
+        s.apply = f;
+        return s;
+    }
+
+    // a value written to the storage; none leaves it
+    void Set(const Value& value) const {
+        std::visit(
+            [&](auto* to) {
+                using T = std::remove_pointer_t<decltype(to)>;
+                if constexpr (std::is_same_v<T, uint32_t> || std::is_same_v<T, int32_t>) {
+                    if (const int64_t* n = std::get_if<int64_t>(&value.v)) *to = T(*n);
+                } else if constexpr (std::is_same_v<T, std::string>) {
+                    if (const char* const* text = std::get_if<const char*>(&value.v)) *to = *text;
+                } else {
+                    if (const T* x = std::get_if<T>(&value.v)) *to = *x;
+                }
+            },
+            storage);
+    }
+    bool IsDefault() const {
+        return std::visit(
+            [&](auto* at) {
+                using T = std::remove_pointer_t<decltype(at)>;
+                if constexpr (std::is_same_v<T, uint32_t> || std::is_same_v<T, int32_t>)
+                    return int64_t(*at) == std::get<int64_t>(def.v);
+                else if constexpr (std::is_same_v<T, std::string>)
+                    return *at == std::get<const char*>(def.v);
+                else
+                    return *at == std::get<T>(def.v);
+            },
+            storage);
+    }
+};
+
+// what the game repo defines once
 struct GameInfo {
     const wchar_t* title;        // window
     const wchar_t* short_title;  // message boxes
     const wchar_t* name;         // window classes, crash dumps, handover event
     const char* log;             // log prefix
-    const char* settings;        // settings file in ConfigDir
+    const char* settings_file;   // settings file in ConfigDir
     const wchar_t* missing;      // message when neither the game files nor a disc image are found
     std::vector<std::pair<const char*, const char*>> images;  // xbe file name, executable name
-    std::vector<Option> options;
-    // the settings file's toml::table, for what options cannot hold
+    std::span<const Setting> (*settings)();
+    // the settings file's toml::table, for what settings cannot hold
     void (*load)(const void* table);
     void (*save)(void* table);
     void (*init)();                // after the settings load, before the window and boot
@@ -339,6 +422,27 @@ struct GameInfo {
     size_t base_shaders_size = 0;
 };
 extern const GameInfo kGame;
+
+// every setting taken to its default
+inline void ResetSettings() {
+    for (const Setting& s : kGame.settings()) s.Set(s.def);
+}
+// the setting kept at `storage`, which must be one of the registry's
+inline const Setting& SettingAt(const void* storage) {
+    for (const Setting& s : kGame.settings())
+        if (std::visit([](auto* p) { return static_cast<const void*>(p); }, s.storage) == storage) return s;
+    std::abort();
+}
+// the settings as the welcome screen's preset has them
+inline void ApplyPreset(int preset) {
+    if (preset < 0 || preset >= kPresets) return;
+    for (const Setting& s : kGame.settings()) {
+        const Value& value = s.presets.value[preset];
+        if (!value) continue;
+        if (s.apply) s.apply(std::get<int64_t>(value.v));
+        else s.Set(value);
+    }
+}
 
 // sleeps out the rest of the frame for the fps cap, and for the console's presentation interval: a title that
 // presents every vblanks-th 60 Hz blank (D3DPRESENT_INTERVAL_TWO is 2) never runs faster than 60 / vblanks

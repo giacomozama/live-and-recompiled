@@ -47,7 +47,7 @@
 #include "cpu/x86_ops.h"
 #include "kernel/kernel.h"
 
-bool subtitles::g_on = false;
+bool subtitles::g_on;
 
 namespace {
 

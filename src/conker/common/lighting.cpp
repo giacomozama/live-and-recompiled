@@ -6,8 +6,8 @@
 #include "common/display.h"
 #include "gpu/shaders.h"
 
-bool lighting::g_per_pixel = true;
-uint32_t lighting::g_rim = 0;
+bool lighting::g_per_pixel;
+uint32_t lighting::g_rim;
 
 namespace {
 

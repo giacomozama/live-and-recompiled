@@ -869,7 +869,7 @@ void PollDumbots() {
 
 }  // namespace
 
-bool g_enabled = true;
+bool g_enabled;
 
 const Info& Get(int index) { return kEntries[std::clamp(index, 0, kCount - 1)].info; }
 

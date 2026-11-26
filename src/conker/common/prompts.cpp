@@ -21,7 +21,7 @@
 
 namespace prompts {
 
-bool g_on = true;
+bool g_on;
 
 #ifdef PROMPTS_SPRITES
 

@@ -380,7 +380,7 @@ uint32_t g_vertices = 0;
 
 }  // namespace
 
-bool medbeam::g_enabled = true;
+bool medbeam::g_enabled;
 
 // the heal tick (0x323BC0, eax the player, from the fire state 0x323E70): run for a remote healer too, its heal and
 // score event skipped, so every machine sees whom it heals

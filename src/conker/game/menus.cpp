@@ -105,8 +105,8 @@ X86_FUNC(sub_00236030) {
 // (0x1F9E60: no button and every stick axis within 20) it adds the frame's seconds ([0x7FA21C]) to [0x8756A8], and
 // past 120 (0x648EA0) puts the frontend in state 0x10 ([0x776574]), which plays frontend\attract.xmv (0x1F9F80), and
 // returns 1. menus::g_attract off: the timer stays at 0 and it returns 0, so the menu waits however long it is left.
-bool menus::g_attract = true;
-bool menus::g_skip_intro = false;
+bool menus::g_attract;
+bool menus::g_skip_intro;
 namespace {
 bool g_booted = false;  // the main menu has run: the launch movies are behind
 }
@@ -505,7 +505,7 @@ void ConkerPanelQuad(X86Context& ctx, uint8_t* base) {
 // flicker that waves across the strips. Its call at 0x216D4D passes 0x10 (pushed at 0x216CDA), which leaves the text
 // at about a fifth over the menu behind; the menu's title, the other call (0x20E526), passes 0x40 and reads.
 // [[hook]] before 0x216D4D: the hints' alpha the title's, with menus::g_bright_hints
-bool menus::g_bright_hints = true;
+bool menus::g_bright_hints;
 void ConkerPageHintAlpha(X86Context& ctx, uint8_t* base) {
     (void)base;
     if (!menus::g_bright_hints) return;

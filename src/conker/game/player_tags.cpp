@@ -57,11 +57,11 @@
 #include "gpu/shaders.h"
 #include "xdk/d3d8.h"
 
-uint32_t display::g_player_tags = display::kTagNames;
-bool display::g_player_ranks = true;
-bool display::g_player_outlines = false;
-uint32_t display::g_team_colors = display::kTeamGreenRed;
-uint32_t display::g_health_bars = display::kBarsBeside;
+uint32_t display::g_player_tags;
+bool display::g_player_ranks;
+bool display::g_player_outlines;
+uint32_t display::g_team_colors;
+uint32_t display::g_health_bars;
 
 namespace {
 

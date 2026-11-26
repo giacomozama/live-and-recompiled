@@ -100,7 +100,7 @@ uint32_t g_session_rules = 0;
 
 }  // namespace
 
-bool syslink::g_no_friendly_fire = false;
+bool syslink::g_no_friendly_fire;
 
 // [[hook]] after 0x2888A8: the host's SysFindR (edi), its 29 bits set to 0, carries the token
 void ConkerLinkAdvertise(X86Context& ctx, uint8_t* base) {

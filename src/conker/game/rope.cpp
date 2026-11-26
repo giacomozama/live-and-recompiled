@@ -35,7 +35,7 @@
 #include "cpu/x86_ops.h"
 #include "kernel/kernel.h"
 
-bool rope::g_physics = true;
+bool rope::g_physics;
 
 namespace {
 

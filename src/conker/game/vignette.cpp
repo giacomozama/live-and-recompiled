@@ -15,7 +15,7 @@
 #include "cpu/x86_ops.h"
 #include "kernel/kernel.h"
 
-bool vignette::g_on = true;
+bool vignette::g_on;
 
 namespace {
 
