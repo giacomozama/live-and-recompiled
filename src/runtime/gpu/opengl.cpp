@@ -31,6 +31,7 @@
 #include "core/log.h"
 #include "gpu/backend.h"
 #include "gpu/draw.h"
+#include "gpu/draw_steps.h"
 #include "gpu/dxgi_formats.h"
 #include "gpu/fsr_hlsl.h"
 #include "gpu/hud_split.h"
@@ -355,8 +356,9 @@ struct Ring {
 };
 constexpr size_t kRingStores = 6;  // stores a ring keeps behind the GPU before it waits for the oldest
 
-class OpenGLBackend final : public Backend, Targets<OpenGLBackend, Image>, PostEffects<OpenGLBackend, Image, View> {
+class OpenGLBackend final : public Backend, Targets<OpenGLBackend, Image>, DrawSteps<OpenGLBackend, Image>, PostEffects<OpenGLBackend, Image, View> {
     friend class Targets<OpenGLBackend, Image>;
+    friend class DrawSteps<OpenGLBackend, Image>;
     friend class PostEffects<OpenGLBackend, Image, View>;
     static constexpr const char* kName = "opengl";
     SDL_Window* window_ = nullptr;
@@ -1224,6 +1226,8 @@ class OpenGLBackend final : public Backend, Targets<OpenGLBackend, Image>, PostE
         return true;
     }
     void BeforeResize() {}
+    // what DrawSteps asks of a backend
+    bool VertexConstants(const void* data, size_t size) { return Constants(0, data, uint32_t(size), &vc_offset_); }
     // what PostEffects asks of a backend, beside FullScreenPass
     static Viewport ViewportOf(uint32_t width, uint32_t height) { return {0, 0, float(width), float(height)}; }
     static std::pair<float, float> ViewportSize(const Viewport& viewport) { return {viewport.w, viewport.h}; }
@@ -1543,42 +1547,6 @@ class OpenGLBackend final : public Backend, Targets<OpenGLBackend, Image>, PostE
                                        reinterpret_cast<const void*>(uintptr_t(index_offset_)), a.base_vertex);
         else
             gl::DrawArrays(mode_, 0, GLsizei(a.draw_count));
-    }
-    void DrawFurShells(const State& s, const Assembled& a, uint32_t shading, bool beyond) {
-        if (!shading) return;
-        const auto& fur = g_program_shading[shading - 1];
-        if (fur.top < 0 || fur.top >= int(s.vsc.size())) return;
-        const auto& top = s.vsc[size_t(fur.top)];
-        const float* reg = fur.fill_register >= 0 && fur.fill_register < int(s.vsc.size())
-                               ? s.vsc[size_t(fur.fill_register)].data()
-                               : nullptr;
-        int count;
-        float from, to;
-        if (beyond) {
-            if (!fur.beyond_of || !fur.top_layers || top[0] <= 0 || int(top[3]) != fur.top_layers - 1) return;
-            float reach = 0;
-            count = fur.beyond_of(reg, top.data(), &reach);
-            from = top[0];
-            to = from * (1 + reach);
-        } else {
-            count = fur.between_live ? int(*fur.between_live) : fur.between;
-            if (fur.between_of) {
-                const int picked = fur.between_of(reg, top.data());
-                if (picked >= 0) count = picked;
-            }
-            from = ShadingBefore(shading);
-            to = top[0];
-        }
-        if (count <= 0 || from < 0 || to <= from) return;
-        auto vertices = s.vsc.v;
-        if (fur.between_mark >= 0 && fur.between_mark < int(s.vsc.size()))
-            vertices[size_t(fur.between_mark)][1] = -1;
-        for (int shell = 1; shell <= count; ++shell) {
-            vertices[size_t(fur.top)][0] = from + (to - from) * float(shell) / float(count + !beyond);
-            if (!Constants(0, vertices.data(), sizeof(vertices))) break;
-            IssueGeometry(a);
-        }
-        last_vsc_valid_ = Constants(0, s.vsc.data(), sizeof(s.vsc.v), &vc_offset_);
     }
     // the reports whose queries are done, written in the order made: the GPU ends them in that order, so the first
     // not done ends the look (each look is a driver call per query, once asked every draw for every report)
@@ -1959,13 +1927,7 @@ public:
             driver_timing_[part] += PerfMs(step_start);
             step_start = PerfClock::now();
         };
-        const State* sp = &original;
-        if (FixedSprite(original, prim)) {
-            sprite_ = original;
-            SpriteStage(sprite_);
-            sp = &sprite_;
-        }
-        const State& s = *sp;
+        const State& s = SpriteState(original, prim);
         const bool uncounted = std::exchange(uncounted_, false);
         if (!uncounted) serial_++;
         const bool as_drawn = std::exchange(as_drawn_, false) && replaying_ && !uncounted;
@@ -1982,60 +1944,13 @@ public:
         // drawn again as the frame drew it: its geometry as the frame put it in the rings, repacked as it was (a left
         // as assembled, its vertices read through its own layout; the attributes take the kept one)
         const KeptGeometry* kept = as_drawn ? KeptFor(a, index_bytes) : nullptr;
-        // an element aligned to min(4, its size), as D3D11 and Vulkan want: Xbox SHORT3 streams can have six byte
-        // offsets and strides; those repacked locally
-        for (uint32_t slot = 0; slot < a.buffer_count; slot++) {
-            if (kept) break;
-            auto& b = a.buffers[slot];
-            auto& storage = color_buffers_[slot];
-            bool repack = false;
-            for (int r = 0; r < 16; r++)
-                if ((a.regs >> r) & 1) {
-                    const auto& e = a.elements[r];
-                    if (e.buffer != slot) continue;
-                    const uint32_t align = std::min(4u, Attrib(e.format).bytes);
-                    if (align && (e.offset % align || b.stride % align)) repack = true;
-                }
-            if (repack && b.stride) {
-                uint32_t offsets[16]{}, stride = 0;
-                for (int r = 0; r < 16; r++)
-                    if (((a.regs >> r) & 1) && a.elements[r].buffer == slot) {
-                        const uint32_t size = Attrib(a.elements[r].format).bytes, align = std::min(4u, size);
-                        if (!align) return;
-                        stride = (stride + align - 1) & ~(align - 1);
-                        offsets[r] = stride;
-                        stride += size;
-                    }
-                stride = (stride + 3) & ~3u;
-                const uint32_t vertices = b.bytes / b.stride;
-                storage.assign(size_t(vertices) * stride, 0);
-                for (int r = 0; r < 16; r++)
-                    if (((a.regs >> r) & 1) && a.elements[r].buffer == slot) {
-                        auto& e = a.elements[r];
-                        const uint32_t size = Attrib(e.format).bytes;
-                        for (uint32_t v = 0; v < vertices; v++) {
-                            const size_t source = size_t(v) * b.stride + e.offset;
-                            if (source < b.bytes)
-                                std::memcpy(storage.data() + size_t(v) * stride + offsets[r], b.src + source,
-                                            std::min(size_t(size), size_t(b.bytes) - source));
-                        }
-                        e.offset = uint16_t(offsets[r]);
-                    }
-                b.src = storage.data();
-                b.bytes = uint32_t(storage.size());
-                b.stride = stride;
-            }
-        }
+        if (!kept && !AlignStreams(a, color_buffers_, [](uint32_t format) { return Attrib(format).bytes; })) return;
         step(0);
-        Image* rt = Target(s.rt, false);
-        Image* ds = (s.rs[kRsZEnable] || s.rs[kRsStencilEnable]) ? Target(s.zs, true) : nullptr;
-        if (rt && ds && (rt->w != ds->w || rt->h != ds->h)) ds = nullptr;
-        if (!rt && !ds) return;
+        Image* rt = nullptr;
+        Image* ds = nullptr;
+        bool hud = false;
+        if (!DrawTargets(s, a, start, count, indices, rt, ds, hud)) return;
         const Image& target = rt ? *rt : *ds;
-        if (rt) CpuWrite(*rt);
-        // g_hud_split: a HUD draw onto the frame drawn narrowed to its place
-        const bool hud = rt && hud_.Place(s, a, start, count, indices, PosW(s), rt->guest.w, rt->guest.h,
-                                          guest_frame_.w, guest_frame_.h, replaying_);
         step(1);
         ShaderChoice sh;
         ClassifyShaders(s, a, count, sh);
@@ -2043,12 +1958,7 @@ public:
         TrackPost(s, a, sh.prog, rt, ds);
         sh.shading = DrawShading(s, sh);
         const ProgramShading* shading = sh.shading ? &g_program_shading[sh.shading - 1] : nullptr;
-        // fur's shells (depth_alpha's, top's x above 0) start the occlusion if nothing has yet: their depth, in only
-        // where a strand is opaque enough, read by it speckled the fur with shadow
-        if (rt && shading && shading->depth_alpha > 0 && !occlusion_done_ && !post_done_ &&
-            app::Get().ambient_occlusion && post_target_ == ResourceKey(rt->data, false) &&
-            (shading->top < 0 || s.vsc[size_t(shading->top)][0] > 0))
-            ApplyOcclusion(*rt);
+        StartFurOcclusion(s, shading, rt);
         Stage *hull = nullptr, *domain = nullptr;
         if (a.topology == Topology::Patches && shading) {
             auto [it, inserted] = tessellation_.try_emplace(sh.shading);
@@ -2072,31 +1982,14 @@ public:
         if (!vs) return;
         step(2);
         const bool clamp = UnitTexcoords(s, a);
-        TexInfo info[4]{};
-        bool is_rt[4]{}, exact[4]{};
-        float scale[4] = {1, 1, 1, 1}, wide[4]{};
+        StageTextures t;
+        auto& info = t.info;
         View views[6]{};
         GLuint samplers[6]{};
-        Image* sampled_images[4]{};
+        ReadStageTextures(s, rt, ds, target, t, views);
         const uint32_t sampled = SampledStages(s);
-        for (int i = 0; i < 4; i++) {
-            Image* tx = Texture(s, i, info[i], is_rt[i], ((sampled >> i) & 1) != 0);
-            if (tx && (tx == rt || tx == ds)) tx = Snapshot(*tx);
-            sampled_images[i] = tx;
-            if (tx) views[i] = tx->view();
-            exact[i] = (info[i].flags & kTexDepthBytes) != 0;
-            if (tx && is_rt[i]) {
-                scale[i] = float(tx->w) / tx->guest.w;
-                const float sy = float(tx->h) / tx->guest.h;
-                // Keep scaled downsample passes from skipping bright console texels.
-                if (!tx->depth && !exact[i] && std::max(scale[i], sy) > 1.1f &&
-                    (tx->guest.w > target.guest.w || tx->guest.h > target.guest.h)) {
-                    wide[i] = std::max(scale[i], sy);
-                    info[i].flags |= kTexWide;
-                }
-            }
+        for (int i = 0; i < 4; i++)
             if ((sampled >> i) & 1) samplers[i] = Sampler(s, i, info[i].shadow != 0, clamp);
-        }
         step(3);
         if (shading) {
             views[4] = GetField(shading->field);
@@ -2116,30 +2009,20 @@ public:
         Image* depth_target = Attachment(ds, multi);
         if ((rt && !color_target) || (ds && !depth_target)) return;
         const uint32_t samples = (color_target ? color_target : depth_target)->samples;
-        const bool blend_enabled = SimpleState(s, kMBlendEnable) != 0;
-        const bool depth_write = SimpleState(s, kMZWriteEnable) != 0;
         Stage* geometry = a.topology == Topology::Points ? CachedStage(PointHlsl(), "main", "gs_5_0") : nullptr;
         if (a.topology == Topology::Points && !geometry) return;
         Program* program = Link({vs, hull, domain, geometry, ps});
         if (!program) return;
         Program* depth_program = nullptr;
         const Raster* depth_raster = nullptr;
-        if (ds && s.rs[kRsZEnable] && blend_enabled) {
-            float alpha = 0;
-            if (depth_write && shading && shading->depth_alpha > 0 &&
-                (shading->top < 0 || s.vsc[size_t(shading->top)][0] > 0))
-                alpha = shading->depth_alpha;
-            else if (!depth_write && SurfaceDepth(s, start, count, indices))
-                alpha = g_surface_depth.alpha;
-            if (alpha > 0) {
-                PixelKey key = pk;
-                key.depth_pass = std::bit_cast<uint32_t>(alpha);
-                auto [it, added] = pixel_stages_.try_emplace(Hash(&key, sizeof(key)));
-                if (added) it->second = CachedStage(PixelHlsl(key), "main", "ps_5_0");
-                if (it->second) {
-                    depth_program = Link({vs, hull, domain, geometry, it->second});
-                    if (depth_program) depth_raster = &RasterOf(s, a, vs->hash, samples, DepthPass::Depth);
-                }
+        if (const float alpha = DepthPassAlpha(s, start, count, indices, ds, shading); alpha > 0) {
+            PixelKey key = pk;
+            key.depth_pass = std::bit_cast<uint32_t>(alpha);
+            auto [it, added] = pixel_stages_.try_emplace(Hash(&key, sizeof(key)));
+            if (added) it->second = CachedStage(PixelHlsl(key), "main", "ps_5_0");
+            if (it->second) {
+                depth_program = Link({vs, hull, domain, geometry, it->second});
+                if (depth_program) depth_raster = &RasterOf(s, a, vs->hash, samples, DepthPass::Depth);
             }
         }
         const bool fur_mask = rt && shading && shading->unsharpened && (app::Get().fsr || DepthOfFieldLately());
@@ -2202,32 +2085,7 @@ public:
         step(5);
         DrawConstants c{};
         const GuestExtent extent = target.guest;
-        FillSurfaceConstants(s, extent, c);
-        if (app::Get().fog != app::Fog::Disabled) FillFogConstants(s, sh.prog, c);
-        FillCombinerConstants(s, c);
-        FillTextureConstants(s, is_rt, exact, scale, wide, c);
-        if (sh.shading) FillShadingConstants(s, sh.shading, c);
-        if (!sh.shading && blend_enabled && (pk.tex[0].flags & kTexDepthBytes)) {
-            PsoKey blend_key{};
-            KeyBlend(s, blend_key);
-            NoteDepthOfField(pk, c.pc, blend_key.dst);
-        }
-        for (int i = 0; i < 4; ++i) {
-            const Image* tx = sampled_images[i];
-            if (!tx || !is_rt[i] || exact[i]) continue;
-            c.texsize[i][3] = -0.5f / tx->h;
-            if (wide[i] > 0) c.spread[i][1] = c.spread[i][0] * tx->w / tx->h;
-        }
-        if (sh.fixed_transform) {
-            FillTransformConstants(s, extent, c);
-            FillLightConstants(s, sh.fk, c);
-        }
-        if (a.topology == Topology::Points) {
-            c.surf[3] = 1;
-            c.ptpx[0] = float(target.w) / extent.w;
-            c.ptpx[1] = float(target.h) / extent.h;
-            FillPointConstants(s, sh.prog, sp == &sprite_, c);
-        }
+        FillDrawConstants(s, a, sh, pk, t, target, &s == &sprite_, c);
         auto constants_start = PerfClock::now();
         const uint64_t store = uniforms_.generation;
         Reserve(uniforms_, 2 * uint32_t(sizeof(s.vsc.v) + sizeof(c) + ubo_align_));
@@ -2261,22 +2119,8 @@ public:
             vp.w = float(target.w) * hud_.scale;
         }
         SetViewport(vp);
-        GuestRect clip{int32_t(s.viewport.x), int32_t(s.viewport.y), int32_t(s.viewport.x + s.viewport.w),
-                       int32_t(s.viewport.y + s.viewport.h)};
-        if (s.scissor_count) {
-            clip.left = std::max(clip.left, int32_t(s.scissors[0]));
-            clip.top = std::max(clip.top, int32_t(s.scissors[1]));
-            clip.right = std::min(clip.right, int32_t(s.scissors[2]));
-            clip.bottom = std::min(clip.bottom, int32_t(s.scissors[3]));
-        }
-        auto rect = RenderRect(target, clip);
-        if (hud && (hud_.scale != 1 || hud_.shift != 0)) {
-            const float vx = hud_.shift * hud_sc;
-            rect.left = int32_t(std::clamp(std::floor(float(rect.left) * hud_.scale + vx), 0.0f, float(target.w)));
-            rect.right = int32_t(std::clamp(std::ceil(float(rect.right) * hud_.scale + vx), 0.0f, float(target.w)));
-        }
-        rect.right = std::max(rect.right, rect.left);
-        rect.bottom = std::max(rect.bottom, rect.top);
+        auto rect = RenderRect(target, DrawClip(s));
+        FinishScissor(rect, target, hud);
         SetScissor(rect);
         Validate();
         mode_ = hull && domain                     ? GL_PATCHES
@@ -2310,12 +2154,7 @@ public:
         }
         step(8);
         g_perf.d_record += PerfMs(record_start);
-        if (hud_.bars && color_target) HudBars(*color_target, target);
-        if (rt) {
-            if (fur_mask) rt->fur_frame = frame_;
-            MarkWritten(*rt, multi);
-        }
-        if (ds && (depth_write || depth_program || s.rs[kRsStencilEnable])) MarkWritten(*ds, multi);
+        FinishDraw(s, rt, ds, color_target, target, fur_mask, multi, depth_program != nullptr);
     }
     void Copy(const Surface& src, const Surface& dst, uint32_t count, uint32_t rects, uint32_t points) override {
         PerfScope timing{g_perf.copy};

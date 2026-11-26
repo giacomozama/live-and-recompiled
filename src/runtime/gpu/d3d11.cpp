@@ -20,6 +20,7 @@
 #include "gpu/backend.h"
 #include "core/diag.h"
 #include "gpu/draw.h"
+#include "gpu/draw_steps.h"
 #include "gpu/d3d11_shaders.h"
 #include "gpu/fsr_hlsl.h"
 #include "gpu/hud_split.h"
@@ -220,8 +221,9 @@ static_assert(sizeof(ShaderRecord)==24);
 constexpr uint64_t kShaderCacheMagic=0x3145484341433344ull; // D3CACHE1, source/profile keyed FXC bytecode
 constexpr size_t kPassConstantFloats = 32;  // a full-screen pass's constant buffer: 8 float4, kMotionBlurHlsl's
 
-class D3D11Backend final : public Backend, Targets<D3D11Backend, Image>, PostEffects<D3D11Backend, Image, ID3D11ShaderResourceView*> {
+class D3D11Backend final : public Backend, Targets<D3D11Backend, Image>, DrawSteps<D3D11Backend, Image>, PostEffects<D3D11Backend, Image, ID3D11ShaderResourceView*> {
     friend class Targets<D3D11Backend, Image>;
+    friend class DrawSteps<D3D11Backend, Image>;
     friend class PostEffects<D3D11Backend, Image, ID3D11ShaderResourceView*>;
     static constexpr const char* kName = "d3d11";
     Com<ID3D11Device> dev_;
@@ -709,6 +711,8 @@ class D3D11Backend final : public Backend, Targets<D3D11Backend, Image>, PostEff
         return true;
     }
     void BeforeResize() { Unbind(); }
+    // what DrawSteps asks of a backend
+    bool VertexConstants(const void* data, size_t size) { return Upload(vc_.get(), data, size); }
     // what PostEffects asks of a backend
     static D3D11_VIEWPORT ViewportOf(uint32_t width, uint32_t height) {
         return {0, 0, float(width), float(height), 0, 1};
@@ -1084,42 +1088,6 @@ class D3D11Backend final : public Backend, Targets<D3D11Backend, Image>, PostEff
         if (a.index_count) ctx_->DrawIndexed(a.index_count,0,a.base_vertex);
         else ctx_->Draw(a.draw_count,0);
     }
-    void DrawFurShells(const State& s, const Assembled& a, uint32_t shading, bool beyond) {
-        if (!shading) return;
-        const auto& fur = g_program_shading[shading - 1];
-        if (fur.top < 0 || fur.top >= int(s.vsc.size())) return;
-        const auto& top = s.vsc[size_t(fur.top)];
-        const float* reg = fur.fill_register >= 0 && fur.fill_register < int(s.vsc.size()) ?
-            s.vsc[size_t(fur.fill_register)].data() : nullptr;
-        int count;
-        float from, to;
-        if (beyond) {
-            if (!fur.beyond_of || !fur.top_layers || top[0] <= 0 || int(top[3]) != fur.top_layers - 1)
-                return;
-            float reach = 0;
-            count = fur.beyond_of(reg,top.data(),&reach);
-            from = top[0];
-            to = from * (1 + reach);
-        } else {
-            count = fur.between_live ? int(*fur.between_live) : fur.between;
-            if (fur.between_of) {
-                const int picked = fur.between_of(reg,top.data());
-                if (picked >= 0) count = picked;
-            }
-            from = ShadingBefore(shading);
-            to = top[0];
-        }
-        if (count <= 0 || from < 0 || to <= from) return;
-        auto vertices = s.vsc.v;
-        if (fur.between_mark >= 0 && fur.between_mark < int(s.vsc.size()))
-            vertices[size_t(fur.between_mark)][1] = -1;
-        for (int shell = 1; shell <= count; ++shell) {
-            vertices[size_t(fur.top)][0] = from + (to - from) * float(shell) / float(count + !beyond);
-            if (!Upload(vc_.get(),vertices.data(),sizeof(vertices))) break;
-            IssueGeometry(a);
-        }
-        last_vsc_valid_ = Upload(vc_.get(),s.vsc.data(),sizeof(s.vsc.v));
-    }
     void PollReports(bool wait=false) {
         for(auto it=reports_.begin();it!=reports_.end();) {
             double samples=0; bool ready=true;
@@ -1450,73 +1418,33 @@ public:
         trace_point_material_=trace_color_material_=0;
         auto step_start=PerfClock::now();
         auto step=[&](unsigned part){driver_timing_[part]+=PerfMs(step_start);step_start=PerfClock::now();};
-        const State* sp=&original;
-        if(FixedSprite(original,prim)) {sprite_=original;SpriteStage(sprite_);sp=&sprite_;}
-        const State& s=*sp; PollReports();
+        const State& s=SpriteState(original,prim); PollReports();
         if (!replaying_) WatchDraw(s,start,count,indices);
         auto assembly_start=PerfClock::now();
         const bool patches = TessellatedDraw(s,prim);
         Assembled& a=assembled_; if(!Assemble(s,prim,start,count,indices,a,patches)) return;
         g_perf.assemble+=PerfMs(assembly_start);
-        // D3D11 aligns an element to min(4, its format size). Xbox SHORT3
-        // streams can have six-byte offsets/strides; repack those locally.
+        if(!AlignStreams(a,color_buffers_,InputBytes)) return;
+        // Normalize packed colors without changing guest memory.
         for(uint32_t slot=0;slot<a.buffer_count;slot++) {
             auto& b=a.buffers[slot];auto& storage=color_buffers_[slot];
-            bool repack=false,copied=false;
-            for(int r=0;r<16;r++)if((a.regs>>r)&1) {
-                const auto& e=a.elements[r];if(e.buffer!=slot)continue;
-                uint32_t align=std::min(4u,InputBytes(e.format));
-                if(align && (e.offset%align || b.stride%align))repack=true;
-            }
-            if(repack && b.stride) {
-                uint32_t offsets[16]{},stride=0;
-                for(int r=0;r<16;r++)if(((a.regs>>r)&1) && a.elements[r].buffer==slot) {
-                    uint32_t size=InputBytes(a.elements[r].format),align=std::min(4u,size);
-                    if(!align)return;
-                    stride=(stride+align-1)&~(align-1);offsets[r]=stride;stride+=size;
-                }
-                stride=(stride+3)&~3u;
-                uint32_t vertices=b.bytes/b.stride;
-                storage.assign(size_t(vertices)*stride,0);
-                for(int r=0;r<16;r++)if(((a.regs>>r)&1) && a.elements[r].buffer==slot) {
-                    auto& e=a.elements[r];uint32_t size=InputBytes(e.format);
-                    for(uint32_t v=0;v<vertices;v++) {
-                        size_t source=size_t(v)*b.stride+e.offset;
-                        if(source<b.bytes)std::memcpy(storage.data()+size_t(v)*stride+offsets[r],b.src+source,std::min(size_t(size),size_t(b.bytes)-source));
-                    }
-                    e.offset=uint16_t(offsets[r]);
-                }
-                b.src=storage.data();b.bytes=uint32_t(storage.size());b.stride=stride;copied=true;
-            }
-            // Normalize packed colors without changing guest memory.
             for(int r=0;r<16;r++)if((a.regs>>r)&1) {
                 auto& e=a.elements[r];if(e.buffer!=slot || e.format!=DXGI_FORMAT_B8G8R8A8_UNORM)continue;
-                if(!copied){storage.assign(b.src,b.src+b.bytes);b.src=storage.data();copied=true;}
+                if(b.src!=storage.data()){storage.assign(b.src,b.src+b.bytes);b.src=storage.data();}
                 if(b.stride)for(size_t at=e.offset;at+3<b.bytes;at+=b.stride)std::swap(storage[at],storage[at+2]);
                 e.format=DXGI_FORMAT_R8G8B8A8_UNORM;
             }
         }
         step(0);
-        Image* rt=Target(s.rt,false);
-        Image* ds=(s.rs[kRsZEnable] || s.rs[kRsStencilEnable])?Target(s.zs,true):nullptr;
-        if(rt && ds && (rt->w!=ds->w || rt->h!=ds->h))ds=nullptr;
-        if(!rt && !ds) return;
+        Image* rt=nullptr; Image* ds=nullptr; bool hud=false;
+        if(!DrawTargets(s,a,start,count,indices,rt,ds,hud)) return;
         const Image& target = rt ? *rt : *ds;
-        if(rt) CpuWrite(*rt);
-        // g_hud_split: a HUD draw onto the frame drawn narrowed to its place
-        const bool hud = rt && hud_.Place(s,a,start,count,indices,PosW(s),rt->guest.w,rt->guest.h,
-                                          guest_frame_.w,guest_frame_.h,replaying_);
         step(1);
         ShaderChoice sh; ClassifyShaders(s,a,count,sh); if(sh.prog) EnsureProgramHash(s);
         TrackPost(s, a, sh.prog, rt, ds);
         sh.shading=DrawShading(s,sh);
         const ProgramShading* shading = sh.shading ? &g_program_shading[sh.shading-1] : nullptr;
-        // fur's shells (depth_alpha's, top's x above 0) start the occlusion if nothing has yet: their depth, in only
-        // where a strand is opaque enough, read by it speckled the fur with shadow
-        if (rt && shading && shading->depth_alpha > 0 && !occlusion_done_ && !post_done_ &&
-            app::Get().ambient_occlusion && post_target_ == ResourceKey(rt->data, false) &&
-            (shading->top < 0 || s.vsc[size_t(shading->top)][0] > 0))
-            ApplyOcclusion(*rt);
+        StartFurOcclusion(s,shading,rt);
         ID3D11HullShader* hull = nullptr;
         ID3D11DomainShader* domain = nullptr;
         if (a.topology == Topology::Patches && shading) {
@@ -1535,27 +1463,11 @@ public:
         Shader& vs=vit->second; if(!vs.vs) return;
         step(2);
         bool clamp=UnitTexcoords(s,a);
-        TexInfo info[4]{}; bool is_rt[4]{}, exact[4]{}; float scale[4]={1,1,1,1},wide[4]{};
+        StageTextures t; auto& info=t.info; auto& is_rt=t.is_rt; auto& sampled_images=t.images;
         ID3D11ShaderResourceView* views[4]{}; ID3D11SamplerState* samplers[4]{};
-        Image* sampled_images[4]{};
-        uint32_t sampled=SampledStages(s);
-        for(int i=0;i<4;i++) {
-            Image* tx=Texture(s,i,info[i],is_rt[i],((sampled>>i)&1)!=0);
-            if(tx && (tx==rt || tx==ds)) tx=Snapshot(*tx);
-            sampled_images[i]=tx;if(tx) views[i]=tx->srv.get();
-            exact[i]=(info[i].flags&kTexDepthBytes)!=0;
-            if (tx && is_rt[i]) {
-                scale[i] = float(tx->w) / tx->guest.w;
-                const float sy = float(tx->h) / tx->guest.h;
-                // Keep scaled downsample passes from skipping bright console texels.
-                if (!tx->depth && !exact[i] && std::max(scale[i], sy) > 1.1f &&
-                    (tx->guest.w > target.guest.w || tx->guest.h > target.guest.h)) {
-                    wide[i] = std::max(scale[i], sy);
-                    info[i].flags |= kTexWide;
-                }
-            }
-            if((sampled>>i)&1)samplers[i]=Sampler(s,i,info[i].shadow!=0,clamp);
-        }
+        ReadStageTextures(s,rt,ds,target,t,views);
+        const uint32_t sampled=SampledStages(s);
+        for(int i=0;i<4;i++) if((sampled>>i)&1)samplers[i]=Sampler(s,i,info[i].shadow!=0,clamp);
         step(3);
         ID3D11ShaderResourceView* material[2]{};
         if (shading) {
@@ -1572,27 +1484,17 @@ public:
         Image* depth_target = Attachment(ds, multi);
         if ((rt && !color_target) || (ds && !depth_target)) return;
         const uint32_t samples = (color_target ? color_target : depth_target)->samples;
-        const bool blend_enabled = SimpleState(s,kMBlendEnable) != 0;
-        const bool depth_write = SimpleState(s,kMZWriteEnable) != 0;
         Shader* depth_ps = nullptr;
         Pipeline* depth_p = nullptr;
-        if (ds && s.rs[kRsZEnable] && blend_enabled) {
-            float alpha = 0;
-            if (depth_write && shading && shading->depth_alpha > 0 &&
-                (shading->top < 0 || s.vsc[size_t(shading->top)][0] > 0))
-                alpha = shading->depth_alpha;
-            else if (!depth_write && SurfaceDepth(s,start,count,indices))
-                alpha = g_surface_depth.alpha;
-            if (alpha > 0) {
-                PixelKey key = pk;
-                key.depth_pass = std::bit_cast<uint32_t>(alpha);
-                auto [it, added] = pixel_shaders_.try_emplace(Hash(&key,sizeof(key)));
-                if (added) it->second = Compile(PixelHlsl(key),"main","ps_5_0");
-                auto& depth = StateObjects(s,a,vs,samples,DepthPass::Depth);
-                if (it->second.ps && depth.blend && depth.depth) {
-                    depth_ps = &it->second;
-                    depth_p = &depth;
-                }
+        if (const float alpha = DepthPassAlpha(s,start,count,indices,ds,shading); alpha > 0) {
+            PixelKey key = pk;
+            key.depth_pass = std::bit_cast<uint32_t>(alpha);
+            auto [it, added] = pixel_shaders_.try_emplace(Hash(&key,sizeof(key)));
+            if (added) it->second = Compile(PixelHlsl(key),"main","ps_5_0");
+            auto& depth = StateObjects(s,a,vs,samples,DepthPass::Depth);
+            if (it->second.ps && depth.blend && depth.depth) {
+                depth_ps = &it->second;
+                depth_p = &depth;
             }
         }
         const bool fur_mask = rt && shading && shading->unsharpened && (app::Get().fsr || DepthOfFieldLately());
@@ -1615,27 +1517,7 @@ public:
         }
         step(5);
         DrawConstants c{}; const GuestExtent extent = target.guest;
-        FillSurfaceConstants(s,extent,c); if(app::Get().fog!=app::Fog::Disabled) FillFogConstants(s,sh.prog,c);
-        FillCombinerConstants(s,c); FillTextureConstants(s,is_rt,exact,scale,wide,c);
-        if (sh.shading) FillShadingConstants(s,sh.shading,c);
-        if (!sh.shading && blend_enabled && (pk.tex[0].flags & kTexDepthBytes)) {
-            PsoKey blend_key{};
-            KeyBlend(s,blend_key);
-            NoteDepthOfField(pk,c.pc,blend_key.dst);
-        }
-        for (int i = 0; i < 4; ++i) {
-            const Image* tx = sampled_images[i];
-            if (!tx || !is_rt[i] || exact[i]) continue;
-            c.texsize[i][3] = -0.5f / tx->h;
-            if (wide[i] > 0) c.spread[i][1] = c.spread[i][0] * tx->w / tx->h;
-        }
-        if(sh.fixed_transform) {FillTransformConstants(s,extent,c);FillLightConstants(s,sh.fk,c);}
-        if (a.topology == Topology::Points) {
-            c.surf[3] = 1;
-            c.ptpx[0] = float(target.w) / extent.w;
-            c.ptpx[1] = float(target.h) / extent.h;
-            FillPointConstants(s,sh.prog,sp==&sprite_,c);
-        }
+        FillDrawConstants(s,a,sh,pk,t,target,&s==&sprite_,c);
         TraceEffect(s,a,prim,count,vs,ps,pk,c,clamp,sampled_images,is_rt);
         auto constants_start=PerfClock::now();
         if(!last_vsc_valid_ || std::memcmp(last_vsc_.data(),s.vsc.data(),sizeof(s.vsc.v))) {
@@ -1699,22 +1581,8 @@ public:
         const float hud_sc = float(target.w) / float(std::max<uint32_t>(target.guest.w, 1));
         if (hud) {vp.TopLeftX = hud_.shift * hud_sc; vp.Width = float(target.w) * hud_.scale;}
         if(!draw_state_valid_ || std::memcmp(&bound_viewport_,&vp,sizeof(vp))){ctx_->RSSetViewports(1,&vp);bound_viewport_=vp;}
-        GuestRect clip{int32_t(s.viewport.x), int32_t(s.viewport.y),
-                       int32_t(s.viewport.x+s.viewport.w), int32_t(s.viewport.y+s.viewport.h)};
-        if (s.scissor_count) {
-            clip.left = std::max(clip.left, int32_t(s.scissors[0]));
-            clip.top = std::max(clip.top, int32_t(s.scissors[1]));
-            clip.right = std::min(clip.right, int32_t(s.scissors[2]));
-            clip.bottom = std::min(clip.bottom, int32_t(s.scissors[3]));
-        }
-        auto rect = RenderRect(target, clip);
-        if (hud && (hud_.scale != 1 || hud_.shift != 0)) {
-            const float vx = hud_.shift * hud_sc;
-            rect.left = LONG(std::clamp(std::floor(float(rect.left) * hud_.scale + vx), 0.0f, float(target.w)));
-            rect.right = LONG(std::clamp(std::ceil(float(rect.right) * hud_.scale + vx), 0.0f, float(target.w)));
-        }
-        rect.right = std::max(rect.right, rect.left);
-        rect.bottom = std::max(rect.bottom, rect.top);
+        auto rect = RenderRect(target, DrawClip(s));
+        FinishScissor(rect, target, hud);
         if(!draw_state_valid_ || std::memcmp(&bound_scissor_,&rect,sizeof(rect))){ctx_->RSSetScissorRects(1,&rect);bound_scissor_=rect;}
         if(!draw_state_valid_ || bound_input_!=p.input.get()){ctx_->IASetInputLayout(p.input.get());bound_input_=p.input.get();}
         auto topo=hull && domain?D3D11_PRIMITIVE_TOPOLOGY_3_CONTROL_POINT_PATCHLIST:
@@ -1744,12 +1612,7 @@ public:
         }
         step(8);
         draw_state_valid_=true;g_perf.d_record+=PerfMs(record_start);
-        if (hud_.bars && color_target) HudBars(*color_target, target);
-        if (rt) {
-            if (fur_mask) rt->fur_frame = frame_;
-            MarkWritten(*rt, multi);
-        }
-        if (ds && (depth_write || depth_p || s.rs[kRsStencilEnable])) MarkWritten(*ds, multi);
+        FinishDraw(s,rt,ds,color_target,target,fur_mask,multi,depth_p!=nullptr);
         DebugPointRaster(a,c,target,views,samplers);
         if(trace_color_material_ && rt) {
             const auto dir=std::filesystem::path(diag::WEnv(L"XBE_D3D11_EFFECT_TRACE"))/("capture-"+std::to_string(effect_capture_));
