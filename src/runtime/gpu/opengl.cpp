@@ -1340,13 +1340,16 @@ class OpenGLBackend final : public Backend {
         const auto& set = app::Get();
         const auto& vc = g_view_constants;
         if ((!set.ambient_occlusion && !set.motion_blur && !g_outlines.load(std::memory_order_relaxed)) || !depth ||
-            vc.viewport < 0 || vc.projection < 0 || !(s.vs_handle & 1) || !s.zscale)
+            vc.viewport < 0 || vc.projection < 0 || !(s.vs_handle & 1) || !s.rs[kRsZEnable] || !s.zscale)
             return;
         const std::array<float, 4> vp[] = {s.vsc[size_t(vc.viewport)], s.vsc[size_t(vc.viewport + 1)]};
         std::array<float, 4> pr[4];
         for (int i = 0; i < 4; ++i) pr[i] = s.vsc[size_t(vc.projection + i)];
-        const bool perspective = pr[0][0] && pr[1][1] && pr[2][3] && pr[3][0] == 0 && pr[3][1] == 0 &&
-                                 pr[3][2] == -1 && pr[3][3] == 0 && vp[0][0] && vp[0][1] && vp[0][2];
+        // the off-diagonal zeros too, as Vulkan's TrackView: a program keeping other things in the first row (Frankie's
+        // line draw in BarnInside) leaves the other three rows a projection's
+        const bool perspective = pr[0][0] && !pr[0][1] && !pr[1][0] && pr[1][1] && !pr[2][0] && !pr[2][1] &&
+                                 pr[2][3] && pr[3][0] == 0 && pr[3][1] == 0 && pr[3][2] == -1 && pr[3][3] == 0 &&
+                                 vp[0][0] && vp[0][1] && vp[0][2];
         if (!perspective) return;
         if (view_ok_ && (vp[0] != view_viewport_[0] || vp[1] != view_viewport_[1])) many_views_ = true;
         std::copy(std::begin(vp), std::end(vp), view_viewport_);
