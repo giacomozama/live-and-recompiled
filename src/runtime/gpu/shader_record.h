@@ -51,6 +51,9 @@ inline void SetWork(Work w, uint32_t total = 0) {
     g_work.store(w);
 }
 
+// set as the settings menu shuts (any thread): the renderer warms up again if the settings now draw with other shaders
+inline std::atomic<bool> g_settings_closed{false};
+
 // the vertex programs on the game's disc (gpu/disc_programs.h) added to programs, each by both names a program goes
 // by (ChipProgramHash, HashProgram's), where programs has none yet: disc_programs.bin beside the exe (Setup's), else
 // in app::CacheDir, else the game's files scanned and written there. Slow when it scans: off the title's thread

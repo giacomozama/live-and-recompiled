@@ -1302,8 +1302,11 @@ private:
     void SavePipelineCache();
     // the shaders and pipelines shaders.rec lists, made on threads of their own while the title runs
     void StartWarmUp();
+    shader_gen::Context WarmContext() const;
+    void CheckWarmUp();
     void WarmUp(std::vector<shader_record::Entry> entries, shader_record::Programs programs, shader_gen::Context ctx);
-    void AddBaseShaders(std::vector<shader_record::Entry>& entries, std::unordered_set<uint64_t>& ids);
+    void AddBaseShaders(std::vector<shader_record::Entry>& entries, std::unordered_set<uint64_t>& ids,
+                        uint32_t samples);
     struct WarmShader {
         uint64_t hash;
         SpirvRef code;
@@ -1699,8 +1702,14 @@ private:
         std::unordered_map<uint64_t, SpirvRef> blobs;
         std::unordered_map<uint64_t, VkPipeline> psos;
         std::atomic<bool> stop{false};
+        std::atomic<bool> running{false};
         std::thread thread;
     } warm_;
+    // the render thread's, for warming up again: shader_gen::Stamp of the last warm-up (0: none, or one stopped),
+    // the frames until the settings are checked against it, and the recorded and since drawn vertex programs
+    uint64_t warm_stamp_ = 0;
+    int warm_check_ = 0;
+    shader_record::Programs warm_programs_;
     // the lightmap worker: smooths the lightmaps the draws bind (Tex::lm_job), one at a time, off the render thread
     struct LightmapWorker {
         std::mutex lock;
@@ -4485,15 +4494,55 @@ void VulkanBackend::StartWarmUp() {
     // a second instance on this PC shares the files: it reads them only
     record_.Open(app::CacheDir(), RecordLayout(), app::Instance() <= 1);
     std::vector<shader_record::Entry> entries = record_.TakeEntries();
-    shader_record::Programs programs = record_.TakePrograms();
+    warm_programs_ = record_.TakePrograms();
     if (!app::Get().shader_warmup) return;
-    // what the disc's records depend on (gpu/shader_gen.h): the frame's targets and what the device can do
+    const shader_gen::Context ctx = WarmContext();
+    warm_stamp_ = shader_gen::Stamp(ctx);
+    warm_.running = true;
+    warm_.thread = std::thread([this, e = std::move(entries), p = warm_programs_, ctx]() mutable {
+        WarmUp(std::move(e), std::move(p), ctx);
+        warm_.running = false;
+    });
+}
+
+// what the disc's records depend on (gpu/shader_gen.h): the frame's targets and what the device can do
+shader_gen::Context VulkanBackend::WarmContext() const {
     shader_gen::Context ctx;
     ctx.samples = msaa_;
     ctx.tess = tess_;
     ctx.vrs = shading_rate_;
-    warm_.thread = std::thread([this, e = std::move(entries), p = std::move(programs), ctx]() mutable {
-        WarmUp(std::move(e), std::move(p), ctx);
+    return ctx;
+}
+
+// the warm-up again once the settings menu has shut on settings that draw with other shaders (MSAA, fog, a shading on
+// or off), so they are made now and not as first drawn. A few frames after, for ApplySettings to have settled; one
+// still running for the old settings is stopped, and waited for over further frames
+void VulkanBackend::CheckWarmUp() {
+    if (shader_record::g_settings_closed.exchange(false)) warm_check_ = 3;
+    if (!warm_check_ || (warm_check_ > 1 && --warm_check_)) return;
+    const shader_gen::Context ctx = WarmContext();
+    const uint64_t stamp = shader_gen::Stamp(ctx);
+    if (!app::Get().shader_warmup || stamp == warm_stamp_) {
+        warm_check_ = 0;
+        return;
+    }
+    if (warm_.running) {
+        warm_.stop = true;
+        warm_stamp_ = 0;
+        return;
+    }
+    if (warm_.thread.joinable()) warm_.thread.join();
+    warm_.stop = false;
+    warm_check_ = 0;
+    warm_stamp_ = stamp;
+    warm_.running = true;
+    LOGR("shaders: the settings changed, warming up again");
+    warm_.thread = std::thread([this, p = warm_programs_, ctx]() mutable {
+        // shaders.rec as it now is, this run's records too (one half written ends the read)
+        std::vector<shader_record::Entry> entries;
+        shader_record::ReadRecords(app::CacheDir() / "shaders.rec", RecordLayout(), entries);
+        WarmUp(std::move(entries), std::move(p), ctx);
+        warm_.running = false;
     });
 }
 
@@ -4506,7 +4555,7 @@ void VulkanBackend::WarmUp(std::vector<shader_record::Entry> entries, shader_rec
     // the disc's records beside the recorded ones: kept from a run before, or made after those are (a first run)
     std::unordered_set<uint64_t> ids;
     for (const auto& e : entries) ids.insert(e.id);
-    AddBaseShaders(entries, ids);
+    AddBaseShaders(entries, ids, ctx.samples);
     std::vector<shader_record::Entry> disc;
     const bool kept = shader_gen::Load(ctx, false, warm_.stop, disc);
     for (auto& e : disc)
@@ -4524,7 +4573,8 @@ void VulkanBackend::WarmUp(std::vector<shader_record::Entry> entries, shader_rec
 
 // app::GameInfo::base_shaders, those not among ids yet. They are recorded at one sample: with multisampling each of
 // their pipelines is also made at the frame's samples, as one of them may draw to the frame
-void VulkanBackend::AddBaseShaders(std::vector<shader_record::Entry>& entries, std::unordered_set<uint64_t>& ids) {
+void VulkanBackend::AddBaseShaders(std::vector<shader_record::Entry>& entries, std::unordered_set<uint64_t>& ids,
+                                   uint32_t samples) {
     std::vector<shader_record::Entry> base;
     if (!app::kGame.base_shaders) return;
     if (!shader_record::ReadRecords(app::kGame.base_shaders, app::kGame.base_shaders_size, kRecordLayout, base)) {
@@ -4533,11 +4583,11 @@ void VulkanBackend::AddBaseShaders(std::vector<shader_record::Entry>& entries, s
     }
     const size_t before = entries.size();
     for (auto& e : base) {
-        if (msaa_ > 1 && e.kind == shader_record::kPipeline && e.bytes.size() == sizeof(PipelineEntry)) {
+        if (samples > 1 && e.kind == shader_record::kPipeline && e.bytes.size() == sizeof(PipelineEntry)) {
             PipelineEntry p;
             std::memcpy(&p, e.bytes.data(), sizeof(p));
             if (p.k.samples == 1) {
-                p.k.samples = msaa_;
+                p.k.samples = samples;
                 const uint64_t id = shader_record::Id(e.kind, &p, sizeof(p));
                 if (ids.insert(id).second) {
                     const auto* b = reinterpret_cast<const uint8_t*>(&p);
@@ -5892,7 +5942,10 @@ void VulkanBackend::EnsureVertexShader(const State& s, const Assembled& a, DrawS
     shader_src_[sh.vkey] = {sh.vh, sh.vid, reads};
     if (!sh.vs_code) return;
     record_.Add(shader_record::kVertex, &v, sizeof(v));
-    if (sh.prog) record_.AddProgram(s.vs->hash, s.vs->program);
+    if (sh.prog) {
+        record_.AddProgram(s.vs->hash, s.vs->program);
+        warm_programs_.emplace(s.vs->hash, s.vs->program);
+    }
 }
 
 // sets sh.ph, sh.pid and sh.ps_code, compiling the shader on a cache miss
@@ -11594,6 +11647,7 @@ void VulkanBackend::ApplySettings() {
         Flush();
         RemakeTargets(want, aside, samples);
     }
+    CheckWarmUp();
 }
 
 // the target resolved, then shrunk with o when it is not guest sized BGRA; res null on failure

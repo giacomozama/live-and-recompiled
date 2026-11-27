@@ -1877,7 +1877,9 @@ void Draw(double fps) {
         if (now != seen) settings_changed = was_open, seen = std::move(now), seen_at = t;
         else if (t - seen_at >= kSaveDelay) app::SaveChanged();
     } else if (was_open) {
-        app::SaveChanged();
+        grass::Update();  // as shader_gen::Stamp reads it, before the game next runs
+        app::SaveChanged();  // first: the process that makes the disc's records reads the file
+        gpu::shader_record::g_settings_closed.store(true);
     }
     const bool opened_before = was_open;
     was_open = open;
