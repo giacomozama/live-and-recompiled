@@ -66,9 +66,9 @@ Then it is two steps: run Setup, run the game.
      puts the game's files in an `assets` folder in the game folder, where the game looks for them.
      - **Windows:** if it is installed from the XBOX Store in its default place
        (`C:\XboxGames\Conker- Live and Reloaded\Content\Game`, not encrypted), pick that folder.
-       - **NOTE:** You have to run the original app and let it extract the game once first, otherwise the files will not decode correctly.
-     - **Linux:** if you bought it on the XBOX Store, download its package with the
-       [Xodus project](https://github.com/xodus-gaming/xodus) or copy it from a Windows install. You can use streaming mode to extract the files automatically.
+       - **NOTE:** You have to run the original app once first, otherwise the files will not decode correctly.
+     - **Linux:** if you bought it on the XBOX Store, ~~download its package with the
+       [Xodus project](https://github.com/xodus-gaming/xodus) or~~ (package moved MSIXVC2 and xodus currently lacks support) copy it from a Windows install. You can use streaming mode to extract the files automatically.
    - **Working folder**: `work` beside Setup by default (made if it's missing). The compiler that comes inside Setup is unpacked into it (once) and the
      game is built there. Setup removes the temporary files and the unpacked compiler when done.
    - **Game folder**: `game` beside Setup by default; where the game is made, with the game's files in an `assets` folder inside it.
