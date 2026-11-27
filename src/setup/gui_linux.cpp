@@ -95,7 +95,7 @@ RunFn Load(const char* name, const unsigned char* begin, const unsigned char* en
     return run;
 }
 
-const GuiApi kApi = {ReadKit, CheckSource, Build, SetSink, SetProgress, Cancel};
+const GuiApi kApi = {ReadKit, FindExisting, CheckSource, Build, SetSink, SetProgress, Cancel};
 
 }  // namespace
 

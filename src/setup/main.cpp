@@ -967,6 +967,21 @@ fs::path FindStoreInstall() {
     return {};
 }
 
+Existing FindExisting(const Options& opt) {
+    Existing e;
+    Kit k;
+    std::string error;
+    if (opt.game_dir.empty() || !LoadKit(opt.work, k, error)) return e;
+    std::error_code ec;
+    e.game = fs::is_regular_file(opt.game_dir / k.Game(), ec);
+    std::ifstream f(opt.game_dir / kStampName, std::ios::binary);
+    std::string stamp;
+    e.current = e.game && std::getline(f, stamp) && stamp == g_kit_stamp;
+    fs::path assets = opt.game_dir / "assets";
+    if (fs::is_directory(assets, ec) && Resolve(assets, k).kind != Kind::Missing) e.source = assets;
+    return e;
+}
+
 Probe CheckSource(const Options& opt) {
     Probe p;
     Kit k;
@@ -1341,7 +1356,10 @@ int main(int argc, char** argv) {
         DWORD ids[2];
         if (GetConsoleProcessList(ids, 2) <= 1) FreeConsole();  // double-clicked: no console behind the window
 #endif
-        if (opt.source.empty()) opt.source = setup::FindStoreInstall();
+        if (opt.source.empty()) {
+            opt.source = setup::FindStoreInstall();
+            opt.source_found = true;
+        }
         int code = setup::RunWindow(opt);
         if (code != setup::kNoWindow) return code;
     }

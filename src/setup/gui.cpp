@@ -73,6 +73,9 @@ struct Window {
     bool running = false, close_when_done = false, overwrite = false;
     bool built = false;      // the last run finished: the button reads Play until something above it changes
     fs::path exe;            // the game this window built
+    Existing existing;       // what the game folder holds: with a game in it the button reads Update or Repair
+    bool auto_source = false;  // the game's source is not the player's choice: it follows the game folder
+    fs::path found_source;     // what Setup found by itself, for a game folder without the game's files
     bool build_ok = false;   // set by the worker before it hands over to Finished
     std::mutex lock;
     std::string pending;  // what the build said and the window has not shown yet
@@ -303,7 +306,16 @@ Options Read(Window& u) {
     return o;
 }
 
+// the game folder chosen: whether it holds a game, and its own copy of the game's files as the source
+void Target(Window& u) {
+    u.existing = FindExisting(Read(u));
+    const fs::path& own = u.existing.source;
+    if (u.auto_source) u.source.input->value(ToUtf8(own.empty() ? u.found_source : own).c_str());
+}
+
 void Refresh(Window& u) {
+    const char* action = !u.existing.game ? "Start" : u.existing.current ? "Repair" : "Update";
+    if (!u.running) u.install->label(u.built ? "Play" : action);
     Probe p = CheckSource(Read(u));
     u.status->copy_label(p.text.c_str());
     u.status->labelcolor(p.ok ? kOk : kBad);
@@ -331,7 +343,7 @@ void Finished(void*) {
     u.built = u.build_ok;
     if (u.built) u.exe = Read(u).game_dir / u.kit.game;
     Lock(u, false);
-    u.install->label(u.built ? "Play" : "Start");
+    u.existing = FindExisting(Read(u));
     u.close->label("Close");
     u.close->activate();
     Refresh(u);
@@ -395,11 +407,13 @@ void Browse(Row& row, bool file) {
     row.input->do_callback();
 }
 
-void Changed(Fl_Widget*, void*) {
-    if (g_ui->running) return;
-    g_ui->built = false;
-    g_ui->install->label("Start");
-    Refresh(*g_ui);
+void Changed(Fl_Widget* w, void*) {
+    Window& u = *g_ui;
+    if (u.running) return;
+    u.built = false;
+    if (w == u.source.input) u.auto_source = !*u.source.input->value();
+    else if (w == u.game.input) Target(u);
+    Refresh(u);
 }
 
 void OnClose(Fl_Widget*, void*) {
@@ -562,6 +576,9 @@ int RunWindow(const Options& defaults) {
     }
     SetSink(Sink);
     SetProgress(Progressed);
+    u.auto_source = defaults.source.empty() || defaults.source_found;
+    if (defaults.source_found) u.found_source = defaults.source;
+    Target(u);
     Refresh(u);
     u.win->show();
     int code = Fl::run();

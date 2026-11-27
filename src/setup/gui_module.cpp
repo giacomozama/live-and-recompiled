@@ -9,6 +9,7 @@ const GuiApi* g_api = nullptr;
 }
 
 KitInfo ReadKit() { return g_api->read_kit(); }
+Existing FindExisting(const Options& opt) { return g_api->find_existing(opt); }
 Probe CheckSource(const Options& opt) { return g_api->check_source(opt); }
 bool Build(const Options& opt) { return g_api->build(opt); }
 void SetSink(void (*sink)(const char*)) { g_api->set_sink(sink); }
