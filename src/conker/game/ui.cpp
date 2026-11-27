@@ -866,7 +866,9 @@ bool Segmented(const char* label, int* v, std::initializer_list<const char*> ite
         ImGui::PushID(i);
         const bool grey = off >> i & 1;
         ImGui::BeginDisabled(grey);
-        if (ImGui::InvisibleButton("##segment", ImVec2(widths[size_t(i)], height))) *v = i, changed = true;
+        // EnableNav: an invisible button is otherwise out of the pad's and the keyboard's reach
+        if (ImGui::InvisibleButton("##segment", ImVec2(widths[size_t(i)], height), ImGuiButtonFlags_EnableNav))
+            *v = i, changed = true;
         ImGui::EndDisabled();
         const ImVec2 a(x, lo.y), b(x + widths[size_t(i)], hi.y);
         const ImDrawFlags corners = names.size() == 1 ? ImDrawFlags_RoundCornersAll
@@ -2205,7 +2207,7 @@ void Draw(double fps) {
                             app::UiAccentColor(int(i), rgb);
                             const ImVec4 color(rgb[0], rgb[1], rgb[2], 1.0f);
                             const ImVec2 p = ImGui::GetCursorScreenPos();
-                            if (ImGui::InvisibleButton("##swatch", ImVec2(size, size))) g_accent = i;
+                            if (ImGui::InvisibleButton("##swatch", ImVec2(size, size), ImGuiButtonFlags_EnableNav)) g_accent = i;
                             ImDrawList* dl = ImGui::GetWindowDrawList();
                             dl->AddRectFilled(p, ImVec2(p.x + size, p.y + size), ImGui::GetColorU32(color), size * 0.25f);
                             if (g_accent == i)
@@ -3223,8 +3225,6 @@ bool Welcome() {
         Segmented("##preset", &preset,
                   {presets::Name(presets::kLow), presets::Name(presets::kMedium), presets::Name(presets::kHigh),
                    presets::Name(presets::kUltra)});
-        Hint(presets::Description(preset));
-        Hint("hint_upscaling_options_are_in_settings");
         gap(0.8f);
 
         heading("fur_tech");
@@ -3240,7 +3240,6 @@ bool Welcome() {
             for (int i = 0; i < int(std::size(kRates)); i++)
                 if (kRates[i] > most) off |= 1u << i;
             Segmented("##rate", &rate, {"30_original", " 60", " 120", " 180", " 240"}, off);
-            Hint("hint_rates_past_the_monitor_s");
         }
         gap(0.8f);
 
@@ -3257,7 +3256,6 @@ bool Welcome() {
         ImGui::BeginDisabled(D3d11());
         if (ImGui::Button(T("calibrate_display"), ImVec2(-FLT_MIN, 0.0f)) && start_at < 0.0) g_calib_step.store(0);
         ImGui::EndDisabled();
-        Hint(D3d11() ? NoVulkan() : "hint_test_patterns_for_brightness_and");
         gap(1.2f);
 
         // Start, the row's width, in the accent
@@ -3272,6 +3270,8 @@ bool Welcome() {
             s.aspect = shape == 1 ? "4:3" : "auto";
             fur::g_strands = fur_tech == 1;
             hud_art::g_on = game_fonts::g_title = game_fonts::g_text = subtitles::g_redraw = hud == 1;
+            // High with super fur takes the cheaper anti-aliasing
+            if (preset == presets::kHigh && fur::g_strands) s.smaa = true, s.msaa = 1;
             start_at = now;
         }
         ImGui::PopStyleVar();
@@ -3279,6 +3279,10 @@ bool Welcome() {
             DrawFrame(ImGui::GetWindowDrawList(), ImGui::GetItemRectMin(), ImGui::GetItemRectMax(),
                       ImGui::GetStyle().FrameRounding, fade, 0, 0.0f, 200.0f, 55.0f);
         ImGui::PopStyleColor(3);
+        // out without settings saved: the screen shows again on the next launch
+        PushDangerButton();
+        if (ImGui::Button(T("quit_game"), ImVec2(-FLT_MIN, 0.0f)) && start_at < 0.0) app::Quit();
+        PopDangerButton();
         ImGui::PopStyleVar(2);
         DrawWindowFrame(fade);
     }
