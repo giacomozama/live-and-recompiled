@@ -18,7 +18,7 @@ void SetFrameRate(uint32_t rate);
 // as 59.94 for 60, counts), past which more pictures only cost; 240 past 240 Hz. A setting above it runs at it
 uint32_t MostFrameRate();
 // the most of 30, 60, 120, 180 and 240 the monitor shows (a rate just under, as 59.94 for 60, counts), up to
-// MostFrameRate: 120 at 165 Hz. The Enhanced preset's, and what an old "Highest" setting (0) becomes
+// MostFrameRate: 120 at 165 Hz. What an old "Highest" setting (0) becomes
 uint32_t HighestFrameRate();
 // in a system link session with another machine: the frame rate setting can't change, and the game's rate stays as it
 // was when the other came in (peers must tick alike, link.cpp). Any thread

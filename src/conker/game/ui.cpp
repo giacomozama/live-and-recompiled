@@ -1716,12 +1716,13 @@ void DrawCalibration(app::Settings& s) {
     ImGui::SetNextWindowSizeConstraints(ImVec2(width, 0.0f), ImVec2(width, display.y * 0.45f));
     static int shown = -1;
     if (shown != step) ImGui::SetNextWindowFocus();
-    const bool arrived = shown != step;
+    bool arrived = shown != step;
     shown = step;
     if (ImGui::Begin("##calibrate", nullptr,
                      ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize |
                          ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings |
                          ImGuiWindowFlags_AlwaysAutoResize)) {
+        arrived |= ImGui::IsWindowAppearing();  // opened again on the step Esc or B left it on
         const ImGuiStyle& st = ImGui::GetStyle();
         ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(st.FramePadding.x * 1.25f, st.FramePadding.y * 1.5f));
         ImGui::TextUnformatted(T("display_calibration"));
@@ -3123,13 +3124,36 @@ void Draw(double fps) {
 
 bool Welcome() {
     MenuStyle();
+    bool back = false;  // B or Esc, pressed this frame
     {
         Buttons drive;
         for (int port = 0; port < input::kPorts; port++) drive.Add(ReadPad(port));
         FeedNav(drive);
+        static bool b_was = false;
+        back = (drive.b && !b_was) || ImGui::IsKeyPressed(ImGuiKey_Escape, false);
+        b_was = drive.b;
     }
     app::Settings& s = app::Get();
-    static int preset = presets::kModern;
+    static constexpr uint32_t kRates[] = {30, 60, 120, 180, 240};
+    static int preset = presets::kHigh;
+    static int rate = -1, shape = 0, hud = 1, fur_tech = 0;
+    if (rate < 0) {
+        const uint32_t now_rate = std::min(display::g_frame_rate, display::MostFrameRate());
+        rate = 0;
+        for (int i = 0; i < int(std::size(kRates)); i++)
+            if (kRates[i] == now_rate) rate = i;
+    }
+    // the display calibration in the screen's place until Done, B or Esc
+    static bool calibrated = false;
+    if (g_calib_step.load() >= 0) {
+        if (!back) {
+            DrawCalibration(s);
+            calibrated = true;
+            return false;
+        }
+        g_calib_step.store(-1);
+    }
+    gpu::g_calibrate.store(0, std::memory_order_relaxed);
     // in as the window opens, out after Start; done once out
     static double shown_at = -1.0, start_at = -1.0;
     const double now = ImGui::GetTime();
@@ -3154,7 +3178,7 @@ bool Welcome() {
     const float width = std::min(std::max(display.x * 0.42f, font * 34.0f), display.x - margin * 2.0f);
     ImGui::SetNextWindowPos(ImVec2(display.x * 0.5f, display.y * 0.5f), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
     ImGui::SetNextWindowSizeConstraints(ImVec2(width, 0.0f), ImVec2(width, display.y - margin * 2.0f));
-    if (first) ImGui::SetNextWindowFocus();
+    if (first || std::exchange(calibrated, false)) ImGui::SetNextWindowFocus();
     ImGui::PushStyleVar(ImGuiStyleVar_Alpha, fade);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(base.WindowPadding.x * 2.5f, base.WindowPadding.y * 2.5f));
     if (ImGui::Begin("##welcome", nullptr,
@@ -3195,10 +3219,45 @@ bool Welcome() {
         }
         gap(0.8f);
 
-        heading("graphics");
+        heading("graphics_quality");
         Segmented("##preset", &preset,
-                  {presets::Name(presets::kNostalgic), presets::Name(presets::kModern), presets::Name(presets::kEnhanced)});
+                  {presets::Name(presets::kLow), presets::Name(presets::kMedium), presets::Name(presets::kHigh),
+                   presets::Name(presets::kUltra)});
         Hint(presets::Description(preset));
+        Hint("hint_upscaling_options_are_in_settings");
+        gap(0.8f);
+
+        heading("fur_tech");
+        Segmented("##fur", &fur_tech, {"vanilla", "super"});
+        Hint("hint_vanilla_keeps_the_game_s");
+        gap(0.8f);
+
+        heading("frame_rate");
+        {
+            // past the first rate to reach the monitor's refresh, greyed out (as in the settings menu)
+            const uint32_t most = display::MostFrameRate();
+            uint32_t off = 0;
+            for (int i = 0; i < int(std::size(kRates)); i++)
+                if (kRates[i] > most) off |= 1u << i;
+            Segmented("##rate", &rate, {"30_original", " 60", " 120", " 180", " 240"}, off);
+            Hint("hint_rates_past_the_monitor_s");
+        }
+        gap(0.8f);
+
+        heading("aspect_ratio");
+        Segmented("##shape", &shape, {"fill_the_screen", "4_3_original"});
+        gap(0.8f);
+
+        heading("hud_and_text");
+        Segmented("##hud", &hud, {"original", "enhanced"});
+        Hint("hint_enhanced_redraws_the_hud");
+        gap(0.8f);
+
+        heading("display_calibration");
+        ImGui::BeginDisabled(D3d11());
+        if (ImGui::Button(T("calibrate_display"), ImVec2(-FLT_MIN, 0.0f)) && start_at < 0.0) g_calib_step.store(0);
+        ImGui::EndDisabled();
+        Hint(D3d11() ? NoVulkan() : "hint_test_patterns_for_brightness_and");
         gap(1.2f);
 
         // Start, the row's width, in the accent
@@ -3209,6 +3268,10 @@ bool Welcome() {
         ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 0.0f);  // its lines are drawn below, as the segments' track has
         if (ImGui::Button(T("start"), ImVec2(-FLT_MIN, std::round(ImGui::GetFrameHeight() * 1.3f))) && start_at < 0.0) {
             presets::Apply(preset);
+            display::SetFrameRate(std::min(kRates[rate], display::MostFrameRate()));
+            s.aspect = shape == 1 ? "4:3" : "auto";
+            fur::g_strands = fur_tech == 1;
+            hud_art::g_on = game_fonts::g_title = game_fonts::g_text = subtitles::g_redraw = hud == 1;
             start_at = now;
         }
         ImGui::PopStyleVar();

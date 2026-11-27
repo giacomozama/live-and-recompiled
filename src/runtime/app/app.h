@@ -310,7 +310,7 @@ void UiFontResize();  // each frame before ImGui's, UiLock held
 // The settings file's registry: every setting that is one value, the host's (Settings) and the game's alike, each
 // with its key, storage, default, what the welcome screen's presets make it and its range. The game defines it once
 // (GameInfo::settings); the file's loading and saving, the defaults, the menu's sliders and the presets go by it
-inline constexpr int kPresets = 3;
+inline constexpr int kPresets = 4;
 // a setting's value, or none: a preset that leaves the setting as it is
 struct Value {
     std::variant<std::monostate, bool, int64_t, const char*, DisplayMode, Fog> v;
@@ -325,8 +325,8 @@ struct Value {
 };
 struct Presets {
     Value value[kPresets];
-    Presets(Value a, Value b, Value c) : value{a, b, c} {}
-    static Presets None() { return {{}, {}, {}}; }
+    Presets(Value a, Value b, Value c, Value d) : value{a, b, c, d} {}
+    static Presets None() { return {{}, {}, {}, {}}; }
 };
 struct Setting {
     using Storage = std::variant<bool*, uint32_t*, int32_t*, std::string*, DisplayMode*, Fog*>;
@@ -337,7 +337,6 @@ struct Setting {
     int64_t min = 0, max = 0;  // equal: no range
     bool zero_ok = false;      // 0 stands outside the range
     bool mix = false;          // one of the audio Mix section's, which its reset button takes back
-    void (*apply)(int64_t) = nullptr;  // how a preset sets it, else written to its storage
 
     Setting Range(int64_t lo, int64_t hi) const {
         Setting s = *this;
@@ -352,11 +351,6 @@ struct Setting {
     Setting Mix() const {
         Setting s = *this;
         s.mix = true;
-        return s;
-    }
-    Setting ApplyBy(void (*f)(int64_t)) const {
-        Setting s = *this;
-        s.apply = f;
         return s;
     }
 
@@ -439,9 +433,7 @@ inline void ApplyPreset(int preset) {
     if (preset < 0 || preset >= kPresets) return;
     for (const Setting& s : kGame.settings()) {
         const Value& value = s.presets.value[preset];
-        if (!value) continue;
-        if (s.apply) s.apply(std::get<int64_t>(value.v));
-        else s.Set(value);
+        if (value) s.Set(value);
     }
 }
 

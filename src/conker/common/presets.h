@@ -4,7 +4,7 @@
 // implemented in src/conker/game/presets.cpp
 namespace presets {
 
-enum Preset { kNostalgic, kModern, kEnhanced, kCount };
+enum Preset { kLow, kMedium, kHigh, kUltra, kCount };
 
 const char* Name(int preset);
 const char* Description(int preset);  // a line or two for under the choice

@@ -1,5 +1,5 @@
-// graphics presets (common/presets.h): the settings each makes are in the registry (common/settings_registry.cpp).
-// Placeholders for now: the values and the descriptions are to be filled in
+// graphics quality presets (common/presets.h): the settings each makes are in the registry
+// (common/settings_registry.cpp). The values are first guesses, to be tuned
 #include "common/presets.h"
 
 #include "app/app.h"
@@ -13,9 +13,10 @@ struct Info {
     const char* description;
 };
 constexpr Info kInfo[kCount] = {
-    {"nostalgic", "hint_as_close_as_possible_to"},
-    {"modern", "hint_faithful_to_the_original_with"},
-    {"enhanced", "hint_takes_advantage_of_modern_hardware"},
+    {"low", "hint_preset_low"},
+    {"medium", "hint_preset_medium"},
+    {"high", "hint_preset_high"},
+    {"ultra", "hint_preset_ultra"},
 };
 
 }  // namespace

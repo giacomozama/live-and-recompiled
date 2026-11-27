@@ -1,7 +1,7 @@
 // the settings registry (app::Setting): every setting of the settings file that is one value, in the settings menu's
 // order. A new setting is a row here, its storage declared without a value: the default is the row's. Each row says
-// what the welcome screen's presets (common/presets.h) make it, in order Nostalgic, Modern, Enhanced: {} leaves it as it is
-// in that one, kNo in all three
+// what the welcome screen's presets (common/presets.h) make it, in order Low, Medium, High, Ultra: {} leaves it as it is
+// in that one, kNo in all four
 #include "common/settings_registry.h"
 
 #include "common/achievements.h"
@@ -44,7 +44,7 @@ std::span<const app::Setting> Registry() {
         {"display_mode", &s.display_mode, DisplayMode::Borderless, kNo},
         {"width", &s.width, 0, kNo},
         {"height", &s.height, 0, kNo},
-        {"aspect", &s.aspect, "auto", {"4:3", {}, {}}},
+        {"aspect", &s.aspect, "auto", kNo},
         {"gpu", &s.gpu, "", kNo},
         {"renderer", &s.renderer, "vulkan", kNo},
 
@@ -56,58 +56,57 @@ std::span<const app::Setting> Registry() {
         Setting{"gamma", &s.gamma, 220, kNo}.Range(180, 260),
         Setting{"brightness", &s.brightness, 0, kNo}.Range(-20, 20),
 
-        // frame rate. frame_rate: 30, 60, 120, 180 or 240; 0, the old Highest, moves to a rate (display.cpp), and as a
-        // preset's value picks the monitor's. It sets fps_cap and the runtime's frame_generation
-        Setting{"frame_rate", &display::g_frame_rate, kDefaultRate, {30, 60, 0}}
-            .ApplyBy([](int64_t rate) { display::SetFrameRate(rate ? uint32_t(rate) : display::HighestFrameRate()); }),
+        // frame rate. frame_rate: 30, 60, 120, 180 or 240; 0, the old Highest, moves to a rate (display.cpp). It sets
+        // fps_cap and the runtime's frame_generation
+        {"frame_rate", &display::g_frame_rate, kDefaultRate, kNo},
         {"fps_cap", &s.fps_cap, 60, kNo},
-        {"vsync", &s.vsync, true, {true, true, true}},
+        {"vsync", &s.vsync, true, kNo},
         {"picture_timing_exact", &s.picture_timing_exact, false, kNo},
         {"adaptive_interp", &s.adaptive_interp, true, kNo},
         {"fps_overlay", &ui::g_fps_overlay, false, kNo},
 
         // upscaling and sharpening
-        Setting{"render_percent", &s.render_percent, 100, {100, 100, 100}}.Range(25, 200),
-        {"upscaler", &s.upscaler, "off", kNo},
+        Setting{"render_percent", &s.render_percent, 100, {100, 100, 100, 100}}.Range(25, 200),
+        {"upscaler", &s.upscaler, "off", {"off", "off", "off", "off"}},
         Setting{"upscaler_quality", &s.upscaler_quality, 1, kNo}.Range(0, 5),
         Setting{"upscaler_percent", &s.upscaler_percent, 33, kNo}.Range(10, 100),
         Setting{"dlss_network", &s.dlss_network, 0, kNo}.Range(0, 2),
         Setting{"dlss_sharpness", &s.dlss_sharpness, 0, kNo}.Range(0, 100),
-        {"fsr", &s.fsr, false, {false, false, true}},
-        Setting{"fsr_sharpness", &s.fsr_sharpness, 80, {80, 80, 80}}.Range(0, 100),
-        Setting{"fur_sharpness", &s.fur_sharpness, 0, {0, 0, 0}}.Range(0, 100),
+        {"fsr", &s.fsr, false, {false, false, true, true}},
+        Setting{"fsr_sharpness", &s.fsr_sharpness, 80, {80, 80, 80, 80}}.Range(0, 100),
+        Setting{"fur_sharpness", &s.fur_sharpness, 0, {0, 0, 0, 0}}.Range(0, 100),
 
         // quality and post processing
-        {"anisotropic_filtering", &s.aniso, 0, {0, 16, 16}},
-        {"msaa", &s.msaa, 1, {1, 4, 4}},
-        {"smaa", &s.smaa, false, {false, false, false}},
-        {"vignette", &vignette::g_on, true, {true, true, true}},  // the game's darkened screen edges (vignette.cpp)
-        Setting{"film_grain", &s.film_grain, 0, {0, 0, 0}}.Range(0, 100),
-        Setting{"chromatic_aberration", &s.chromatic_aberration, 0, {0, 0, 0}}.Range(0, 100),
-        Setting{"ambient_occlusion", &s.ambient_occlusion, 0, {0, 0, 100}}.Range(0, 100),
-        Setting{"ambient_occlusion_radius", &s.ambient_occlusion_radius, 30, {50, 50, 50}}.Range(5, 200),
-        Setting{"motion_blur", &s.motion_blur, 0, {0, 0, 0}}.Range(0, 100),
+        {"anisotropic_filtering", &s.aniso, 0, {0, 8, 16, 16}},
+        {"msaa", &s.msaa, 1, {1, 2, 4, 4}},
+        {"smaa", &s.smaa, false, {false, false, false, false}},
+        {"vignette", &vignette::g_on, true, {true, true, true, true}},  // the game's darkened screen edges (vignette.cpp)
+        Setting{"film_grain", &s.film_grain, 0, {0, 0, 0, 0}}.Range(0, 100),
+        Setting{"chromatic_aberration", &s.chromatic_aberration, 0, {0, 0, 0, 0}}.Range(0, 100),
+        Setting{"ambient_occlusion", &s.ambient_occlusion, 0, {0, 0, 50, 100}}.Range(0, 100),
+        Setting{"ambient_occlusion_radius", &s.ambient_occlusion_radius, 30, {50, 50, 50, 50}}.Range(5, 200),
+        Setting{"motion_blur", &s.motion_blur, 0, {0, 0, 0, 0}}.Range(0, 100),
 
         // lighting
-        {"per_pixel_lighting", &lighting::g_per_pixel, true, {false, false, true}},  // lit per pixel (lighting.cpp)
-        Setting{"rim_light", &lighting::g_rim, 0, kNo}.Range(0, 100),  // edges lit against the background, per pixel lighting
-        {"smooth_lightmaps", &s.smooth_lightmaps, true, {false, false, true}},
-        Setting{"lightmap_smoothing", &s.lightmap_smoothing, 5, {5, 5, 5}}.Range(1, 10),
-        {"lightmap_size", &s.lightmap_size, 512, {512, 512, 1024}},
-        {"fog", &s.fog, Fog::Enabled, {Fog::Enabled, Fog::Enabled, Fog::Enabled}},
+        {"per_pixel_lighting", &lighting::g_per_pixel, true, {false, false, true, true}},  // lit per pixel (lighting.cpp)
+        Setting{"rim_light", &lighting::g_rim, 0, {0, 0, 50, 50}}.Range(0, 100),  // edges lit against the background, per pixel lighting
+        {"smooth_lightmaps", &s.smooth_lightmaps, true, {false, true, true, true}},
+        Setting{"lightmap_smoothing", &s.lightmap_smoothing, 5, {5, 5, 5, 5}}.Range(1, 10),
+        {"lightmap_size", &s.lightmap_size, 512, {512, 512, 512, 1024}},
+        {"fog", &s.fog, Fog::Enabled, {Fog::Enabled, Fog::Enabled, Fog::Enabled, Fog::Enabled}},
 
         // fur and detail
-        {"fur_strands", &fur::g_strands, false, {false, false, true}},  // super fur: procedural strands; each model's look in [fur_models] (fur.cpp)
-        {"fur_distant", &fur::g_distant, true, {false, true, true}},  // distant fur keeps all its shells (hooks.cpp)
-        {"dlss_fur_auto", &s.dlss_fur_auto, true, kNo},
-        {"character_max_lod", &characters::g_max_lod, true, {false, true, true}},  // characters keep their full model (hooks.cpp)
-        {"character_smooth_animation", &characters::g_smooth_animation, true, {false, true, true}},  // far players animate every frame (hooks.cpp)
-        {"character_menu_models", &characters::g_menu_models, false, {false, false, false}},  // the classes' character select models (hooks.cpp)
-        {"grass_wind", &grass::g_wind, true, {false, true, true}},  // distant grass sways too (hooks.cpp)
-        {"grass_max_lod", &grass::g_max_lod, true, {false, true, true}},  // distant grass keeps all its blades (hooks.cpp)
-        {"grass_fade", &grass::g_fade, false, {true, false, false}},  // distant grass fades out, else solid however far (hooks.cpp)
-        {"dynamic_water", &water::g_dynamic, false, {false, true, true}},  // flowing, rippling water (water.cpp)
-        {"floor_depth", &reflection::g_floor_depth, true, {false, true, true}},  // floors over reflections blur by their own depth (reflection.cpp)
+        {"fur_strands", &fur::g_strands, false, kNo},  // super fur: procedural strands; each model's look in [fur_models] (fur.cpp)
+        {"fur_distant", &fur::g_distant, true, {false, true, true, true}},  // distant fur keeps all its shells (hooks.cpp)
+        {"dlss_fur_auto", &s.dlss_fur_auto, true, {true, true, true, true}},
+        {"character_max_lod", &characters::g_max_lod, true, {false, false, false, true}},  // characters keep their full model (hooks.cpp)
+        {"character_smooth_animation", &characters::g_smooth_animation, true, {false, true, true, true}},  // far players animate every frame (hooks.cpp)
+        {"character_menu_models", &characters::g_menu_models, false, {false, false, false, true}},  // the classes' character select models (hooks.cpp)
+        {"grass_wind", &grass::g_wind, true, {false, true, true, true}},  // distant grass sways too (hooks.cpp)
+        {"grass_max_lod", &grass::g_max_lod, true, {false, true, true, true}},  // distant grass keeps all its blades (hooks.cpp)
+        {"grass_fade", &grass::g_fade, false, {true, false, false, false}},  // distant grass fades out, else solid however far (hooks.cpp)
+        {"dynamic_water", &water::g_dynamic, false, {false, true, true, true}},  // flowing, rippling water (water.cpp)
+        {"floor_depth", &reflection::g_floor_depth, true, {false, true, true, true}},  // floors over reflections blur by their own depth (reflection.cpp)
         {"redrawn_hud", &hud_art::g_on, true, kNo},  // HUD art drawn from vector pictures (hud_art.cpp)
         {"shader_warmup", &s.shader_warmup, true, kNo},
 
@@ -120,17 +119,17 @@ std::span<const app::Setting> Registry() {
         {"hq_title_font", &game_fonts::g_title, true, kNo},  // the title font drawn from Reloaded Serif (game_fonts.cpp)
         {"hq_text_font", &game_fonts::g_text, true, kNo},  // the text font drawn from Trebuchet MS Bold
         {"skippable_cutscenes", &cutscenes::g_skippable, true, kNo},  // LT skips any cutscene (hooks.cpp)
-        {"english_bubbles", &cutscenes::g_english_bubbles, true, {false, true, true}},  // the throne monologues' bubbles in English (hooks.cpp)
+        {"english_bubbles", &cutscenes::g_english_bubbles, true, kNo},  // the throne monologues' bubbles in English (hooks.cpp)
         {"speech_subtitles", &subtitles::g_on, false, kNo},  // speech bubbles shown as subtitles instead (subtitles.cpp)
-        {"redrawn_bubbles", &subtitles::g_redraw, true, {false, true, true}},  // speech bubbles drawn again by the runtime, never with subtitles (bubbles.cpp)
+        {"redrawn_bubbles", &subtitles::g_redraw, true, kNo},  // speech bubbles drawn again by the runtime, never with subtitles (bubbles.cpp)
         {"fade_loads", &loading::g_fade, true, kNo},  // a fade to black instead of loading screens (hooks.cpp)
-        {"rope_physics", &rope::g_physics, true, {false, true, true}},  // ropes swing as a weighted chain (rope.cpp)
+        {"rope_physics", &rope::g_physics, true, {false, true, true, true}},  // ropes swing as a weighted chain (rope.cpp)
         {"achievements", &achievements::g_enabled, true, kNo},  // achievements are earned, locally (achievements.cpp)
 
         // multiplayer
         {"join_ip", &s.join_ip, "", kNo},
         {"system_link_port", &s.system_link_port, 3074, kNo},
-        {"hud_split", &display::g_hud_split, true, {false, true, true}},  // a match's HUD unstretched, at the display's edges (display.cpp)
+        {"hud_split", &display::g_hud_split, true, kNo},  // a match's HUD unstretched, at the display's edges (display.cpp)
         Setting{"player_tags", &display::g_player_tags, display::kTagNames, kNo}.Range(0, display::kTagOff),  // over other players: 0 names, 1 markers, 2 off (player_tags.cpp)
         {"player_ranks", &display::g_player_ranks, true, kNo},  // the rank emblem in the tag over other players
         Setting{"health_bars", &display::g_health_bars, display::kBarsBeside, kNo}.Range(0, display::kBarsOff),  // other players' health bars: 0 beside them, 1 instead of the name or marker, 2 none
@@ -139,7 +138,7 @@ std::span<const app::Setting> Registry() {
         {"medgun_beam", &medbeam::g_enabled, true, kNo},  // the medgun's heal beam in a match (medbeam.cpp)
         {"sharp_drone_view", &display::g_sharp_drone, true, kNo},  // the Sneeker drone's view sharp, no haze (display.cpp)
         {"no_friendly_fire", &syslink::g_no_friendly_fire, false, kNo},  // a match's teammates don't hurt each other; online the host's (friendly_fire.cpp)
-        {"bright_menu_hints", &menus::g_bright_hints, true, {false, true, true}},  // solid page hints (menus.cpp)
+        {"bright_menu_hints", &menus::g_bright_hints, true, kNo},  // solid page hints (menus.cpp)
 
         // audio
         Setting{"volume", &s.volume, 100, kNo}.Range(0, 100),
