@@ -644,10 +644,14 @@ void DrawBubble(X86Context& ctx, uint32_t rec) {
         if (l > 1e-3f) sx = tip.x / hx / l, sy = tip.y / hy / l;
     }
     constexpr float kShade = 0.22f, kLight = 0.06f;
+    // the fill more opaque than the game's sprite, by a factor, so its fades still reach 0; a black bubble more so
+    constexpr float kOpacity = 1.15f, kDarkOpacity = 1.3f, kDark = 0.25f;  // kDark: the colour's luminance below
+    const bool black = 0.299f * fr + 0.587f * fg + 0.114f * fb < kDark;
+    const float fill_alpha = std::min(alpha * (black ? kDarkOpacity : kOpacity), 1.0f);
     auto fill = [&](float x, float y) {
         const float g = std::clamp((x / hx) * sx + (y / hy) * sy, -1.0f, 1.0f);  // 1 at the ellipse's edge by the tail
         const float dark = 1 - kShade * std::max(g, 0.0f), up = kLight * std::max(-g, 0.0f);
-        return Colour((fr + (1 - fr) * up) * dark, (fg + (1 - fg) * up) * dark, (fb + (1 - fb) * up) * dark, alpha);
+        return Colour((fr + (1 - fr) * up) * dark, (fg + (1 - fg) * up) * dark, (fb + (1 - fb) * up) * dark, fill_alpha);
     };
     // Lit from the upper left (y down), so it reads raised off the picture: a short shadow cast down and to the right,
     // as if the bubble stood a little off it, and a rim shaded inside its edge, light toward the light and dark away
