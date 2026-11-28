@@ -20,7 +20,7 @@ How to build the port from a checkout and how to package a release. For playing,
 
 ### What you need
 
-- **Your copy of the game**, the supported release (USA disc, SHA-1 `2232a1b3874d67b4bb4cf53a940420d2dab59535`, see the [README](README.md#installation)), as a disc image (`.iso`), extracted files
+- **Your copy of the game**, a supported release (USA or European disc, or the digital release, see the [README](README.md#installation)), as a disc image (`.iso`), extracted files
   (`default.xbe` with `dvddata/` and `media/` beside it), or the digital release's package (`DefaultPackage` and its
   `DefaultPackage.data` folder), which Setup's unpacker (`setup-linux --unpack`) unpacks (a Microsoft Store install keeps it in
   `C:\XboxGames\Conker- Live and Reloaded\Content\Game`; see the README's Installation).
@@ -86,7 +86,7 @@ the generated code includes, and the pinned compiler's address and SHA-256. It c
 
 ### On Linux
 
-Put the supported release in `assets/` (any `tools/build.sh` above does that), then:
+Put a supported release in `assets/` (any `tools/build.sh` above does that), then:
 
 ```bash
 tools/package.sh                         # writes out/release/LiveAndRecompiled-<version>-windows-x86_64.zip and -linux-x86_64.tar.gz
@@ -103,12 +103,13 @@ a Linux player would: the packaged `setup-linux` builds the native `Game` from t
 `assets/`, and the test fails unless it comes out. `--no-test` skips the test. The Zig archive for each host goes inside its
 Setup (downloaded once into `toolchain/archives/`), so players download nothing.
 
-The kit only accepts the exact XBE it was packaged from, so package from the supported release.
+The kit accepts the XBE it was packaged from and those of the supported releases (`XBE_ALSO_SHA1` in `CMakeLists.txt`),
+so package from a supported release.
 
 ### On Windows
 
 You need the same CMake, Ninja and Git as for building (running `tools\build.bat` once sets them up). Packaging
-builds with the pinned Zig, which it downloads into `toolchain\`. Put the supported release in
+builds with the pinned Zig, which it downloads into `toolchain\`. Put a supported release in
 `assets\`, then:
 
 ```bat
@@ -130,8 +131,9 @@ The digital, backwards compatible release is a small `DefaultPackage` file and a
 `Data0000`, `Data0001`, ... It's an Xbox 360 Games-on-Demand package: the disc's file system cut into 4 KiB blocks
 with a table of hashes after every 204 of them. Nothing in it is encrypted, so Setup only needs to
 leave the hash tables out and find where the files start. `src/setup/store.cpp` has the layout. It writes the same 881
-files as extracting the disc does, and Setup still compares the XBE's SHA-1: the disc's, or the Microsoft Store
-`default.xbe`'s, which has the same code and data and only a different header (`XBE_ALSO_SHA1` in `CMakeLists.txt`).
+files as extracting the disc does, and Setup still compares the XBE's SHA-1: the USA disc's, or the European disc's,
+which the Microsoft Store has too, with the same code and data and only a different header (`XBE_ALSO_SHA1` in
+`CMakeLists.txt`).
 
 ```bash
 setup-linux                              # the window: the game (package, image or files), working and game folder

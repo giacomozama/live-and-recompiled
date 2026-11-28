@@ -5,6 +5,7 @@
 #                                                          releases with the same code and a different header (null-ended)
 #   -DMODE=kit   -DSHA=<file> [-DALSO=a,b] -DIN=<toml> -DOUT=<toml>
 #                                                          a player kit's kit.toml with @XBE_SHA1@ and @XBE_ALSO_SHA1@ filled in
+string(REPLACE "," ";" ALSO "${ALSO}")  # comma-separated on the command line
 if(MODE STREQUAL "stamp")
     if(NOT EXISTS "${XBE}")
         message(FATAL_ERROR "${XBE} is missing: put the game in assets/ (tools/build.sh --iso FILE)")
